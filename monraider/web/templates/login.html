@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login · MonRaider</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ version }}">
+</head>
+<body>
+<div class="login card">
+  <h2>Mon<span style="color:var(--accent2)">Raider</span></h2>
+  <p class="muted small">OPNsense security monitoring</p>
+  <form method="post" action="/login">
+    <input name="username" placeholder="Username" autocomplete="username" required autofocus>
+    <input name="password" type="password" placeholder="Password" autocomplete="current-password" required>
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+</body>
+</html>

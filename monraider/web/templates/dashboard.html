@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top">
+  <h1>Security dashboard</h1>
+  <span class="muted small" id="updated"></span>
+  <div class="seg" id="range">
+    <button data-v="1">1h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button>
+  </div>
+</header>
+
+<div class="grid kpis" id="kpis"></div>
+
+<div class="grid g3" style="margin-top:14px">
+  <div class="card" style="grid-column: span 2"><h3>Events over time</h3><div class="chart-box"><canvas id="c-timeline"></canvas></div></div>
+  <div class="card"><h3>Events by source</h3><div class="chart-box"><canvas id="c-sources"></canvas></div></div>
+</div>
+
+<div class="grid g2" style="margin-top:14px">
+  <div class="card"><h3>Open alerts<span class="sp"></span><a href="/alerts" class="small">all alerts →</a></h3><div id="t-alerts"></div></div>
+  <div class="card"><h3>Firewall system</h3><div id="sys"></div></div>
+</div>
+
+<div class="grid g3" style="margin-top:14px">
+  <div class="card"><h3>Top blocked sources</h3><div id="t-blocked-src"></div></div>
+  <div class="card"><h3>Top blocked ports</h3><div id="t-blocked-ports"></div></div>
+  <div class="card"><h3>Blocked by country</h3><div id="t-countries"></div></div>
+  <div class="card"><h3>Allowed inbound from internet</h3><div id="t-pass-in"></div></div>
+  <div class="card"><h3>Auth failures</h3><div id="t-auth"></div></div>
+  <div class="card"><h3>Successful logins</h3><div id="t-auth-ok"></div></div>
+  <div class="card"><h3>DNS top domains</h3><div id="t-dns"></div></div>
+  <div class="card"><h3>DNS blocked</h3><div id="t-dns-blocked"></div></div>
+  <div class="card"><h3>DNS clients</h3><div id="t-dns-clients"></div></div>
+  <div class="card"><h3>Web (nginx) responses</h3><div class="chart-box sm"><canvas id="c-web"></canvas></div></div>
+  <div class="card"><h3>Web attack patterns</h3><div id="t-web-tags"></div></div>
+  <div class="card"><h3>Web top clients</h3><div id="t-web-clients"></div></div>
+  <div class="card"><h3>IDS (Suricata) signatures</h3><div id="t-ids"></div></div>
+  <div class="card"><h3>CrowdSec scenarios</h3><div id="t-cs"></div></div>
+  <div class="card"><h3>Q-Feeds threat-intel hits</h3><div id="t-qf"></div></div>
+  <div class="card"><h3>Zenarmor</h3><div id="t-zen"></div></div>
+  <div class="card"><h3>Internal top talkers</h3><div id="t-talkers"></div></div>
+  <div class="card"><h3>New devices</h3><div id="t-devices"></div></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let hours = Number(localStorage.getItem("mr-hours") || 24);
+MR.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("mr-hours", v); load(); });
+
+function kpi(label, value, cls = "") { return `<div class="card kpi ${cls}"><div class="v">${value}</div><div class="l">${MR.esc(label)}</div></div>`; }
+const cnt = (v, r) => MR.num(v);
+
+async function load() {
+  let d;
+  try { d = await MR.api(`/api/overview?hours=${hours}`); }
+  catch (e) { document.getElementById("kpis").innerHTML = `<div class="card">Failed to load: ${MR.esc(e.message)}</div>`; return; }
+  const k = d.kpi, oa = k.open_alerts || {};
+  const crit = (oa.critical || 0) + (oa.high || 0);
+  const openTotal = Object.values(oa).reduce((a, b) => a + b, 0);
+  document.getElementById("kpis").innerHTML =
+    kpi("Events", MR.num(k.total)) +
+    kpi("Blocked", MR.num(k.blocked), k.blocked ? "warn" : "") +
+    kpi("Blocked IPs", MR.num(k.blocked_ips)) +
+    kpi("Open alerts", `${openTotal}${crit ? ` <span class="small" style="color:var(--bad)">(${crit} high+)</span>` : ""}`, crit ? "bad" : openTotal ? "warn" : "ok") +
+    kpi("Login failures", MR.num(k.login_failed), k.login_failed ? "warn" : "") +
+    kpi("IDS events", MR.num(k.ids), k.ids ? "warn" : "") +
+    kpi("DNS queries", MR.num(k.dns)) +
+    kpi("CrowdSec bans", k.crowdsec_decisions ?? "–") +
+    kpi("Devices (24h)", MR.num(k.devices));
+  document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+
+  // timeline (stacked by source)
+  const tl = d.timeline, buckets = [...new Set(tl.series.map(r => r.bucket))].sort();
+  const sources = [...new Set(tl.series.map(r => r.source))];
+  const idx = Object.fromEntries(buckets.map((b, i) => [b, i]));
+  const ds = sources.map(s => {
+    const data = new Array(buckets.length).fill(0);
+    tl.series.filter(r => r.source === s).forEach(r => data[idx[r.bucket]] = r.n);
+    return { label: s, data, backgroundColor: MR.sourceColors[s] || "#64748b", stack: "s" };
+  });
+  const labels = buckets.map(b => { const t = new Date(b); return hours > 48 ? t.toLocaleDateString(undefined, {month: "short", day: "2-digit"}) + " " + t.getHours() + "h" : t.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); });
+  MR.chart("c-timeline", { type: "bar", data: { labels, datasets: ds },
+    options: { maintainAspectRatio: false, animation: false, scales: { x: { stacked: true, ticks: { maxTicksLimit: 12 } }, y: { stacked: true } }, plugins: { legend: { position: "bottom", labels: { boxWidth: 10 } } } } });
+  const tot = d.report.totals_by_source;
+  MR.chart("c-sources", { type: "doughnut", data: { labels: tot.map(r => r.source),
+    datasets: [{ data: tot.map(r => r.n), backgroundColor: tot.map(r => MR.sourceColors[r.source] || "#64748b"), borderWidth: 0 }] },
+    options: { maintainAspectRatio: false, animation: false, plugins: { legend: { position: "right", labels: { boxWidth: 10 } } } } });
+
+  const r = d.report;
+  MR.table("#t-alerts", [{k: "severity", l: "Sev", f: MR.sev}, {k: "title", l: "Alert", f: (v, row) => `<a href="/alerts#${row.id}">${MR.esc(v)}</a>`},
+    {k: "count", l: "#", num: true}, {k: "last_seen", l: "Last", f: MR.ago}], r.alerts.filter(a => a.status === "open").slice(0, 12), "No open alerts 🎉");
+  MR.table("#t-blocked-src", [{k: "ip", l: "Source", f: MR.ip}, {k: "country", l: "", f: MR.flag}, {k: "ports", l: "Ports", num: true}, {k: "n", l: "Hits", num: true}], r.top_blocked_sources);
+  MR.table("#t-blocked-ports", [{k: "port", l: "Port"}, {k: "proto", l: "Proto"}, {k: "sources", l: "Sources", num: true}, {k: "n", l: "Hits", num: true}], r.top_blocked_ports);
+  MR.table("#t-countries", [{k: "country", l: "Country", f: MR.flag}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Hits", num: true}], r.top_blocked_countries, "No GeoIP data (see Setup)");
+  MR.table("#t-pass-in", [{k: "dst", l: "Destination", f: MR.ip}, {k: "port", l: "Port"}, {k: "proto", l: "Proto"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Hits", num: true}], r.top_passed_inbound, "None logged (enable logging on pass rules)");
+  MR.table("#t-auth", [{k: "ip", l: "Source", f: MR.ip}, {k: "source", l: "Svc"}, {k: "users", l: "Users"}, {k: "n", l: "Fails", num: true}], r.auth_failures, "No failed logins");
+  MR.table("#t-auth-ok", [{k: "username", l: "User"}, {k: "ip", l: "From", f: MR.ip}, {k: "program", l: "Via"}, {k: "last", l: "Last", f: MR.ago}], r.auth_success);
+  MR.table("#t-dns", [{k: "domain", l: "Domain"}, {k: "clients", l: "Clients", num: true}, {k: "n", l: "Queries", num: true}], r.dns_top_domains);
+  MR.table("#t-dns-blocked", [{k: "domain", l: "Domain"}, {k: "blocklist", l: "List"}, {k: "n", l: "Hits", num: true}], r.dns_blocked);
+  MR.table("#t-dns-clients", [{k: "client", l: "Client", f: MR.ip}, {k: "blocked", l: "Blocked", num: true}, {k: "n", l: "Queries", num: true}], r.dns_clients);
+  MR.chart("c-web", { type: "bar", data: { labels: r.web_status.map(x => x.status.replace("http_", "")),
+    datasets: [{ data: r.web_status.map(x => x.n), backgroundColor: r.web_status.map(x => /http_[5]/.test(x.status) ? "#ef4444" : /http_4/.test(x.status) ? "#f59e0b" : "#22c55e") }] },
+    options: { maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } } } });
+  MR.table("#t-web-tags", [{k: "tag", l: "Pattern"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Requests", num: true}], r.web_attack_tags, "No attack patterns seen");
+  MR.table("#t-web-clients", [{k: "ip", l: "Client", f: MR.ip}, {k: "country", l: "", f: MR.flag}, {k: "errors", l: "4xx/5xx", num: true}, {k: "n", l: "Req", num: true}], r.web_top_clients);
+  MR.table("#t-ids", [{k: "signature", l: "Signature"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_signatures, "No IDS alerts");
+  MR.table("#t-cs", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}], r.crowdsec_scenarios);
+  MR.table("#t-qf", [{k: "src", l: "Source", f: MR.ip}, {k: "dst", l: "Destination", f: MR.ip}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}], r.qfeeds_hits);
+  MR.table("#t-zen", [{k: "app", l: "App / category"}, {k: "action", l: "Action"}, {k: "n", l: "Events", num: true}], r.zenarmor_top);
+  MR.table("#t-talkers", [{k: "ip", l: "Host", f: MR.ip}, {k: "peers", l: "Peers", num: true}, {k: "n", l: "Events", num: true}], r.top_talkers_internal);
+  MR.table("#t-devices", [{k: "mac", l: "MAC"}, {k: "ip", l: "IP", f: MR.ip}, {k: "hostname", l: "Name"}, {k: "first_seen", l: "First seen", f: MR.ago}], r.new_devices, "No new devices");
+
+  // system card
+  const s = d.system || {}, gws = d.gateways || [];
+  const info = s.information || {}, mem = (s.resources || {}).memory || {}, st = s.pf_states || {}, tm = s.time || {};
+  const memPct = mem.total ? Math.round(mem.used / mem.total * 100) : null;
+  const statePct = st.limit ? Math.round(st.current / st.limit * 100) : null;
+  const bar = p => p === null ? "" : `<div class="bar ${p > 90 ? "bad" : p > 75 ? "warn" : ""}"><i style="width:${p}%"></i></div>`;
+  document.getElementById("sys").innerHTML = s.resources ? `
+    <div class="kv">
+      <div>Host</div><div>${MR.esc(info.name || "")}</div>
+      <div>Version</div><div>${MR.esc((info.versions || []).join(" · "))}</div>
+      <div>Uptime</div><div>${MR.esc(tm.uptime || "")}</div>
+      <div>Load</div><div>${MR.esc(tm.loadavg || "")}</div>
+      <div>Memory</div><div>${memPct ?? "?"}% of ${MR.bytes(mem.total)}${bar(memPct)}</div>
+      <div>States</div><div>${MR.num(st.current)} / ${MR.num(st.limit)}${bar(statePct)}</div>
+      <div>Gateways</div><div>${gws.map(g => `<span class="dot ${/online|none/i.test(g.status_translated || g.status) ? "ok" : "bad"}"></span>${MR.esc(g.name)} ${MR.esc(g.delay || "")}`).join("<br>") || "–"}</div>
+    </div>` : `<div class="empty">No OPNsense API data yet. Configure OPNSENSE_URL / API key (see <a href="/setup">Setup</a>).</div>`;
+}
+load();
+setInterval(load, 60000);
+</script>
+{% endblock %}

@@ -1,0 +1,37 @@
+# MonRaider + PostgreSQL. Copy .env.example to .env, fill it in, then: docker compose up -d
+services:
+  monraider:
+    image: ghcr.io/gittimeraider/monraider:latest
+    container_name: monraider
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://monraider:${POSTGRES_PASSWORD:-change-me}@db:5432/monraider
+    ports:
+      - "8080:8080"        # web UI
+      - "514:5514/udp"     # syslog from OPNsense (UDP)
+      - "514:5514/tcp"     # syslog from OPNsense (TCP)
+    volumes:
+      - ./data:/data       # optional: put GeoLite2-City.mmdb here
+
+  db:
+    image: postgres:16-alpine
+    container_name: monraider-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: monraider
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: monraider
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monraider -d monraider"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
