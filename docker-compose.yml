@@ -1,4 +1,7 @@
-# MonRaider + PostgreSQL. Copy .env.example to .env, fill it in, then: docker compose up -d
+# MonRaider + PostgreSQL (standard setup).
+#   1. cp .env.example .env   and fill it in
+#   2. docker compose up -d
+# More variants are in ./examples (HTTPS for passkeys, external PostgreSQL, Unraid socket proxy, build from source).
 services:
   monraider:
     image: ghcr.io/gittimeraider/monraider:latest
@@ -9,13 +12,16 @@ services:
         condition: service_healthy
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://monraider:${POSTGRES_PASSWORD:-change-me}@db:5432/monraider
+      DATABASE_URL: postgresql://monraider:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/monraider
     ports:
       - "8080:8080"        # web UI
       - "514:5514/udp"     # syslog from OPNsense (UDP)
       - "514:5514/tcp"     # syslog from OPNsense (TCP)
     volumes:
-      - ./data:/data       # optional: put GeoLite2-City.mmdb here
+      - ./data:/data       # optional: GeoLite2-City.mmdb
+    logging:               # reset codes are printed to this log - keep a few MB of it
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
 
   db:
     image: postgres:16-alpine
@@ -23,7 +29,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: monraider
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: monraider
     volumes:
       - pgdata:/var/lib/postgresql/data

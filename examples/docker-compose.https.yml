@@ -1,0 +1,65 @@
+# MonRaider behind Caddy with HTTPS - needed for passkeys (WebAuthn only works on https:// or http://localhost).
+#
+#   1. Pick a name, e.g. monraider.home.lan, and point it (DNS record in OPNsense: Services > Unbound DNS > Overrides)
+#      to the Docker host.
+#   2. Put it in .env:   MONRAIDER_HOST=monraider.home.lan   and   PUBLIC_URL=https://monraider.home.lan
+#   3. docker compose -f docker-compose.https.yml up -d
+#
+# Certificates: with `tls internal` (see Caddyfile) Caddy creates its own CA. Install its root certificate on your
+# devices once, otherwise browsers show a warning and refuse passkeys:
+#   docker cp monraider-caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-root.crt
+# Have a real domain? Remove `tls internal` and Caddy fetches a Let's Encrypt certificate automatically
+# (or use your existing Nginx Proxy Manager / Traefik / SWAG and only the monraider + db services below).
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: monraider-caddy
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+    environment:
+      MONRAIDER_HOST: ${MONRAIDER_HOST:?set MONRAIDER_HOST in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [monraider]
+
+  monraider:
+    image: ghcr.io/gittimeraider/monraider:latest
+    container_name: monraider
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://monraider:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/monraider
+      COOKIE_SECURE: "true"
+    expose:
+      - "8080"             # only reachable through Caddy
+    ports:
+      - "514:5514/udp"
+      - "514:5514/tcp"
+    volumes:
+      - ./data:/data
+
+  db:
+    image: postgres:16-alpine
+    container_name: monraider-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: monraider
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: monraider
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monraider -d monraider"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  caddy_data:

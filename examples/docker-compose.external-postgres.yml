@@ -1,0 +1,18 @@
+# MonRaider using a PostgreSQL server you already run (14 or newer).
+# Create the database once (psql on the database server):
+#   CREATE USER monraider WITH PASSWORD 'long-random-password';
+#   CREATE DATABASE monraider OWNER monraider;
+# Then set DATABASE_URL in .env, e.g.
+#   DATABASE_URL=postgresql://monraider:long-random-password@192.168.1.20:5432/monraider
+services:
+  monraider:
+    image: ghcr.io/gittimeraider/monraider:latest
+    container_name: monraider
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+      - "514:5514/udp"
+      - "514:5514/tcp"
+    volumes:
+      - ./data:/data

@@ -1,9 +1,10 @@
 # MonRaider
 
-Self-hosted security monitoring for **OPNsense**. MonRaider collects and stores the firewall's logs and system state,
-detects attacks and anomalies, shows dashboards and reports, and includes an **AI analyst** that you can talk to
-(Claude or any other OpenAI-compatible model) to find problems, vulnerabilities, hacking attempts, intruders and
-strange traffic.
+Self-hosted security monitoring for **OPNsense** (and your **Unraid** server). MonRaider collects and stores the
+firewall's logs and system state, detects attacks and anomalies, shows dashboards and reports, keeps a device
+inventory of everything on your network, and includes an **AI analyst** that you can talk to (Claude or any other
+OpenAI-compatible model) to find problems, vulnerabilities, hacking attempts, intruders and strange traffic.
+The web UI is protected by a password **plus mandatory MFA** (authenticator app / TOTP or passkey).
 
 Image: `ghcr.io/gittimeraider/monraider:latest` (linux/amd64 + linux/arm64), built by GitHub Actions.
 
@@ -19,8 +20,9 @@ Image: `ghcr.io/gittimeraider/monraider:latest` (linux/amd64 + linux/arm64), bui
 | Zenarmor | syslog streaming (paid editions) | L7 apps, categories, security tags |
 | Q-Feeds | API (events + stats) | threat-intel matches, especially **internal hosts contacting malicious IPs** |
 | SSH / web GUI / OpenVPN / IPsec | syslog | failed and successful logins, config changes |
-| DHCP + ARP | syslog + API | device inventory, **new/rogue device** alerts |
-| System | API | CPU load, memory, disks, temperature, states, interfaces, gateways, services, firmware updates |
+| DHCP leases (Kea, dnsmasq, ISC) + ARP | API + syslog | **device list**: name, IP, MAC, vendor, interface, lease, online state, per-device activity; **new/rogue device** alerts |
+| System / hardware | API | CPU %, load, memory, swap, ZFS ARC, disks, temperatures, states, interface throughput/errors, gateways, services, top processes, firmware updates |
+| **Unraid** | Unraid API (GraphQL) + optional Docker socket proxy | CPU/cores, memory, temperatures, network, array/parity, disks (temp, errors, SMART), shares, **Docker containers** (state, updates, CPU/mem) and **their logs**, Unraid syslog, **notifications**, VMs, UPS |
 
 ## Built-in detections
 
@@ -55,10 +57,22 @@ curl -O https://raw.githubusercontent.com/GitTimeraider/MonRaider/master/docker-
 curl -o .env https://raw.githubusercontent.com/GitTimeraider/MonRaider/master/.env.example
 ```
 
+Other ready-made compose files are in [`examples/`](examples):
+
+| File | Use it when |
+|---|---|
+| [`docker-compose.yml`](docker-compose.yml) | standard: MonRaider + its own PostgreSQL |
+| [`examples/docker-compose.https.yml`](examples/docker-compose.https.yml) + [`Caddyfile`](examples/Caddyfile) | you want HTTPS (required for **passkeys**) via a bundled Caddy reverse proxy |
+| [`examples/docker-compose.external-postgres.yml`](examples/docker-compose.external-postgres.yml) | you already run PostgreSQL 14+ |
+| [`examples/docker-compose.all-in-one.yml`](examples/docker-compose.all-in-one.yml) | Portainer / Dockge stacks: all settings inline, no `.env` |
+| [`examples/docker-compose.build.yml`](examples/docker-compose.build.yml) | build the image from source |
+| [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml) | run **on Unraid** for per-container CPU/memory graphs |
+| [`examples/unraid/monraider.xml`](examples/unraid/monraider.xml) | run MonRaider itself **on Unraid** as a Docker template |
+
 ### 3. Configure (edit `~/monraider/.env` with any text editor, e.g. `nano .env`)
 
-* `POSTGRES_PASSWORD`, `ADMIN_PASSWORD` – choose strong passwords.
-* `SECRET_KEY` – paste the output of `openssl rand -hex 32` (run on the Docker host).
+* `POSTGRES_PASSWORD` – choose a long random password.
+* `ADMIN_USER` / `ADMIN_PASSWORD` – the first account (only used when the database is still empty).
 * `OPNSENSE_URL` – e.g. `https://192.168.1.1` (add `:port` if the web GUI runs on a different port).
 * `OPNSENSE_API_KEY` / `OPNSENSE_API_SECRET` – the values from the file of step 1.
 * `AI_API_KEY` – your Anthropic API key (from <https://console.anthropic.com> › *API keys*). The defaults
@@ -66,18 +80,41 @@ curl -o .env https://raw.githubusercontent.com/GitTimeraider/MonRaider/master/.e
   OpenAI-compatible API. Any other OpenAI-compatible service works as well (OpenAI, OpenRouter, LiteLLM, a local
   Ollama at `http://host:11434/v1/` …) by changing the base URL, model and key.
 * `TIMEZONE` – your local zone (used for BSD-style syslog timestamps and the daily report).
+* `PUBLIC_URL` – only when you use HTTPS / a reverse proxy, e.g. `https://monraider.home.lan` (for passkeys).
 
-### 4. Start (shell on your Docker host, in `~/monraider`)
+### 4. Start and log in
+
+On the Docker host, in `~/monraider`:
 
 ```bash
 docker compose up -d
 docker compose logs -f monraider     # Ctrl+C to stop following
 ```
 
-Open `http://<docker-host>:8080` in your browser and log in with `ADMIN_USER` / `ADMIN_PASSWORD`.
+In your browser open `http://<docker-host>:8080`, log in with `ADMIN_USER` / `ADMIN_PASSWORD`. You are sent to
+**Account & MFA** and must set up a second factor before anything else is accessible:
+
+* **Authenticator app (TOTP)** – click *Set up authenticator app*, scan the QR code with Google/Microsoft
+  Authenticator, Aegis, 1Password, Bitwarden…, type the 6-digit code, *Confirm*.
+* **Passkey / security key** – type a name, click *Add passkey* and follow your browser / phone / YubiKey prompt.
+  Passkeys only work when MonRaider is opened over **HTTPS** (or `http://localhost`); use
+  `examples/docker-compose.https.yml` or your own reverse proxy (Nginx Proxy Manager, Traefik, SWAG…).
+
+Then change the initial password on the same page. Next logins ask for password + TOTP code or passkey.
 
 > Port 514 on the host must be free. If something else uses it, change `"514:5514/udp"` in `docker-compose.yml`
 > to e.g. `"1514:5514/udp"` and use that port in OPNsense in the next step.
+
+### Forgot the password or lost the MFA device?
+
+1. On the login page click **Forgot password / lost MFA device?** (or open `http://<docker-host>:8080/reset`) and
+   click **Generate reset code**.
+2. Read the code from the container log – shell on the Docker host: `docker logs monraider --tail 20`
+   (Unraid: Docker tab › MonRaider icon › *Logs*; Portainer: *Containers › monraider › Logs*). It looks like
+   `Reset code: 7F3A-91BC (valid 15 minutes, single use)`.
+   Alternatively create a code from the shell: `docker exec monraider python -m monraider.cli reset-code`.
+3. Enter the code and a new password on the reset page. Password **and** all MFA factors are reset; you set up
+   MFA again at the next login. Codes are single use, expire after 15 minutes and are destroyed after 5 wrong attempts.
 
 ### 5. Send logs from OPNsense (OPNsense web UI)
 
@@ -118,18 +155,46 @@ docker compose pull && docker compose up -d
 
 ---
 
+## Adding an Unraid server
+
+1. **Unraid web UI** (Unraid 7.2+ has the API built in; on 6.12–7.1 install the *Unraid Connect* plugin from
+   Community Apps first): *Settings › Management Access › API Keys › Create*, name `monraider`, role **Viewer**,
+   copy the key. (Or in the Unraid terminal: `unraid-api apikey --create --name monraider --roles VIEWER --json`.)
+2. **MonRaider web UI**: *Integrations* › fill in name, URL (e.g. `http://192.168.1.10`) and the API key ›
+   *Test connection* › *Add server*. Add as many servers as you like.
+3. Optional, for per-container CPU / memory graphs: on Unraid start
+   [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml)
+   (a read-only Docker API) and enter `http://<unraid-ip>:2375` as *Docker API* for that server.
+
+The **Unraid** page then shows Overview (CPU/cores, memory, temperatures, network, VMs, UPS), Array & disks
+(array/parity status, per-disk temperature, usage, errors, shares, SMART), Docker (containers, state, updates,
+CPU/memory), Logs (container logs and Unraid syslog, searchable) and Notifications. Disk errors/overheating, stopped
+auto-start containers, array problems, UPS on battery and Unraid *warning/alert* notifications become MonRaider alerts.
+
 ## Using it
 
-* **Dashboard** – KPIs, events over time, top blocked sources/ports/countries, allowed inbound, logins, DNS, web,
-  IDS, CrowdSec, Q-Feeds, Zenarmor, internal top talkers, new devices.
+* **Overview** – KPIs and the most important tables of every source in one page.
 * **Alerts** – detections ranked by severity; acknowledge / close; **Ask AI** investigates one alert.
-* **Events** – search all stored logs by source, IP/CIDR, action, text, severity, time range (click a row for details).
-* **System** – OPNsense health, firmware, gateways, interfaces with throughput graphs, services, device inventory.
+* **Security dashboards** (one per function, each with KPIs, charts over time, breakdowns, top-N tables and a live log):
+  *Firewall* (actions, interfaces, protocols, ports, countries, rules, allowed inbound, internal hosts being blocked),
+  *DNS* (queries vs. blocked, types, rcodes, blocklists, clients, NXDOMAIN, tunneling candidates),
+  *Web server* (status classes, attack patterns over time, vhosts, paths, 4xx probing, user agents, clients),
+  *Threats* (IDS, CrowdSec, Q-Feeds, alerts by rule/severity, top attackers across all sources, active bans),
+  *Zenarmor* (actions, categories, apps, hosts, blocked destinations, threats),
+  *Authentication & VPN* (failed/successful logins, usernames tried, config changes) and *System logs*.
+* **OPNsense** – gateways, interfaces, services, firmware. **Hardware** – CPU, load, memory/swap/ARC, temperatures,
+  disks, states, interface throughput/errors, gateway latency/loss, top processes.
+* **Devices** – everything connected to OPNsense (ARP + DHCP leases from Kea / dnsmasq / ISC): online state, name,
+  IP, MAC, vendor, interface, lease, first/last seen, events/blocks/DNS queries/alerts per device; mark devices as
+  trusted, rename them, add notes.
+* **Unraid** – see above.
+* **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range.
 * **Reports** – 24h / 7d / 30d reports, optionally with an AI-written analysis; print to PDF or download JSON.
   Set `AI_DAILY_REPORT=true` to get one automatically every morning.
 * **AI Analyst** – chat with the model. It can run read-only SQL against the log database, search events, profile an
-  IP, read alerts, system status and traffic statistics, and answers with evidence and remediation steps.
-  Data sent to the AI provider consists of the query results the model asks for (IPs, domains, log lines).
+  IP, read alerts, OPNsense + Unraid status and traffic statistics, and answers with evidence and remediation steps.
+  Credentials (users, MFA secrets, API keys) are never accessible to it. Data sent to the AI provider consists of the
+  query results the model asks for (IPs, domains, log lines).
 
 ## Configuration reference
 
@@ -138,8 +203,11 @@ All settings are environment variables (see `.env.example`). The most important:
 | Variable | Default | Meaning |
 |---|---|---|
 | `DATABASE_URL` | `postgresql://monraider:monraider@db:5432/monraider` | PostgreSQL connection |
-| `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / random (printed in the log) | web login |
-| `SECRET_KEY` | random per start | cookie signing key (set it, or you are logged out on every restart) |
+| `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / random (printed in the log) | first account, created only when no user exists |
+| `PUBLIC_URL` / `WEBAUTHN_RP_ID` | auto | public https URL / passkey relying-party id when behind a reverse proxy |
+| `COOKIE_SECURE` | `false` | mark the session cookie HTTPS-only |
+| `SECRET_KEY` | generated, stored in DB | cookie signing key |
+| `UNRAID_NAME` / `UNRAID_URL` / `UNRAID_API_KEY` / `UNRAID_DOCKER_URL` | – | optional first Unraid server (more via *Integrations*) |
 | `SYSLOG_UDP_PORT` / `SYSLOG_TCP_PORT` | `5514` | container syslog ports |
 | `SYSLOG_ALLOWED_SENDERS` | *(all)* | comma-separated IPs/CIDRs allowed to send syslog |
 | `OPNSENSE_URL`, `OPNSENSE_API_KEY`, `OPNSENSE_API_SECRET` | – | API access |
@@ -155,8 +223,11 @@ All settings are environment variables (see `.env.example`). The most important:
 
 ## Security notes
 
+* Login = password (scrypt-hashed) + mandatory TOTP or passkey; failed logins are rate limited per IP and logged.
+  Password changes and resets invalidate all other sessions.
 * Put MonRaider on your LAN / management network; don't expose port 8080 to the internet (use a VPN or a reverse
-  proxy with TLS and extra authentication if you need remote access).
+  proxy with TLS if you need remote access).
+* The reset code only appears in the container log, so a reset requires access to the Docker host.
 * Use `SYSLOG_ALLOWED_SENDERS=<opnsense-ip>` so nobody else can inject log lines.
 * The AI's SQL tool runs inside read-only transactions with a statement timeout and only accepts `SELECT`.
 
@@ -167,6 +238,9 @@ pip install -r requirements-dev.txt
 python -m pytest -q                                   # parser tests
 DATABASE_URL=postgresql://... ADMIN_PASSWORD=x python -m monraider.main
 python tools/simulate.py --port 5514                  # send simulated OPNsense logs (scans, brute force, tunnels…)
+python tools/mock_opnsense.py --port 18443            # fake OPNsense API  (OPNSENSE_URL=http://127.0.0.1:18443)
+python tools/mock_unraid.py --port 18500              # fake Unraid API    (UNRAID_URL=http://127.0.0.1:18500, key test-key)
+TEST_DATABASE_URL=postgresql://... python -m pytest   # also runs every dashboard query against PostgreSQL
 ```
 
 Architecture: one asyncio Python process (FastAPI web UI, UDP/TCP syslog receiver with RFC 3164/5424 + octet

@@ -4,17 +4,52 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Login · MonRaider</title>
   <link rel="stylesheet" href="/static/style.css?v={{ version }}">
+  <script src="/static/app.js?v={{ version }}"></script>
 </head>
 <body>
 <div class="login card">
   <h2>Mon<span style="color:var(--accent2)">Raider</span></h2>
-  <p class="muted small">OPNsense security monitoring</p>
+  {% if info %}<p class="ok-msg">{{ info }}</p>{% endif %}
+  {% if step == "password" %}
+  <p class="muted small">Sign in</p>
   <form method="post" action="/login">
     <input name="username" placeholder="Username" autocomplete="username" required autofocus>
     <input name="password" type="password" placeholder="Password" autocomplete="current-password" required>
     {% if error %}<div class="err">{{ error }}</div>{% endif %}
-    <button type="submit">Sign in</button>
+    <button type="submit">Continue</button>
   </form>
+  <p class="small"><a href="/reset">Forgot password / lost MFA device?</a></p>
+  {% else %}
+  <p class="muted small">Two-factor verification for <b>{{ username }}</b></p>
+  {% if passkey %}
+  <button id="pk" type="button" style="width:100%">Use passkey / security key</button>
+  <div id="pk-msg" class="err small"></div>
+  {% if totp %}<div class="or">or</div>{% endif %}
+  {% endif %}
+  {% if totp %}
+  <form method="post" action="/login/totp">
+    <input name="code" placeholder="6-digit code from your authenticator app" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" required {% if not passkey %}autofocus{% endif %}>
+    <button type="submit">Verify</button>
+  </form>
+  {% endif %}
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  <p class="small"><a href="/login">Start over</a> · <a href="/reset">Lost your device?</a></p>
+  {% if passkey %}
+  <script>
+  document.getElementById("pk").onclick = async () => {
+    const msg = document.getElementById("pk-msg"); msg.textContent = "";
+    try {
+      if (!window.PublicKeyCredential || !window.isSecureContext) throw new Error("Passkeys need HTTPS (or localhost). Use your TOTP code instead.");
+      const opts = await MR.api("/login/passkey/options", { method: "POST" });
+      const cred = await navigator.credentials.get({ publicKey: MR.webauthn.requestOptions(opts) });
+      const r = await MR.api("/login/passkey/verify", { method: "POST", body: MR.webauthn.credentialJSON(cred) });
+      location.href = r.redirect || "/";
+    } catch (e) { msg.textContent = e.message || String(e); }
+  };
+  {% if not totp %}window.addEventListener("load", () => document.getElementById("pk").click());{% endif %}
+  </script>
+  {% endif %}
+  {% endif %}
 </div>
 </body>
 </html>

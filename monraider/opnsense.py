@@ -102,7 +102,9 @@ class Poller:
             ("services", 300, self.poll_services),
             ("firmware", 6 * 3600, self.poll_firmware),
             ("rule_labels", 600, self.poll_rule_labels),
-            ("arp", 300, self.poll_arp),
+            ("arp", 120, self.poll_arp),
+            ("leases", 300, self.poll_leases),
+            ("activity", p, self.poll_activity),
             ("firewall_log", 15, self.poll_firewall_log),
         ]
         if settings.unbound_query_pull:
@@ -169,10 +171,12 @@ class Poller:
             self._try("diagnostics/system/systemMbuf"),
             self._try("diagnostics/firewall/pf_states"),
             self._try("core/system/status"),
+            self._try("diagnostics/cpu_usage/getCPUType"),
         )
-        resources, info, systime, disk, temp, swap, mbuf, states, status = results
+        resources, info, systime, disk, temp, swap, mbuf, states, status, cpu_type = results
         snap = {"resources": resources, "information": info, "time": systime, "disk": disk, "temperature": temp,
-                "swap": swap, "mbuf": mbuf, "pf_states": states, "status": status}
+                "swap": swap, "mbuf": mbuf, "pf_states": states, "status": status,
+                "cpu_type": cpu_type[0] if isinstance(cpu_type, list) and cpu_type else cpu_type}
         await db.set_snapshot("system", snap)
 
         metrics: list[tuple[str, str, float]] = []
@@ -192,6 +196,13 @@ class Poller:
             pct = _num(d.get("used_pct") or d.get("capacity"))
             if pct is not None:
                 metrics.append(("disk_used_pct", d.get("mountpoint", ""), pct))
+        swaps = (swap or {}).get("swap", []) if isinstance(swap, dict) else []
+        sw_total = sum(_num(x.get("total")) or 0 for x in swaps if isinstance(x, dict))
+        sw_used = sum(_num(x.get("used")) or 0 for x in swaps if isinstance(x, dict))
+        if sw_total:
+            metrics.append(("swap_used_pct", "", round(sw_used / sw_total * 100, 2)))
+        if _num(mem.get("arc")) is not None and total:
+            metrics.append(("zfs_arc_pct", "", round(_num(mem["arc"]) / total * 100, 2)))
         for t in temp if isinstance(temp, list) else []:
             v = _num(t.get("temperature"))
             if v is not None:
@@ -261,12 +272,58 @@ class Poller:
         devices = []
         for r in rows:
             mac = (r.get("mac") or "").lower()
-            if not mac or mac == "(incomplete)":
+            if not mac or mac == "(incomplete)" or r.get("expired"):
                 continue
             devices.append({"mac": mac, "ip": ip_or_none(r.get("ip")), "hostname": r.get("hostname") or None,
-                            "manufacturer": r.get("manufacturer"), "intf": r.get("intf_description") or r.get("intf")})
+                            "vendor": r.get("manufacturer") or None, "interface": r.get("intf_description") or r.get("intf"),
+                            "online": True})
         from .detections import track_devices  # local import to avoid a cycle
-        await track_devices(devices, origin="arp")
+        await track_devices(devices, origin="arp", mark_online=True)
+
+    async def poll_leases(self) -> None:
+        """DHCP leases from whichever DHCP server is in use: Kea, dnsmasq or ISC dhcpd (plugin)."""
+        from .detections import track_devices
+
+        found = False
+        for path, kind in (("kea/leases4/search", "kea"), ("dnsmasq/leases/search", "dnsmasq"),
+                           ("dhcpv4/leases/search_lease", "isc")):
+            try:
+                rows = await self.api.search(path, rows=5000)
+            except ApiError:
+                continue
+            found = True
+            await db.set_snapshot(f"leases_{kind}", rows)
+            devices = []
+            for r in rows:
+                mac = (r.get("hwaddr") or r.get("mac") or "").lower()
+                if not mac:
+                    continue
+                devices.append({
+                    "mac": mac, "ip": ip_or_none(r.get("address")), "hostname": r.get("hostname") or None,
+                    "vendor": r.get("mac_info") or r.get("man") or None, "interface": r.get("if_descr") or r.get("if"),
+                    "lease_type": r.get("lease_type") or r.get("type"),
+                    "lease_expires": str(r.get("expire") or r.get("ends") or "") or None,
+                    "online": str(r.get("status", "")).lower() == "online"})
+            await track_devices(devices, origin=f"dhcp-{kind}")
+        if not found:
+            raise ApiError(404, "no DHCP lease API found (Kea, dnsmasq or ISC DHCP)")
+
+    async def poll_activity(self) -> None:
+        """CPU usage and top processes from the 'top' based activity endpoint."""
+        res = await self.api.get("diagnostics/activity/getActivity")
+        headers = (res or {}).get("headers", []) if isinstance(res, dict) else []
+        details = (res or {}).get("details", []) if isinstance(res, dict) else []
+        await db.set_snapshot("activity", {"headers": headers, "details": details[:40]})
+        metrics = []
+        for line in headers:
+            if line.startswith("CPU:"):
+                parts = {kv.split("%")[1].strip().rstrip(","): _num(kv.split("%")[0]) for kv in line[4:].split(",") if "%" in kv}
+                if parts.get("idle") is not None:
+                    metrics.append(("cpu_used_pct", "", round(100 - parts["idle"], 2)))
+                for k in ("user", "system", "interrupt"):
+                    if parts.get(k) is not None:
+                        metrics.append((f"cpu_{k}_pct", "", parts[k]))
+        await db.add_metrics(metrics)
 
     # ------------------------------------------------------------- logs ---
     async def poll_firewall_log(self) -> None:

@@ -62,25 +62,39 @@ def registered_domain(domain: str) -> str:
     return ".".join(parts[-2:])
 
 
-async def track_devices(devices: list[dict[str, Any]], origin: str) -> None:
-    """Upsert devices (from ARP or DHCP) and alert on MAC addresses never seen before."""
+async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online: bool = False) -> None:
+    """Upsert devices (from ARP, DHCP leases or DHCP logs) and alert on MAC addresses never seen before.
+
+    ``mark_online``: the list is a complete snapshot of present devices (ARP table) -> others become offline.
+    """
+    pool = db.pool()
+    if mark_online:
+        await pool.execute("UPDATE devices SET online = false WHERE online AND NOT (mac = ANY($1::text[]))",
+                           [d["mac"] for d in devices])
     if not devices:
         return
-    pool = db.pool()
     first_run = not await pool.fetchval("SELECT EXISTS (SELECT 1 FROM devices)")
     for d in devices:
         new = await pool.fetchval(
-            "INSERT INTO devices (mac, ip, hostname) VALUES ($1, $2, $3) "
+            "INSERT INTO devices (mac, ip, hostname, vendor, interface, sources, lease_type, lease_expires, online) "
+            "VALUES ($1, $2, $3, $4, $5, ARRAY[$6::text], $7, $8, $9) "
             "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(EXCLUDED.ip, devices.ip), "
-            "hostname = COALESCE(EXCLUDED.hostname, devices.hostname), last_seen = now() "
-            "RETURNING (xmax = 0)", d["mac"], d.get("ip"), d.get("hostname"))
+            "hostname = COALESCE(EXCLUDED.hostname, devices.hostname), vendor = COALESCE(EXCLUDED.vendor, devices.vendor), "
+            "interface = COALESCE(EXCLUDED.interface, devices.interface), "
+            "sources = (SELECT array_agg(DISTINCT s) FROM unnest(devices.sources || EXCLUDED.sources) s), "
+            "lease_type = COALESCE(EXCLUDED.lease_type, devices.lease_type), "
+            "lease_expires = COALESCE(EXCLUDED.lease_expires, devices.lease_expires), "
+            "online = devices.online OR EXCLUDED.online, last_seen = now() "
+            "RETURNING (xmax = 0)", d["mac"], d.get("ip"), d.get("hostname") or None, d.get("vendor") or None,
+            d.get("interface") or None, origin, d.get("lease_type"), d.get("lease_expires"), bool(d.get("online")))
         if new and not first_run:
             await raise_alert(
                 "new_device", "low", f"New device on network: {d['mac']} ({d.get('hostname') or d.get('ip') or '?'})",
                 f"new_device:{d['mac']}",
-                description=f"A MAC address never seen before appeared via {origin}: {d}. "
-                            "Verify it is a known device (intruder / rogue device check).",
-                src_ip=d.get("ip"), data=d)
+                description=f"A MAC address never seen before appeared via {origin}: "
+                            f"ip={d.get('ip')} hostname={d.get('hostname')} vendor={d.get('vendor')} interface={d.get('interface')}. "
+                            "Verify it is a known device (intruder / rogue device check) and mark it trusted on the Devices page.",
+                src_ip=d.get("ip"), data={k: v for k, v in d.items() if v is not None})
 
 
 async def dhcp_listener(events: list[dict[str, Any]]) -> None:

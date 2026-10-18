@@ -96,3 +96,50 @@ CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value JSONB
 );
+
+-- ---------------------------------------------------------------- auth ---
+CREATE TABLE IF NOT EXISTS users (
+    id              BIGSERIAL PRIMARY KEY,
+    username        TEXT NOT NULL UNIQUE,
+    password_hash   TEXT NOT NULL,
+    totp_secret     TEXT,
+    totp_enabled    BOOLEAN NOT NULL DEFAULT false,
+    session_version INTEGER NOT NULL DEFAULT 1,   -- bumped on password/MFA reset to invalidate sessions
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_login      TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS webauthn_credentials (
+    id            BIGSERIAL PRIMARY KEY,
+    user_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    credential_id TEXT NOT NULL UNIQUE,          -- base64url
+    public_key    BYTEA NOT NULL,
+    sign_count    BIGINT NOT NULL DEFAULT 0,
+    name          TEXT NOT NULL,
+    transports    JSONB,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used     TIMESTAMPTZ
+);
+
+-- ------------------------------------------------------------ devices+ ---
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS vendor TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS interface TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS sources TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS lease_type TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS lease_expires TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS online BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS trusted BOOLEAN NOT NULL DEFAULT false;
+
+-- ------------------------------------------------------------- unraid ---
+CREATE TABLE IF NOT EXISTS unraid_servers (
+    id          BIGSERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    url         TEXT NOT NULL,                 -- e.g. http://tower.lan  (GraphQL at /graphql)
+    api_key     TEXT NOT NULL,
+    verify_ssl  BOOLEAN NOT NULL DEFAULT false,
+    docker_url  TEXT,                          -- optional docker socket proxy, e.g. http://tower.lan:2375
+    collect_logs BOOLEAN NOT NULL DEFAULT true,
+    enabled     BOOLEAN NOT NULL DEFAULT true,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

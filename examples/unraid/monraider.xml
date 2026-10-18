@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<!--
+  Unraid Docker template for running MonRaider ON Unraid.
+  Install: copy this file to /boot/config/plugins/dockerMan/templates-user/my-MonRaider.xml (Unraid terminal or
+  the flash share), then Docker tab > Add Container > Template: MonRaider.
+  Needs a PostgreSQL container first, e.g. the "postgresql16" app from Community Applications
+  (create user/database "monraider") - set its address in DATABASE_URL below.
+-->
+<Container version="2">
+  <Name>MonRaider</Name>
+  <Repository>ghcr.io/gittimeraider/monraider:latest</Repository>
+  <Registry>https://github.com/GitTimeraider/MonRaider/pkgs/container/monraider</Registry>
+  <Network>bridge</Network>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/GitTimeraider/MonRaider/issues</Support>
+  <Project>https://github.com/GitTimeraider/MonRaider</Project>
+  <Overview>OPNsense security monitoring: log collection, dashboards, detections, reports, Unraid monitoring and an AI analyst. Lost your password/MFA? Use "Forgot password" on the login page and read the reset code in this container's log.</Overview>
+  <Category>Network:Management Security: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/GitTimeraider/MonRaider/master/examples/unraid/icon.png</Icon>
+  <Config Name="Web UI" Target="8080" Default="8080" Mode="tcp" Description="Web interface" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Syslog UDP" Target="5514" Default="514" Mode="udp" Description="Point OPNsense remote logging here" Type="Port" Display="always" Required="true" Mask="false">514</Config>
+  <Config Name="Syslog TCP" Target="5514" Default="514" Mode="tcp" Description="Syslog over TCP" Type="Port" Display="always" Required="false" Mask="false">514</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/monraider" Mode="rw" Description="Optional GeoLite2-City.mmdb" Type="Path" Display="advanced" Required="false" Mask="false">/mnt/user/appdata/monraider</Config>
+  <Config Name="DATABASE_URL" Target="DATABASE_URL" Default="postgresql://monraider:PASSWORD@192.168.1.10:5432/monraider" Description="PostgreSQL connection" Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="ADMIN_USER" Target="ADMIN_USER" Default="admin" Description="First admin user" Type="Variable" Display="always" Required="true" Mask="false">admin</Config>
+  <Config Name="ADMIN_PASSWORD" Target="ADMIN_PASSWORD" Default="" Description="Initial password (empty = random, printed in the log)" Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="TIMEZONE" Target="TIMEZONE" Default="Europe/Amsterdam" Description="Your time zone" Type="Variable" Display="always" Required="false" Mask="false">Europe/Amsterdam</Config>
+  <Config Name="OPNSENSE_URL" Target="OPNSENSE_URL" Default="https://192.168.1.1" Description="OPNsense web GUI URL" Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="OPNSENSE_API_KEY" Target="OPNSENSE_API_KEY" Default="" Description="System > Access > Users > API keys" Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="OPNSENSE_API_SECRET" Target="OPNSENSE_API_SECRET" Default="" Description="API secret" Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="AI_API_KEY" Target="AI_API_KEY" Default="" Description="Anthropic (or other OpenAI-compatible) API key" Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="AI_BASE_URL" Target="AI_BASE_URL" Default="https://api.anthropic.com/v1/" Description="OpenAI-compatible endpoint" Type="Variable" Display="advanced" Required="false" Mask="false">https://api.anthropic.com/v1/</Config>
+  <Config Name="AI_MODEL" Target="AI_MODEL" Default="claude-opus-5-5" Description="Model name" Type="Variable" Display="advanced" Required="false" Mask="false">claude-opus-5-5</Config>
+  <Config Name="UNRAID_URL" Target="UNRAID_URL" Default="" Description="Monitor this Unraid server, e.g. http://192.168.1.10 (or add it later under Integrations)" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="UNRAID_API_KEY" Target="UNRAID_API_KEY" Default="" Description="Unraid API key (Settings > Management Access > API Keys, role Viewer)" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+  <Config Name="SYSLOG_ALLOWED_SENDERS" Target="SYSLOG_ALLOWED_SENDERS" Default="" Description="Only accept syslog from these IPs (your OPNsense)" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="PUBLIC_URL" Target="PUBLIC_URL" Default="" Description="https URL when behind a reverse proxy (needed for passkeys)" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+</Container>

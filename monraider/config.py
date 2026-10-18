@@ -1,7 +1,6 @@
 """Runtime configuration, read from environment variables (or a .env file)."""
 from __future__ import annotations
 
-import secrets
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,8 +16,11 @@ class Settings(BaseSettings):
     web_host: str = "0.0.0.0"
     web_port: int = 8080
     admin_user: str = "admin"
-    admin_password: str = ""  # empty -> random password is generated and logged at startup
-    secret_key: str = ""  # session cookie signing key; random if empty (sessions reset on restart)
+    admin_password: str = ""  # initial password of the first user only; empty -> random one is logged at first start
+    secret_key: str = ""  # session cookie signing key; generated and stored in the database if empty
+    public_url: str = ""  # e.g. https://monraider.home.lan - used as WebAuthn origin (auto-detected if empty)
+    webauthn_rp_id: str = ""  # passkey relying party id (defaults to the host name of public_url / the request)
+    cookie_secure: bool = False  # set true when served over HTTPS
     timezone: str = "UTC"
 
     # --- syslog receiver ----------------------------------------------------
@@ -52,6 +54,13 @@ class Settings(BaseSettings):
     ai_daily_report: bool = False
     ai_daily_report_hour: int = 7
 
+    # --- Unraid (optional bootstrap; more servers can be added in the web UI under Settings) ---
+    unraid_name: str = "Unraid"
+    unraid_url: str = ""  # e.g. http://192.168.1.10  (GraphQL API at /graphql)
+    unraid_api_key: str = ""
+    unraid_verify_ssl: bool = False
+    unraid_docker_url: str = ""  # optional docker-socket-proxy, e.g. http://192.168.1.10:2375
+
     # --- enrichment / housekeeping -----------------------------------------
     geoip_db: str = "/data/GeoLite2-City.mmdb"  # optional MaxMind mmdb (City or Country)
     retention_days: int = 30
@@ -73,6 +82,4 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     s = Settings()
-    if not s.secret_key:
-        s.secret_key = secrets.token_urlsafe(32)
     return s

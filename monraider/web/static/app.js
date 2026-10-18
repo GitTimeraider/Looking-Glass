@@ -77,6 +77,10 @@ const MR = {
     if (MR.charts[id]) MR.charts[id].destroy();
     const el = document.getElementById(id);
     if (!el || !window.Chart) return null;
+    const box = el.parentElement, ds = config.data.datasets || [];
+    const empty = !ds.length || ds.every(d => !(d.data || []).length);
+    box.classList.toggle("nodata", empty);
+    if (empty) { delete MR.charts[id]; return null; }
     Chart.defaults.color = "#8b98a9";
     Chart.defaults.borderColor = "#263241";
     MR.charts[id] = new Chart(el, config);
@@ -88,5 +92,78 @@ const MR = {
       b.classList.toggle("on", b.dataset.v === String(value));
       b.onclick = () => { el.querySelectorAll("button").forEach(x => x.classList.remove("on")); b.classList.add("on"); onChange(b.dataset.v); };
     });
+  },
+  /* ---- WebAuthn (passkeys): JSON <-> ArrayBuffer conversion ---- */
+  webauthn: {
+    b64uToBuf(s) { s = s.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Uint8Array.from(atob(s), c => c.charCodeAt(0)).buffer; },
+    bufToB64u(b) { return btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); },
+    creationOptions(o) {
+      return { ...o, challenge: this.b64uToBuf(o.challenge), user: { ...o.user, id: this.b64uToBuf(o.user.id) },
+               excludeCredentials: (o.excludeCredentials || []).map(c => ({ ...c, id: this.b64uToBuf(c.id) })) };
+    },
+    requestOptions(o) {
+      return { ...o, challenge: this.b64uToBuf(o.challenge), allowCredentials: (o.allowCredentials || []).map(c => ({ ...c, id: this.b64uToBuf(c.id) })) };
+    },
+    credentialJSON(c) {
+      const r = c.response, out = { id: c.id, rawId: this.bufToB64u(c.rawId), type: c.type, clientExtensionResults: c.getClientExtensionResults ? c.getClientExtensionResults() : {}, response: {} };
+      out.response.clientDataJSON = this.bufToB64u(r.clientDataJSON);
+      if (r.attestationObject) { out.response.attestationObject = this.bufToB64u(r.attestationObject); if (r.getTransports) out.response.transports = r.getTransports(); }
+      if (r.authenticatorData) { out.response.authenticatorData = this.bufToB64u(r.authenticatorData); out.response.signature = this.bufToB64u(r.signature);
+                                 out.response.userHandle = r.userHandle ? this.bufToB64u(r.userHandle) : null; }
+      if (c.authenticatorAttachment) out.authenticatorAttachment = c.authenticatorAttachment;
+      return out;
+    },
+  },
+  /* ---- chart helpers ---- */
+  color(i) { return MR.palette[i % MR.palette.length]; },
+  timeLabel(t, hours) {
+    const d = new Date(t);
+    return hours > 48 ? d.toLocaleDateString(undefined, { month: "short", day: "2-digit" }) + " " + String(d.getHours()).padStart(2, "0") + "h"
+                      : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  },
+  /** rows [{t, series, v}] -> stacked bar (or line) chart */
+  seriesChart(id, rows, opts = {}) {
+    const buckets = [...new Set(rows.map(r => r.t))].sort();
+    const series = [...new Set(rows.map(r => r.series))];
+    const idx = Object.fromEntries(buckets.map((b, i) => [b, i]));
+    const datasets = series.map((s, i) => {
+      const data = new Array(buckets.length).fill(0);
+      rows.filter(r => r.series === s).forEach(r => data[idx[r.t]] = Number(r.v));
+      const c = (opts.colors && opts.colors[s]) || MR.sourceColors[s] || MR.color(i);
+      return opts.line ? { label: s ?? "?", data, borderColor: c, backgroundColor: c + "33", fill: !!opts.fill, pointRadius: 0, tension: .25, borderWidth: 1.5 }
+                       : { label: s ?? "?", data, backgroundColor: c, stack: "s" };
+    });
+    return MR.chart(id, { type: opts.line ? "line" : "bar", data: { labels: buckets.map(b => MR.timeLabel(b, opts.hours || 24)), datasets },
+      options: { maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false },
+        scales: { x: { stacked: !opts.line, ticks: { maxTicksLimit: 10, maxRotation: 0 } }, y: { stacked: !opts.line, beginAtZero: true, ticks: { callback: opts.fmt || (v => v) } } },
+        plugins: { legend: { position: "bottom", labels: { boxWidth: 10 } } } } });
+  },
+  /** metric series {label: [[t, v], ...]} -> line chart */
+  lineChart(id, series, opts = {}) {
+    const datasets = Object.entries(series || {}).map(([label, pts], i) => ({
+      label: (opts.rename ? opts.rename(label) : label) || id, borderColor: MR.color(i), backgroundColor: MR.color(i) + "22", fill: !!opts.fill,
+      data: pts.map(p => ({ x: new Date(p[0]).getTime(), y: opts.neg && opts.neg(label) ? -p[1] : p[1] })), pointRadius: 0, borderWidth: 1.5, tension: .2 }));
+    const fmt = opts.fmt || (v => Math.round(v * 100) / 100);
+    return MR.chart(id, { type: "line", data: { datasets }, options: { maintainAspectRatio: false, animation: false, parsing: false,
+      interaction: { mode: "nearest", intersect: false },
+      scales: { x: { type: "linear", ticks: { callback: v => MR.timeLabel(v, opts.hours || 24), maxTicksLimit: 7, maxRotation: 0 } },
+                y: { min: opts.min, max: opts.max, ticks: { callback: v => fmt(Math.abs(v)) } } },
+      plugins: { legend: { display: datasets.length > 1, position: "bottom", labels: { boxWidth: 10 } },
+                 tooltip: { callbacks: { title: i => new Date(i[0].parsed.x).toLocaleString(), label: c => `${c.dataset.label}: ${fmt(Math.abs(c.parsed.y))}` } } } } });
+  },
+  pieChart(id, rows) {
+    return MR.chart(id, { type: "doughnut", data: { labels: rows.map(r => r.label ?? "?"),
+      datasets: [{ data: rows.map(r => Number(r.v)), backgroundColor: rows.map((r, i) => MR.sourceColors[r.label] || MR.color(i)), borderWidth: 0 }] },
+      options: { maintainAspectRatio: false, animation: false, plugins: { legend: { position: "right", labels: { boxWidth: 10 } } } } });
+  },
+  barChart(id, rows, horizontal) {
+    return MR.chart(id, { type: "bar", data: { labels: rows.map(r => r.label ?? "?"),
+      datasets: [{ data: rows.map(r => Number(r.v)), backgroundColor: rows.map((r, i) => MR.color(horizontal ? 0 : i)) }] },
+      options: { indexAxis: horizontal ? "y" : "x", maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } },
+                 scales: { y: { ticks: { autoSkip: false, font: { size: 11 } } } } } });
+  },
+  gauge(pct, label, sub) {
+    const p = Math.max(0, Math.min(100, Number(pct) || 0)), cls = p > 90 ? "bad" : p > 75 ? "warn" : "";
+    return `<div class="gauge"><div class="gv">${pct === null || pct === undefined ? "–" : Math.round(p) + "%"}</div><div class="bar ${cls}"><i style="width:${p}%"></i></div><div class="l">${MR.esc(label)}</div>${sub ? `<div class="small muted">${sub}</div>` : ""}</div>`;
   },
 };

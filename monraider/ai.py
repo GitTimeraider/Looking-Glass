@@ -28,7 +28,8 @@ events(id bigint, ts timestamptz, received_at timestamptz, source text, host tex
        proto text, interface text, direction text, username text, domain text, src_country text, dst_country text,
        message text, data jsonb, uid text)
   source values: firewall (pf filterlog), nginx (web server/reverse proxy), unbound (DNS), crowdsec, suricata (IDS/IPS),
-                 zenarmor (L7 firewall/NGFW), qfeeds (threat intel blocks), auth (ssh / web GUI logins), vpn, dhcp, system
+                 zenarmor (L7 firewall/NGFW), qfeeds (threat intel blocks), auth (ssh / web GUI logins), vpn, dhcp, system,
+                 unraid (Unraid syslog + notifications, host = server name), docker (Unraid container logs, program = container)
   action examples: firewall: pass/block; nginx: http_200, http_404, waf_block, rate_limited; unbound: query, reply,
                    block, nxdomain; crowdsec: alert, ban; suricata: alert, drop, blocked; auth: login_failed, login_success,
                    config_change; dhcp: lease
@@ -39,16 +40,20 @@ alerts(id, created_at, last_seen, rule, severity /*info|low|medium|high|critical
        dst_ip inet, count int, status /*open|acknowledged|closed*/, fingerprint, data jsonb)
 metrics(ts, name, labels, value)  names: memory_used_pct, load1, pf_states, pf_states_pct, disk_used_pct, temperature,
        gateway_delay_ms, gateway_loss_pct, if_rx_bps, if_tx_bps (labels = interface), if_received_errors, ...
-devices(mac, ip, hostname, first_seen, last_seen)
-snapshots(key, ts, data jsonb)  keys: system, gateways, interfaces, services, firmware, arp, unbound_totals,
-       crowdsec_decisions, qfeeds_stats, poller_status
+devices(mac, ip, hostname, vendor, interface, sources text[], lease_type, lease_expires, online, trusted, notes,
+        first_seen, last_seen)   -- network inventory from ARP + DHCP leases
+snapshots(key, ts, data jsonb)  keys: system, activity (top processes), gateways, interfaces, services, firmware, arp,
+       leases_kea / leases_dnsmasq / leases_isc, unbound_totals, crowdsec_decisions, qfeeds_stats, poller_status,
+       unraid:<server id>:<info|metrics|array|docker|docker_stats|notifications|vms|ups|shares|disks>, unraid_status
+metrics also: cpu_used_pct, swap_used_pct, unraid_cpu_pct / unraid_mem_pct / unraid_temp / unraid_disk_temp /
+       unraid_array_used_pct (labels '<server id>[:<item>]'), container_cpu_pct / container_mem_bytes ('<server id>:<container>')
 
 Tips: use host(src_ip) to print addresses, `src_ip << '10.0.0.0/8'::inet` for subnet tests, ts > now() - interval '24 hours'
 for time windows. Always aggregate (GROUP BY / count) rather than pulling raw rows when looking at large volumes.
 """
 
 SYSTEM_PROMPT = """You are MonRaider's security analyst, a senior SOC / network security engineer investigating an
-OPNsense firewall and the network behind it. You have tools that query the log database (firewall, nginx, Unbound DNS,
+OPNsense firewall, the network behind it and the user's Unraid server(s). You have tools that query the log database (firewall, nginx, Unbound DNS,
 CrowdSec, Suricata IDS, Zenarmor, Q-Feeds threat intel, authentication, VPN, DHCP and system logs) plus
 OPNsense system state.
 
@@ -99,7 +104,7 @@ TOOLS: list[dict[str, Any]] = [
             "limit": {"type": "integer"}}}}},
     {"type": "function", "function": {
         "name": "system_status",
-        "description": "Current OPNsense system state: resources, versions, gateways, services, firmware/updates, log ingestion stats and which API endpoints work.",
+        "description": "Current OPNsense system state (resources, versions, gateways, services, firmware/updates), Unraid servers (hardware, array/disks, containers, notifications, UPS, VMs), log ingestion stats and which API endpoints work.",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
         "name": "traffic_overview",
@@ -109,6 +114,11 @@ TOOLS: list[dict[str, Any]] = [
 
 _FORBIDDEN = re.compile(r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|vacuum|call|do|lock|set|reset|"
                         r"pg_sleep|pg_read|pg_ls|lo_import|lo_export|dblink|pg_terminate|pg_cancel)\b", re.I)
+
+
+# secrets the model must never read (credentials, MFA material, session key)
+_SECRET = re.compile(r"\b(users|webauthn_credentials|kv|unraid_servers|api_key|password_hash|totp_secret|secret_key|"
+                     r"pg_shadow|pg_authid|pg_user|current_setting|pg_settings|pg_stat_activity)\b", re.I)
 
 
 def _dump(value: Any, limit: int = 40000) -> str:
@@ -124,6 +134,8 @@ async def tool_sql_query(query: str) -> Any:
         return {"error": "only a single statement is allowed"}
     if not re.match(r"^\s*(select|with|explain)\b", q, re.I) or _FORBIDDEN.search(re.sub(r"'[^']*'", "''", q)):
         return {"error": "only read-only SELECT queries are allowed"}
+    if _SECRET.search(q):
+        return {"error": "that table/column holds credentials and is not accessible"}
     async with db.pool().acquire() as conn:
         async with conn.transaction(readonly=True):
             await conn.execute("SET LOCAL statement_timeout = '30s'")
@@ -197,6 +209,13 @@ async def tool_system_status() -> Any:
     out["services"] = [{"name": s.get("name"), "description": s.get("description"), "running": s.get("running")}
                        for s in services if isinstance(s, dict)]
     out["ingest"] = STATS.as_dict()
+    servers = await db.pool().fetch("SELECT id, name FROM unraid_servers WHERE enabled")
+    out["unraid"] = {}
+    for srv in servers:
+        snap = {}
+        for key in ("info", "metrics", "array", "docker", "notifications", "ups", "vms"):
+            snap[key] = await db.get_snapshot(f"unraid:{srv['id']}:{key}")
+        out["unraid"][srv["name"]] = snap
     return out
 
 

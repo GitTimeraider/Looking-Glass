@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import uvicorn
 
-from . import __version__, db
+from . import __version__, auth, db
 from .ai import Analyst
 from .config import get_settings
 from .detections import DetectionEngine, dhcp_listener
@@ -18,6 +18,7 @@ from .enrich import Enricher
 from .ingest import EventWriter, SyslogServer
 from .opnsense import Poller
 from .reports import build_report
+from .unraid import UnraidManager
 from .web.app import create_app
 
 log = logging.getLogger("monraider")
@@ -70,13 +71,14 @@ async def daily_ai_report(settings, analyst: Analyst) -> None:
 async def amain() -> None:
     settings = get_settings()
     logging.basicConfig(level=settings.log_level.upper(), format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     log.info("MonRaider %s starting", __version__)
-    if not settings.admin_password:
-        settings.admin_password = secrets.token_urlsafe(12)
-        log.warning("ADMIN_PASSWORD not set - generated one for this run: user=%s password=%s",
-                    settings.admin_user, settings.admin_password)
-
     await db.connect(settings.database_url)
+    if not settings.secret_key:
+        # persist a generated cookie key so logins survive restarts
+        settings.secret_key = await db.kv_get("secret_key") or secrets.token_urlsafe(48)
+        await db.kv_set("secret_key", settings.secret_key)
+    await auth.ensure_admin(settings.admin_user, settings.admin_password)
     enricher = Enricher(settings.geoip_db, settings.internal_networks)
     writer = EventWriter(enricher)
     writer.listeners.append(dhcp_listener)
@@ -91,6 +93,7 @@ async def amain() -> None:
         tasks.append(asyncio.create_task(Poller(settings, writer).run(), name="poller"))
     else:
         log.warning("OPNSENSE_URL / OPNSENSE_API_KEY / OPNSENSE_API_SECRET not set - API polling disabled")
+    tasks.append(asyncio.create_task(UnraidManager(settings, writer).run(), name="unraid"))
     if settings.ai_daily_report:
         tasks.append(asyncio.create_task(daily_ai_report(settings, analyst), name="daily_report"))
 
