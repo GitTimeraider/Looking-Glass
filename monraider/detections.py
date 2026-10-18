@@ -97,6 +97,29 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
                 src_ip=d.get("ip"), data={k: v for k, v in d.items() if v is not None})
 
 
+_zen_seen: dict[str, float] = {}
+
+
+async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
+    """Zenarmor records carry the client MAC, hostname and a device fingerprint (name/vendor/OS)."""
+    now = time.time()
+    found: dict[str, dict[str, Any]] = {}
+    for e in events:
+        d = e.get("data") if e.get("source") == "zenarmor" else None
+        if not isinstance(d, dict):
+            continue
+        mac = str(d.get("src_hwaddr") or "").lower()
+        if len(mac) != 17 or mac in found or now - _zen_seen.get(mac, 0) < 600:
+            continue
+        dev = d.get("device") if isinstance(d.get("device"), dict) else {}
+        vendor = " / ".join(x for x in (dev.get("vendor"), dev.get("os")) if x) or None
+        found[mac] = {"mac": mac, "ip": e.get("src_ip"), "hostname": dev.get("name") or d.get("src_hostname"),
+                      "vendor": vendor, "interface": d.get("interface"), "online": True}
+    for mac in found:
+        _zen_seen[mac] = now
+    await track_devices(list(found.values()), origin="zenarmor")
+
+
 async def dhcp_listener(events: list[dict[str, Any]]) -> None:
     devices = [{"mac": e["data"]["mac"], "ip": e.get("dst_ip"), "hostname": e["data"].get("hostname")}
                for e in events if e.get("source") == "dhcp" and isinstance(e.get("data"), dict) and e["data"].get("mac")]
@@ -348,19 +371,19 @@ class DetectionEngine:
     async def zenarmor_threats(self) -> None:
         last, current = await self._watermark("zenarmor")
         rows = await db.pool().fetch(
-            "SELECT src_ip, coalesce(domain, host(dst_ip)) AS target, "
-            "coalesce(data->>'security_tags', data->>'threat', data->>'security_category', data->>'category', '') AS threat, count(*) AS hits "
-            "FROM events WHERE id > $1 AND id <= $2 AND source = 'zenarmor' AND action IN ('threat', 'block') "
+            "SELECT src_ip, coalesce(domain, host(dst_ip)) AS target, coalesce(data->>'security', data->>'security_tags', '') AS threat, "
+            "bool_or(action = 'block') AS blocked, count(*) AS hits "
+            "FROM events WHERE id > $1 AND id <= $2 AND source = 'zenarmor' "
+            "AND (data->>'family' = 'alert' OR coalesce(data->>'security', data->>'security_tags', '') <> '') "
             "GROUP BY 1, 2, 3", last, current)
         for r in rows:
-            threat = r["threat"] or ""
-            if not threat or threat in ("[]", "null"):
-                continue
+            threat = r["threat"] or "threat alert"
             src = str(r["src_ip"]) if r["src_ip"] else None
-            sev = "high" if any(w in threat.lower() for w in ("malware", "botnet", "phishing", "command", "c2", "ransom")) else "medium"
+            sev = "high" if any(w in threat.lower() for w in ("malware", "botnet", "phishing", "command", "c2", "ransom", "crypto")) else "medium"
             await raise_alert("zenarmor_threat", sev, f"Zenarmor: {src} → {r['target']} ({threat[:60]})",
                               f"zen:{src}:{r['target']}", src_ip=src, count=r["hits"],
-                              description=f"Zenarmor flagged traffic from {src} to {r['target']} as '{threat}'.")
+                              description=f"Zenarmor flagged traffic from {src} to {r['target']} as '{threat}' "
+                                          f"({'blocked' if r['blocked'] else 'NOT blocked'}).")
         await self._commit("zenarmor", current)
 
     # --------------------------------------------------------- DNS rules ---
@@ -385,7 +408,7 @@ class DetectionEngine:
                 dga[client].add(domain)
             if (r["rcode"] or "").upper() == "NXDOMAIN" or r["action"] == "nxdomain":
                 nx[client] += 1
-            if r["action"] in ("block", "drop") and any(w in (r["bl"] or "").lower() for w in ("malware", "phish", "threat", "crypto", "ransom", "botnet", "c2", "abuse")):
+            if r["action"] in ("block", "drop") and any(w in (r["bl"] or "").lower() for w in ("malware", "phish", "threat", "crypto", "ransom", "botnet", "c2", "abuse", "qfeed", "q-feed")):
                 bad_block[client].add(domain)
         for (client, reg), subs in per_client_sub.items():
             long_subs = [s for s in subs if len(s) > 30]

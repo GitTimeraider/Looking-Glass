@@ -22,6 +22,7 @@
   <Config Name="Web UI" Target="8080" Default="8080" Mode="tcp" Description="Web interface" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
   <Config Name="Syslog UDP" Target="5514" Default="514" Mode="udp" Description="Point OPNsense remote logging here" Type="Port" Display="always" Required="true" Mask="false">514</Config>
   <Config Name="Syslog TCP" Target="5514" Default="514" Mode="tcp" Description="Syslog over TCP" Type="Port" Display="always" Required="false" Mask="false">514</Config>
+  <Config Name="Zenarmor stream" Target="9200" Default="9200" Mode="tcp" Description="Zenarmor 'Stream Reporting Data to External Elasticsearch' receiver" Type="Port" Display="advanced" Required="false" Mask="false">9200</Config>
   <Config Name="Data" Target="/data" Default="/mnt/user/appdata/monraider" Mode="rw" Description="Optional GeoLite2-City.mmdb" Type="Path" Display="advanced" Required="false" Mask="false">/mnt/user/appdata/monraider</Config>
   <Config Name="DATABASE_URL" Target="DATABASE_URL" Default="postgresql://monraider:PASSWORD@192.168.1.10:5432/monraider" Description="PostgreSQL connection" Type="Variable" Display="always" Required="true" Mask="true"></Config>
   <Config Name="ADMIN_USER" Target="ADMIN_USER" Default="admin" Description="First admin user" Type="Variable" Display="always" Required="true" Mask="false">admin</Config>

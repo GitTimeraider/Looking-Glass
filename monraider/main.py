@@ -13,13 +13,14 @@ import uvicorn
 from . import __version__, auth, db
 from .ai import Analyst
 from .config import get_settings
-from .detections import DetectionEngine, dhcp_listener
+from .detections import DetectionEngine, dhcp_listener, zenarmor_device_listener
 from .enrich import Enricher
 from .ingest import EventWriter, SyslogServer
 from .opnsense import Poller
 from .reports import build_report
 from .unraid import UnraidManager
 from .web.app import create_app
+from .zenarmor_es import create_es_app
 
 log = logging.getLogger("monraider")
 
@@ -82,6 +83,7 @@ async def amain() -> None:
     enricher = Enricher(settings.geoip_db, settings.internal_networks)
     writer = EventWriter(enricher)
     writer.listeners.append(dhcp_listener)
+    writer.listeners.append(zenarmor_device_listener)
     analyst = Analyst(settings)
 
     tasks = [asyncio.create_task(writer.run(), name="writer"),
@@ -107,12 +109,21 @@ async def amain() -> None:
         loop.add_signal_handler(sig, stop.set)
 
     web = asyncio.create_task(server.serve(), name="web")
+    es_server = None
+    if settings.zenarmor_es_port:
+        es_server = uvicorn.Server(uvicorn.Config(create_es_app(settings, writer), host=settings.web_host,
+                                                  port=settings.zenarmor_es_port, log_level="warning"))
+        es_server.install_signal_handlers = lambda: None
+        tasks.append(asyncio.create_task(es_server.serve(), name="zenarmor-es"))
+        log.info("Zenarmor Elasticsearch-compatible receiver on port %s", settings.zenarmor_es_port)
     log.info("web UI on http://%s:%s", settings.web_host, settings.web_port)
     done, _ = await asyncio.wait([web, asyncio.create_task(stop.wait()), *tasks], return_when=asyncio.FIRST_COMPLETED)
     for t in done:
         if t.exception() if not t.cancelled() else None:
             log.error("task %s died: %r", t.get_name(), t.exception())
     server.should_exit = True
+    if es_server:
+        es_server.should_exit = True
     for t in tasks:
         t.cancel()
     await asyncio.gather(web, return_exceptions=True)

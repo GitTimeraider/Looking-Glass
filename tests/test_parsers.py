@@ -89,9 +89,21 @@ def test_ids_api():
 
 def test_zenarmor_json():
     ev = parse_zenarmor(NOW, "fw", "zenarmor", '{"ip_src_saddr":"192.168.1.30","ip_dst_saddr":"93.184.216.34","ip_dst_port":443,'
-                                                '"transport_proto":"TCP","app_name":"TLS","dst_hostname":"Bad.Example","is_blocked":1,'
-                                                '"security_tags":["malware"]}')
+                                                '"transport_proto":"TCP","app_name":"TLS","dst_hostname":"Bad.Example","is_blocked":1}')
     assert ev["action"] == "block" and ev["domain"] == "bad.example" and ev["dst_port"] == 443
+
+
+def test_zenarmor_syslog_format():
+    # line shape: daemon=zenarmor, index=<family>, data=<json>  (as streamed by ipdrstreamer)
+    line = ('<134>1 2026-10-18T11:00:00+00:00 fw.lan ipdrstreamer 123 - - daemon=zenarmor, index=dns, '
+            'data={"start_time":1784368102000,"query":"gsp-ssl.ls.apple.com","qtype":"A","is_blocked":0,'
+            '"ip_src_saddr":"192.168.1.20","ip_dst_saddr":"192.168.1.1","src_hwaddr":"aa:bb:cc:00:11:22","src_hostname":"iphone"}')
+    ev = parse_line(line, now=NOW)
+    assert ev["source"] == "zenarmor" and ev["domain"] == "gsp-ssl.ls.apple.com" and ev["action"] == "dns"
+    assert ev["src_ip"] == "192.168.1.20" and ev["data"]["src_hwaddr"] == "aa:bb:cc:00:11:22"
+    alert = parse_line('<134>Oct 18 11:59:01 fw zenarmor: daemon=zenarmor, index=alert, '
+                       'data={"alertinfo":{"category":["Malware"],"sid":"x"},"is_blocked":1,"ip_src_saddr":"192.168.1.9"}', now=NOW)
+    assert alert["action"] == "block" and "Malware" in alert["data"]["security"]
 
 
 def test_auth_patterns():

@@ -30,11 +30,12 @@ services:
       - "8080:8080"
       - "514:5514/udp"
       - "514:5514/tcp"
+      - "9200:9200"        # Zenarmor Elasticsearch-compatible stream receiver
     volumes:
       - monraider_data:/data
 
   db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: monraider-db
     restart: unless-stopped
     environment:
@@ -42,7 +43,7 @@ services:
       POSTGRES_PASSWORD: CHANGE-ME-db-password
       POSTGRES_DB: monraider
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql   # PostgreSQL 18+ layout (data lives in /var/lib/postgresql/18/docker)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U monraider -d monraider"]
       interval: 10s

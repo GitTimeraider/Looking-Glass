@@ -17,8 +17,8 @@ Image: `ghcr.io/gittimeraider/monraider:latest` (linux/amd64 + linux/arm64), bui
 | Unbound DNS | API (reporting DB) and/or syslog (`log-queries`) | per-client queries, blocklist hits, NXDOMAIN, DNS tunneling / DGA detection |
 | CrowdSec | API (alerts + decisions) + syslog | scenarios, bans |
 | Suricata IDS/IPS | API + syslog | signatures, classifications |
-| Zenarmor | syslog streaming (paid editions) | L7 apps, categories, security tags |
-| Q-Feeds | API (events + stats) | threat-intel matches, especially **internal hosts contacting malicious IPs** |
+| Zenarmor | built-in Elasticsearch-compatible receiver (**works on the free edition**) or syslog (paid editions) | flows, DNS, TLS/SNI, HTTP, threat alerts, apps/categories, traffic volume, **device fingerprints** (name, vendor, OS) |
+| Q-Feeds | API (events + stats) | threat-intel matches, especially **internal hosts contacting malicious IPs** (needs logged block rules, see step 5) |
 | SSH / web GUI / OpenVPN / IPsec | syslog | failed and successful logins, config changes |
 | DHCP leases (Kea, dnsmasq, ISC) + ARP | API + syslog | **device list**: name, IP, MAC, vendor, interface, lease, online state, per-device activity; **new/rogue device** alerts |
 | System / hardware | API | CPU %, load, memory, swap, ZFS ARC, disks, temperatures, states, interface throughput/errors, gateways, services, top processes, firmware updates |
@@ -118,7 +118,9 @@ Then change the initial password on the same page. Next logins ask for password 
 
 ### 5. Send logs from OPNsense (OPNsense web UI)
 
-1. **Remote syslog** – **System › Settings › Logging**, tab **Remote** (on older versions *System › Settings › Logging / targets*), click **+**:
+These steps were checked against the current OPNsense documentation and source (26.x).
+
+1. **Remote syslog** – **System › Settings › Logging**, tab **Remote** (on older versions *System › Settings › Logging / targets*), click **+** (add a *Destination*):
    * Enabled ✓, Transport `UDP(4)` (or `TCP(4)`)
    * Applications: leave **empty** (= everything, recommended)
    * Levels: select everything from *info* up
@@ -127,16 +129,27 @@ Then change the initial password on the same page. Next logins ask for password 
    * Save, then **Apply**.
 2. **Firewall logging** – default block rules are logged already. Open your important pass rules / port forwards
    (**Firewall › Rules › WAN** etc.) and tick **Log packets that are handled by this rule** so allowed traffic is visible too.
-3. **Unbound DNS** – **Reporting › Settings**: enable *Unbound DNS reporting* (MonRaider pulls queries via the API).
-   For complete query logs also enable **Services › Unbound DNS › Advanced › Log Queries** (and *Log Replies*).
+3. **Unbound DNS** – **Reporting › Settings**: enable the Unbound DNS statistics (off by default; MonRaider then pulls
+   per-client queries via the API, OPNsense keeps 7 days). For complete query logs over syslog also enable
+   **Services › Unbound DNS › Advanced › Log Queries** (and *Log Replies*) – note this slows Unbound down somewhat.
 4. **nginx plugin** – **Services › Nginx › Configuration**, tab **Other › SYSLOG Targets**: add a target
    (Host = Docker host, Port = 514). Then edit each **HTTP(S) › HTTP Server**, select that target under
    *SYSLOG targets* and use Access Log Format `main` or `main_ext`. Apply.
-5. **Suricata** – **Services › Intrusion Detection › Administration**: tick **Enable syslog alerts**
-   (optionally *Enable eve syslog output*). Alerts are also pulled from the API.
-6. **Zenarmor** (SOHO/Business edition) – **Zenarmor › Configuration › Reporting & Data › Streaming Data**:
-   stream to a syslog server = Docker host, port 514, and select the event types.
-7. **CrowdSec** and **Q-Feeds** need nothing extra – they are read through the API.
+5. **Suricata** – **Services › Intrusion Detection › Administration**: tick **Enable syslog alerts** (fast-log format)
+   and/or **Enable eve syslog output** (JSON). Alerts are also pulled from the API.
+6. **Zenarmor** – choose one (both are mirrors; Zenarmor's own reports stay intact):
+   * **Any edition, incl. free Home (recommended)**: **Zenarmor › Settings › Streaming Data › Stream Reporting Data to
+     External Elasticsearch**: URI `http://<docker-host>:9200`, Elasticsearch version `8.11.3`, username/password empty
+     (or the values of `ZENARMOR_ES_USER` / `ZENARMOR_ES_PASSWORD`), Apply. MonRaider answers as an Elasticsearch node.
+     ⚠️ Do **not** use the install wizard's *Remote Elasticsearch Database* option – that replaces Zenarmor's local
+     storage and cannot be changed afterwards.
+   * **Paid editions**: the same page, *Stream Reporting Data to External Syslog*: server = Docker host, port 514,
+     select Connections, DNS, TLS, Web (HTTP) and Alerts.
+7. **Q-Feeds** – the plugin only creates firewall aliases. Its *Events* (which MonRaider reads) only appear when you
+   add **block rules that use the Q-Feeds aliases with logging enabled**, e.g. on LAN: *block, destination = Q-Feeds
+   alias, Log ✓* and on WAN: *block, source = Q-Feeds alias, Log ✓* (**Firewall › Rules**). The domain feeds are
+   applied through Unbound's blocklist (*Register domain feeds* in **Security › Q-Feeds Connect**).
+8. **CrowdSec** needs nothing extra – alerts and decisions are read through the API.
 
 Check **Setup & Status** in MonRaider: every source should show a recent "last message" and every API job "ok"
 (jobs for plugins you don't have show `n/a`).
@@ -146,6 +159,9 @@ Check **Setup & Status** in MonRaider: every source should show a recent "last m
 Create a free account at MaxMind, download **GeoLite2-City.mmdb** (or Country) and place it in `~/monraider/data/`,
 then `docker compose restart monraider`. Make sure the `data` folder is readable by UID 10001
 (`sudo chown -R 10001 ~/monraider/data`).
+
+> **PostgreSQL 18:** the compose files use `postgres:18-alpine`, whose image mounts the volume at
+> `/var/lib/postgresql` (not `/var/lib/postgresql/data` as in 17 and older). Fresh installs need nothing extra.
 
 ### Updating (shell on your Docker host, in `~/monraider`)
 
@@ -184,14 +200,16 @@ auto-start containers, array problems, UPS on battery and Unraid *warning/alert*
   *Authentication & VPN* (failed/successful logins, usernames tried, config changes) and *System logs*.
 * **OPNsense** – gateways, interfaces, services, firmware. **Hardware** – CPU, load, memory/swap/ARC, temperatures,
   disks, states, interface throughput/errors, gateway latency/loss, top processes.
-* **Devices** – everything connected to OPNsense (ARP + DHCP leases from Kea / dnsmasq / ISC): online state, name,
+* **Devices** – everything connected to OPNsense (ARP + DHCP leases from dnsmasq / Kea / ISC + Zenarmor device
+  fingerprints): online state, name,
   IP, MAC, vendor, interface, lease, first/last seen, events/blocks/DNS queries/alerts per device; mark devices as
   trusted, rename them, add notes.
 * **Unraid** – see above.
 * **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range.
 * **Reports** – 24h / 7d / 30d reports, optionally with an AI-written analysis; print to PDF or download JSON.
   Set `AI_DAILY_REPORT=true` to get one automatically every morning.
-* **AI Analyst** – chat with the model. It can run read-only SQL against the log database, search events, profile an
+* **AI Analyst** – chat with the model (any OpenAI-compatible endpoint; with Claude it uses Anthropic's
+  [OpenAI SDK compatibility layer](https://platform.claude.com/docs/en/api/openai-sdk)). It can run read-only SQL against the log database, search events, profile an
   IP, read alerts, OPNsense + Unraid status and traffic statistics, and answers with evidence and remediation steps.
   Credentials (users, MFA secrets, API keys) are never accessible to it. Data sent to the AI provider consists of the
   query results the model asks for (IPs, domains, log lines).
@@ -217,6 +235,7 @@ All settings are environment variables (see `.env.example`). The most important:
 | `UNBOUND_QUERY_PULL`, `CROWDSEC_PULL`, `QFEEDS_PULL`, `IDS_PULL` | `true` | per-source API pulls |
 | `AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY` | Anthropic / `claude-opus-5-5` / – | AI endpoint |
 | `AI_DAILY_REPORT`, `AI_DAILY_REPORT_HOUR` | `false`, `7` | automatic daily AI report |
+| `ZENARMOR_ES_PORT` / `ZENARMOR_ES_USER` / `ZENARMOR_ES_PASSWORD` / `ZENARMOR_ES_ALLOWED` | `9200` / – | Zenarmor Elasticsearch-compatible receiver (`0` disables) |
 | `RETENTION_DAYS` / `METRICS_RETENTION_DAYS` | `30` / `90` | data retention |
 | `INTERNAL_NETWORKS` | – | extra CIDRs treated as internal |
 | `GEOIP_DB` | `/data/GeoLite2-City.mmdb` | MaxMind database path |
@@ -230,6 +249,16 @@ All settings are environment variables (see `.env.example`). The most important:
 * The reset code only appears in the container log, so a reset requires access to the Docker host.
 * Use `SYSLOG_ALLOWED_SENDERS=<opnsense-ip>` so nobody else can inject log lines.
 * The AI's SQL tool runs inside read-only transactions with a statement timeout and only accepts `SELECT`.
+
+## Sources used
+
+Integration details were checked against current upstream sources: the OPNsense
+[core](https://github.com/opnsense/core), [plugins](https://github.com/opnsense/plugins) and
+[docs](https://github.com/opnsense/docs) repositories (API controllers, syslog model, nginx syslog targets, Q-Feeds,
+CrowdSec, DHCP leases), the [Unraid API](https://github.com/unraid/api) schema and [Unraid docs](https://github.com/unraid/docs),
+[opnsense2otel](https://github.com/rknightion/opnsense2otel) (Zenarmor wire formats),
+[docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) and Anthropic's
+[OpenAI SDK compatibility](https://platform.claude.com/docs/en/api/openai-sdk) docs.
 
 ## Development
 

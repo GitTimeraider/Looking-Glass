@@ -27,7 +27,7 @@
     <li><b>Firewall logging</b> — default block rules are logged out of the box (<i>Firewall › Settings › Advanced › Logging</i>).
       Tick <i>Log</i> on the pass rules / port forwards you care about (WAN inbound!) so allowed traffic is visible too.
       Without syslog MonRaider pulls the live firewall log via the API instead (<code>FIREWALL_LOG_PULL=auto</code>).</li>
-    <li><b>Unbound DNS</b> — enable <i>Reporting › Settings › Unbound DNS reporting</i> so MonRaider can pull per-client queries via the API,
+    <li><b>Unbound DNS</b> — enable the Unbound DNS statistics in <i>Reporting › Settings</i> (off by default) so MonRaider can pull per-client queries via the API,
       and/or <i>Services › Unbound DNS › Advanced</i> › <i>Log Queries</i> (+ <i>Log Replies</i>) for full query logs over syslog.</li>
     <li><b>nginx plugin</b> — error logs reach syslog automatically. For access logs open <i>Services › Nginx › Configuration</i>,
       tab <i>Other › SYSLOG Targets</i>, add a target with Host = Docker host, Port = 514, then select it under <i>HTTP(S) › HTTP Server › SYSLOG targets</i>
@@ -35,10 +35,14 @@
     <li><b>CrowdSec</b> (os-crowdsec) — nothing extra: alerts and decisions are pulled via the API; its log lines arrive through syslog.</li>
     <li><b>Suricata IDS/IPS</b> — <i>Services › Intrusion Detection › Administration</i>: tick <i>Enable syslog alerts</i> (and optionally
       <i>Enable eve syslog output</i>). Alerts are also pulled from the API.</li>
-    <li><b>Zenarmor</b> — <i>Zenarmor › Configuration › Reporting &amp; Data › Streaming Data</i> (paid editions): stream to a syslog server = Docker host,
-      port 514, and pick the event types (connections, DNS, TLS, web, alerts/blocks). See
-      <a href="https://www.zenarmor.com/docs/opnsense/configuring/streaming-reporting-data" target="_blank" rel="noopener">Zenarmor docs</a>.</li>
-    <li><b>Q-Feeds</b> (os-q-feeds-connector) — nothing extra: threat-intel matches are pulled from <i>Security › Q-Feeds Connect › Events</i> via the API.</li>
+    <li><b>Zenarmor</b> — <i>Zenarmor › Settings › Streaming Data</i>. Works on every edition including free Home:
+      <i>Stream Reporting Data to External Elasticsearch</i> with URI <code>http://&lt;docker-host&gt;:9200</code> and Elasticsearch
+      version <code>8.11.3</code> (MonRaider acts as the Elasticsearch node). Paid editions can alternatively stream to syslog
+      (Docker host, port 514). Don't pick the install wizard's <i>Remote Elasticsearch Database</i> - that replaces local storage.
+      See <a href="https://www.zenarmor.com/docs/opnsense/configuring/streaming-reporting-data" target="_blank" rel="noopener">Zenarmor docs</a>.</li>
+    <li><b>Q-Feeds</b> (os-q-feeds-connector) — events only exist for <b>logged</b> firewall block rules that use the Q-Feeds
+      aliases (e.g. LAN: block to alias, WAN: block from alias, <i>Log</i> ✓). MonRaider pulls them from
+      <i>Security › Q-Feeds Connect › Events</i> via the API. Domain feeds go into Unbound's blocklist.</li>
     <li><b>GeoIP</b> (optional) — create a free MaxMind account, download <code>GeoLite2-City.mmdb</code> (or Country) into the mounted
       <code>/data</code> volume, restart. Countries then appear in dashboards and reports.</li>
     <li><b>AI analyst</b> — set <code>AI_API_KEY</code>. Defaults use Anthropic's OpenAI-compatible endpoint
@@ -52,13 +56,14 @@
 (async () => {
   const s = await MR.api("/api/status");
   const ing = s.ingest, now = Date.now() / 1000;
-  const SOURCES = ["firewall", "nginx", "unbound", "crowdsec", "suricata", "zenarmor", "qfeeds", "auth", "vpn", "dhcp", "system"];
+  const SOURCES = ["firewall", "nginx", "unbound", "crowdsec", "suricata", "zenarmor", "qfeeds", "auth", "vpn", "dhcp", "system", "unraid", "docker"];
   MR.table("#ingest", [{k: "source", l: "Source", f: MR.src}, {k: "n", l: "Since start", num: true},
     {k: "last", l: "Last message", f: v => v ? `<span class="dot ${now - v < 900 ? "ok" : "warn"}"></span>${MR.ago(v)}` : `<span class="dot"></span><span class="muted">none yet</span>`}],
     SOURCES.map(x => ({ source: x, n: ing.by_source[x] || 0, last: ing.last_by_source[x] })));
   document.getElementById("ingest").insertAdjacentHTML("beforeend", `<p class="small muted">Received ${MR.num(ing.received)} · parsed ${MR.num(ing.parsed)} ·
     written ${MR.num(ing.written)} · dropped ${MR.num(ing.dropped)} · errors ${MR.num(ing.errors)}<br>Senders: ${Object.entries(ing.senders).map(([ip, t]) => `${MR.esc(ip)} (${MR.ago(t)})`).join(", ") || "none"}.
-    Note: sources fed only by the API (Q-Feeds, CrowdSec alerts, IDS, Unbound reporting) show here as 0 — see the right panel.</p>`);
+    Note: sources fed only by the API (Q-Feeds, CrowdSec alerts, IDS, Unbound reporting, Unraid) show here as 0 — see the right panel.
+    ${ing.zenarmor_es ? `<br>Zenarmor Elasticsearch stream: ${MR.num(ing.zenarmor_es.docs)} records from ${MR.esc(ing.zenarmor_es.peer)} (${MR.ago(ing.zenarmor_es.last)})` : ""}</p>`);
   const p = s.poller || {};
   MR.table("#poller", [{k: "job", l: "Job"}, {k: "ok", l: "State", f: (v, r) => r.unsupported ? `<span class="badge warn">n/a</span>` : v ? `<span class="badge ok">ok</span>` : v === false ? `<span class="badge bad">error</span>` : "…"},
     {k: "last", l: "Last", f: MR.ago}, {k: "error", l: "Detail", f: v => `<span class="small muted">${MR.esc(v || "")}</span>`}],

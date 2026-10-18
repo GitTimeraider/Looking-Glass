@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # comma separated list of IPs allowed to send syslog; empty = accept everyone
     syslog_allowed_senders: str = ""
 
+    # --- Zenarmor "Stream Reporting Data to External Elasticsearch" receiver (works on the free edition) ---
+    zenarmor_es_port: int = 9200  # 0 disables
+    zenarmor_es_user: str = ""  # optional basic auth, must match Zenarmor's streaming username/password
+    zenarmor_es_password: str = ""
+    zenarmor_es_allowed: str = ""  # allowed sender IPs/CIDRs (defaults to SYSLOG_ALLOWED_SENDERS)
+
     # --- OPNsense API -------------------------------------------------------
     opnsense_url: str = ""  # e.g. https://192.168.1.1  (or https://fw.lan:8443)
     opnsense_api_key: str = ""

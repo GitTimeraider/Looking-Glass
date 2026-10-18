@@ -157,7 +157,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
         "title": "Zenarmor", "source": "zenarmor", "panels": [
             {"id": "kpi", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) AS \"Events\", count(*) FILTER (WHERE action = 'block') AS \"Blocked\", "
-                f"count(*) FILTER (WHERE action = 'threat' OR data ? 'security_tags') AS \"Threat tagged\", "
+                f"count(*) FILTER (WHERE data->>'family' = 'alert' OR coalesce(data->>'security', '') <> '') AS \"Threats\", "
                 f"count(DISTINCT src_ip) AS \"Hosts\", count(DISTINCT coalesce(data->>'app_name', '')) AS \"Applications\" "
                 f"FROM events WHERE source = 'zenarmor' AND {W}"},
             {"id": "act", "title": "Events by action", "type": "timeseries", "span": 2,
@@ -171,7 +171,16 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             {"id": "blocked", "title": "Blocked destinations", "type": "table", "cols": [["dest", "Destination"], ["cat", "Category"], ["n", "Hits", "num"]],
              "sql": f"SELECT coalesce(domain, host(dst_ip)) dest, max(coalesce(data->>'app_category', data->>'category')) cat, count(*) n FROM events WHERE source = 'zenarmor' AND action = 'block' AND {W} GROUP BY 1 ORDER BY 3 DESC LIMIT 25"},
             {"id": "threats", "title": "Threats", "type": "table", "cols": [["src", "Host", "ip"], ["dest", "Destination"], ["tags", "Tags"], ["n", "Hits", "num"]],
-             "sql": f"SELECT host(src_ip) src, coalesce(domain, host(dst_ip)) dest, coalesce(data->>'security_tags', data->>'threat') tags, count(*) n FROM events WHERE source = 'zenarmor' AND (action = 'threat' OR data ? 'security_tags') AND {W} GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 25"},
+             "sql": f"SELECT host(src_ip) src, coalesce(domain, host(dst_ip)) dest, coalesce(data->>'security', data->>'security_tags') tags, count(*) n FROM events WHERE source = 'zenarmor' AND (data->>'family' = 'alert' OR coalesce(data->>'security', '') <> '') AND {W} GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 25"},
+            {"id": "fam", "title": "Records per family", "type": "pie",
+             "sql": f"SELECT coalesce(data->>'family', '?') label, count(*) v FROM events WHERE source = 'zenarmor' AND {W} GROUP BY 1 ORDER BY 2 DESC"},
+            {"id": "tls", "title": "Top TLS server names (SNI)", "type": "table", "cols": [["sni", "Server name"], ["cat", "Category"], ["n", "Sessions", "num"]],
+             "sql": f"SELECT domain sni, max(data->>'category') cat, count(*) n FROM events WHERE source = 'zenarmor' AND data->>'family' = 'tls' AND {W} GROUP BY 1 ORDER BY 3 DESC LIMIT 25"},
+            {"id": "devices", "title": "Devices seen by Zenarmor", "type": "table",
+             "cols": [["name", "Device"], ["os", "OS"], ["vendor", "Vendor"], ["ip", "IP", "ip"], ["n", "Records", "num"]],
+             "sql": f"SELECT coalesce(data->'device'->>'name', data->>'src_hostname') name, max(data->'device'->>'os') os, max(data->'device'->>'vendor') vendor, max(host(src_ip)) ip, count(*) n FROM events WHERE source = 'zenarmor' AND (data ? 'device' OR data ? 'src_hostname') AND {W} GROUP BY 1 ORDER BY 5 DESC LIMIT 30"},
+            {"id": "bytes", "title": "Top talkers by volume, MB (flows)", "type": "hbar",
+             "sql": f"SELECT coalesce(data->>'src_hostname', host(src_ip)) label, round(sum(coalesce((data->>'src_nbytes')::numeric, 0) + coalesce((data->>'dst_nbytes')::numeric, 0)) / 1048576, 1) v FROM events WHERE source = 'zenarmor' AND data->>'family' = 'conn' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 15"},
             log_panel("source = 'zenarmor'"),
         ]},
     "auth": {

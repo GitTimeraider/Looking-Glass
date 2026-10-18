@@ -183,65 +183,113 @@ def ids_from_api(row: dict[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------- Zenarmor ---
-_ZEN_KEYS = {
-    "src_ip": ("ip_src_saddr", "src_ip", "src_addr", "srcip", "client_ip", "src"),
-    "dst_ip": ("ip_dst_saddr", "dst_ip", "dst_addr", "dstip", "server_ip", "dst"),
-    "src_port": ("ip_src_port", "src_port", "srcport", "sport"),
-    "dst_port": ("ip_dst_port", "dst_port", "dstport", "dport"),
-    "proto": ("transport_proto", "proto", "ip_proto", "protocol"),
-    "domain": ("dst_hostname", "domain", "query", "hostname", "host", "sni", "server_name"),
-    "username": ("src_username", "username", "user"),
-    "interface": ("interface", "iface", "interface_name"),
-}
+# Zenarmor (ipdrstreamer) streams one record per line, both over syslog and Elasticsearch _bulk:
+#   syslog:  "daemon=zenarmor, index=conn, data={...json...}"
+#   ES bulk: index "zenarmor_<id>_<uuid>_conn_write" with the JSON document
+# Families: conn (flows), dns, tls, http, alert, sip. Field names verified against
+# github.com/rknightion/opnsense2otel internal/logship/zenarmor/parse.go (zenDoc).
+ZEN_FAMILIES = {"conn": "conn", "dns": "dns", "tls": "tls", "http": "http", "alert": "alert", "sip": "sip"}
+_ZEN_SYSLOG = re.compile(r"index=(?P<fam>[\w-]+)\s*,?\s*.*?data=(?P<data>\{.*\})\s*$", re.S)
 
 
-def _first(d: dict[str, Any], keys: tuple[str, ...]) -> Any:
-    for k in keys:
+def zen_family_from_index(index: str) -> str | None:
+    tok = index[:-len("_write")] if index.endswith("_write") else index
+    tok = tok.rsplit("_", 1)[-1]
+    if "-" in tok:
+        tok = tok.rsplit("-", 1)[0]  # dated index: ..._conn-260716
+    return ZEN_FAMILIES.get(tok)
+
+
+def _zen_ts(d: dict[str, Any], fallback: datetime) -> datetime:
+    for k in ("start_time", "end_time", "timestamp", "@timestamp", "time"):
         v = d.get(k)
-        if v not in (None, "", []):
-            return v
-    return None
+        if isinstance(v, (int, float)) and v > 0:
+            return datetime.fromtimestamp(v / 1000 if v > 1e11 else v, tz=timezone.utc)
+        if isinstance(v, str) and parse_iso(v):
+            return parse_iso(v)
+    return fallback
+
+
+def _flat(v: Any) -> str:
+    if isinstance(v, list):
+        return ", ".join(str(x) for x in v)
+    return "" if v is None else str(v)
+
+
+def zenarmor_record(family: str, d: dict[str, Any], ts: datetime, host: str | None = None,
+                    program: str = "zenarmor") -> dict[str, Any]:
+    """Normalise one Zenarmor document (any family) into an event."""
+    blocked = str(d.get("is_blocked", "")).lower() in ("1", "true")
+    alert_info = d.get("alertinfo") if isinstance(d.get("alertinfo"), dict) else {}
+    category = d.get("app_category") or d.get("category") or _flat(d.get("domain_categories")) or None
+    security = d.get("alert_category") or _flat(alert_info.get("category")) or d.get("security_tags") or None
+    device = d.get("device") if isinstance(d.get("device"), dict) else {}
+    src_geo = d.get("src_geoip") if isinstance(d.get("src_geoip"), dict) else {}
+    dst_geo = d.get("dst_geoip") if isinstance(d.get("dst_geoip"), dict) else {}
+
+    if family == "dns":
+        domain = d.get("query")
+        summary = f"DNS {d.get('qtype', '')} {domain}" + (f" [{category}]" if category else "")
+    elif family == "tls":
+        domain = d.get("server_name")
+        summary = f"TLS {domain}" + (f" [{category}]" if category else "")
+    elif family == "http":
+        domain = d.get("host")
+        summary = f"HTTP {d.get('method', '')} {domain}{d.get('uri', '')}"
+    elif family == "alert":
+        domain = d.get("dst_hostname") or d.get("server_name") or d.get("query")
+        summary = f"Threat alert: {security or alert_info or 'unknown'} {domain or ''}"
+    else:
+        domain = d.get("dst_hostname") or d.get("server_name")
+        summary = f"{d.get('app_name') or d.get('app_proto') or 'flow'} -> {domain or d.get('ip_dst_saddr')}" + \
+                  (f" [{category}]" if category else "")
+    action = "block" if blocked else ("threat" if family == "alert" else family)
+    data = {k: v for k, v in d.items() if k not in ("src_geoip", "dst_geoip") and v not in (None, "", [], {})}
+    if device:
+        data["device"] = device
+    return event(
+        _zen_ts(d, ts), "zenarmor", host=host, program=program,
+        severity=3 if family == "alert" else 4 if blocked else 6, action=action,
+        src_ip=d.get("ip_src_saddr") or d.get("src_ip"), dst_ip=d.get("ip_dst_saddr") or d.get("dst_ip"),
+        src_port=d.get("ip_src_port"), dst_port=d.get("ip_dst_port"),
+        proto=str(d.get("transport_proto") or "").lower() or None,
+        interface=d.get("interface"), direction=d.get("direction"),
+        domain=str(domain).lower().rstrip(".") if domain else None,
+        username=d.get("src_username") or None,
+        src_country=src_geo.get("country_code2") or None, dst_country=dst_geo.get("country_code2") or None,
+        message=(("BLOCKED " if blocked else "") + summary)[:4000],
+        data={"family": family, "security": security, "category": category, **data},
+    )
 
 
 def parse_zenarmor(ts: datetime, host: str | None, program: str | None, message: str) -> dict[str, Any]:
     msg = message.strip()
+    m = _ZEN_SYSLOG.search(msg)
+    if m:
+        try:
+            d = json.loads(m["data"])
+            if isinstance(d, dict):
+                fam = ZEN_FAMILIES.get(m["fam"].lower(), m["fam"].lower())
+                return zenarmor_record(fam, d, ts, host, program or "zenarmor")
+        except ValueError:
+            pass
     start = msg.find("{")
-    d: dict[str, Any] | None = None
     if start >= 0:
         try:
             d = json.loads(msg[start:])
+            if isinstance(d, dict):
+                fam = "dns" if "query" in d else "alert" if ("alertinfo" in d or "alert_category" in d) else \
+                      "http" if "uri" in d else "tls" if "server_name" in d else "conn"
+                return zenarmor_record(fam, d, ts, host, program or "zenarmor")
         except ValueError:
-            d = None
-    if not isinstance(d, dict):
-        # key=value fallback
-        d = {k: v.strip('"') for k, v in _LOGFMT.findall(msg)}
-        if not d:
-            ips = find_ips(msg)
-            return event(ts, "zenarmor", host=host, program=program, severity=6, src_ip=ips[0] if ips else None,
-                         dst_ip=ips[1] if len(ips) > 1 else None, message=msg[:4000])
-    kind = str(d.get("type") or d.get("log_type") or d.get("event_type") or d.get("category_type") or "conn").lower()
-    blocked = str(d.get("is_blocked", d.get("blocked", d.get("action", "")))).lower() in ("1", "true", "block", "blocked", "drop")
-    security = d.get("security_tags") or d.get("threat") or d.get("security_category")
-    category = d.get("app_category") or d.get("category") or d.get("web_category")
-    action = "block" if blocked else ("threat" if security else kind)
-    domain = _first(d, _ZEN_KEYS["domain"])
-    t = ts
-    for k in ("start_time", "timestamp", "time", "@timestamp"):
-        v = d.get(k)
-        if isinstance(v, (int, float)):
-            t = datetime.fromtimestamp(v / 1000 if v > 1e11 else v, tz=timezone.utc)
-            break
-        if isinstance(v, str) and parse_iso(v):
-            t = parse_iso(v)
-            break
-    summary = " ".join(str(x) for x in (kind, action if action != kind else "", d.get("app_name") or "", domain or "", category or "",
-                                        f"security={security}" if security else "") if x)
-    return event(t, "zenarmor", host=host, program=program or "zenarmor", severity=4 if (blocked or security) else 6,
-                 action=action, src_ip=_first(d, _ZEN_KEYS["src_ip"]), dst_ip=_first(d, _ZEN_KEYS["dst_ip"]),
-                 src_port=_first(d, _ZEN_KEYS["src_port"]), dst_port=_first(d, _ZEN_KEYS["dst_port"]),
-                 proto=str(_first(d, _ZEN_KEYS["proto"]) or "").lower() or None, domain=str(domain).lower() if domain else None,
-                 username=_first(d, _ZEN_KEYS["username"]), interface=_first(d, _ZEN_KEYS["interface"]),
-                 message=summary[:4000], data={k: d[k] for k in list(d)[:60]})
+            pass
+    ips = find_ips(msg)
+    return event(ts, "zenarmor", host=host, program=program, severity=6, src_ip=ips[0] if ips else None,
+                 dst_ip=ips[1] if len(ips) > 1 else None, message=msg[:4000])
+
+
+def is_zenarmor_line(message: str) -> bool:
+    return "daemon=zenarmor" in message or ("index=" in message and "data={" in message and "ip_src_saddr" in message)
 
 
 # ----------------------------------------------------- auth / vpn / dhcp ---

@@ -27,12 +27,13 @@ class Stats:
         self.by_source: dict[str, int] = {}
         self.last_by_source: dict[str, float] = {}
         self.senders: dict[str, float] = {}
+        self.extra: dict[str, Any] = {}
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "received": self.received, "parsed": self.parsed, "dropped": self.dropped,
             "written": self.written, "errors": self.errors, "by_source": self.by_source,
-            "last_by_source": self.last_by_source, "senders": self.senders,
+            "last_by_source": self.last_by_source, "senders": self.senders, **self.extra,
         }
 
 
