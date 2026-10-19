@@ -35,6 +35,9 @@ async function load() {
   LG.barChart("c-active", [...devs].sort((a, b) => b.events - a.events).slice(0, 10).map(d => ({ label: d.hostname || d.ip || d.mac, v: d.events })), true);
   render();
 }
+const NAME_SRC = {manual: "Name set by you - never replaced automatically", "dnsmasq-static": "From a dnsmasq Hosts entry (static reservation)",
+  "dhcp-dnsmasq": "Host name the device sent with its dnsmasq DHCP request", "dhcp-kea": "From the Kea DHCP lease", "dhcp-isc": "From the ISC DHCP lease",
+  dhcp: "From the DHCP log", dns: "Name Unbound DNS shows for this IP", arp: "From the ARP table (reverse DNS)", zenarmor: "From Zenarmor device detection"};
 function render() {
   const f = document.getElementById("filter").value.toLowerCase(), week = Date.now() - 7 * 864e5;
   const rows = devs.filter(d => (!f || [d.hostname, d.ip, d.mac, d.vendor, d.interface, d.notes].join(" ").toLowerCase().includes(f)) &&
@@ -42,7 +45,7 @@ function render() {
   document.getElementById("info").textContent = `${rows.length} shown`;
   LG.table("#list", [
     {k: "online", l: "", f: v => `<span class="dot ${v ? "ok" : ""}" title="${v ? "online" : "offline"}"></span>`},
-    {k: "hostname", l: "Name", f: (v, r) => `<b>${LG.esc(v || "–")}</b>${r.notes ? `<div class="small muted">${LG.esc(r.notes)}</div>` : ""}`},
+    {k: "hostname", l: "Name", f: (v, r) => `<b>${LG.esc(v || "–")}</b>${v && r.name_source ? ` <span class="small muted" title="${LG.esc(NAME_SRC[r.name_source] || r.name_source)}">${LG.esc(r.name_source === "manual" ? "✎" : r.name_source)}</span>` : ""}${r.notes ? `<div class="small muted">${LG.esc(r.notes)}</div>` : ""}`},
     {k: "ip", l: "IP", f: LG.ip}, {k: "mac", l: "MAC", f: v => `<span class="mono small">${LG.esc(v)}</span>`},
     {k: "vendor", l: "Vendor"}, {k: "interface", l: "Interface"},
     {k: "lease_type", l: "Lease", f: (v, r) => `${LG.esc(v || "")}${r.lease_expires ? `<div class="small muted">${LG.esc(r.lease_expires)}</div>` : ""}`},
@@ -56,7 +59,8 @@ function render() {
   document.querySelectorAll("[data-trust]").forEach(c => c.onchange = () => LG.api(`/api/devices/${c.dataset.trust}`, { method: "POST", body: { trusted: c.checked } }));
   document.querySelectorAll("[data-edit]").forEach(a => a.onclick = async e => {
     e.preventDefault(); const d = devs.find(x => x.mac === a.dataset.edit);
-    const name = prompt("Name for this device", d.hostname || ""); if (name === null) return;
+    const name = prompt(`Your own name for this device - leave empty to use the automatic name${d.name_source !== "manual" && d.hostname ? ` (now: ${d.hostname})` : ""} from DHCP / DNS`,
+      d.name_source === "manual" ? d.hostname : ""); if (name === null) return;
     const notes = prompt("Notes", d.notes || ""); if (notes === null) return;
     await LG.api(`/api/devices/${d.mac}`, { method: "POST", body: { hostname: name, notes } }); load();
   });

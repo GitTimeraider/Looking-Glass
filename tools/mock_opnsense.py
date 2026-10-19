@@ -107,6 +107,17 @@ SEARCH = {
                                         "destination": "91.92.1.1", "source_port": "50000", "destination_port": "443"}],
     "ids/service/queryAlerts": [{"timestamp": "2026-10-18T22:02:00.000000+0000", "flow_id": 5, "src_ip": "192.168.1.44", "src_port": 50000, "dest_ip": "91.92.1.1",
                                  "dest_port": 443, "proto": "TCP", "alert": "ET MALWARE Possible C2", "alert_sid": 2030000, "alert_action": "allowed"}],
+    # dnsmasq writes "*" as host name when the client sent none; the Hosts entry below names one of them
+    "dnsmasq/leases/search": [
+        {"address": "192.168.1.61", "hwaddr": "aa:aa:aa:aa:aa:61", "hostname": "*", "expire": 1792450000, "if_descr": "LAN",
+         "mac_info": "Espressif Inc.", "lease_type": "static", "client_id": "*"},
+        {"address": "192.168.1.62", "hwaddr": "aa:aa:aa:aa:aa:62", "hostname": "*", "expire": 1792450000, "if_descr": "LAN",
+         "mac_info": "Tuya", "lease_type": "dynamic", "client_id": "*"},
+        {"address": "192.168.1.63", "hwaddr": "aa:aa:aa:aa:aa:63", "hostname": "pixel-7", "expire": 1792450000, "if_descr": "LAN",
+         "mac_info": "Google, Inc.", "lease_type": "dynamic", "client_id": "01:aa:aa:aa:aa:aa:63"}],
+    "dnsmasq/settings/search_host": [
+        {"uuid": "h1", "host": "living-room-plug", "domain": "home.lan", "ip": "192.168.1.61", "hwaddr": "aa:aa:aa:aa:aa:61", "descr": ""},
+        {"uuid": "h2", "host": "printer", "domain": "home.lan", "ip": "192.168.1.90", "hwaddr": "", "descr": "Office printer"}],
     "kea/leases4/search": [
         {"address": "192.168.1.50", "hwaddr": "aa:aa:aa:aa:aa:01", "hostname": "nas", "expire": "2026-10-19 10:00", "if_descr": "LAN", "mac_info": "Synology Incorporated", "lease_type": "static"},
         {"address": "192.168.1.77", "hwaddr": "aa:aa:aa:aa:aa:77", "hostname": "unknown-phone", "expire": "2026-10-19 09:00", "if_descr": "GUEST", "mac_info": "Apple, Inc.", "lease_type": "dynamic"}],

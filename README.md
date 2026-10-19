@@ -396,6 +396,11 @@ metrics, no alerts.
   fingerprints): online state, name,
   IP, MAC, vendor, interface, lease, first/last seen, events/blocks/DNS queries/alerts per device; mark devices as
   trusted, rename them, add notes.
+  Names come from, best first: a name you typed (never replaced; clear it to go back to automatic) → a dnsmasq
+  *Hosts* entry for the MAC or IP (*Services > Dnsmasq DNS & DHCP > Hosts*) → the host name the device sent with its
+  DHCP request → the name Unbound shows for the IP → the ARP table / Zenarmor. The placeholders dnsmasq (`*`) and the
+  ARP table (`-`, `?`) use for "no name" are ignored. A device that still has no name sends none and has no Hosts
+  entry: add one in OPNsense (host name + its MAC) or name it on the Devices page.
 * **Unraid** – see above.
 * **Settings › Data & detection › Delete collected data** – wipe logs/events, alerts, graphs, reports, AI conversations
   and optionally the device list to start over. Settings, credentials, accounts/MFA, Unraid servers and the encryption
