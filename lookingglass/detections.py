@@ -9,7 +9,7 @@ import time
 from collections import Counter, defaultdict
 from typing import Any
 
-from . import db
+from . import alert_filters, db
 from .parsers.common import real_name
 from .config import Settings
 from .ingest import STATS
@@ -178,6 +178,13 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
             description = (description + "\n\n" if description else "") + (
                 f"Connected to: {dev['conn_where']}{signal} (UniFi). To cut it off quickly: UniFi Network › Client Devices › "
                 f"{name or dev.get('mac')} › Block, or an OPNsense firewall rule for {src_ip}.")
+    status = "open"
+    if flt := await alert_filters.check(rule, severity, title, description, src_ip, dst_ip):
+        if flt["action"] == "suppress":
+            log.debug("alert '%s' stopped by filter %s", title, flt["id"])
+            return
+        status = "closed"  # "create as closed": kept for reference, never shown as open
+        data["filter"] = {"id": flt["id"], "name": flt.get("name")}
     row = await pool.fetchrow(
         "SELECT id, severity FROM alerts WHERE fingerprint = $1 AND status <> 'closed' "
         "AND last_seen > now() - interval '24 hours' ORDER BY id DESC LIMIT 1", fingerprint)
@@ -185,13 +192,14 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
         sev = max(row["severity"], severity, key=SEVERITIES.index) if keep_max else severity
         count_sql = "count + $2" if mode == "add" else "GREATEST(count, $2)"
         await pool.execute(
-            f"UPDATE alerts SET last_seen = now(), count = {count_sql}, severity = $3, description = $4, data = $5 WHERE id = $1",
-            row["id"], count, sev, description, data)
+            f"UPDATE alerts SET last_seen = now(), count = {count_sql}, severity = $3, description = $4, data = $5, "
+            f"status = CASE WHEN $6 = 'closed' THEN 'closed' ELSE status END WHERE id = $1",
+            row["id"], count, sev, description, data, status)
         return
     await pool.execute(
-        "INSERT INTO alerts (rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-        rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data)
+        "INSERT INTO alerts (rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data, status) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data, status)
     log.info("ALERT [%s] %s", severity, title)
 
 

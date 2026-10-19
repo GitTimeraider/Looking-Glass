@@ -40,6 +40,21 @@ outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), 
 offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, gateway down, resources
 (disk/memory/states) high, stopped services, firmware updates available and "logs stopped arriving" (possible tampering).
 
+### Muting alerts (alert filters)
+
+*Settings › Alert filters* (or **Mute similar…** on any alert, which pre-fills one) stops alerts you don't want:
+
+* Conditions: **severity** (e.g. "low and below"), **rules / sources** (tick one or more), **text** in the title or
+  description (several terms: comma separated, *any* or *all* of them) and **IP addresses / networks** (source or
+  destination).
+* **AND / OR**: per filter choose *all conditions must match* or *any one is enough*. Inside one condition it is always
+  "or" (any ticked rule, any listed IP), and filters together work as "or" - so "(A and B) or C" is two filters.
+* Action: **don't create** the alert, or **create it as closed** (kept under Alerts › Closed for reference).
+  Logs, dashboards and reports are never affected.
+* **Preview** shows what a filter would have caught in the last 30 days; **close matching** closes existing ones.
+* **Unmute**: alerts matched by a filter show "🔇 Muted by …" with an **Unmute** button on the Alerts page; in the
+  filter list, untick *On* to pause a filter or use *unmute (delete)*. Each filter counts its hits.
+
 ### How severity is decided
 
 Every alert shows **"Why <severity>"**: the base reason and every step up (↑) or down (↓). The same four questions
