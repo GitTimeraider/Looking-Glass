@@ -118,6 +118,10 @@ FIELDS: list[Field] = [
     Field("retention_days", "data", "Keep events (days)", "int", "", min=1, max=3650),
     Field("metrics_retention_days", "data", "Keep metrics (days)", "int", "", min=1, max=3650),
     Field("detection_interval", "data", "Detection interval (seconds)", "int", "", min=10, max=3600),
+    Field("dns_ignore_domains", "data", "DNS: domains to ignore", "str",
+          "Comma separated domains (subdomains included) the DNS checks - random-looking / DGA names, tunneling, NXDOMAIN "
+          "storms - skip, e.g. CDNs or latency probes with random names. Logs and dashboards still show them.",
+          placeholder="atoma.cloud, example-cdn.net"),
     Field("geoip_db", "data", "GeoIP database path", "str", "MaxMind GeoLite2-City or -Country .mmdb inside the data volume.",
           placeholder="/data/GeoLite2-City.mmdb"),
 ]

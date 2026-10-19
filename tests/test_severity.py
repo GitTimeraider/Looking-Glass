@@ -55,3 +55,27 @@ def test_scan_severity_depends_on_outcome_and_origin_not_size():
             await db.close()
 
     asyncio.run(main())
+
+
+def test_dga_heuristic_and_ignore_list():
+    from lookingglass.detections import dga_like, ignore_list, ignored_domain
+
+    assert dga_like("kq3v9x7w2m8p4z1r.com")
+    assert not dga_like("echo-prod-a8f3k2m9x1q7.cloud")  # named service + short id
+    assert not dga_like("a.kq3v9x7w2m8p4z1r.example.com")  # deeper names: tunneling check
+    ign = ignore_list("*.Atoma.cloud; example.net")
+    assert ign == ["atoma.cloud", "example.net"]
+    assert ignored_domain("echo-prod-1.atoma.cloud", ign) and ignored_domain("atoma.cloud.", ign)
+    assert not ignored_domain("notatoma.cloud", ign)
+
+
+def test_future_time_stamps_are_counted_per_source():
+    from lookingglass.ingest import STATS, EventWriter
+
+    w = EventWriter(enricher=None)
+    STATS.future_by_source.clear()
+    ev = event(datetime.now(timezone.utc) + timedelta(hours=1), "firewall", host="opn")
+    w.put(ev)
+    f = STATS.future_by_source["firewall"]
+    assert f["n"] == 1 and 3500 < f["max_ahead"] <= 3600 and f["host"] == "opn"
+    assert ev["ts"] <= datetime.now(timezone.utc)

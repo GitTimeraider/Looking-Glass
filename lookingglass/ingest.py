@@ -32,6 +32,7 @@ class Stats:
         self.senders: dict[str, float] = {}
         self.clock_offsets: dict[str, int] = {}  # sender -> seconds its timestamps are ahead of real time (corrected)
         self.future_clamped = 0                   # events that still claimed to be from the future
+        self.future_by_source: dict[str, dict[str, Any]] = {}  # source -> {n, max_ahead (s), last, sender}
         self.extra: dict[str, Any] = {}
 
     def as_dict(self) -> dict[str, Any]:
@@ -39,7 +40,7 @@ class Stats:
             "received": self.received, "parsed": self.parsed, "dropped": self.dropped,
             "written": self.written, "errors": self.errors, "by_source": self.by_source,
             "last_by_source": self.last_by_source, "senders": self.senders, "clock_offsets": self.clock_offsets,
-            "future_clamped": self.future_clamped, **self.extra,
+            "future_clamped": self.future_clamped, "future_by_source": self.future_by_source, **self.extra,
         }
 
 
@@ -58,10 +59,17 @@ class EventWriter:
 
     def put(self, ev: dict[str, Any]) -> None:
         ts = ev.get("ts")
-        if isinstance(ts, datetime) and ts > datetime.now(timezone.utc) + timedelta(minutes=2):
-            # nothing can happen in the future: a wrong time zone somewhere - keep the receive time instead
-            ev["ts"] = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        if isinstance(ts, datetime) and ts > now + timedelta(minutes=2):
+            # nothing can happen in the future: a wrong time zone or clock somewhere - keep the receive time instead
+            ev["ts"] = now
             STATS.future_clamped += 1
+            f = STATS.future_by_source.setdefault(str(ev.get("source") or "?"), {"n": 0, "max_ahead": 0})
+            f["n"] += 1
+            f["max_ahead"] = max(f["max_ahead"], int((ts - now).total_seconds()))
+            f["last"] = time.time()
+            if ev.get("host"):
+                f["host"] = str(ev["host"])
         try:
             self.queue.put_nowait(ev)
         except asyncio.QueueFull:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from . import db
@@ -309,8 +310,31 @@ async def run(settings: Settings) -> dict[str, Any]:
                "Or: Looking Glass › Settings › Ingestion & network › Time zone: the zone of OPNsense, e.g. Europe/Amsterdam "
                "(same as OPNsense › System › Settings › General › Timezone)."])
     elif STATS.future_clamped > 20:
-        check("clock", "Event time stamps", "info", [], f"{STATS.future_clamped:,} events claimed a time in the future and "
-              "were stored with their receive time. Check the time zone settings of OPNsense and Looking Glass.")
+        parts, steps = [], []
+        hours = minutes = False
+        for src, f in sorted(STATS.future_by_source.items(), key=lambda x: -x[1]["n"]):
+            ahead = f["max_ahead"]
+            whole_h = ahead >= 3000 and min(ahead % 3600, 3600 - ahead % 3600) <= 180
+            hours |= whole_h
+            minutes |= not whole_h
+            when = f"{round(ahead / 3600)} h" if whole_h else f"{ahead // 60} min" if ahead >= 120 else f"{ahead} s"
+            parts.append(f"{src} ({f['n']:,}×, up to {when} ahead{', from ' + f['host'] if f.get('host') else ''})")
+        if hours:
+            steps += ["Whole hours ahead = a time zone mix-up. OPNsense › System › Settings › General › Timezone must be "
+                      "your real zone (e.g. Europe/Amsterdam), and Looking Glass › Settings › Ingestion & network › "
+                      f"Time zone the same zone (now: {settings.timezone or 'UTC'}).",
+                      "For syslog: OPNsense › System › Settings › Logging › Remote › your destination (pencil): tick "
+                      "'RFC5424' (time stamps with zone), Save, Apply."]
+        if minutes:
+            steps += ["Minutes ahead = a clock running fast, on OPNsense or on the Docker host. Compare: OPNsense › "
+                      "Lobby › Dashboard (System time) against a shell on the Docker host: date -u (Looking Glass uses "
+                      "the host's clock).",
+                      "OPNsense running fast: Services › Network Time › General: add time servers (e.g. pool.ntp.org), "
+                      "Save. Docker host running slow: enable NTP there (e.g. timedatectl set-ntp true; on Unraid: "
+                      "Settings › Date and Time › Use NTP: Yes)."]
+        check("clock", "Event time stamps", "info", [], f"{STATS.future_clamped:,} events since the last start claimed a "
+              f"time in the future and were stored with their receive time instead: {'; '.join(parts) or 'unknown source'}. "
+              f"Looking Glass clock now: {datetime.now(timezone.utc):%H:%M:%S} UTC.", steps)
 
     # ------------------------------------------------------------- extras ---
     status = await db.get_snapshot("unraid_status") or {}
