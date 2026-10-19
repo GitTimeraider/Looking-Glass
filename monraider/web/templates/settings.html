@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top"><h1>Integrations</h1></header>
+<div class="card">
+  <h3>Unraid servers</h3>
+  <div id="list"></div>
+  <h3 style="margin-top:18px" id="form-title">Add Unraid server</h3>
+  <form id="f" class="inline-grid">
+    <input type="hidden" name="id">
+    <input name="name" placeholder="Name, e.g. Tower" required>
+    <input name="url" placeholder="URL, e.g. http://192.168.1.10" required>
+    <input name="api_key" placeholder="API key" autocomplete="off">
+    <input name="docker_url" placeholder="Optional: Docker API (socket proxy) e.g. http://192.168.1.10:2375">
+    <label class="chk"><input type="checkbox" name="verify_ssl"> verify TLS certificate</label>
+    <label class="chk"><input type="checkbox" name="collect_logs" checked> collect container &amp; system logs</label>
+    <label class="chk"><input type="checkbox" name="enabled" checked> enabled</label>
+    <div class="filters" style="margin:0"><button type="submit" id="save">Add server</button><button type="button" class="secondary" id="test">Test connection</button><button type="button" class="secondary" id="cancel" hidden>Cancel</button></div>
+  </form>
+  <div id="msg" class="small" style="margin-top:8px"></div>
+  <details style="margin-top:14px"><summary>How do I get an Unraid API key?</summary>
+    <ol class="small">
+      <li><b>Unraid 7.2 or newer</b>: the API is built in. In the Unraid web UI open <i>Settings › Management Access › API Keys</i>,
+        click <b>Create</b>, name it <code>monraider</code>, role <b>Viewer</b> (read-only), and copy the key.
+        Alternatively, open the Unraid terminal (<i>&gt;_</i> icon top right) and run
+        <code>unraid-api apikey --create --name monraider --roles VIEWER --json</code>.</li>
+      <li><b>Unraid 6.12 – 7.1</b>: install the <i>Unraid Connect</i> plugin from Community Apps first (it ships the API), then do the same.</li>
+      <li>URL: the address you use for the Unraid web UI (e.g. <code>http://192.168.1.10</code> or <code>https://tower.local</code>).</li>
+      <li>Optional Docker API: run the <code>docker-socket-proxy</code> container on Unraid (see <code>examples/docker-compose.unraid-socket-proxy.yml</code>)
+        to get per-container CPU / memory graphs. Never expose the raw Docker socket.</li>
+    </ol>
+  </details>
+</div>
+<div class="card" style="margin-top:14px">
+  <h3>OPNsense &amp; AI</h3>
+  <p class="small">The OPNsense API and the AI endpoint are configured with environment variables (<code>OPNSENSE_URL</code>,
+    <code>OPNSENSE_API_KEY</code>, <code>OPNSENSE_API_SECRET</code>, <code>AI_API_KEY</code>, …) in your <code>.env</code> / compose file.
+    Their live status is on <a href="/setup">Setup &amp; status</a>.</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const f = document.getElementById("f"), msg = (t, ok) => { const m = document.getElementById("msg"); m.innerHTML = t; m.className = "small " + (ok ? "ok-msg" : "err"); };
+function payload() {
+  return { id: f.id.value ? Number(f.id.value) : null, name: f.name.value, url: f.url.value, api_key: f.api_key.value, docker_url: f.docker_url.value,
+           verify_ssl: f.verify_ssl.checked, collect_logs: f.collect_logs.checked, enabled: f.enabled.checked };
+}
+function resetForm() { f.reset(); f.id.value = ""; document.getElementById("save").textContent = "Add server"; document.getElementById("form-title").textContent = "Add Unraid server"; document.getElementById("cancel").hidden = true; f.api_key.placeholder = "API key"; }
+async function load() {
+  const rows = await MR.api("/api/unraid/servers");
+  MR.table("#list", [{k: "name", l: "Name", f: (v, r) => `<a href="/unraid">${MR.esc(v)}</a>`}, {k: "url", l: "URL"}, {k: "docker_url", l: "Docker API"},
+    {k: "status", l: "Status", f: v => v ? `<span class="dot ${v.ok ? "ok" : "bad"}"></span>${v.ok ? "ok" : MR.esc((v.error || "").slice(0, 100))} <span class="muted small">${v.last ? MR.ago(v.last) : ""}</span>` : `<span class="muted">waiting…</span>`},
+    {k: "enabled", l: "Enabled", f: v => v ? "yes" : "no"},
+    {k: "id", l: "", f: v => `<a href="#" data-edit="${v}">edit</a> · <a href="#" data-del="${v}">delete</a>`}], rows, "No Unraid servers yet.");
+  document.querySelectorAll("[data-edit]").forEach(a => a.onclick = e => {
+    e.preventDefault(); const r = rows.find(x => x.id === Number(a.dataset.edit));
+    f.id.value = r.id; f.name.value = r.name; f.url.value = r.url; f.api_key.value = ""; f.api_key.placeholder = "API key (leave empty to keep " + r.api_key + ")";
+    f.docker_url.value = r.docker_url || ""; f.verify_ssl.checked = r.verify_ssl; f.collect_logs.checked = r.collect_logs; f.enabled.checked = r.enabled;
+    document.getElementById("save").textContent = "Save changes"; document.getElementById("form-title").textContent = "Edit " + r.name; document.getElementById("cancel").hidden = false;
+  });
+  document.querySelectorAll("[data-del]").forEach(a => a.onclick = async e => {
+    e.preventDefault(); if (!confirm("Delete this server and its stored snapshots?")) return;
+    await MR.api(`/api/unraid/servers/${a.dataset.del}`, { method: "DELETE" }); load();
+  });
+}
+f.onsubmit = async e => {
+  e.preventDefault(); const p = payload();
+  try {
+    if (p.id) await MR.api(`/api/unraid/servers/${p.id}`, { method: "PUT", body: p });
+    else await MR.api("/api/unraid/servers", { method: "POST", body: p });
+    msg("Saved. The first data arrives within ~30 seconds.", true); resetForm(); load();
+  } catch (err) { msg(MR.esc(err.message)); }
+};
+document.getElementById("test").onclick = async () => {
+  msg(`<span class="spinner"></span> testing…`, true);
+  try {
+    const r = await MR.api("/api/unraid/test", { method: "POST", body: payload() });
+    const g = r.graphql || {}, d = r.docker;
+    msg(`GraphQL API: ${g.ok ? `OK – ${MR.esc((g.info || {}).os?.hostname || "")} Unraid ${MR.esc((g.info || {}).versions?.core?.unraid || "")}` : "FAILED – " + MR.esc(g.error)}` +
+        (d ? `<br>Docker API: ${d.ok ? "OK – Docker " + MR.esc(d.version) : "FAILED – " + MR.esc(d.error || d.version)}` : ""), g.ok && (!d || d.ok));
+  } catch (err) { msg(MR.esc(err.message)); }
+};
+document.getElementById("cancel").onclick = resetForm;
+load(); setInterval(load, 30000);
+</script>
+{% endblock %}

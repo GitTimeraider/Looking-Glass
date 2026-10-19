@@ -1,0 +1,40 @@
+# Build MonRaider from source instead of pulling the image (e.g. to test changes):
+#   git clone https://github.com/GitTimeraider/MonRaider && cd MonRaider
+#   docker compose -f examples/docker-compose.build.yml --project-directory . up -d --build
+services:
+  monraider:
+    build: .
+    container_name: monraider
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://monraider:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/monraider
+    ports:
+      - "8080:8080"
+      - "514:5514/udp"
+      - "514:5514/tcp"
+      - "9200:9200"        # Zenarmor Elasticsearch-compatible stream receiver
+    volumes:
+      - ./data:/data
+
+  db:
+    image: postgres:18-alpine
+    container_name: monraider-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: monraider
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: monraider
+    volumes:
+      - pgdata:/var/lib/postgresql   # PostgreSQL 18+ layout (data lives in /var/lib/postgresql/18/docker)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monraider -d monraider"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

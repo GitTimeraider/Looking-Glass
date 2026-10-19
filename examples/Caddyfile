@@ -1,0 +1,5 @@
+{$MONRAIDER_HOST} {
+	tls internal
+	encode gzip
+	reverse_proxy monraider:8080
+}

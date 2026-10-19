@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top"><h1>Reports</h1></header>
+<div class="card filters">
+  <b>New report:</b>
+  <select id="hours"><option value="24">Last 24 hours</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select>
+  <label {% if not ai_enabled %}title="Configure AI_API_KEY to enable" class="muted"{% endif %}><input type="checkbox" id="ai" {% if ai_enabled %}checked{% else %}disabled{% endif %}> include AI analysis</label>
+  <button id="go">Generate</button>
+  <span id="state" class="muted small"></span>
+</div>
+<div class="card"><div id="list"></div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function load() {
+  const rows = await MR.api("/api/reports");
+  MR.table("#list", [{k: "id", l: "#"}, {k: "title", l: "Report", f: (v, r) => `<a href="/reports/${r.id}">${MR.esc(v)}</a>`},
+    {k: "created_at", l: "Created", f: MR.time}, {k: "period_h", l: "Period (h)", num: true}, {k: "has_ai", l: "AI", f: v => v ? "✔" : ""},
+    {k: "id", l: "", f: v => `<a href="/api/reports/${v}/download">json</a> · <a href="#" data-del="${v}">delete</a>`}], rows, "No reports yet");
+  document.querySelectorAll("[data-del]").forEach(a => a.onclick = async e => { e.preventDefault(); if (confirm("Delete report?")) { await MR.api(`/api/reports/${a.dataset.del}`, { method: "DELETE" }); load(); } });
+}
+document.getElementById("go").onclick = async () => {
+  const b = document.getElementById("go"), st = document.getElementById("state");
+  b.disabled = true; st.innerHTML = `<span class="spinner"></span> generating${document.getElementById("ai").checked ? " (AI analysis can take a few minutes)" : ""}…`;
+  try {
+    const r = await MR.api("/api/reports", { method: "POST", body: { hours: Number(document.getElementById("hours").value), ai: document.getElementById("ai").checked } });
+    location.href = `/reports/${r.id}`;
+  } catch (e) { st.textContent = e.message; } finally { b.disabled = false; }
+};
+load();
+</script>
+{% endblock %}
