@@ -93,3 +93,22 @@ def test_severity_rules_come_before_muting():
             await db.close()
 
     asyncio.run(main())
+
+
+def test_invalidate_reloads_right_after_boot(monkeypatch):
+    # time.monotonic() counts from boot: on a machine up < 60 s, invalidate() must still force a reload
+    loads = []
+
+    class Pool:
+        async def fetch(self, *a):
+            loads.append(1)
+            return []
+
+    monkeypatch.setattr(af.db, "pool", lambda: Pool())
+    monkeypatch.setattr(af.time, "monotonic", lambda: 30.0)
+    af.invalidate()
+    asyncio.run(af._filters())
+    af.invalidate()
+    asyncio.run(af._filters())
+    assert len(loads) == 2
+    af.invalidate()
