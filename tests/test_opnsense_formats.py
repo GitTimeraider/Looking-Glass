@@ -57,3 +57,11 @@ def test_nginx_api_lines():
     st = nginx.stream_from_api({"remote_ip": "198.51.100.8", "time": "19/Oct/2026:10:00:00 +0200", "status": "200",
                                 "bytes_sent": "100", "bytes_received": "50", "session_time": "1.5"}, "port 443", NOW)
     assert st["action"] == "stream_200" and st["data"]["bytes_sent"] == 100
+
+
+def test_dashboard_sql_order():
+    from lookingglass.dashboards import sql_order
+    cols = ["ip", "country", "n", "last"]
+    assert sql_order("SELECT ... GROUP BY 1 ORDER BY 3 DESC LIMIT 25", cols) == {"k": "n", "dir": -1}
+    assert sql_order("SELECT ... (SELECT x FROM y ORDER BY 1) ... ORDER BY last DESC LIMIT 5", cols) == {"k": "last", "dir": -1}
+    assert sql_order("SELECT ... ORDER BY 9", cols) is None and sql_order("SELECT 1", cols) is None

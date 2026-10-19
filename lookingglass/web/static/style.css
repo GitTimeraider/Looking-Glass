@@ -50,8 +50,10 @@ tr:hover td { background: var(--panel2); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .table-wrap { overflow: auto; max-height: 420px; }
 .table-wrap.tall { max-height: none; }
-th.sortable { cursor: pointer; user-select: none; white-space: nowrap; } th.sortable:hover { color: var(--text); }
+th.sortable { cursor: pointer; user-select: none; } th.sortable:hover { color: var(--text); }
 th.sortable .arrow { font-size: 10px; margin-left: 4px; }
+.sort-toggle { background: none; border: 1px solid var(--border); color: var(--muted); font-size: 11px; padding: 1px 7px; border-radius: 10px; text-transform: none; letter-spacing: 0; font-weight: 400; cursor: pointer; margin-left: 6px; }
+.sort-toggle:hover { color: var(--text); border-color: var(--muted); }
 #containers .table-wrap { max-height: none; } #containers td { padding-top: 5px; padding-bottom: 5px; }
 td.msg { font-family: var(--mono); font-size: 12px; word-break: break-word; }
 tr.detail td { background: var(--bg); }

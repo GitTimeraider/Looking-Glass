@@ -12,6 +12,7 @@ Panel types (rendered by templates/dash.html):
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from . import db
@@ -307,6 +308,20 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
 }
 
 
+_ORDER = re.compile(r"ORDER BY\s+(\d+|[a-z_]+)(\s+DESC)?", re.I)
+
+
+def sql_order(sql: str, columns: list[str]) -> dict[str, Any] | None:
+    """Column a table query sorts by (its last ORDER BY), so the page can mark it: {"k": "n", "dir": -1}."""
+    m = _ORDER.findall(sql)
+    if not m:
+        return None
+    col, desc = m[-1]
+    if col.isdigit():
+        col = columns[int(col) - 1] if 0 < int(col) <= len(columns) else ""
+    return {"k": col, "dir": -1 if desc else 1} if col in columns else None
+
+
 def step_for(hours: float) -> int:
     return max(60, int(hours * 3600 / 60))
 
@@ -322,6 +337,8 @@ async def run_dashboard(name: str, hours: float) -> dict[str, Any]:
         try:
             async with db.pool().acquire() as conn:
                 out["rows"] = db.records(await conn.fetch(sql, *args))
+            if panel["type"] == "table" and out["rows"]:
+                out["order"] = sql_order(sql, list(out["rows"][0]))
         except Exception as exc:  # noqa: BLE001 - one broken panel must not break the page
             out["rows"], out["error"] = [], str(exc)
         return out
