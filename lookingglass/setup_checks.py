@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import db
-from .config import Settings
+from .config import Settings, local_time
 from .ingest import STATS
 
 PRIV = "System › Access › Users › (Looking Glass user) › Privileges"
@@ -334,7 +334,8 @@ async def run(settings: Settings) -> dict[str, Any]:
                       "Settings › Date and Time › Use NTP: Yes)."]
         check("clock", "Event time stamps", "info", [], f"{STATS.future_clamped:,} events since the last start claimed a "
               f"time in the future and were stored with their receive time instead: {'; '.join(parts) or 'unknown source'}. "
-              f"Looking Glass clock now: {datetime.now(timezone.utc):%H:%M:%S} UTC.", steps)
+              f"Looking Glass clock now: {local_time(settings, seconds=True)} {settings.timezone or 'UTC'} "
+              f"({datetime.now(timezone.utc):%H:%M:%S} UTC).", steps)
 
     # ------------------------------------------------------------- extras ---
     status = await db.get_snapshot("unraid_status") or {}

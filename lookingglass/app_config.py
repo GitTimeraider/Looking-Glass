@@ -117,7 +117,8 @@ FIELDS: list[Field] = [
           placeholder="Europe/Amsterdam"),
     # display
     Field("time_format", "display", "Time format", "choice", "24h = 14:05, 12h = 2:05 PM, browser = whatever your browser's "
-          "language uses.", choices=("24h", "12h", "browser")),
+          "language uses. Applies to the web UI, notification mails and the AI analyst's answers and reports (mails and "
+          "AI use the Time zone under Ingestion & network; browser = 24h there).", choices=("24h", "12h", "browser")),
     # data
     Field("retention_days", "data", "Keep events (days)", "int", "", min=1, max=3650),
     Field("metrics_retention_days", "data", "Keep metrics (days)", "int", "", min=1, max=3650),

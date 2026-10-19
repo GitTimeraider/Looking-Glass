@@ -21,7 +21,7 @@ from typing import Any
 
 from . import alert_filters as af
 from . import db
-from .config import Settings
+from .config import Settings, local_time
 
 log = logging.getLogger("lookingglass.notify")
 _ADDR = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
@@ -117,7 +117,7 @@ def _due(rule: dict[str, Any], a: dict[str, Any]) -> bool:
     return bool(rule.get("on_escalation")) and af.SEVERITIES.index(a["severity"]) > af.SEVERITIES.index(done)
 
 
-def compose(rule: dict[str, Any], alerts: list[dict[str, Any]], link: str) -> tuple[str, str, str]:
+def compose(rule: dict[str, Any], alerts: list[dict[str, Any]], link: str, s: Settings | None = None) -> tuple[str, str, str]:
     order = {s: i for i, s in enumerate(reversed(af.SEVERITIES))}
     alerts = sorted(alerts, key=lambda a: (order[a["severity"]], a["title"]))
     worst = alerts[0]["severity"]
@@ -130,8 +130,11 @@ def compose(rule: dict[str, Any], alerts: list[dict[str, Any]], link: str) -> tu
         why = "; ".join(d.get("severity_why") or [])
         dev = d.get("device") or {}
         where = " · ".join(x for x in (dev.get("hostname"), a.get("src_ip"), dev.get("conn_where")) if x)
+        seen = a.get("last_seen")
+        when = f"{local_time(s, seen, date=True)} ({s.timezone or 'UTC'})" if s and isinstance(seen, datetime) else ""
         url = f"{base}/alerts#{a['id']}" if base else ""
-        lines.append(f"[{a['severity'].upper()}] {a['title']}\n" + (f"  Device: {where}\n" if where else "") +
+        lines.append(f"[{a['severity'].upper()}] {a['title']}\n" + (f"  Time: {when}\n" if when else "") +
+                     (f"  Device: {where}\n" if where else "") +
                      (f"  Why: {why}\n" if why else "") + (f"  {url}\n" if url else ""))
         colour = {"critical": "#a21caf", "high": "#b91c1c", "medium": "#b45309", "low": "#0e7490", "info": "#475569"}[a["severity"]]
         title = html.escape(a["title"])
@@ -139,7 +142,8 @@ def compose(rule: dict[str, Any], alerts: list[dict[str, Any]], link: str) -> tu
             f'<tr><td style="padding:6px 8px;vertical-align:top"><span style="background:{colour};color:#fff;border-radius:9px;'
             f'padding:1px 8px;font-size:12px;font-weight:600">{a["severity"].upper()}</span></td>'
             f'<td style="padding:6px 8px">{f"<a href={html.escape(url)!r}>{title}</a>" if url else title}'
-            + (f'<div style="color:#555;font-size:12px">{html.escape(where)}</div>' if where else "")
+            + (f'<div style="color:#555;font-size:12px">{html.escape(" · ".join(x for x in (when, where) if x))}</div>'
+               if when or where else "")
             + (f'<div style="color:#555;font-size:12px">Why: {html.escape(why)}</div>' if why else "") + "</td></tr>")
     name = rule.get("name") or f"rule #{rule['id']}"
     text = (f"Looking Glass - notification rule “{name}”\n\n" + "\n".join(lines) +
@@ -176,7 +180,7 @@ async def run_once(s: Settings) -> int:
             continue
         if rule.get("last_sent") and (now - rule["last_sent"]).total_seconds() < rule["min_interval"] * 60:
             continue  # bundled into the next mail
-        subject, text, body = compose(rule, due, link)
+        subject, text, body = compose(rule, due, link, s)
         try:
             await send(s, recipients(rule["recipients"]), subject, text, body)
         except (MailError, ValueError) as exc:

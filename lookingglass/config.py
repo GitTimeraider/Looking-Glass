@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from functools import lru_cache
+from typing import Any
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -147,3 +150,25 @@ def get_settings() -> Settings:
         except (OSError, ValueError) as exc:
             log.error("cannot use DATABASE_PASSWORD_FILE (%s): %s", pw_file, exc)
     return s
+
+
+def local_time(s: Settings, dt: datetime | None = None, seconds: bool = False, date: bool = False) -> str:
+    """``dt`` (default: now) in the configured time zone and time format (Settings › Display), e.g. "14:05" or
+    "2:05 PM"; with ``date``: "2026-10-19 14:05"."""
+    try:
+        tz: Any = ZoneInfo(s.timezone or "UTC")
+    except Exception:  # noqa: BLE001 - unknown zone name
+        tz = timezone.utc
+    t = (dt or datetime.now(timezone.utc)).astimezone(tz)
+    fmt = ("%I:%M:%S %p" if seconds else "%I:%M %p") if s.time_format == "12h" else ("%H:%M:%S" if seconds else "%H:%M")
+    out = t.strftime(fmt)
+    if s.time_format == "12h":
+        out = out.lstrip("0")
+    return f"{t:%Y-%m-%d} {out}" if date else out
+
+
+def time_style(s: Settings) -> str:
+    """How times should be written in text for the user (AI prompts)."""
+    zone = s.timezone or "UTC"
+    clock = "12-hour clock with AM/PM (e.g. 2:05 PM)" if s.time_format == "12h" else "24-hour clock (e.g. 14:05)"
+    return f"{zone} local time, {clock}"

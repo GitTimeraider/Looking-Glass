@@ -90,3 +90,17 @@ def test_notifier_sends_once_bundles_and_escalates(tmp_path):
         asyncio.run(main())
     finally:
         srv.terminate()
+
+
+def test_times_follow_zone_and_format():
+    from datetime import datetime, timezone
+
+    from lookingglass.config import local_time, time_style
+
+    t = datetime(2026, 7, 1, 12, 5, 9, tzinfo=timezone.utc)
+    s24 = Settings(timezone="Europe/Amsterdam", time_format="24h")
+    s12 = Settings(timezone="Europe/Amsterdam", time_format="12h")
+    assert local_time(s24, t) == "14:05" and local_time(s24, t, seconds=True, date=True) == "2026-07-01 14:05:09"
+    assert local_time(s12, t) == "2:05 PM" and "12-hour" in time_style(s12) and "24-hour" in time_style(s24)
+    _, text, body = notify.compose({"id": 1}, [{"id": 3, "severity": "high", "title": "x", "data": {}, "last_seen": t}], "", s24)
+    assert "Time: 2026-07-01 14:05 (Europe/Amsterdam)" in text and "14:05" in body
