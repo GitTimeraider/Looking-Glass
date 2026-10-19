@@ -55,6 +55,7 @@ If you prefer an existing PostgreSQL 14+ server, drop the `db` service and point
 mkdir -p ~/looking-glass && cd ~/looking-glass
 curl -O https://raw.githubusercontent.com/GitTimeraider/Looking-Glass/master/docker-compose.yml
 curl -o .env https://raw.githubusercontent.com/GitTimeraider/Looking-Glass/master/.env.example
+mkdir -p data && sudo chown 10001:10001 data    # the container runs as this uid:gid, never as root
 ```
 
 Other ready-made compose files are in [`examples/`](examples):
@@ -80,7 +81,9 @@ enter them in the web UI after the first login (step 5), where they are stored e
   environment variable at all).
 * `ADMIN_USER` / `ADMIN_PASSWORD` – the first account (only used while the database is empty; leave the password
   empty and a random one is printed in the container log).
-* `PUID` / `PGID` – owner of the files in the data volume (default 10001; on Unraid use 99 / 100).
+* `PUID` / `PGID` – the user and group the container runs as (the compose file passes them to `user:`; default
+  10001). The `data` folder must belong to them: `sudo chown -R <PUID>:<PGID> data`. See
+  [Running hardened](#running-hardened-non-root-no-capabilities).
 * `PUBLIC_URL` – only when you use HTTPS / a reverse proxy, e.g. `https://looking-glass.home.lan` (for passkeys).
 
 ### 4. Start and log in
@@ -177,8 +180,8 @@ Check **Setup & Status** in Looking Glass: every source should show a recent "la
 ### 7. Optional: GeoIP countries (shell on your Docker host)
 
 Create a free account at MaxMind, download **GeoLite2-City.mmdb** (or Country) and place it in `~/looking-glass/data/`,
-then `docker compose restart lookingglass`. Make sure the `data` folder is readable by UID 10001
-(`sudo chown -R 10001 ~/looking-glass/data`).
+then `docker compose restart looking-glass`. Make sure the file belongs to the container user
+(`sudo chown -R 10001:10001 ~/looking-glass/data`, or your `PUID:PGID`).
 
 > **PostgreSQL 18:** the compose files use `postgres:18-alpine`, whose image mounts the volume at
 > `/var/lib/postgresql` (not `/var/lib/postgresql/data` as in 17 and older). Fresh installs need nothing extra.
@@ -188,6 +191,63 @@ then `docker compose restart lookingglass`. Make sure the `data` folder is reada
 ```bash
 docker compose pull && docker compose up -d
 ```
+
+Upgrading from a version that started as root and used `PUID`/`PGID` to drop privileges: download the new
+`docker-compose.yml` (it adds `user: "${PUID}:${PGID}"`, `cap_drop` and `no-new-privileges`). Your `data` folder
+already belongs to `PUID:PGID`, so nothing else changes. Running with `docker run` instead of compose? Add
+`--user <PUID>:<PGID>`; without it the container runs as 10001:10001 and prints a warning that `PUID`/`PGID` are
+ignored.
+
+## Running hardened (non-root, no capabilities)
+
+The image runs as an unprivileged user (uid/gid **10001**) and needs **no Linux capabilities at all**, so all of
+these work together without adding anything back:
+
+| Option | `docker run` | compose |
+|---|---|---|
+| choose the user (and owner of `/data`) | `--user 99:100` | `user: "99:100"` |
+| drop every capability | `--cap-drop=ALL` | `cap_drop: [ALL]` |
+| block privilege escalation | `--security-opt=no-new-privileges:true` | `security_opt: ["no-new-privileges:true"]` |
+
+All bundled compose files already set these. A complete `docker run` example (shell on your Docker host):
+
+```bash
+mkdir -p /srv/looking-glass && sudo chown 99:100 /srv/looking-glass
+docker run -d --name looking-glass --restart unless-stopped \
+  --user 99:100 --cap-drop=ALL --security-opt=no-new-privileges:true \
+  -e DATABASE_URL=postgresql://lookingglass:PASSWORD@192.168.1.10:5432/lookingglass \
+  -v /srv/looking-glass:/data \
+  -p 8080:8080 -p 514:5514/udp -p 514:5514/tcp -p 9200:9200 \
+  ghcr.io/gittimeraider/looking-glass:latest
+```
+
+Things to know:
+
+* **The data folder must belong to the user you choose.** For a bind mount, run on the Docker host
+  `sudo chown -R <uid>:<gid> <folder>` before starting. Docker creates a missing folder as root, and the container
+  then stops with `ERROR: /data is not writable for uid … / gid …` and the exact command to run. A new **named
+  volume** works with any `--user` without a chown, because `/data` in the image is world-writable with the sticky
+  bit, like `/tmp`. The encryption key inside it is always created with mode `0600`.
+* **Changing the user later:** chown the folder to the new uid:gid first, otherwise the container stops with
+  `ERROR: the encryption key … belongs to another user`.
+* The container ports (8080, 5514, 9200) are above 1024, so `NET_BIND_SERVICE` is not needed. Map host port 514 to
+  container port 5514 as the examples do.
+* Any uid/gid works; it doesn't have to exist inside the image.
+* **Legacy root mode:** started as root (`--user 0`) with `PUID`/`PGID`, the container fixes the ownership of
+  `/data` and then drops to `PUID:PGID`. Only that mode needs capabilities. With `--cap-drop=ALL` add back
+  `--cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=SETUID --cap-add=SETGID`. It still works with
+  `no-new-privileges`. Prefer `--user`.
+* **PostgreSQL** (bundled `postgres:18-alpine`): started with `user: postgres` it skips its root start-up step and
+  also runs with `cap_drop: [ALL]` and `no-new-privileges`, as in the compose files. Started as root (its default),
+  it needs `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETUID` and `SETGID` back.
+* **Docker secrets** (`examples/docker-compose.secrets.yml`): plain compose mounts the secret file with its host
+  permissions, so non-root containers can only read it when it is `chmod 644`. Keep the `secrets` folder itself
+  `chmod 700` to protect it on the host.
+* **Caddy** (`examples/docker-compose.https.yml`) is left at its defaults. If you add `cap_drop: [ALL]` to it, add
+  back `cap_add: [NET_BIND_SERVICE]` for ports 80/443.
+* **Unraid template:** *Extra Parameters* already contains
+  `--user=99:100 --cap-drop=ALL --security-opt=no-new-privileges:true`. Appdata shares belong to `nobody:users`
+  (99:100), so it works as is.
 
 ---
 
@@ -248,7 +308,7 @@ networks, time zone · retention, detection interval, GeoIP path · Unraid serve
 | `DATABASE_URL` (or `DATABASE_URL_FILE`) | `postgresql://lookingglass:lookingglass@db:5432/lookingglass` | PostgreSQL connection |
 | `DATABASE_PASSWORD_FILE` | – | read the DB password from a Docker secret file and insert it into `DATABASE_URL` |
 | `ADMIN_USER` / `ADMIN_PASSWORD` (or `ADMIN_PASSWORD_FILE`) | `admin` / random (printed in the log) | first account, created only when no user exists |
-| `PUID` / `PGID` | `10001` | owner of the files in `/data` |
+| `PUID` / `PGID` | `10001` | compose files: the `user:` the container runs as (must own `./data`). `docker run`: use `--user` instead |
 | `DATA_DIR` | `/data` | data volume (encryption key, GeoIP database) |
 | `LG_ENCRYPTION_KEY_FILE` | `/data/lookingglass.key` | alternative location of the encryption key (e.g. a Docker secret) |
 | `PUBLIC_URL` / `WEBAUTHN_RP_ID` | auto | public https URL / passkey relying-party id when behind a reverse proxy |

@@ -5,6 +5,9 @@
   the flash share), then Docker tab > Add Container > Template: Looking Glass.
   Needs a PostgreSQL container first, e.g. the "postgresql16" app from Community Applications
   (create user/database "lookingglass") - set its address in DATABASE_URL below.
+  Runs as nobody:users (99:100), the owner of Unraid appdata shares, with all capabilities dropped and
+  no-new-privileges (Advanced View > Extra Parameters). An existing appdata folder owned by someone else:
+  Unraid terminal: chown -R 99:100 /mnt/user/appdata/looking-glass
 -->
 <Container version="2">
   <Name>LookingGlass</Name>
@@ -13,6 +16,7 @@
   <Network>bridge</Network>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
+  <ExtraParams>--user=99:100 --cap-drop=ALL --security-opt=no-new-privileges:true</ExtraParams>
   <Support>https://github.com/GitTimeraider/Looking-Glass/issues</Support>
   <Project>https://github.com/GitTimeraider/Looking-Glass</Project>
   <Overview>OPNsense security monitoring: log collection, dashboards, detections, reports, Unraid monitoring and an AI analyst. OPNsense/AI/Unraid credentials are entered in the web UI (Settings) and stored encrypted. Lost your password/MFA? Use "Forgot password" on the login page and read the reset code in this container's log.</Overview>
@@ -27,7 +31,5 @@
   <Config Name="DATABASE_URL" Target="DATABASE_URL" Default="postgresql://lookingglass:PASSWORD@192.168.1.10:5432/lookingglass" Description="PostgreSQL connection" Type="Variable" Display="always" Required="true" Mask="true"></Config>
   <Config Name="ADMIN_USER" Target="ADMIN_USER" Default="admin" Description="First admin user" Type="Variable" Display="always" Required="true" Mask="false">admin</Config>
   <Config Name="ADMIN_PASSWORD" Target="ADMIN_PASSWORD" Default="" Description="Initial password (empty = random, printed in the log)" Type="Variable" Display="always" Required="false" Mask="true"></Config>
-  <Config Name="PUID" Target="PUID" Default="99" Description="User id for files in /data (Unraid: 99 = nobody)" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
-  <Config Name="PGID" Target="PGID" Default="100" Description="Group id (Unraid: 100 = users)" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
   <Config Name="PUBLIC_URL" Target="PUBLIC_URL" Default="" Description="https URL when behind a reverse proxy (needed for passkeys)" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
 </Container>

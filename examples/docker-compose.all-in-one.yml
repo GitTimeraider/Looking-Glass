@@ -5,14 +5,15 @@ services:
     image: ghcr.io/gittimeraider/looking-glass:latest
     container_name: looking-glass
     restart: unless-stopped
+    user: "10001:10001"   # uid:gid to run as (change both numbers); must own the data folder
+    cap_drop: [ALL]                   # needs no Linux capabilities
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       db:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://lookingglass:CHANGE-ME-db-password@db:5432/lookingglass
       ADMIN_USER: admin                                # first account; password is printed in the log
-      PUID: "10001"
-      PGID: "10001"
       # Everything else (OPNsense API, AI key, Zenarmor, Unraid, retention ...) is configured in the web UI
       # under Settings and stored encrypted - do not put API keys in this file.
     ports:
@@ -27,6 +28,9 @@ services:
     image: postgres:18-alpine
     container_name: looking-glass-db
     restart: unless-stopped
+    user: postgres                    # start directly as the postgres user, so no capabilities are needed
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     environment:
       POSTGRES_USER: lookingglass
       POSTGRES_PASSWORD: CHANGE-ME-db-password

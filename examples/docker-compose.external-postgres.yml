@@ -9,6 +9,9 @@ services:
     image: ghcr.io/gittimeraider/looking-glass:latest
     container_name: looking-glass
     restart: unless-stopped
+    user: "${PUID:-10001}:${PGID:-10001}"   # uid:gid to run as (PUID/PGID in .env); must own the data folder
+    cap_drop: [ALL]                   # needs no Linux capabilities
+    security_opt: ["no-new-privileges:true"]
     env_file: .env
     ports:
       - "8080:8080"
@@ -16,4 +19,4 @@ services:
       - "514:5514/tcp"
       - "9200:9200"        # Zenarmor Elasticsearch-compatible stream receiver
     volumes:
-      - ./data:/data
+      - ./data:/data       # sudo chown -R 10001:10001 ./data (= PUID:PGID)
