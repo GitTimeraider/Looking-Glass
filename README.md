@@ -187,8 +187,12 @@ These steps were checked against the current OPNsense documentation and source (
 2. **Firewall logging** – default block rules are logged already. Open your important pass rules / port forwards
    (**Firewall › Rules › WAN** etc.) and tick **Log packets that are handled by this rule** so allowed traffic is visible too.
 3. **Unbound DNS** – **Reporting › Settings**: enable the Unbound DNS statistics (off by default; Looking Glass then pulls
-   per-client queries via the API, OPNsense keeps 7 days). For complete query logs over syslog also enable
-   **Services › Unbound DNS › Advanced › Log Queries** (and *Log Replies*) – note this slows Unbound down somewhat.
+   every query with client, answer and blocklist via the API). Don't also enable *Log Queries* / *Log Replies* in
+   **Services › Unbound DNS › Advanced** – that duplicates every query and slows Unbound down.
+
+> **Check your setup:** Looking Glass › **Setup & status** lists every data source with what actually arrived in the last
+> 24 hours and through which channel, marked *to do* (what to change, and where), *duplicate* (the same data arrives
+> twice – which one to switch off), *tip*, *ok* or *optional*. Each source needs only one channel.
 4. **nginx plugin** – nothing to do. OPNsense remote syslog never forwards nginx *access* logs; they exist only as files.
    Looking Glass therefore reads access, error and stream logs through the nginx log API every minute (*Settings ›
    OPNsense › Pull nginx access / error logs*; the API user needs the nginx pages). For real-time delivery instead:
@@ -197,8 +201,8 @@ These steps were checked against the current OPNsense documentation and source (
    nginx then sends straight to Looking Glass over UDP.
    **VPN** – WireGuard writes no connection logs, so WireGuard peers (status, last handshake, traffic), OpenVPN sessions
    and IPsec tunnels are read from the API (*Pull VPN status*). A WireGuard peer going online or offline becomes an event.
-5. **Suricata** – **Services › Intrusion Detection › Administration**: tick **Enable syslog alerts** (fast-log format)
-   and/or **Enable eve syslog output** (JSON). Alerts are also pulled from the API.
+5. **Suricata** – nothing to do: alerts are pulled from the API. Don't also tick *Enable syslog alerts* in
+   Intrusion Detection, that would count every alert twice.
 6. **Zenarmor** – choose one (both are mirrors; Zenarmor's own reports stay intact):
    * **Any edition, incl. free Home (recommended)**: **Zenarmor › Settings › Streaming Data › Stream Reporting Data to
      External Elasticsearch**: URI `http://<docker-host>:9200`, Elasticsearch version `8.11.3`, username/password empty

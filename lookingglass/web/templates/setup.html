@@ -1,14 +1,29 @@
 {% extends "base.html" %}
 {% block body %}
-<header class="top"><h1>Setup &amp; status</h1></header>
-<div class="grid g2">
-  <div class="card"><h3>Log ingestion (syslog)</h3><div id="ingest"></div></div>
-  <div class="card"><h3>OPNsense API polling</h3><div id="poller"></div></div>
+<header class="top"><h1>Setup &amp; status</h1><span class="muted small" id="updated"></span></header>
+<div class="grid kpis" id="sum"></div>
+<div class="card" style="margin-top:14px">
+  <h3>Data sources<span class="sp"></span><span class="small muted" style="text-transform:none;letter-spacing:0">checked against what actually arrived in the last 24 hours</span></h3>
+  <div id="checks"></div>
+  <p class="small muted" style="margin-top:10px">
+    <span class="badge bad">to do</span> needed to get this data ·
+    <span class="badge warn">duplicate</span> the same data arrives twice, switch one off ·
+    <span class="badge info">tip</span> works, can be improved ·
+    <span class="badge ok">ok</span> nothing to do ·
+    <span class="badge">optional</span> only if you use it.
+    Each source needs <b>one</b> channel: where the API delivers it, don't also enable the syslog variant.</p>
 </div>
-<div class="card" style="margin-top:14px"><h3>Configuration</h3><div id="conf"></div></div>
 
-<div class="card setup" style="margin-top:14px">
-  <h3>How to connect your OPNsense</h3>
+<details class="card" style="margin-top:14px"><summary><b>Technical details</b> – raw syslog counters, API jobs, configuration</summary>
+<div class="grid g2" style="margin-top:10px">
+  <div><h3>Syslog received (since start)</h3><div id="ingest"></div></div>
+  <div><h3>OPNsense API jobs</h3><div id="poller"></div></div>
+</div>
+<div style="margin-top:14px"><h3>Configuration</h3><div id="conf"></div></div>
+</details>
+
+<details class="card setup" style="margin-top:14px">
+  <summary><b>Full setup guide</b> – every step with explanations</summary>
   <p class="muted">Looking Glass combines two channels: <b>syslog</b> (OPNsense pushes logs, real time) and the <b>REST API</b>
     (Looking Glass pulls system state, CrowdSec, Q-Feeds, IDS and Unbound data). Use both for the best coverage.</p>
   <ol>
@@ -30,20 +45,21 @@
     <li><b>Firewall logging</b> — default block rules are logged out of the box (<i>Firewall › Settings › Advanced › Logging</i>).
       Tick <i>Log</i> on the pass rules / port forwards you care about (WAN inbound!) so allowed traffic is visible too.
       Without syslog Looking Glass pulls the live firewall log via the API instead (<code>FIREWALL_LOG_PULL=auto</code>).</li>
-    <li><b>Unbound DNS</b> — enable the Unbound DNS statistics in <i>Reporting › Settings</i> (off by default) so Looking Glass can pull per-client queries via the API,
-      and/or <i>Services › Unbound DNS › Advanced</i> › <i>Log Queries</i> (+ <i>Log Replies</i>) for full query logs over syslog.</li>
+    <li><b>Unbound DNS</b> — enable <i>Unbound DNS statistics</i> in <i>Reporting › Settings</i> (off by default); Looking Glass
+      pulls every query with client, answer and blocklist from it. Do <b>not</b> also enable <i>Log Queries</i> / <i>Log Replies</i>
+      in <i>Services › Unbound DNS › Advanced</i>: that duplicates every query and slows Unbound down.</li>
     <li><b>nginx plugin</b> — OPNsense remote syslog only forwards nginx's global error log, never the access logs (they are
       files on the firewall). Looking Glass therefore reads access, error and stream logs through the nginx API
       (<a href="/settings#opnsense">Settings › OPNsense</a> › <i>Pull nginx access / error logs</i>, on by default; the API
-      user needs the nginx pages). For real-time delivery instead, open <i>Services › Nginx › Configuration</i>, tab
-      <i>Other › SYSLOG Targets</i>, add a target with Host = Docker host, Port = the Looking Glass syslog port, Severity
-      <i>info</i>, then select it under <i>HTTP(S) › HTTP Server › SYSLOG targets</i>. nginx sends straight over UDP.</li>
+      user needs the nginx pages). A nginx <i>SYSLOG target</i> is <b>not</b> needed; only if you want access logs in real time
+      instead of once a minute, add one (Host = Docker host, Port = the syslog port, tag <code>nginx</code>) and then switch the
+      pull off, otherwise every request is counted twice.</li>
     <li><b>VPN</b> — WireGuard writes no connection logs at all, so peers, handshakes and traffic come from the API
       (<i>Pull VPN status</i>, on by default), as do OpenVPN sessions and IPsec tunnels. Logins and connects of OpenVPN /
       IPsec also arrive via syslog (<code>openvpn</code>, <code>ipsec (charon)</code>).</li>
     <li><b>CrowdSec</b> (os-crowdsec) — nothing extra: alerts and decisions are pulled via the API (CrowdSec writes no syslog on OPNsense).</li>
-    <li><b>Suricata IDS/IPS</b> — <i>Services › Intrusion Detection › Administration</i>: tick <i>Enable syslog alerts</i> (and optionally
-      <i>Enable eve syslog output</i>). Alerts are also pulled from the API.</li>
+    <li><b>Suricata IDS/IPS</b> — nothing extra: alerts are pulled from the API (<i>Pull Suricata IDS alerts</i>). Do <b>not</b>
+      also tick <i>Enable syslog alerts</i> in Intrusion Detection, that would count every alert twice.</li>
     <li><b>Zenarmor</b> — <i>Zenarmor › Settings › Streaming Data</i>. Works on every edition including free Home:
       <i>Stream Reporting Data to External Elasticsearch</i> with URI <code>http://&lt;docker-host&gt;:9200</code> and Elasticsearch
       version <code>8.11.3</code> (Looking Glass acts as the Elasticsearch node). Paid editions can alternatively stream to syslog
@@ -58,10 +74,30 @@
       OpenAI-compatible endpoint (<code>https://api.anthropic.com/v1/</code>, model <code>claude-opus-5-5</code>); any other
       OpenAI-compatible endpoint (OpenAI, OpenRouter, LiteLLM, Ollama…) works by changing base URL and model.</li>
   </ol>
-</div>
+</details>
 {% endblock %}
 {% block scripts %}
 <script>
+const BADGE = { action: ["bad", "to do"], duplicate: ["warn", "duplicate"], info: ["info", "tip"], ok: ["ok", "ok"], optional: ["", "optional"] };
+async function checks() {
+  const d = await LG.api("/api/setup/checks");
+  const sm = d.summary;
+  document.getElementById("sum").innerHTML = [["action", "To do", "bad"], ["duplicate", "Duplicates", "warn"], ["info", "Tips", ""], ["ok", "OK", "ok"], ["optional", "Optional / not used", ""]]
+    .map(([k, l, c]) => `<div class="card kpi ${sm[k] ? c : ""}"><div class="v">${sm[k] || 0}</div><div class="l">${l}</div></div>`).join("");
+  const rank = { action: 0, duplicate: 1, info: 2, ok: 3, optional: 4 };
+  const rows = [...d.checks].sort((a, b) => rank[a.status] - rank[b.status]);
+  LG.table("#checks", [
+    {k: "status", l: "", f: v => `<span class="badge ${BADGE[v][0]}">${BADGE[v][1]}</span>`},
+    {k: "name", l: "Source", f: (v, r) => r.link ? `<a href="${r.link}"><b>${LG.esc(v)}</b></a>` : `<b>${LG.esc(v)}</b>`},
+    {k: "via", l: "Via", f: v => (v || []).map(x => `<span class="pill">${LG.esc(x)}</span>`).join(" ")},
+    {k: "count", l: "24 h", num: true, f: v => v === null || v === undefined ? "" : LG.num(v)},
+    {k: "last", l: "Last", f: v => v ? LG.ago(v) : ""},
+    {k: "summary", l: "Status / what to do", f: (v, r) => `<div>${LG.esc(v)}</div>` +
+      r.todo.map(t => `<div class="todo ${r.status === "duplicate" ? "dup" : ""}">→ ${LG.esc(t)}</div>`).join("") +
+      r.avoid.map(t => `<div class="avoid">✕ Don't: ${LG.esc(t)}</div>`).join("")}], rows);
+  document.getElementById("updated").textContent = "checked " + new Date().toLocaleTimeString();
+}
+checks(); setInterval(checks, 60000);
 (async () => {
   const s = await LG.api("/api/status");
   const ing = s.ingest, now = Date.now() / 1000;
@@ -71,7 +107,7 @@
     SOURCES.map(x => ({ source: x, n: ing.by_source[x] || 0, last: ing.last_by_source[x] })));
   document.getElementById("ingest").insertAdjacentHTML("beforeend", `<p class="small muted">Received ${LG.num(ing.received)} · parsed ${LG.num(ing.parsed)} ·
     written ${LG.num(ing.written)} · dropped ${LG.num(ing.dropped)} · errors ${LG.num(ing.errors)}<br>Senders: ${Object.entries(ing.senders).map(([ip, t]) => `${LG.esc(ip)} (${LG.ago(t)})`).join(", ") || "none"}.
-    Note: sources fed only by the API (Q-Feeds, CrowdSec alerts, IDS, Unbound reporting, Unraid) show here as 0 — see the right panel.
+    Only syslog is counted here; API and Zenarmor-stream sources are in the Data sources list above.
     ${ing.zenarmor_es ? `<br>Zenarmor Elasticsearch stream: ${LG.num(ing.zenarmor_es.docs)} records from ${LG.esc(ing.zenarmor_es.peer)} (${LG.ago(ing.zenarmor_es.last)})` : ""}</p>`);
   const p = s.poller || {};
   LG.table("#poller", [{k: "job", l: "Job"}, {k: "ok", l: "State", f: (v, r) => r.unsupported ? `<span class="badge warn">n/a</span>` : v ? `<span class="badge ok">ok</span>` : v === false ? `<span class="badge bad">error</span>` : "…"},
