@@ -1,5 +1,5 @@
-{$MONRAIDER_HOST} {
+{$LOOKING_GLASS_HOST} {
 	tls internal
 	encode gzip
-	reverse_proxy monraider:8080
+	reverse_proxy looking-glass:8080
 }

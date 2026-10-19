@@ -1,13 +1,13 @@
-# MonRaider using a PostgreSQL server you already run (14 or newer).
+# Looking Glass using a PostgreSQL server you already run (14 or newer).
 # Create the database once (psql on the database server):
-#   CREATE USER monraider WITH PASSWORD 'long-random-password';
-#   CREATE DATABASE monraider OWNER monraider;
+#   CREATE USER lookingglass WITH PASSWORD 'long-random-password';
+#   CREATE DATABASE lookingglass OWNER lookingglass;
 # Then set DATABASE_URL in .env, e.g.
-#   DATABASE_URL=postgresql://monraider:long-random-password@192.168.1.20:5432/monraider
+#   DATABASE_URL=postgresql://lookingglass:long-random-password@192.168.1.20:5432/lookingglass
 services:
-  monraider:
-    image: ghcr.io/gittimeraider/monraider:latest
-    container_name: monraider
+  looking-glass:
+    image: ghcr.io/gittimeraider/looking-glass:latest
+    container_name: looking-glass
     restart: unless-stopped
     env_file: .env
     ports:

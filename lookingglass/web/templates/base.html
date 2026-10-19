@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · Looking Glass</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ version }}">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='13' cy='13' r='9' fill='none' stroke='%233b82f6' stroke-width='4'/><path d='M20 20l9 9' stroke='%233b82f6' stroke-width='5' stroke-linecap='round'/></svg>">
+  <script src="/static/vendor/chart.umd.min.js"></script>
+  <script src="/static/app.js?v={{ version }}"></script>
+  {% block head %}{% endblock %}
+</head>
+<body>
+<div class="layout">
+  <nav class="side">
+    <div class="brand">Looking<span>Glass</span></div>
+    <a href="/" class="{{ 'active' if path == '/' }}">Overview</a>
+    <a href="/alerts" class="{{ 'active' if path == '/alerts' }}">Alerts</a>
+    <div class="grp">Security dashboards</div>
+    {% for key, label in dashboards %}<a href="/dash/{{ key }}" class="{{ 'active' if path == '/dash/' ~ key }}">{{ label }}</a>{% endfor %}
+    <div class="grp">Infrastructure</div>
+    <a href="/system" class="{{ 'active' if path == '/system' }}">OPNsense</a>
+    <a href="/hardware" class="{{ 'active' if path == '/hardware' }}">Hardware</a>
+    <a href="/devices" class="{{ 'active' if path == '/devices' }}">Devices</a>
+    <a href="/unraid" class="{{ 'active' if path == '/unraid' }}">Unraid</a>
+    <div class="grp">Tools</div>
+    <a href="/events" class="{{ 'active' if path == '/events' }}">Event search</a>
+    <a href="/reports" class="{{ 'active' if path == '/reports' }}">Reports</a>
+    <a href="/ai" class="{{ 'active' if path == '/ai' }}">AI Analyst</a>
+    <div class="grp">Admin</div>
+    <a href="/settings" class="{{ 'active' if path == '/settings' }}">Integrations</a>
+    <a href="/setup" class="{{ 'active' if path == '/setup' }}">Setup &amp; status</a>
+    <a href="/account" class="{{ 'active' if path == '/account' }}">Account &amp; MFA</a>
+    <a href="/logout">Log out</a>
+    <div class="foot">v{{ version }}{% if user %} · {{ user }}{% endif %}</div>
+  </nav>
+  <main>
+    {% block body %}{% endblock %}
+  </main>
+</div>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,15 +1,15 @@
 # Everything in one file with inline settings (no .env) - handy for Portainer stacks / Dockge.
 # Replace every CHANGE-ME value before deploying.
 services:
-  monraider:
-    image: ghcr.io/gittimeraider/monraider:latest
-    container_name: monraider
+  looking-glass:
+    image: ghcr.io/gittimeraider/looking-glass:latest
+    container_name: looking-glass
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://monraider:CHANGE-ME-db-password@db:5432/monraider
+      DATABASE_URL: postgresql://lookingglass:CHANGE-ME-db-password@db:5432/lookingglass
       ADMIN_USER: admin
       ADMIN_PASSWORD: CHANGE-ME-initial-password      # only used to create the first account
       TIMEZONE: Europe/Amsterdam
@@ -32,24 +32,24 @@ services:
       - "514:5514/tcp"
       - "9200:9200"        # Zenarmor Elasticsearch-compatible stream receiver
     volumes:
-      - monraider_data:/data
+      - lookingglass_data:/data
 
   db:
     image: postgres:18-alpine
-    container_name: monraider-db
+    container_name: looking-glass-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: monraider
+      POSTGRES_USER: lookingglass
       POSTGRES_PASSWORD: CHANGE-ME-db-password
-      POSTGRES_DB: monraider
+      POSTGRES_DB: lookingglass
     volumes:
       - pgdata:/var/lib/postgresql   # PostgreSQL 18+ layout (data lives in /var/lib/postgresql/18/docker)
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U monraider -d monraider"]
+      test: ["CMD-SHELL", "pg_isready -U lookingglass -d lookingglass"]
       interval: 10s
       timeout: 5s
       retries: 10
 
 volumes:
   pgdata:
-  monraider_data:
+  lookingglass_data:

@@ -1,9 +1,9 @@
 from datetime import datetime, timezone
 
-from monraider.parsers import parse_line
-from monraider.parsers.filterlog import parse_fields
-from monraider.parsers.security import ids_from_api, unbound_from_api, parse_zenarmor
-from monraider.parsers.syslog import parse_syslog
+from lookingglass.parsers import parse_line
+from lookingglass.parsers.filterlog import parse_fields
+from lookingglass.parsers.security import ids_from_api, unbound_from_api, parse_zenarmor
+from lookingglass.parsers.syslog import parse_syslog
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 

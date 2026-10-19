@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top"><h1>Event search</h1><span class="muted small" id="info"></span></header>
+<form class="filters card" id="f">
+  <select name="source">
+    <option value="">all sources</option>
+    {% for s in ["firewall","nginx","unbound","crowdsec","suricata","zenarmor","qfeeds","auth","vpn","dhcp","system"] %}<option>{{ s }}</option>{% endfor %}
+  </select>
+  <input name="ip" placeholder="IP or CIDR">
+  <input name="action" placeholder="action (block, login_failed, …)">
+  <input name="q" placeholder="text / domain / user" style="flex:1">
+  <select name="min_severity">
+    <option value="">any severity</option><option value="3">error+</option><option value="4">warning+</option><option value="5">notice+</option>
+  </select>
+  <select name="hours">
+    <option value="1">1 hour</option><option value="24" selected>24 hours</option><option value="168">7 days</option><option value="720">30 days</option><option value="2160">90 days</option>
+  </select>
+  <button type="submit">Search</button>
+</form>
+<div class="card"><div id="results"></div><div style="margin-top:10px"><button class="secondary" id="more" hidden>Load more</button></div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const form = document.getElementById("f");
+const qs = LG.qs();
+for (const [k, v] of Object.entries(qs)) if (form.elements[k]) form.elements[k].value = v;
+let offset = 0, rows = [];
+
+function params() {
+  const p = new URLSearchParams();
+  for (const el of form.elements) if (el.name && el.value) p.set(el.name, el.value);
+  return p;
+}
+function render() {
+  const el = document.getElementById("results");
+  if (!rows.length) { el.innerHTML = `<div class="empty">No events match.</div>`; return; }
+  el.innerHTML = `<div class="table-wrap tall"><table><thead><tr><th>Time</th><th>Source</th><th>Action</th><th>Src</th><th>Dst</th><th>Message</th></tr></thead><tbody>` +
+    rows.map((r, i) => `<tr data-i="${i}" style="cursor:pointer">
+      <td class="small" style="white-space:nowrap">${LG.time(r.ts)}</td>
+      <td>${LG.src(r.source)}</td>
+      <td>${LG.esc(r.action || "")}</td>
+      <td>${LG.ip(r.src_ip)}${r.src_port ? `<span class="muted">:${r.src_port}</span>` : ""} ${LG.flag(r.src_country)}</td>
+      <td>${LG.ip(r.dst_ip)}${r.dst_port ? `<span class="muted">:${r.dst_port}</span>` : ""} ${LG.flag(r.dst_country)}</td>
+      <td class="msg">${LG.esc(r.message || "")}</td></tr>`).join("") + `</tbody></table></div>`;
+  el.querySelectorAll("tr[data-i]").forEach(tr => tr.onclick = () => {
+    const next = tr.nextElementSibling;
+    if (next && next.classList.contains("detail")) { next.remove(); return; }
+    const r = rows[tr.dataset.i];
+    const d = document.createElement("tr"); d.className = "detail";
+    d.innerHTML = `<td colspan="6"><pre>${LG.esc(JSON.stringify(r, null, 2))}</pre></td>`;
+    tr.after(d);
+  });
+}
+async function search(append) {
+  if (!append) { offset = 0; rows = []; }
+  const p = params(); p.set("limit", 200); p.set("offset", offset);
+  history.replaceState(null, "", "?" + params().toString());
+  try {
+    const d = await LG.api("/api/events?" + p.toString());
+    rows = rows.concat(d.rows); offset += d.rows.length;
+    document.getElementById("more").hidden = !d.has_more;
+    document.getElementById("info").textContent = `${rows.length}${d.has_more ? "+" : ""} events`;
+    render();
+  } catch (e) { document.getElementById("results").innerHTML = `<div class="empty">${LG.esc(e.message)}</div>`; }
+}
+form.onsubmit = e => { e.preventDefault(); search(false); };
+document.getElementById("more").onclick = () => search(true);
+search(false);
+</script>
+{% endblock %}

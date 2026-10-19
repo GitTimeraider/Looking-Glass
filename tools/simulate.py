@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send realistic OPNsense-style syslog traffic to MonRaider (for testing / demos).
+"""Send realistic OPNsense-style syslog traffic to Looking Glass (for testing / demos).
 
     python tools/simulate.py --host 127.0.0.1 --port 5514 --count 2000
 """

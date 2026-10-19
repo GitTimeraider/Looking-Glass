@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top"><h1>Account &amp; MFA</h1></header>
+{% if setup %}
+<div class="card warn-box" style="margin-bottom:14px"><b>Multi-factor authentication is required.</b> Set up an authenticator app (TOTP)
+  and/or a passkey below before you can use Looking Glass.</div>
+{% endif %}
+<div class="grid g2">
+  <div class="card">
+    <h3>Authenticator app (TOTP)</h3>
+    <div id="totp-state"></div>
+    <div id="totp-setup" hidden>
+      <p class="small">Scan this QR code with Google Authenticator, Microsoft Authenticator, Aegis, 1Password, Bitwarden…, then enter the 6-digit code.</p>
+      <div id="qr" style="background:#fff;display:inline-block;padding:6px;border-radius:6px"></div>
+      <p class="small muted">Manual key: <code id="secret"></code></p>
+      <div class="filters"><input id="totp-code" placeholder="123456" inputmode="numeric" autocomplete="one-time-code"><button id="totp-confirm">Confirm</button></div>
+    </div>
+    <div class="filters"><button id="totp-begin">Set up authenticator app</button><button id="totp-disable" class="secondary" hidden>Remove</button></div>
+    <div id="totp-msg" class="small"></div>
+  </div>
+  <div class="card">
+    <h3>Passkeys / security keys</h3>
+    <div id="pk-list"></div>
+    <div class="filters" style="margin-top:8px"><input id="pk-name" placeholder="Name, e.g. 'iPhone' or 'YubiKey'"><button id="pk-add">Add passkey</button></div>
+    <div id="pk-msg" class="small"></div>
+    <p class="small muted" id="pk-note">Passkeys require Looking Glass to be opened over HTTPS (or via http://localhost). See the
+      <code>docker-compose.https.yml</code> example for a ready-made HTTPS setup.</p>
+  </div>
+  <div class="card">
+    <h3>Change password</h3>
+    <form id="pw" class="grid" style="gap:8px">
+      <input type="password" name="current" placeholder="Current password" autocomplete="current-password" required>
+      <input type="password" name="new" placeholder="New password (min. 10 characters)" autocomplete="new-password" required>
+      <input type="password" name="new2" placeholder="Repeat new password" autocomplete="new-password" required>
+      <button type="submit">Change password</button>
+      <div id="pw-msg" class="small"></div>
+    </form>
+  </div>
+  <div class="card">
+    <h3>Lost access?</h3>
+    <p class="small">If you lose your password or MFA device, open <a href="/reset">/reset</a> on the login page, click
+      <i>Generate reset code</i> and read the code from the container log (<code>docker logs looking-glass --tail 20</code>).
+      You can also create a code from the Docker host with<br><code>docker exec looking-glass python -m lookingglass.cli reset-code</code>.</p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const say = (id, text, ok) => { const el = document.getElementById(id); el.textContent = text; el.className = "small " + (ok ? "ok-msg" : "err"); };
+async function load() {
+  const a = await LG.api("/api/account");
+  document.getElementById("totp-state").innerHTML = a.totp_enabled ? `<p><span class="badge ok">enabled</span></p>` : `<p><span class="badge warn">not set up</span></p>`;
+  document.getElementById("totp-begin").textContent = a.totp_enabled ? "Replace authenticator app" : "Set up authenticator app";
+  document.getElementById("totp-disable").hidden = !a.totp_enabled;
+  LG.table("#pk-list", [{k: "name", l: "Name"}, {k: "created_at", l: "Added", f: LG.time}, {k: "last_used", l: "Last used", f: LG.ago},
+    {k: "id", l: "", f: v => `<a href="#" data-del="${v}">remove</a>`}], a.passkeys, "No passkeys yet");
+  document.querySelectorAll("[data-del]").forEach(x => x.onclick = async e => {
+    e.preventDefault(); if (!confirm("Remove this passkey?")) return;
+    try { await LG.api(`/api/account/passkey/${x.dataset.del}`, { method: "DELETE" }); load(); } catch (err) { say("pk-msg", err.message); }
+  });
+  if (a.mfa && new URLSearchParams(location.search).get("setup")) { say("totp-msg", "MFA is set up - you can now use Looking Glass.", true); }
+}
+document.getElementById("totp-begin").onclick = async () => {
+  const r = await LG.api("/api/account/totp/begin", { method: "POST" });
+  document.getElementById("qr").innerHTML = r.svg; document.getElementById("secret").textContent = r.secret;
+  document.getElementById("totp-setup").hidden = false; document.getElementById("totp-code").focus();
+};
+document.getElementById("totp-confirm").onclick = async () => {
+  try {
+    await LG.api("/api/account/totp/confirm", { method: "POST", body: { code: document.getElementById("totp-code").value } });
+    document.getElementById("totp-setup").hidden = true; say("totp-msg", "Authenticator app enabled.", true); load();
+    if (new URLSearchParams(location.search).get("setup")) setTimeout(() => location.href = "/", 1200);
+  } catch (e) { say("totp-msg", e.message); }
+};
+document.getElementById("totp-disable").onclick = async () => {
+  const password = prompt("Confirm with your password"); if (!password) return;
+  try { await LG.api("/api/account/totp/disable", { method: "POST", body: { password } }); load(); } catch (e) { say("totp-msg", e.message); }
+};
+document.getElementById("pk-add").onclick = async () => {
+  try {
+    if (!window.PublicKeyCredential || !window.isSecureContext) throw new Error("This page is not opened over HTTPS - passkeys are unavailable here.");
+    const opts = await LG.api("/api/account/passkey/options", { method: "POST" });
+    const cred = await navigator.credentials.create({ publicKey: LG.webauthn.creationOptions(opts) });
+    await LG.api("/api/account/passkey/verify", { method: "POST", body: { credential: LG.webauthn.credentialJSON(cred), name: document.getElementById("pk-name").value || "Passkey" } });
+    say("pk-msg", "Passkey added.", true); load();
+    if (new URLSearchParams(location.search).get("setup")) setTimeout(() => location.href = "/", 1200);
+  } catch (e) { say("pk-msg", e.message || String(e)); }
+};
+document.getElementById("pw").onsubmit = async e => {
+  e.preventDefault(); const f = e.target;
+  if (f.new.value !== f.new2.value) return say("pw-msg", "Passwords do not match.");
+  try { await LG.api("/api/account/password", { method: "POST", body: { current: f.current.value, new: f.new.value } }); f.reset(); say("pw-msg", "Password changed. Other sessions were logged out.", true); }
+  catch (err) { say("pw-msg", err.message); }
+};
+if (!window.isSecureContext) document.getElementById("pk-note").classList.add("err");
+load();
+</script>
+{% endblock %}

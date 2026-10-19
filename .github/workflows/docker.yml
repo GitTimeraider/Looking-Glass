@@ -18,14 +18,14 @@ jobs:
       postgres:
         image: postgres:18-alpine
         env:
-          POSTGRES_USER: monraider
-          POSTGRES_PASSWORD: monraider
-          POSTGRES_DB: monraider
+          POSTGRES_USER: lookingglass
+          POSTGRES_PASSWORD: lookingglass
+          POSTGRES_DB: lookingglass
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U monraider" --health-interval 5s --health-timeout 5s --health-retries 10
+          --health-cmd "pg_isready -U lookingglass" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      TEST_DATABASE_URL: postgresql://monraider:monraider@localhost:5432/monraider
+      TEST_DATABASE_URL: postgresql://lookingglass:lookingglass@localhost:5432/lookingglass
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

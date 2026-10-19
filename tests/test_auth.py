@@ -1,6 +1,6 @@
 import pyotp
 
-from monraider import auth
+from lookingglass import auth
 
 
 def test_password_hash_roundtrip():
@@ -27,7 +27,7 @@ def test_totp_and_replay():
 
 def test_reset_code(caplog):
     auth._reset.clear()
-    with caplog.at_level("WARNING", logger="monraider.auth"):
+    with caplog.at_level("WARNING", logger="lookingglass.auth"):
         auth.create_reset_code("admin")
     code = next(r.getMessage().split("Reset code: ")[1].split()[0] for r in caplog.records if "Reset code:" in r.getMessage())
     assert auth.check_reset_code("WRONG-CODE") is None
@@ -37,7 +37,7 @@ def test_reset_code(caplog):
 
 def test_reset_code_attempt_limit(caplog):
     auth._reset.clear()
-    with caplog.at_level("WARNING", logger="monraider.auth"):
+    with caplog.at_level("WARNING", logger="lookingglass.auth"):
         auth.create_reset_code("admin")
     code = next(r.getMessage().split("Reset code: ")[1].split()[0] for r in caplog.records if "Reset code:" in r.getMessage())
     for _ in range(5):

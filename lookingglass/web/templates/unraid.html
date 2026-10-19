@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top">
+  <h1>Unraid</h1>
+  <select id="server"></select>
+  <span class="muted small" id="updated"></span>
+  <div class="seg" id="range"><button data-v="1">1h</button><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button></div>
+</header>
+<div id="empty" class="card" hidden>No Unraid server configured yet. Add one under <a href="/settings">Integrations</a>.</div>
+<div id="main" hidden>
+  <div class="tabs" id="tabs">
+    <button data-t="overview" class="on">Overview</button><button data-t="storage">Array &amp; disks</button>
+    <button data-t="docker">Docker</button><button data-t="logs">Logs</button><button data-t="notifications">Notifications</button>
+  </div>
+  <section data-s="overview">
+    <div class="grid g3">
+      <div class="card span2"><h3>Utilisation now</h3><div class="gauges" id="gauges"></div></div>
+      <div class="card"><h3>System</h3><div id="sys"></div></div>
+      <div class="card"><h3>CPU %</h3><div class="chart-box sm"><canvas id="c-cpu"></canvas></div></div>
+      <div class="card"><h3>Memory / swap %</h3><div class="chart-box sm"><canvas id="c-mem"></canvas></div></div>
+      <div class="card"><h3>Temperatures °C</h3><div class="chart-box sm"><canvas id="c-temp"></canvas></div></div>
+      <div class="card span2"><h3>Network (receive + / transmit −)</h3><div class="chart-box sm"><canvas id="c-net"></canvas></div></div>
+      <div class="card"><h3>Per-core load now</h3><div class="chart-box sm"><canvas id="c-cores"></canvas></div></div>
+      <div class="card"><h3>VMs</h3><div id="vms"></div></div>
+      <div class="card"><h3>UPS</h3><div id="ups"></div></div>
+      <div class="card"><h3>Connection</h3><div id="conn"></div></div>
+    </div>
+  </section>
+  <section data-s="storage" hidden>
+    <div class="grid g3">
+      <div class="card"><h3>Array</h3><div id="array"></div></div>
+      <div class="card"><h3>Disk temperatures °C</h3><div class="chart-box sm"><canvas id="c-dtemp"></canvas></div></div>
+      <div class="card"><h3>Disk usage %</h3><div class="chart-box sm"><canvas id="c-dused"></canvas></div></div>
+      <div class="card span3"><h3>Disks</h3><div id="disks"></div></div>
+      <div class="card span2"><h3>Shares</h3><div id="shares"></div></div>
+      <div class="card"><h3>Physical disks (SMART)</h3><div id="phys"></div></div>
+    </div>
+  </section>
+  <section data-s="docker" hidden>
+    <div class="grid kpis" id="dk-kpis"></div>
+    <div class="grid g3" style="margin-top:14px">
+      <div class="card"><h3>Containers running</h3><div class="chart-box sm"><canvas id="c-ctr"></canvas></div></div>
+      <div class="card"><h3>Container CPU % (top 8)</h3><div class="chart-box sm"><canvas id="c-ccpu"></canvas></div></div>
+      <div class="card"><h3>Container memory (top 8)</h3><div class="chart-box sm"><canvas id="c-cmem"></canvas></div></div>
+      <div class="card span3"><h3>Containers</h3><div id="containers"></div></div>
+    </div>
+  </section>
+  <section data-s="logs" hidden>
+    <div class="filters">
+      <select id="lg-kind"><option value="docker">Container logs</option><option value="syslog">Unraid syslog</option></select>
+      <select id="lg-ctr"><option value="">all containers</option></select>
+      <input id="lg-q" placeholder="search text" style="flex:1">
+      <select id="lg-h"><option value="1">1h</option><option value="24" selected>24h</option><option value="168">7d</option></select>
+      <button id="lg-go">Show</button>
+    </div>
+    <div class="grid g2" style="margin-bottom:14px">
+      <div class="card"><h3>Log volume per container</h3><div class="chart-box sm"><canvas id="c-logvol"></canvas></div></div>
+      <div class="card"><h3>Errors / warnings per container</h3><div class="chart-box sm"><canvas id="c-logerr"></canvas></div></div>
+    </div>
+    <div class="card"><div class="logview" id="logview"></div></div>
+  </section>
+  <section data-s="notifications" hidden>
+    <div class="grid kpis" id="nt-kpis"></div>
+    <div class="card" style="margin-top:14px"><h3>Unread notifications</h3><div id="notifs"></div></div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let servers = [], sid = Number(localStorage.getItem("lg-unraid") || 0), hours = 24, tab = "overview", snap = {};
+LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); charts(); });
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
+  tab = b.dataset.t; document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll("section[data-s]").forEach(s => s.hidden = s.dataset.s !== tab);
+  if (tab === "logs") logs(); else charts();
+});
+const pct = v => Math.round(v) + "%";
+const D = k => (snap[k] || {}).data;
+const kbytes = v => LG.bytes(Number(v) * 1024);
+async function init() {
+  servers = await LG.api("/api/unraid/servers");
+  if (!servers.length) { document.getElementById("empty").hidden = false; return; }
+  document.getElementById("main").hidden = false;
+  if (!servers.find(s => s.id === sid)) sid = servers[0].id;
+  const sel = document.getElementById("server");
+  sel.innerHTML = servers.map(s => `<option value="${s.id}" ${s.id === sid ? "selected" : ""}>${LG.esc(s.name)}</option>`).join("");
+  sel.onchange = () => { sid = Number(sel.value); localStorage.setItem("lg-unraid", sid); load(); };
+  load();
+}
+async function load() {
+  const d = await LG.api(`/api/unraid/${sid}`); snap = d.snapshots;
+  const info = D("info") || {}, m = D("metrics") || {}, arr = D("array") || {}, os = info.os || {}, cpu = info.cpu || {};
+  const mem = m.memory || {}, kb = (arr.capacity || {}).kilobytes || {};
+  const temps = ((m.temperature || {}).sensors || []);
+  document.getElementById("gauges").innerHTML = LG.gauge((m.cpu || {}).percentTotal, "CPU") +
+    LG.gauge(mem.percentTotal, "Memory", `${LG.bytes(mem.used)} / ${LG.bytes(mem.total)}`) + LG.gauge(mem.percentSwapTotal, "Swap") +
+    LG.gauge(kb.total ? kb.used / kb.total * 100 : null, "Array", kb.total ? `${kbytes(kb.used)} / ${kbytes(kb.total)}` : "") +
+    (temps.length ? `<div class="gauge"><div class="gv">${Math.max(...temps.map(t => t.current.value)).toFixed(0)}°C</div><div class="l">Hottest sensor</div></div>` : "") +
+    ((cpu.packages || {}).totalPower ? `<div class="gauge"><div class="gv">${cpu.packages.totalPower.toFixed(0)} W</div><div class="l">CPU power</div></div>` : "");
+  const layout = (info.memory || {}).layout || [], ver = (info.versions || {}).core || {};
+  document.getElementById("sys").innerHTML = `<div class="kv">
+    <div>Host</div><div>${LG.esc(os.hostname || "–")}</div>
+    <div>Unraid</div><div>${LG.esc(ver.unraid || os.release || "–")} <span class="muted">(API ${LG.esc(ver.api || "?")})</span></div>
+    <div>Kernel</div><div>${LG.esc(ver.kernel || os.kernel || "–")}</div>
+    <div>System</div><div>${LG.esc([(info.system || {}).manufacturer, (info.system || {}).model].filter(Boolean).join(" ") || "–")}</div>
+    <div>Board</div><div>${LG.esc([(info.baseboard || {}).manufacturer, (info.baseboard || {}).model].filter(Boolean).join(" ") || "–")}</div>
+    <div>CPU</div><div>${LG.esc([cpu.manufacturer, cpu.brand].filter(Boolean).join(" ") || "–")} ${cpu.cores ? `(${cpu.cores}C/${cpu.threads}T${cpu.speedmax ? ", " + cpu.speedmax + " GHz" : ""})` : ""}</div>
+    <div>RAM</div><div>${layout.length ? `${LG.bytes(layout.reduce((a, x) => a + Number(x.size || 0), 0))} in ${layout.length} module(s) ${LG.esc(layout[0].type || "")} ${layout[0].clockSpeed || ""}${layout[0].clockSpeed ? " MHz" : ""}` : "–"}</div>
+    <div>Up since</div><div>${os.uptime ? (isNaN(new Date(os.uptime)) ? LG.esc(os.uptime) : LG.time(os.uptime)) : "–"}</div></div>`;
+  LG.chart("c-cores", { type: "bar", data: { labels: ((m.cpu || {}).cpus || []).map((_, i) => "" + i), datasets: [{ data: ((m.cpu || {}).cpus || []).map(c => c.percentTotal), backgroundColor: "#3b82f6" }] },
+    options: { maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { y: { min: 0, max: 100 } } } });
+  LG.table("#vms", [{k: "name", l: "VM"}, {k: "state", l: "State", f: v => `<span class="state-${v === "RUNNING" ? "running" : "exited"}">${LG.esc(v)}</span>`}], (D("vms") || {}).domains || [], "No VMs (or VM manager disabled)");
+  LG.table("#ups", [{k: "name", l: "UPS"}, {k: "status", l: "Status"}, {k: "battery", l: "Charge", f: v => v ? `${v.chargeLevel}% · ${Math.round(v.estimatedRuntime / 60)} min` : ""},
+    {k: "power", l: "Load", f: v => v ? `${v.loadPercentage}%${v.currentPower ? " · " + Math.round(v.currentPower) + " W" : ""}` : ""}], D("ups") || [], "No UPS configured");
+  const st = d.status || {};
+  document.getElementById("conn").innerHTML = `<div class="kv"><div>API</div><div><span class="dot ${st.ok ? "ok" : st.ok === false ? "bad" : ""}"></span>${st.ok ? "ok" : LG.esc(st.error || "waiting…")}</div>
+    <div>Last poll</div><div>${st.last ? LG.ago(st.last) : "–"}</div>` +
+    Object.entries(st.sections || {}).map(([k, v]) => `<div>${LG.esc(k)}</div><div><span class="dot ${v.ok ? "ok" : "warn"}"></span>${v.ok ? "ok" : LG.esc((v.error || "").slice(0, 120))}</div>`).join("") + "</div>";
+  // storage
+  const disks = [...(arr.parities || []).map(x => ({ ...x, role: "parity" })), ...(arr.disks || []).map(x => ({ ...x, role: "data" })), ...(arr.caches || []).map(x => ({ ...x, role: "cache" })), ...(arr.boot ? [{ ...arr.boot, role: "boot" }] : [])];
+  const pc = arr.parityCheckStatus || {};
+  document.getElementById("array").innerHTML = arr.state ? `<div class="kv">
+    <div>State</div><div><span class="dot ${arr.state === "STARTED" ? "ok" : "bad"}"></span>${LG.esc(arr.state)}</div>
+    <div>Capacity</div><div>${kbytes(kb.used)} used of ${kbytes(kb.total)}<div class="bar"><i style="width:${kb.total ? kb.used / kb.total * 100 : 0}%"></i></div></div>
+    <div>Free</div><div>${kbytes(kb.free)}</div>
+    <div>Parity check</div><div>${LG.esc(pc.status || "–")}${pc.running ? ` · ${pc.progress}% · ${LG.esc(pc.speed || "")}` : ""}${pc.errors ? ` · <b style="color:var(--bad)">${pc.errors} errors</b>` : ""}</div>
+    <div>Last check</div><div>${LG.esc(pc.date ? LG.time(pc.date) : "–")}</div></div>` : `<div class="empty">No array data</div>`;
+  LG.table("#disks", [{k: "role", l: "Role"}, {k: "name", l: "Name"}, {k: "device", l: "Device"}, {k: "status", l: "Status", f: v => `<span class="dot ${v === "DISK_OK" ? "ok" : v === "DISK_NP" ? "" : "bad"}"></span>${LG.esc(v || "")}`},
+    {k: "temp", l: "Temp", f: (v, r) => v === null || v === undefined ? (r.isSpinning === false ? "spun down" : "–") : `<span style="color:${v >= (r.critical || 55) ? "var(--bad)" : v >= (r.warning || 50) ? "var(--warn)" : "inherit"}">${v}°C</span>`},
+    {k: "size", l: "Size", f: v => v ? kbytes(v) : ""}, {k: "fsType", l: "FS"},
+    {k: "fsUsed", l: "Used", f: (v, r) => r.fsSize ? `${kbytes(v)} (${Math.round(v / r.fsSize * 100)}%)<div class="bar"><i style="width:${v / r.fsSize * 100}%"></i></div>` : ""},
+    {k: "numErrors", l: "Errors", f: v => v ? `<b style="color:var(--bad)">${v}</b>` : "0"}, {k: "numReads", l: "Reads", num: true}, {k: "numWrites", l: "Writes", num: true}], disks);
+  LG.table("#shares", [{k: "name", l: "Share"}, {k: "comment", l: "Comment"}, {k: "used", l: "Used", f: kbytes}, {k: "free", l: "Free", f: kbytes}, {k: "cache", l: "Cache", f: v => v ? "yes" : ""}], D("shares") || []);
+  LG.table("#phys", [{k: "name", l: "Disk"}, {k: "interfaceType", l: "Bus"}, {k: "smartStatus", l: "SMART", f: v => `<span class="dot ${v === "OK" ? "ok" : "warn"}"></span>${LG.esc(v)}`}, {k: "temperature", l: "Temp", f: v => v ? v + "°C" : "–"}, {k: "size", l: "Size", f: LG.bytes}], D("disks") || []);
+  // docker
+  const ctrs = D("docker") || [], stats = D("docker_stats") || [];
+  const sByName = Object.fromEntries(stats.map(s => [s.name, s]));
+  const k = (l, v, c = "") => `<div class="card kpi ${c}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  document.getElementById("dk-kpis").innerHTML = k("Containers", ctrs.length) + k("Running", ctrs.filter(c => c.state === "RUNNING").length, "ok") +
+    k("Stopped", ctrs.filter(c => c.state !== "RUNNING").length, ctrs.some(c => c.state === "EXITED" && c.autoStart) ? "bad" : "") +
+    k("Updates available", ctrs.filter(c => c.isUpdateAvailable).length, ctrs.some(c => c.isUpdateAvailable) ? "warn" : "") +
+    (stats.length ? k("Total CPU %", stats.reduce((a, s) => a + s.cpu_pct, 0).toFixed(1)) + k("Total memory", LG.bytes(stats.reduce((a, s) => a + s.mem_bytes, 0))) : "");
+  LG.table("#containers", [
+    {k: "names", l: "Container", f: (v, r) => `${r.iconUrl ? `<img src="${LG.esc(r.iconUrl)}" width="16" height="16" style="vertical-align:middle;margin-right:6px" onerror="this.remove()">` : ""}<b>${LG.esc((v || [])[0]?.replace(/^\//, ""))}</b>`},
+    {k: "image", l: "Image", f: v => `<span class="small mono">${LG.esc(v)}</span>`},
+    {k: "state", l: "State", f: (v, r) => `<span class="state-${LG.esc(v)}">${LG.esc(v)}</span><div class="small muted">${LG.esc(r.status)}</div>`},
+    {k: "autoStart", l: "Autostart", f: v => v ? "yes" : ""}, {k: "isUpdateAvailable", l: "Update", f: v => v ? `<span class="badge warn">available</span>` : ""},
+    {k: "ports", l: "Ports", f: v => (v || []).filter(p => p.publicPort).map(p => `<span class="pill">${p.publicPort}→${p.privatePort}/${LG.esc(p.type || "").toLowerCase()}</span>`).join("")},
+    {k: "names", l: "CPU", num: true, f: v => sByName[(v || [])[0]?.replace(/^\//, "")] ? sByName[(v || [])[0].replace(/^\//, "")].cpu_pct.toFixed(1) + "%" : ""},
+    {k: "names", l: "Memory", num: true, f: v => sByName[(v || [])[0]?.replace(/^\//, "")] ? LG.bytes(sByName[(v || [])[0].replace(/^\//, "")].mem_bytes) : ""},
+    {k: "names", l: "", f: v => `<a href="#" data-logs="${LG.esc((v || [])[0]?.replace(/^\//, ""))}">logs</a>`},
+    {k: "webUiUrl", l: "", f: v => v ? `<a href="${LG.esc(v)}" target="_blank" rel="noopener">web UI</a>` : ""}], ctrs, "No container data");
+  document.querySelectorAll("[data-logs]").forEach(a => a.onclick = e => { e.preventDefault(); document.getElementById("lg-kind").value = "docker"; ctrSel(a.dataset.logs); document.querySelector('#tabs [data-t="logs"]').click(); });
+  ctrSel();
+  // notifications
+  const nt = D("notifications") || {}, ov = (nt.overview || {}).unread || {};
+  document.getElementById("nt-kpis").innerHTML = k("Unread", ov.total ?? "–") + k("Alerts", ov.alert ?? "–", ov.alert ? "bad" : "") + k("Warnings", ov.warning ?? "–", ov.warning ? "warn" : "") + k("Info", ov.info ?? "–") + k("Archived", ((nt.overview || {}).archive || {}).total ?? "–");
+  LG.table("#notifs", [{k: "importance", l: "Level", f: v => LG.sev({ ALERT: "high", WARNING: "medium", INFO: "info" }[v] || "info")}, {k: "timestamp", l: "Time", f: v => LG.time(isNaN(v) ? v : Number(v))},
+    {k: "subject", l: "Subject", f: (v, r) => `<b>${LG.esc(r.title)}</b> – ${LG.esc(v)}<div class="small muted">${LG.esc(r.description)}</div>`}], nt.list || [], "No unread notifications");
+  document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  charts();
+}
+function ctrSel(selected) {
+  const sel = document.getElementById("lg-ctr"), cur = selected ?? sel.value;
+  const names = (D("docker") || []).map(c => (c.names || [])[0]?.replace(/^\//, "")).filter(Boolean).sort();
+  sel.innerHTML = `<option value="">all containers</option>` + names.map(n => `<option ${n === cur ? "selected" : ""}>${LG.esc(n)}</option>`).join("");
+}
+async function charts() {
+  if (!servers.length) return;
+  const m = await LG.api(`/api/metrics/multi?hours=${hours}&prefix=${sid}&names=unraid_cpu_pct,unraid_mem_pct,unraid_swap_pct,unraid_temp,unraid_net_rx_bps,unraid_net_tx_bps,unraid_disk_temp,unraid_disk_used_pct,unraid_containers_running,container_cpu_pct,container_mem_bytes`);
+  const o = { hours }, strip = l => l.replace(/^\d+:?/, "");
+  if (tab === "overview") {
+    LG.lineChart("c-cpu", m.unraid_cpu_pct || {}, { ...o, fmt: pct, min: 0, max: 100, fill: true, rename: () => "CPU" });
+    LG.lineChart("c-mem", { memory: Object.values(m.unraid_mem_pct || {})[0] || [], swap: Object.values(m.unraid_swap_pct || {})[0] || [] }, { ...o, fmt: pct, min: 0, max: 100 });
+    LG.lineChart("c-temp", m.unraid_temp || {}, { ...o, rename: strip });
+    const net = {};
+    for (const [l, v] of Object.entries(m.unraid_net_rx_bps || {})) net[strip(l) + " rx"] = v;
+    for (const [l, v] of Object.entries(m.unraid_net_tx_bps || {})) net[strip(l) + " tx"] = v;
+    LG.lineChart("c-net", net, { ...o, fmt: v => LG.bps(v), neg: l => l.endsWith(" tx") });
+  } else if (tab === "storage") {
+    LG.lineChart("c-dtemp", m.unraid_disk_temp || {}, { ...o, rename: strip });
+    LG.lineChart("c-dused", m.unraid_disk_used_pct || {}, { ...o, rename: strip, fmt: pct, min: 0, max: 100 });
+  } else if (tab === "docker") {
+    LG.lineChart("c-ctr", m.unraid_containers_running || {}, { ...o, rename: () => "running" });
+    const top = (series, n) => Object.fromEntries(Object.entries(series || {}).sort((a, b) => b[1].reduce((s, p) => s + p[1], 0) - a[1].reduce((s, p) => s + p[1], 0)).slice(0, n));
+    LG.lineChart("c-ccpu", top(m.container_cpu_pct, 8), { ...o, rename: strip, fmt: pct });
+    LG.lineChart("c-cmem", top(m.container_mem_bytes, 8), { ...o, rename: strip, fmt: LG.bytes });
+  }
+}
+async function logs() {
+  const kind = document.getElementById("lg-kind").value, ctr = document.getElementById("lg-ctr").value;
+  document.getElementById("lg-ctr").hidden = kind !== "docker";
+  const p = new URLSearchParams({ kind, hours: document.getElementById("lg-h").value, limit: 1000 });
+  if (ctr && kind === "docker") p.set("container", ctr);
+  if (document.getElementById("lg-q").value) p.set("q", document.getElementById("lg-q").value);
+  const rows = await LG.api(`/api/unraid/${sid}/logs?${p}`);
+  document.getElementById("logview").innerHTML = rows.length ? rows.slice().reverse().map(r =>
+    `<div class="l${r.severity}"><span class="ts">${LG.time(r.ts)}</span> <b>${LG.esc(r.program || "")}</b> ${LG.esc(r.message)}</div>`).join("")
+    : `<div class="empty">No log lines. Container logs need "Collect logs" enabled for this server (Integrations).</div>`;
+  const lv = document.getElementById("logview"); lv.scrollTop = lv.scrollHeight;
+  const per = {}, err = {};
+  rows.forEach(r => { per[r.program] = (per[r.program] || 0) + 1; if (r.severity <= 4) err[r.program] = (err[r.program] || 0) + 1; });
+  const top = o => Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([label, v]) => ({ label, v }));
+  LG.barChart("c-logvol", top(per), true); LG.barChart("c-logerr", top(err), true);
+}
+document.getElementById("lg-go").onclick = logs;
+document.getElementById("lg-kind").onchange = logs;
+init(); setInterval(() => { if (servers.length) { load(); if (tab === "logs") logs(); } }, 60000);
+</script>
+{% endblock %}

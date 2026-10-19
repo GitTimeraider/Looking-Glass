@@ -2,7 +2,7 @@
 """Tiny fake OPNsense API for local development / testing of the poller.
 
     python tools/mock_opnsense.py --port 18443
-    OPNSENSE_URL=http://127.0.0.1:18443 OPNSENSE_API_KEY=x OPNSENSE_API_SECRET=y python -m monraider.main
+    OPNSENSE_URL=http://127.0.0.1:18443 OPNSENSE_API_KEY=x OPNSENSE_API_SECRET=y python -m lookingglass.main
 """
 from __future__ import annotations
 
