@@ -8,10 +8,12 @@
   <button class="secondary" id="sel-all">Select all</button>
   <button id="ack">Acknowledge</button>
   <button class="secondary" id="close">Close</button>
+  <button class="secondary" id="close-fp" title="Close and remember it was a false positive - repeated ones become a suggestion to mute or lower them">Close as false positive</button>
   <button class="secondary" id="reopen">Re-open</button>
   <input id="filter" placeholder="filter…" style="flex:1">
   <a class="btn secondary" href="/settings#filters" id="filters-link" title="Mute filters and severity rules: see, adjust, pause or remove them">Mute &amp; severity rules</a>
 </div>
+<div class="card suggest" id="suggest" hidden></div>
 <div class="card"><div id="list"></div></div>
 {% endblock %}
 {% block scripts %}
@@ -80,7 +82,7 @@ function render() {
       <td><input type="checkbox" value="${a.id}"></td><td>${LG.sev(a.severity)}</td>
       <td><b>${LG.esc(a.title)}</b>${a.muted_by ? `<div class="small muted-by">🔇 Muted by <a href="/settings?edit=${a.muted_by.id}#filters" title="Adjust this filter">${LG.esc(a.muted_by.name)} ✎</a>${a.muted_by.action === "close" ? " (created as closed)" : " - new alerts like this are not created"}</div>` : ""}${override(a)}${why(a)}<div class="small muted">${LG.esc(desc(a))}</div></td>
       <td class="small rule-cell">${LG.esc(a.rule)}</td><td>${a.src_ip ? LG.ip(a.src_ip) : `<span class="muted">–</span>`}${device(a)}</td><td class="num">${LG.num(a.count)}</td>
-      <td class="small seen-cell" title="first ${LG.esc(LG.time(a.created_at))}">last ${LG.ago(a.last_seen)}<div class="muted">first ${LG.time(a.created_at)}</div><span class="pill">${LG.esc(a.status)}</span></td>
+      <td class="small seen-cell" title="first ${LG.esc(LG.time(a.created_at))}">last ${LG.ago(a.last_seen)}<div class="muted">first ${LG.time(a.created_at)}</div><span class="pill">${LG.esc(a.status)}</span>${a.close_reason === "false_positive" ? `<span class="pill" title="Closed as false positive">false positive</span>` : ""}</td>
       <td><div class="actions">${eventsUrl(a) ? `<a class="btn secondary small" href="${eventsUrl(a)}" title="Show the events behind this alert">Events</a>` : ""}${a.muted_by ? `<button type="button" class="secondary small" data-unmute="${a.muted_by.id}" title="Delete the filter “${LG.esc(a.muted_by.name)}” so alerts like this are created again">Unmute</button>`
         : `<a class="btn secondary small" href="${muteUrl(a)}" title="Create a filter that stops alerts like this one">Mute similar…</a>`}<a class="btn secondary small" href="${muteUrl(a, "severity")}" title="Give alerts like this one your own severity from now on">Change severity…</a>{% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do.`)}" title="Let the AI analyst investigate this alert">Ask AI</a>{% endif %}</div></td>
     </tr>`).join("") + "</tbody></table></div>";
@@ -95,15 +97,32 @@ function render() {
   if (location.hash) { const t = document.querySelector(location.hash.replace("#", "#a")); if (t) { t.scrollIntoView(); t.style.outline = "2px solid var(--accent)"; } }
 }
 function selected() { return [...document.querySelectorAll("#list input:checked")].map(i => Number(i.value)); }
-async function setStatus(s) {
+async function setStatus(s, reason) {
   const ids = selected(); if (!ids.length) return;
-  await LG.api("/api/alerts/status", { method: "POST", body: { ids, status: s } }); load();
+  await LG.api("/api/alerts/status", { method: "POST", body: { ids, status: s, reason } }); load(); suggestions();
+}
+/* learned from "Close as false positive": suggest muting / lowering patterns that keep coming back */
+async function suggestions() {
+  const box = document.getElementById("suggest");
+  let r; try { r = await LG.api("/api/feedback/suggestions"); } catch (e) { return; }
+  box.hidden = !r.suggestions.length;
+  if (!r.suggestions.length) return;
+  const q = x => new URLSearchParams({ mute: 1, rule: x.rule, ip: x.ip || "", name: `Learned: ${x.label}${x.ip ? " from " + x.ip : ""}` });
+  box.innerHTML = `<h3>Learned from your false positives</h3>` + r.suggestions.map(x => `<div class="row">
+    <span>You closed <b>${x.count}</b> “${LG.esc(x.label)}” alerts${x.ip ? ` for <b>${LG.esc(x.ip)}</b>` : ""} as false positive (e.g. ${LG.esc(x.example)}).</span>
+    <a class="btn secondary" href="/settings?${q(x)}&action=suppress#filters">Mute these…</a>
+    <a class="btn secondary" href="/settings?${q(x)}&action=severity&to=info#filters">Lower to info…</a>
+    <button class="secondary" data-dismiss="${LG.esc(x.id)}">Dismiss</button></div>`).join("");
+  box.querySelectorAll("[data-dismiss]").forEach(b => b.onclick = async () => {
+    await LG.api("/api/feedback/dismiss", { method: "POST", body: { id: b.dataset.dismiss } }); suggestions();
+  });
 }
 document.getElementById("ack").onclick = () => setStatus("acknowledged");
-document.getElementById("close").onclick = () => setStatus("closed");
+document.getElementById("close").onclick = () => setStatus("closed", "resolved");
+document.getElementById("close-fp").onclick = () => setStatus("closed", "false_positive");
 document.getElementById("reopen").onclick = () => setStatus("open");
 document.getElementById("sel-all").onclick = () => document.querySelectorAll("#list input[type=checkbox]").forEach(i => i.checked = !i.checked);
 document.getElementById("filter").oninput = render;
-load(); setInterval(load, 60000);
+load(); suggestions(); setInterval(load, 60000);
 </script>
 {% endblock %}

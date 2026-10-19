@@ -223,7 +223,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             args.append(status.split(","))
             cond = "AND status = ANY($3::text[])"
         rows = await db.pool().fetch(
-            f"SELECT id, created_at, last_seen, rule, severity, title, description, host(src_ip) src_ip, host(dst_ip) dst_ip, count, status, data "
+            f"SELECT id, created_at, last_seen, rule, severity, title, description, host(src_ip) src_ip, host(dst_ip) dst_ip, count, status, close_reason, data "
             f"FROM alerts WHERE last_seen > now() - make_interval(secs => $1) {cond} "
             f"ORDER BY array_position(ARRAY['critical','high','medium','low','info'], severity), last_seen DESC LIMIT $2", *args)
         out = db.records(rows)
@@ -464,7 +464,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         status = payload.get("status")
         if status not in ("open", "acknowledged", "closed"):
             raise HTTPException(400, "invalid status")
-        await db.pool().execute("UPDATE alerts SET status = $1 WHERE id = ANY($2::bigint[])", status, ids)
+        reason = payload.get("reason") if status == "closed" else None
+        if reason not in (None, "false_positive", "resolved"):
+            raise HTTPException(400, "invalid reason")
+        await db.pool().execute("UPDATE alerts SET status = $1, close_reason = $3 WHERE id = ANY($2::bigint[])",
+                                status, ids, reason)
         return {"ok": True, "updated": len(ids)}
 
     @app.get("/api/system")
@@ -511,16 +515,21 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         "reports": ("reports", "Reports"),
         "ai_chats": ("ai_chats", "AI analyst conversations"),
         "devices": ("devices", "Device list (incl. names, notes and trusted marks you set)"),
+        "behavior": ("device_profile, device_hourly, hourly_stats, risk_scores, seen_domains",
+                     "Learned behaviour (device profiles, hourly baselines, risk scores, seen domains)"),
     }
 
     @app.get("/api/admin/data")
     async def data_sizes():
         out = []
         for key, (table, label) in PURGE.items():
+            tables = [t.strip() for t in table.split(",")]
             row = await db.pool().fetchrow(
-                f"SELECT pg_size_pretty(pg_total_relation_size('{table}')) size, "
-                f"(SELECT reltuples::bigint FROM pg_class WHERE relname = '{table}') approx")
-            exact = await db.pool().fetchval(f"SELECT count(*) FROM {table}") if (row["approx"] or 0) < 100000 else None
+                "SELECT pg_size_pretty(sum(pg_total_relation_size(t::regclass))) size, "
+                "(SELECT sum(greatest(reltuples, 0))::bigint FROM pg_class WHERE relname = ANY($1::text[])) approx "
+                "FROM unnest($1::text[]) t", tables)
+            exact = sum([await db.pool().fetchval(f"SELECT count(*) FROM {t}") for t in tables]) \
+                if (row["approx"] or 0) < 100000 else None
             out.append({"key": key, "label": label, "size": row["size"], "rows": exact if exact is not None else max(0, row["approx"])})
         return out
 
@@ -708,9 +717,79 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "(SELECT count(*) FROM events e WHERE e.src_ip = d.ip AND e.ts > now() - make_interval(secs => $1)) events, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = d.ip AND e.action = 'block' AND e.ts > now() - make_interval(secs => $1)) blocked, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = d.ip AND e.source = 'unbound' AND e.ts > now() - make_interval(secs => $1)) dns, "
-            "(SELECT count(*) FROM alerts a WHERE (a.src_ip = d.ip OR a.dst_ip = d.ip) AND a.status = 'open') alerts "
+            "(SELECT count(*) FROM alerts a WHERE (a.src_ip = d.ip OR a.dst_ip = d.ip) AND a.status = 'open') alerts, "
+            "(SELECT round(r.score::numeric, 0) FROM risk_scores r WHERE r.entity = host(d.ip)) risk, "
+            "(SELECT count(*) FROM device_profile p WHERE p.key = d.mac) learned "
             "FROM devices d ORDER BY d.online DESC, d.last_seen DESC LIMIT 3000", hours * 3600)
         return db.records(rows)
+
+    @app.get("/api/devices/{mac}/profile")
+    async def device_profile(mac: str):
+        """What Looking Glass learned as normal for this device (Settings › Behaviour & ML)."""
+        pool = db.pool()
+        ip = await pool.fetchval("SELECT host(ip) FROM devices WHERE mac = $1", mac.lower())
+        keys = [k for k in (mac.lower(), ip) if k]
+        rows = await pool.fetch("SELECT kind, value, first_seen, last_seen, hits FROM device_profile WHERE key = ANY($1::text[]) "
+                                "ORDER BY kind, hits DESC", keys)
+        risk = await pool.fetchrow("SELECT score, parts, updated FROM risk_scores WHERE entity = $1", ip) if ip else None
+        out: dict[str, list] = {}
+        for r in rows:
+            out.setdefault(r["kind"], []).append(db.jsonable(dict(r)))
+        since = min((r["first_seen"] for r in rows), default=None)
+        return {"mac": mac.lower(), "ip": ip, "since": since.isoformat() if since else None, "profile": out,
+                "risk": db.jsonable(dict(risk)) if risk else None}
+
+    @app.delete("/api/devices/{mac}/profile")
+    async def forget_profile(mac: str, kind: str | None = None):
+        """Forget the learned behaviour (all, or one kind): the device is learned again from scratch."""
+        pool = db.pool()
+        ip = await pool.fetchval("SELECT host(ip) FROM devices WHERE mac = $1", mac.lower())
+        keys = [k for k in (mac.lower(), ip) if k]
+        if kind:
+            await pool.execute("DELETE FROM device_profile WHERE key = ANY($1::text[]) AND kind = $2", keys, kind)
+        else:
+            await pool.execute("DELETE FROM device_profile WHERE key = ANY($1::text[])", keys)
+            await pool.execute("DELETE FROM device_hourly WHERE key = ANY($1::text[])", keys)
+        return {"ok": True}
+
+    @app.get("/api/risk")
+    async def risk_list(limit: int = Query(50, ge=1, le=500)):
+        rows = await db.pool().fetch(
+            "SELECT r.entity, round(r.score::numeric, 1) score, r.parts, r.updated, d.hostname, d.mac FROM risk_scores r "
+            "LEFT JOIN devices d ON host(d.ip) = r.entity ORDER BY r.score DESC LIMIT $1", limit)
+        return {"threshold": settings.risk_threshold, "rows": db.records(rows)}
+
+    @app.get("/api/intel/status")
+    async def intel_status():
+        from ..intel import FEEDS
+        st = await db.kv_get("intel:status", {}) or {}
+        counts = {r["feed"]: r["n"] for r in await db.pool().fetch("SELECT feed, count(*) n FROM intel_indicators GROUP BY 1")}
+        nod = await db.pool().fetchrow("SELECT count(*) n, count(*) FILTER (WHERE first_seen > now() - interval '1 day') new "
+                                       "FROM seen_domains")
+        return {"feeds": [{"feed": k, "label": f["label"], **(st.get(k) or {}), "count": counts.get(k, 0)}
+                          for k, f in FEEDS.items()],
+                "seen_domains": dict(nod) if nod else {}, "exposure": await db.kv_get("exposure:status")}
+
+    @app.post("/api/intel/update")
+    async def intel_update():
+        from ..intel import Intel
+        await Intel(settings).update(force=True)
+        return await intel_status()
+
+    @app.get("/api/feedback/suggestions")
+    async def feedback_suggestions():
+        from ..behavior import Behavior
+        if settings.feedback_mode != "suggest":
+            return {"suggestions": []}
+        return {"suggestions": await Behavior(settings, lambda ip: False).feedback()}
+
+    @app.post("/api/feedback/dismiss")
+    async def feedback_dismiss(payload: dict = Body(...)):
+        dismissed = list(await db.kv_get("feedback:dismissed", []) or [])
+        if payload.get("id") and payload["id"] not in dismissed:
+            dismissed.append(str(payload["id"]))
+        await db.kv_set("feedback:dismissed", dismissed[-500:])
+        return {"ok": True}
 
     @app.post("/api/devices/{mac}")
     async def update_device(mac: str, payload: dict = Body(...)):

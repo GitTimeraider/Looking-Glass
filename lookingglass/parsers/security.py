@@ -197,6 +197,18 @@ def suricata_from_eve(d: dict[str, Any], ts: datetime, host: str | None = None, 
     alert = d.get("alert") or {}
     prio = int_or_none(alert.get("severity")) or 3
     t = parse_iso(str(d.get("timestamp", ""))) or ts
+    if d.get("event_type") == "tls" and isinstance(d.get("tls"), dict):
+        # TLS records (eve "tls" logging): JA3 / JA4 fingerprints identify the client program
+        tls = d["tls"]
+        ja3 = tls.get("ja3") if isinstance(tls.get("ja3"), dict) else {}
+        ja3s = tls.get("ja3s") if isinstance(tls.get("ja3s"), dict) else {}
+        return event(t, "suricata", host=host, program="suricata", severity=6, action="tls",
+                     src_ip=d.get("src_ip"), src_port=d.get("src_port"), dst_ip=d.get("dest_ip"), dst_port=d.get("dest_port"),
+                     proto=(d.get("proto") or "").lower() or None, domain=(tls.get("sni") or "").lower() or None,
+                     message=f"TLS {tls.get('sni') or d.get('dest_ip')} {tls.get('version') or ''}".strip(), uid=uid,
+                     data={k: v for k, v in {"ja3": ja3.get("hash"), "ja3s": ja3s.get("hash"), "ja4": tls.get("ja4"),
+                                             "subject": tls.get("subject"), "issuer": tls.get("issuerdn"),
+                                             "version": tls.get("version")}.items() if v})
     return event(t, "suricata", host=host, program="suricata", severity={1: 2, 2: 3, 3: 4}.get(prio, 5),
                  action=alert.get("action", d.get("event_type", "alert")) if alert.get("action") != "allowed" else "alert",
                  src_ip=d.get("src_ip"), src_port=d.get("src_port"), dst_ip=d.get("dest_ip"), dst_port=d.get("dest_port"),
@@ -373,9 +385,21 @@ AUTH_PROGRAMS = ("sshd", "sshd-session", "audit", "login", "su", "sudo", "lightt
 DHCP_PROGRAMS = ("dhcpd", "dhcpd6", "kea-dhcp4", "kea-dhcp6", "dnsmasq", "dnsmasq-dhcp", "dhcp6c", "dhclient")
 
 
+# FreeBSD kernel: "arp: 192.168.1.5 moved from aa:.. to bb:.. on igb1" / "arp: aa:.. is using my IP address 192.168.1.1 on igb1!"
+_ARP_MOVE = re.compile(r"arp: (?P<ip>[0-9.]+) moved from (?P<old>[0-9a-f:]{17}) to (?P<new>[0-9a-f:]{17}) on (?P<intf>\S+)", re.I)
+_ARP_MINE = re.compile(r"arp: (?P<mac>[0-9a-f:]{17}) is using my IP address (?P<ip>[0-9.]+)(?: on (?P<intf>[^!\s]+))?", re.I)
+
+
 def parse_generic(ts: datetime, host: str | None, program: str | None, severity: int, message: str) -> dict[str, Any]:
     msg = message.strip()
     prog = (program or "").lower()
+    if "arp: " in msg:
+        if m := _ARP_MOVE.search(msg):
+            return event(ts, "arp", host=host, program=program, severity=4, action="arp_move", src_ip=m["ip"],
+                         message=msg[:4000], data={"from": m["old"].lower(), "to": m["new"].lower(), "interface": m["intf"]})
+        if m := _ARP_MINE.search(msg):
+            return event(ts, "arp", host=host, program=program, severity=2, action="arp_conflict", src_ip=m["ip"],
+                         message=msg[:4000], data={"mac": m["mac"].lower(), "interface": m["intf"]})
     for rx, action, source in AUTH_PATTERNS:
         m = rx.search(msg)
         if m:

@@ -283,3 +283,15 @@ details.card > summary { cursor: pointer; }
 .rule-groups label.chk .mono { font-size: 10px; overflow-wrap: anywhere; }
 .rule-cell { overflow-wrap: anywhere; min-width: 80px; max-width: 130px; }
 .seen-cell { min-width: 110px; }
+
+/* dialogs (device profile) */
+.dlg { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px;
+       width: min(900px, calc(100vw - 32px)); max-height: 85vh; overflow: auto; }
+.dlg::backdrop { background: rgba(0, 0, 0, .55); }
+.dlg-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.dlg h4 { margin: 14px 0 6px; }
+.prof-items { display: flex; flex-wrap: wrap; gap: 4px; }
+/* feedback suggestions on the alerts page */
+.suggest { border-left: 3px solid var(--accent); }
+.suggest .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--border); }
+.suggest .row:first-of-type { border-top: 0; }

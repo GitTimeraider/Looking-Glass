@@ -38,6 +38,13 @@ RULES: dict[str, list[tuple[str, str]]] = {
                     ("distributed_brute_force", "Distributed brute force"), ("login_new_location", "Login from a new country"),
                     ("beaconing", "Beaconing (regular check-ins)"), ("lateral_movement", "Lateral movement"),
                     ("dns_bypass", "DNS bypass (external DNS)"), ("large_upload", "Unusual upload")],
+    "Behaviour & ML": [("new_behavior", "New behaviour of a device"), ("odd_hours", "Active at an unusual hour"),
+                       ("volume_spike", "Traffic spike of a device"), ("ml_anomaly", "Machine learning anomaly"),
+                       ("unusual_volume", "Unusual for this hour of the week"), ("risk_score", "High risk score")],
+    "Threat intel & traps": [("threat_feed", "Threat feed match (abuse.ch)"), ("malicious_tls", "Malware TLS fingerprint"),
+                             ("tor", "Tor"), ("crypto_mining", "Crypto mining"), ("young_domain", "Newly registered domain"),
+                             ("canary", "Canary address touched"), ("exposure_change", "Port forward / rule change"),
+                             ("arp_spoofing", "ARP spoofing")],
     "Devices": [("new_device", "New device")],
     "OPNsense system": [("gateway_down", "Gateway down"), ("gateway_degraded", "Gateway degraded"),
                         ("resource", "Resource usage high"), ("service_stopped", "Service stopped"),
@@ -51,6 +58,7 @@ RULES: dict[str, list[tuple[str, str]]] = {
                ("unraid_unreachable", "Server unreachable")],
 }
 RULE_NAMES = {r for group in RULES.values() for r, _ in group}
+RULE_LABELS = {r: label for group in RULES.values() for r, label in group}
 
 _cache: dict[str, Any] = {"at": None, "filters": []}  # at: time.monotonic() of the last load, None = reload
 

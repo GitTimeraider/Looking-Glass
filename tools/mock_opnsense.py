@@ -137,6 +137,9 @@ async def wg(status: str):
     return STATE
 
 
+EXPOSURE = {"calls": 0}
+
+
 @app.api_route("/api/{path:path}", methods=["GET", "POST"])
 async def handler(path: str, request: Request):
     if not request.headers.get("authorization", "").startswith("Basic "):
@@ -146,6 +149,19 @@ async def handler(path: str, request: Request):
         return d[path]
     if path in SEARCH:
         return {"rows": SEARCH[path], "total": len(SEARCH[path])}
+    if path == "firewall/filter/search_rule":
+        rows = [{"uuid": "r1", "enabled": "1", "action": "pass", "interface": "lan", "source_net": "lan", "destination_net": "any",
+                 "description": "Default allow LAN"}]
+        return {"rows": rows, "total": len(rows)}
+    if path == "firewall/d_nat/search_rule":
+        # a new port forward appears after a few polls (exposure watch test)
+        EXPOSURE["calls"] += 1
+        rows = [{"uuid": "n1", "enabled": "1", "interface": "wan", "protocol": "TCP", "destination_port": "443",
+                 "target": "192.168.1.10", "local-port": "443", "description": "web server"}]
+        if EXPOSURE["calls"] > 1:
+            rows.append({"uuid": "n2", "enabled": "1", "interface": "wan", "protocol": "TCP", "destination_port": "3389",
+                         "target": "192.168.1.33", "local-port": "3389", "description": "remote desktop"})
+        return {"rows": rows, "total": len(rows)}
     raise HTTPException(404, "not found")
 
 

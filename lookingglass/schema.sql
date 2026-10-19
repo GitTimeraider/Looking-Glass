@@ -208,3 +208,61 @@ CREATE TABLE IF NOT EXISTS notification_rules (
     last_error    TEXT,
     last_error_at TIMESTAMPTZ
 );
+
+-- behaviour profiles: what each device (MAC, or IP when unknown) normally does
+CREATE TABLE IF NOT EXISTS device_profile (
+    key        TEXT NOT NULL,          -- MAC address, or IP
+    kind       TEXT NOT NULL,          -- country | port | domain | tls | hour
+    value      TEXT NOT NULL,
+    first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    hits       BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (key, kind, value)
+);
+CREATE INDEX IF NOT EXISTS device_profile_kind_value_idx ON device_profile (kind, value);
+
+-- per device and hour: the features for volume checks and the Isolation Forest
+CREATE TABLE IF NOT EXISTS device_hourly (
+    key      TEXT NOT NULL,
+    hour     TIMESTAMPTZ NOT NULL,
+    ip       INET,
+    features JSONB NOT NULL,
+    PRIMARY KEY (key, hour)
+);
+CREATE INDEX IF NOT EXISTS device_hourly_hour_idx ON device_hourly (hour);
+
+-- network-wide totals per hour (hour-of-week baselines)
+CREATE TABLE IF NOT EXISTS hourly_stats (
+    metric TEXT NOT NULL,
+    hour   TIMESTAMPTZ NOT NULL,
+    value  DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (metric, hour)
+);
+
+-- threat intel indicators (abuse.ch, Tor, mining pools)
+CREATE TABLE IF NOT EXISTS intel_indicators (
+    kind  TEXT NOT NULL,                -- domain | ip | ja3
+    value TEXT NOT NULL,
+    feed  TEXT NOT NULL,
+    info  TEXT,
+    PRIMARY KEY (kind, value, feed)
+);
+
+-- first time any device looked up a (registered) domain
+CREATE TABLE IF NOT EXISTS seen_domains (
+    domain       TEXT PRIMARY KEY,
+    first_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    first_client INET,
+    registered   TIMESTAMPTZ,
+    rdap_checked BOOLEAN NOT NULL DEFAULT false
+);
+
+-- risk score per device / address
+CREATE TABLE IF NOT EXISTS risk_scores (
+    entity  TEXT PRIMARY KEY,
+    score   DOUBLE PRECISION NOT NULL,
+    parts   JSONB,
+    updated TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS close_reason TEXT;  -- 'false_positive' | 'resolved'

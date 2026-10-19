@@ -337,6 +337,55 @@ async def run(settings: Settings) -> dict[str, Any]:
               f"Looking Glass clock now: {local_time(settings, seconds=True)} {settings.timezone or 'UTC'} "
               f"({datetime.now(timezone.utc):%H:%M:%S} UTC).", steps)
 
+    # ------------------------------------------------- behaviour & intel ---
+    if settings.behavior_enabled:
+        prof = await db.pool().fetchrow("SELECT count(DISTINCT key) devices, min(first_seen) since FROM device_profile")
+        n, since = (prof["devices"], prof["since"]) if prof else (0, None)
+        days = (time.time() - since.timestamp()) / 86400 if since else 0
+        check("behavior", "Behaviour learning", "ok" if days >= settings.behavior_min_days else "info", [],
+              f"{n} devices profiled, learning for {days:.1f} days." + ("" if days >= settings.behavior_min_days else
+              f" New-behaviour alerts start after {settings.behavior_min_days} days per device."),
+              link="/settings#behavior")
+    feeds = await db.kv_get("intel:status", {}) or {}
+    bad = {k: v for k, v in feeds.items() if v.get("enabled") and v.get("ok") is False}
+    if bad:
+        need_key = any("Auth-Key" in (v.get("error") or "") for v in bad.values())
+        check("intel", "Threat feeds", "action", ["internet"], "Not downloaded: " + "; ".join(
+              f"{k}: {v.get('error')}" for k, v in bad.items())[:600],
+              ["Looking Glass › Settings › Threat intel & traps › abuse.ch Auth-Key: get a free key at auth.abuse.ch "
+               "(log in, Optional › Generate Auth-Key), Save, then Update feeds now."] if need_key else
+              ["The container needs internet access (HTTPS) to abuse.ch and torproject.org; or switch the feed off."],
+              link="/settings#intel")
+    elif any(v.get("ok") for v in feeds.values()):
+        total = sum(v.get("count") or 0 for v in feeds.values())
+        check("intel", "Threat feeds", "ok", ["internet"], f"{total:,} indicators from "
+              f"{sum(1 for v in feeds.values() if v.get('ok'))} feeds.", link="/settings#intel")
+    tls = await db.pool().fetchval("SELECT count(*) FROM events WHERE ts > now() - interval '1 day' AND source IN "
+                                   "('suricata', 'zenarmor') AND coalesce(data->>'ja3', data->>'ja4', data->>'ja3_hash') IS NOT NULL")
+    if settings.intel_ja3 or settings.behavior_new_tls:
+        check("tls", "TLS fingerprints (JA3/JA4)", "ok" if tls else "optional", ["syslog"],
+              f"{tls:,} TLS records with fingerprints in 24 h." if tls else
+              "None received - malware TLS fingerprints and 'new TLS program' need them.",
+              [] if tls else ["Optional: OPNsense › Services › Intrusion Detection › Administration › Settings: enable "
+                              "'Enable eve syslog output' with TLS logging, so Suricata sends its tls records (JA3/JA4) "
+                              "to the remote syslog destination."])
+    if settings.exposure_watch:
+        ex = await db.kv_get("exposure:status")
+        if ex:
+            check("exposure", "Exposure watch", "ok" if ex.get("api") else "info", ["API"],
+                  f"{ex.get('rules')} rules / port forwards compared." + ("" if ex.get("api") else
+                  " Port forwards and rule details are not in this OPNsense version's API (25.7+); only rule names are compared."),
+                  [] if ex.get("api") else ["Optional: give the API user the privileges 'Firewall: Rules' and "
+                                            "'Firewall: NAT: Port Forward' (System › Access › Users › your API user)."])
+    canaries = settings.canary_targets.strip()
+    check("canary", "Canary addresses", "ok" if canaries else "optional", [],
+          "Configured." if canaries else "None set. A canary is an address / port nothing should ever use - any contact is "
+          "a strong sign of someone exploring the network.",
+          [] if canaries else ["Looking Glass › Settings › Threat intel & traps › Canary addresses, e.g. "
+                               "192.168.1.1:23 and 192.168.1.1:445 (unused ports on the firewall's LAN address).",
+                               "OPNsense › Firewall › Rules › LAN: a block rule for those ports with 'Log' ticked, above the "
+                               "allow rules - so the firewall logs every attempt."], link="/settings#intel")
+
     # ------------------------------------------------------------- extras ---
     status = await db.get_snapshot("unraid_status") or {}
     for sid, st in status.items():

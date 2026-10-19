@@ -46,6 +46,12 @@ metrics(ts, name, labels, value)  names: memory_used_pct, load1, pf_states, pf_s
 devices(mac, ip, hostname, name_source, vendor, interface, sources text[], lease_type, lease_expires, online, trusted, notes,
         conn_type /*wifi|wired, from UniFi*/, conn_where /*'AP Living room · Home (5 GHz)' / 'Switch Office port 5'*/,
         conn_signal /*dBm*/, conn_seen, first_seen, last_seen)   -- network inventory: ARP, DHCP leases, UniFi clients, Zenarmor
+device_profile(key /*MAC or IP*/, kind /*country|port|domain|tls|hour*/, value, first_seen, last_seen, hits)
+       -- what is NORMAL for each device (learned); device_hourly(key, hour, ip, features jsonb: connections, destinations,
+       ports, countries, dns, failed_lookups, blocked, upload_mb) -- per device and hour
+risk_scores(entity /*IP*/, score, parts jsonb [{rule, severity, points}], updated)  -- alerts add points that fade
+intel_indicators(kind /*domain|ip|ja3*/, value, feed /*urlhaus|threatfox|feodo|sslbl_ja3|tor_relay|tor_exit*/, info)
+seen_domains(domain, first_seen, first_client, registered /*RDAP*/)  -- first lookup of each domain on the network
 snapshots(key, ts, data jsonb)  keys: system, activity (top processes), gateways, interfaces, services, firmware, arp,
        leases_kea / leases_dnsmasq / leases_isc, unbound_totals, crowdsec_decisions, qfeeds_stats, poller_status,
        unifi:devices (APs / switches: state, model, firmware, upgradable, cpu, mem, clients, ports[], radios[]),

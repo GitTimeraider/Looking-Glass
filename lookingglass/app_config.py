@@ -41,6 +41,8 @@ GROUPS = {
     "ingest": "Log ingestion & network",
     "data": "Data & detection",
     "display": "Display",
+    "behavior": "Behaviour & ML",
+    "intel": "Threat intel & traps",
 }
 
 FIELDS: list[Field] = [
@@ -115,6 +117,87 @@ FIELDS: list[Field] = [
           "CIDRs treated as internal besides RFC1918/CGNAT/ULA, e.g. public ranges you own.", placeholder="203.0.113.0/28"),
     Field("timezone", "ingest", "Time zone", "str", "IANA name; used for syslog timestamps without zone and daily reports.",
           placeholder="Europe/Amsterdam"),
+    # behaviour & ML
+    Field("behavior_enabled", "behavior", "Learn device behaviour", "bool", "Learn per device which countries, ports, "
+          "domains, TLS programs and hours are normal, and alert on what is new or unusual."),
+    Field("behavior_exclude", "behavior", "Never analyse these devices", "str", "Comma separated IPs, CIDRs or MAC "
+          "addresses skipped by ALL behaviour, anomaly and risk rules (e.g. a backup server, Looking Glass itself).",
+          placeholder="192.168.1.10, 192.168.50.0/24, aa:bb:cc:dd:ee:ff"),
+    Field("behavior_learn_days", "behavior", "Learning period (days)", "int", "How far back the normal behaviour of a "
+          "device is taken from. Things not seen for longer count as new again.", min=3, max=90),
+    Field("behavior_min_days", "behavior", "Quiet period for new devices (days)", "int", "A device is only judged after "
+          "it has been seen for this many days - before that everything it does is new.", min=1, max=60),
+    Field("behavior_stable_max", "behavior", "Predictable devices: max. new things per day", "int", "'New …' alerts "
+          "only for devices that picked up at most this many new destinations per day while learning (cameras, TVs, "
+          "plugs). PCs and phones that constantly reach new places are skipped. 0 = judge every device.", min=0, max=1000),
+    Field("behavior_new_country", "behavior", "Alert: first contact with a new country", "bool"),
+    Field("behavior_new_port", "behavior", "Alert: first use of a new port / protocol", "bool"),
+    Field("behavior_new_domain", "behavior", "Alert: first lookup of a new domain", "bool"),
+    Field("behavior_new_tls", "behavior", "Alert: new TLS program (JA3/JA4)", "bool", "Needs TLS records with JA3/JA4 "
+          "from Suricata (eve) or Zenarmor."),
+    Field("behavior_odd_hours", "behavior", "Alert: activity at hours the device is never active", "bool"),
+    Field("behavior_peers", "behavior", "Compare with similar devices", "bool", "Devices of the same vendor form a "
+          "group: something the others do too is not alerted; something none of them do weighs heavier."),
+    Field("behavior_volume_factor", "behavior", "Alert: traffic N times the device's normal", "int", "Connections / "
+          "data / DNS lookups in one hour compared to the device's median for that hour. 0 = off.", min=0, max=1000),
+    Field("anomaly_ml_enabled", "behavior", "Machine learning (Isolation Forest)", "bool", "Scores every device-hour on "
+          "8 features (connections, destinations, ports, countries, DNS, failed lookups, blocks, upload) against the "
+          "device's own history and alerts on combinations that are rare. Runs locally, nothing leaves the server."),
+    Field("anomaly_ml_sensitivity", "behavior", "Machine learning: sensitivity", "choice", "low = only hours rarer "
+          "than 1 in 2000 normal hours with a feature 4+ deviations off; medium = 1 in 500, 3.5; high = 1 in 200, 3.",
+          choices=("low", "medium", "high")),
+    Field("seasonal_enabled", "behavior", "Unusual for this hour of the week", "bool", "Totals per hour (firewall "
+          "blocks, failed logins, DNS, failed lookups, per log source) against the same hour in previous weeks."),
+    Field("seasonal_sensitivity", "behavior", "Hour of the week: sensitivity", "int", "How many 'normal deviations' "
+          "above usual before an alert (3 = sensitive, 10 = only big spikes).", min=2, max=30),
+    Field("seasonal_ignore", "behavior", "Hour of the week: ignore metrics", "str", "Comma separated metric names from "
+          "these alerts, e.g. blocks, dns, source:firewall.", placeholder="blocks, source:nginx"),
+    Field("risk_enabled", "behavior", "Risk score per device / address", "bool", "Every alert adds points (info 1, low "
+          "3, medium 8, high 20, critical 40; once per rule) that fade over time; one alert when the total is high."),
+    Field("risk_threshold", "behavior", "Risk score: alert from", "int", "", min=10, max=1000),
+    Field("risk_half_life", "behavior", "Risk score: half-life (hours)", "int", "After this many hours an alert counts "
+          "half.", min=1, max=720),
+    Field("risk_exclude", "behavior", "Risk score: skip these addresses", "str", "Comma separated IPs / CIDRs."),
+    Field("feedback_mode", "behavior", "Learn from 'false positive'", "choice", "suggest = show a suggestion on the "
+          "Alerts page after repeated false positives; auto = also create a rule that lowers them to info (listed "
+          "under Alert filters, undo there); off.", choices=("suggest", "auto", "off")),
+    Field("feedback_min", "behavior", "False positives before learning", "int", "Same rule + same address closed as "
+          "false positive this many times in 30 days.", min=2, max=50),
+    # threat intel & traps
+    Field("abusech_auth_key", "intel", "abuse.ch Auth-Key", "secret", "Free key for URLhaus, ThreatFox, Feodo Tracker "
+          "and SSLBL: auth.abuse.ch › log in (e.g. with GitHub / Google) › Optional › Generate Auth-Key."),
+    Field("intel_urlhaus", "intel", "URLhaus (malware download domains)", "bool"),
+    Field("intel_threatfox", "intel", "ThreatFox (malware / C2 domains and IPs)", "bool"),
+    Field("intel_feodo", "intel", "Feodo Tracker (botnet C2 servers)", "bool"),
+    Field("intel_ja3", "intel", "SSLBL JA3 (malware TLS fingerprints)", "bool"),
+    Field("intel_tor", "intel", "Tor detection", "choice", "outbound = devices connecting to the Tor network; both = "
+          "also Tor exit nodes reaching your services; off.", choices=("outbound", "both", "off")),
+    Field("intel_tor_allow", "intel", "Devices allowed to use Tor", "str", "Comma separated IPs / CIDRs / MACs."),
+    Field("intel_mining", "intel", "Crypto-mining pools", "bool", "Lookups of / connections to known mining pools."),
+    Field("mining_domains", "intel", "Extra mining pool domains", "str", "Comma separated, added to the built-in list."),
+    Field("intel_allow", "intel", "Never flag these domains / IPs", "str", "Comma separated domains (incl. subdomains) "
+          "and IPs / CIDRs, for false positives in the feeds."),
+    Field("nod_enabled", "intel", "Track newly seen domains", "bool", "Remembers the first time any device looks up a "
+          "domain; beaconing and random-domain alerts to such a domain weigh heavier."),
+    Field("nod_rdap", "intel", "Look up the registration date (RDAP)", "bool", "Asks the domain registries (rdap.org) "
+          "when new domains were registered and alerts on lookups of very young domains. Sends those domain names to "
+          "the registry."),
+    Field("nod_young_days", "intel", "Young domain: registered less than (days)", "int", "", min=1, max=365),
+    Field("nod_lookups_per_hour", "intel", "RDAP lookups per hour (max)", "int", "", min=1, max=1000),
+    Field("canary_targets", "intel", "Canary addresses", "text", "One per line or comma separated: IP, IP:port or "
+          "CIDR that nothing should ever contact. The firewall must see (and log) that traffic: e.g. the firewall's own "
+          "LAN address on unused ports (192.168.1.1:23) or an unused IP in ANOTHER VLAN - traffic inside one subnet "
+          "never passes OPNsense.", placeholder="192.168.1.1:23\n192.168.1.1:445\n192.168.20.250"),
+    Field("canary_exclude", "intel", "Canary: ignore these sources", "str", "e.g. your own network scanner."),
+    Field("canary_internal_only", "intel", "Canary: only devices inside", "bool", "Off = also internet addresses "
+          "(port forwards used as a honeypot)."),
+    Field("exposure_watch", "intel", "Watch what is open to the internet", "bool", "Alerts on new / changed port "
+          "forwards and firewall rules (OPNsense API; needs the 'Firewall: Rules' / 'NAT' read privileges)."),
+    Field("arp_watch", "intel", "ARP spoofing detection", "bool", "OPNsense's ARP table and kernel messages: an IP "
+          "flipping between devices, a device claiming the firewall's address, one device holding many IPs."),
+    Field("arp_exclude", "intel", "ARP: ignore these IPs / MACs", "str", "e.g. failover (CARP / VRRP) addresses, "
+          "Wi-Fi repeaters, VM hosts with bridged guests."),
+    Field("arp_flips", "intel", "ARP: IP changes per hour before alerting", "int", "", min=2, max=100),
     # display
     Field("time_format", "display", "Time format", "choice", "24h = 14:05, 12h = 2:05 PM, browser = whatever your browser's "
           "language uses. Applies to the web UI, notification mails and the AI analyst's answers and reports (mails and "

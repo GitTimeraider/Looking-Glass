@@ -193,6 +193,8 @@ async def amain() -> None:
     tasks.append(asyncio.create_task(unifi_supervisor(settings, writer), name="unifi"))
     tasks.append(asyncio.create_task(daily_ai_report(settings, analyst), name="daily_report"))
     tasks.append(asyncio.create_task(notify.notifier(settings), name="notifier"))
+    from .intel import Intel
+    tasks.append(asyncio.create_task(Intel(settings).updater(), name="threat_feeds"))
 
     app = create_app(settings, analyst)
     server = uvicorn.Server(uvicorn.Config(app, host=settings.web_host, port=settings.web_port, log_level="warning",

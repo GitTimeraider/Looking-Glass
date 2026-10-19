@@ -6,11 +6,17 @@
   Changes apply immediately - no restart needed.</p>
 <div class="tabs" id="tabs">
   <button data-t="opnsense" class="on">OPNsense</button><button data-t="unifi">UniFi</button><button data-t="ai">AI analyst</button><button data-t="zenarmor">Zenarmor</button>
-  <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button><button data-t="filters">Alert filters</button><button data-t="email">Email &amp; notifications</button><button data-t="display">Display</button>
+  <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button><button data-t="behavior">Behaviour &amp; ML</button><button data-t="intel">Threat intel &amp; traps</button><button data-t="filters">Alert filters</button><button data-t="email">Email &amp; notifications</button><button data-t="display">Display</button>
 </div>
-{% for g in ["opnsense", "unifi", "ai", "zenarmor", "ingest", "data", "email", "display"] %}
+{% for g in ["opnsense", "unifi", "ai", "zenarmor", "ingest", "data", "behavior", "intel", "email", "display"] %}
 <section data-s="{{ g }}" {% if g != "opnsense" %}hidden{% endif %}>
   <div class="card">
+    {% if g == "behavior" %}<p class="small muted">Looking Glass learns what is normal for every device and alerts on what is new
+      or unusual. Every check has its own switch; devices you never want analysed go in the first field. What a device
+      learned can be viewed and forgotten on the Devices page (Learned column). Single alerts: Mute similar… on the Alerts page.</p>{% endif %}
+    {% if g == "intel" %}<p class="small muted">Known-bad lists from abuse.ch and the Tor project are downloaded daily and
+      compared with DNS lookups, connections and TLS fingerprints. Traps (canaries), ARP spoofing and changes to what is open to the
+      internet are watched too. Every part has its own switch and exception list.</p>{% endif %}
     {% if g == "email" %}<h3>Mail server (SMTP)</h3>
     <p class="small muted">The account Looking Glass sends notification mails with. Below the mail server you choose what you want to be mailed about.</p>{% endif %}
     <form class="settings-form" data-group="{{ g }}"></form>
@@ -22,6 +28,14 @@
     </div>
     <div class="small" id="msg-{{ g }}"></div>
   </div>
+  {% if g == "intel" %}
+  <div class="card" style="margin-top:14px">
+    <h3>Threat feeds</h3>
+    <div id="feeds"></div>
+    <div class="filters" style="margin-top:10px"><button type="button" class="secondary" id="feeds-update">Update feeds now</button></div>
+    <div class="small" id="feeds-msg"></div>
+  </div>
+  {% endif %}
   {% if g == "email" %}
   <div class="card" style="margin-top:14px">
     <h3>Notification rules</h3>
@@ -448,6 +462,24 @@ document.getElementById("flt-save").onclick = async () => {
     editFilter(null); fmsg("Saved. It applies to new alerts right away; use “close matching” for alerts that already exist.", true);
     loadFilters();
   } catch (e) { fmsg(LG.esc(e.message)); }
+};
+/* ---------- threat feeds ---------- */
+function showFeeds(r) {
+  LG.table("#feeds", [
+    {k: "label", l: "Feed"},
+    {k: "enabled", l: "State", f: (v, x) => v === false ? `<span class="muted">off</span>` : x.ok ? `<span class="badge ok">ok</span>` : x.error ? `<span class="badge high" title="${LG.esc(x.error)}">error</span>` : `<span class="muted">waiting</span>`},
+    {k: "count", l: "Entries", num: true}, {k: "updated", l: "Updated", f: v => v ? LG.ago(v) : "never"},
+    {k: "error", l: "", f: v => v ? `<span class="small err">${LG.esc(v)}</span>` : ""},
+  ], r.feeds, "");
+  const sd = r.seen_domains || {}, ex = r.exposure;
+  document.getElementById("feeds-msg").innerHTML = `Newly seen domains: ${LG.num(sd.n || 0)} known, ${LG.num(sd.new || 0)} new in the last 24 h. ` +
+    (ex ? `Exposure watch: ${ex.rules} rules / port forwards checked ${LG.ago(ex.checked)}${ex.api ? "" : " (rule API not available on this OPNsense version - only rule names are compared)"}.` : "Exposure watch: not run yet.");
+  document.getElementById("feeds-msg").className = "small muted";
+}
+LG.api("/api/intel/status").then(showFeeds).catch(() => {});
+document.getElementById("feeds-update").onclick = async () => {
+  const m = document.getElementById("feeds-msg"); m.innerHTML = `<span class="spinner"></span> downloading…`;
+  try { showFeeds(await LG.api("/api/intel/update", { method: "POST" })); } catch (e) { m.className = "small err"; m.textContent = e.message; }
 };
 /* ---------- notification rules ---------- */
 let NR = { rules: [] };
