@@ -295,10 +295,43 @@ Things to know:
    [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml)
    (a read-only Docker API) and enter `http://<unraid-ip>:2375` as *Docker API* for that server.
 
-The **Unraid** page then shows Overview (CPU/cores, memory, temperatures, network, VMs, UPS), Array & disks
-(array/parity status, per-disk temperature, usage, errors, shares, SMART), Docker (containers, state, updates,
-CPU/memory), Logs (container logs and Unraid syslog, searchable) and Notifications. Disk errors/overheating, stopped
-auto-start containers, array problems, UPS on battery and Unraid *warning/alert* notifications become Looking Glass alerts.
+The **Unraid** page then shows:
+* **Overview**: CPU/cores, memory, temperatures, network, VMs, UPS.
+* **Array, pools & disks**: the array and each pool separately (e.g. a ZFS SSD pool), with capacity, file system,
+  member disks, spinning / spun-down state, temperature, errors, parity check, shares and SMART. Charts show
+  spinning disks and usage per array/pool.
+* **Docker**: containers, state, updates, CPU/memory.
+* **Logs**: container logs and the Unraid syslog, searchable.
+* **Notifications**.
+
+These become Looking Glass alerts: disk errors or overheating, stopped auto-start containers, array problems, ZFS
+errors in the Unraid syslog (`zed` device faults, checksum/I/O errors), UPS on battery and Unraid *warning/alert*
+notifications.
+
+### Spun-down disks are never woken
+
+Array and pool status (including disk temperatures, which Unraid itself only reads while a disk spins) comes from
+Unraid's own state files. Reading those never touches a disk. Only two Unraid API calls touch the disks, and Looking
+Glass only sends them while **every** array/pool hard disk was already spinning in the last two readings:
+
+* **SMART check** (physical disks). The Unraid API runs `smartctl -a` on *every* disk for it, which wakes all of them.
+  It is off by default. Turn it on per array/pool under *Settings › Unraid servers › arrays & pools* (every hour …
+  weekly).
+* **Temperature sensors** (CPU, board, NVMe). Up to Unraid API 4.37.5 they also run `smartctl` on every disk
+  ([unraid/api#2017](https://github.com/unraid/api/issues/2017), fixed by
+  [#2091](https://github.com/unraid/api/pull/2091) after the 4.37.5 release). On those versions *Auto* reads them every 10 minutes
+  while all disks spin anyway. Newer API versions read them every poll. Set them to *Off* if you don't need them.
+
+The SMART query and the old-API temperature sensors also touch disks outside the array and pools (e.g. Unassigned
+Devices). Their spin state isn't reported by the API, so leave the SMART check off if you have such disks and want
+them asleep.
+
+*Settings › Unraid servers › arrays & pools* also lets you **exclude** an array or pool completely: no dashboard, no
+metrics, no alerts.
+
+> ZFS pool health (`zpool status`: vdev layout, scrub results) is not available through the Unraid API. Looking Glass
+> shows ZFS pools with capacity and member devices, and alerts on ZFS errors from the Unraid syslog (enable *collect
+> container & system logs*) and on Unraid's own notifications.
 
 ## Using it
 

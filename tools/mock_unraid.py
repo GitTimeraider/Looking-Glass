@@ -2,7 +2,11 @@
 """Tiny fake Unraid API (GraphQL) + Docker API for local development / testing.
 
     python tools/mock_unraid.py --port 18500       # GraphQL at http://127.0.0.1:18500/graphql, Docker API at the same port
+    python tools/mock_unraid.py --api 4.37.5       # old API: temperature sensors wake the disks like the real one
 Answers are chosen by looking at which root field the query asks for (not a real GraphQL engine).
+
+Disk spin-down is simulated like the real API: the array HDDs can be spun down with POST /mock/spindown, and the
+`disks` query (always) and `metrics { temperature }` (API <= 4.37.5) wake them, counted in GET /mock/stats.
 """
 from __future__ import annotations
 
@@ -17,16 +21,34 @@ from fastapi import FastAPI, HTTPException, Request
 app = FastAPI()
 KEY = "test-key"
 SYSLOG = [f"Oct 18 22:{i % 60:02d}:00 Tower kernel: eth0: link up {i}" for i in range(50)]
+SYSLOG.append("Oct 18 23:00:00 Tower zed[4242]: eid=77 class=statechange pool='ssd' vdev=nvme1n1p1 vdev_state=DEGRADED")
+STATE = {"api": "4.25.0", "spinning": True, "wakeups": 0, "queries": {}}
 
 
-def disk(idx, name, typ, temp, status="DISK_OK", errors=0):
-    return {"id": f"d{idx}", "idx": idx, "name": name, "device": f"sd{chr(97 + idx)}", "size": 8_000_000_000, "status": status, "rotational": True,
-            "temp": temp, "numReads": 1000 * idx, "numWrites": 500 * idx, "numErrors": errors, "fsSize": 7_800_000_000 if typ != "PARITY" else None,
-            "fsFree": 3_000_000_000, "fsUsed": 4_800_000_000, "type": typ, "warning": 45, "critical": 55, "fsType": "xfs", "isSpinning": True, "color": "GREEN_ON"}
+def disk(idx, name, typ, temp, status="DISK_OK", errors=0, rotational=True, fs="xfs", size=8_000_000_000, fs_size=True):
+    spinning = STATE["spinning"] or not rotational
+    return {"id": f"d{idx}", "idx": idx, "name": name, "device": f"sd{chr(97 + idx % 26)}" if rotational else f"nvme{idx}n1",
+            "size": size, "status": status, "rotational": rotational, "temp": temp if spinning else None, "numErrors": errors,
+            "fsSize": int(size * .97) if typ != "PARITY" and fs_size else None, "fsFree": int(size * .35) if fs_size and typ != "PARITY" else None,
+            "fsUsed": int(size * .62) if fs_size and typ != "PARITY" else None, "type": typ, "warning": 45, "critical": 55,
+            "fsType": fs if typ != "PARITY" else None, "isSpinning": spinning, "transport": "sata" if rotational else "nvme", "comment": ""}
+
+
+def wake(reason: str) -> None:
+    if not STATE["spinning"]:
+        STATE["wakeups"] += 1
+        STATE["spinning"] = True
+        print(f"!!! disks woken by {reason}", flush=True)
+
+
+def old_api() -> bool:
+    return tuple(int(x) for x in STATE["api"].split(".")[:3]) <= (4, 37, 5)
 
 
 def answer(q: str, variables: dict) -> dict:
     now = datetime.now(timezone.utc)
+    root = q.split("{", 2)[1].strip().split()[0] if "{" in q else "?"
+    STATE["queries"][root] = STATE["queries"].get(root, 0) + 1
     if "logFile" in q:
         lines = variables.get("lines") or 1
         start = variables.get("start") or len(SYSLOG)
@@ -43,9 +65,11 @@ def answer(q: str, variables: dict) -> dict:
                                  "packages": {"temp": [52.0], "totalPower": 41.5}},
                          "system": {"manufacturer": "ASRock", "model": "B550M Pro4", "virtual": False},
                          "baseboard": {"manufacturer": "ASRock", "model": "B550M Pro4", "memMax": 128e9, "memSlots": 4},
-                         "versions": {"core": {"unraid": "7.2.0", "api": "4.25.0", "kernel": "6.12.24-Unraid"}},
+                         "versions": {"core": {"unraid": "7.2.0", "api": STATE["api"], "kernel": "6.12.24-Unraid"}},
                          "memory": {"layout": [{"size": 17179869184, "type": "DDR4", "clockSpeed": 3200, "manufacturer": "Kingston"}] * 2}}}
     if "metrics" in q:
+        if "temperature" in q and old_api():
+            wake("metrics.temperature (API <= 4.37.5)")
         cpus = [{"percentTotal": random.random() * 40} for _ in range(16)]
         return {"metrics": {"cpu": {"percentTotal": sum(c["percentTotal"] for c in cpus) / 16, "cpus": cpus},
                             "memory": {"total": 34359738368, "used": 12e9, "available": 22e9, "percentTotal": 35 + random.random() * 5,
@@ -59,8 +83,13 @@ def answer(q: str, variables: dict) -> dict:
                           "parityCheckStatus": {"status": "COMPLETED", "progress": 100, "errors": 0, "running": False, "paused": False, "speed": "180 MB/s",
                                                 "date": (now - timedelta(days=20)).isoformat(), "duration": 50000},
                           "parities": [disk(0, "parity", "PARITY", 35)],
-                          "disks": [disk(1, "disk1", "DATA", 36), disk(2, "disk2", "DATA", 47), disk(3, "disk3", "DATA", None, errors=3)],
-                          "caches": [disk(30, "cache", "CACHE", 41)], "boot": None}}
+                          "disks": [disk(1, "disk1", "DATA", 36), disk(2, "disk2", "DATA", 47), disk(3, "disk3", "DATA", 39, errors=3)],
+                          # two pools like a real 7.x server: btrfs "cache" mirror and a zfs "ssd" mirror (first member carries fs size)
+                          "caches": [disk(30, "cache", "CACHE", 41, rotational=False, fs="btrfs", size=1_000_000_000),
+                                     disk(31, "cache2", "CACHE", 40, rotational=False, fs="btrfs", size=1_000_000_000, fs_size=False),
+                                     disk(32, "ssd", "CACHE", 38, rotational=False, fs="zfs", size=2_000_000_000),
+                                     disk(33, "ssd2", "CACHE", 37, rotational=False, fs="zfs", size=2_000_000_000, fs_size=False)],
+                          "boot": {**disk(40, "flash", "FLASH", None, rotational=False, fs="vfat", size=32_000_000), "device": "sda"}}}
     if "docker" in q:
         def c(cid, name, image, state, auto=True, upd=False):
             return {"id": cid, "names": ["/" + name], "image": image, "state": state, "status": "Up 3 days" if state == "RUNNING" else "Exited (1) 2 hours ago",
@@ -86,8 +115,13 @@ def answer(q: str, variables: dict) -> dict:
         return {"shares": [{"name": "media", "free": 9000000000, "used": 12000000000, "size": 0, "comment": "Movies", "cache": False},
                            {"name": "appdata", "free": 400000000, "used": 120000000, "size": 0, "comment": "", "cache": True}]}
     if "disks" in q:
-        return {"disks": [{"id": "p1", "device": "/dev/sdb", "name": "WDC WD80EFZZ", "vendor": "WDC", "size": 8e12, "type": "HD", "interfaceType": "SATA",
-                           "smartStatus": "OK", "temperature": 36, "isSpinning": True, "serialNum": "X", "firmwareRevision": "1"}]}
+        wake("disks query (smartctl -a on every disk)")
+        return {"disks": [{"id": f"p{i}", "device": f"/dev/sd{chr(97 + i)}", "name": "WDC WD80EFZZ", "vendor": "WDC", "size": 8e12, "type": "HD",
+                           "interfaceType": "SATA", "smartStatus": "OK", "temperature": 36, "isSpinning": True, "serialNum": f"X{i}",
+                           "firmwareRevision": "1"} for i in range(4)] +
+                          [{"id": f"n{i}", "device": f"/dev/nvme{i}n1", "name": "Samsung 990", "vendor": "Samsung", "size": 2e12, "type": "SSD",
+                            "interfaceType": "PCIE", "smartStatus": "OK", "temperature": 41, "isSpinning": False, "serialNum": f"N{i}",
+                            "firmwareRevision": "1"} for i in (30, 31, 32, 33)]}
     raise HTTPException(400, "unknown query")
 
 
@@ -100,6 +134,17 @@ async def graphql(request: Request):
         return {"data": answer(body["query"], body.get("variables") or {})}
     except HTTPException:
         return {"errors": [{"message": "Cannot query field"}]}
+
+
+@app.post("/mock/spindown")
+async def spindown():
+    STATE["spinning"] = False
+    return STATE
+
+
+@app.get("/mock/stats")
+async def mock_stats():
+    return STATE
 
 
 @app.get("/version")
@@ -125,4 +170,7 @@ async def stats(cid: str):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=18500)
-    uvicorn.run(app, port=ap.parse_args().port, log_level="warning")
+    ap.add_argument("--api", default="4.25.0", help="Unraid API version to report (<= 4.37.5: temperatures wake disks)")
+    args = ap.parse_args()
+    STATE["api"] = args.api
+    uvicorn.run(app, port=args.port, log_level="warning")

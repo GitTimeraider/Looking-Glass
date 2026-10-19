@@ -19,6 +19,7 @@ from ..config import Settings
 from ..ingest import STATS
 from ..dashboards import DASHBOARDS, run_dashboard
 from ..reports import build_report, timeline
+from .. import unraid_storage
 from ..unraid import test_connection as unraid_test
 from .auth_routes import PUBLIC_PATHS, SETUP_PATHS, current_user
 from .auth_routes import register as register_auth
@@ -384,7 +385,20 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def unraid_servers():
         rows = await db.pool().fetch("SELECT * FROM unraid_servers ORDER BY id")
         status = await db.get_snapshot("unraid_status") or {}
-        return [{**_server_out(r), "status": status.get(str(r["id"]))} for r in rows]
+        out = []
+        for r in rows:
+            snap = await db.get_snapshot(f"unraid:{r['id']}:storage") or {}
+            groups = [{k: g.get(k) for k in ("name", "kind", "disks", "fsType", "excluded", "smart_minutes", "spinning",
+                                              "standby", "ssd")} for g in snap.get("groups") or []]
+            out.append({**_server_out(r), "storage": unraid_storage.clean_prefs(r["storage"]), "groups": groups,
+                        "status": status.get(str(r["id"]))})
+        return out
+
+    @app.put("/api/unraid/servers/{sid}/storage")
+    async def unraid_storage_prefs(sid: int, payload: dict = Body(...)):
+        prefs = unraid_storage.clean_prefs(payload)
+        await db.pool().execute("UPDATE unraid_servers SET storage = $2 WHERE id = $1", sid, prefs)
+        return prefs
 
     def _validate_server(payload: dict) -> dict[str, Any]:
         url = str(payload.get("url", "")).strip().rstrip("/")

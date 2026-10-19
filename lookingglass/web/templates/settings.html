@@ -37,6 +37,20 @@
     <div class="filters" style="margin:0"><button type="submit" id="save">Add server</button><button type="button" class="secondary" id="test">Test connection</button><button type="button" class="secondary" id="cancel" hidden>Cancel</button></div>
   </form>
   <div id="msg" class="small" style="margin-top:8px"></div>
+  <div id="storage-panel" hidden style="margin-top:18px">
+    <h3 id="storage-title">Arrays &amp; pools</h3>
+    <p class="small muted">Looking Glass reads array and pool status from Unraid's own state files, which never wakes a
+      disk. Only two things touch the disks themselves, and they run only while <b>every</b> array/pool hard disk is
+      already spinning, so a spun-down disk is never woken: the SMART check below and, on Unraid API 4.37.5 or older,
+      the temperature sensors.</p>
+    <div id="storage-groups"></div>
+    <label class="small" style="display:block;margin-top:10px">Temperature sensors (CPU, board, NVMe)
+      <select id="sensor-temps"><option value="auto">Auto – never wakes disks</option><option value="off">Off</option></select></label>
+    <div id="temps-note" class="small muted" style="margin-top:4px"></div>
+    <div class="filters" style="margin-top:10px"><button type="button" id="storage-save">Save</button>
+      <button type="button" class="secondary" id="storage-close">Close</button></div>
+    <div id="storage-msg" class="small"></div>
+  </div>
   <details style="margin-top:14px"><summary>How do I get an Unraid API key?</summary>
     <ol class="small">
       <li><b>Unraid 7.2 or newer</b>: the API is built in. In the Unraid web UI open <i>Settings › Management Access › API Keys</i>,
@@ -120,7 +134,8 @@ async function load() {
   LG.table("#list", [{k: "name", l: "Name", f: (v, r) => `<a href="/unraid">${LG.esc(v)}</a>`}, {k: "url", l: "URL"}, {k: "docker_url", l: "Docker API"},
     {k: "status", l: "Status", f: v => v ? `<span class="dot ${v.ok ? "ok" : "bad"}"></span>${v.ok ? "ok" : LG.esc((v.error || "").slice(0, 100))} <span class="muted small">${v.last ? LG.ago(v.last) : ""}</span>` : `<span class="muted">waiting…</span>`},
     {k: "enabled", l: "Enabled", f: v => v ? "yes" : "no"},
-    {k: "id", l: "", f: v => `<a href="#" data-edit="${v}">edit</a> · <a href="#" data-del="${v}">delete</a>`}], rows, "No Unraid servers yet.");
+    {k: "id", l: "", f: v => `<a href="#" data-edit="${v}">edit</a> · <a href="#" data-storage="${v}">arrays &amp; pools</a> · <a href="#" data-del="${v}">delete</a>`}], rows, "No Unraid servers yet.");
+  document.querySelectorAll("[data-storage]").forEach(a => a.onclick = e => { e.preventDefault(); openStorage(rows.find(x => x.id === Number(a.dataset.storage))); });
   document.querySelectorAll("[data-edit]").forEach(a => a.onclick = e => {
     e.preventDefault(); const r = rows.find(x => x.id === Number(a.dataset.edit));
     f.id.value = r.id; f.name.value = r.name; f.url.value = r.url; f.api_key.value = ""; f.api_key.placeholder = "API key (leave empty to keep " + r.api_key + ")";
@@ -150,6 +165,42 @@ document.getElementById("test").onclick = async () => {
   } catch (err) { msg(LG.esc(err.message)); }
 };
 document.getElementById("cancel").onclick = resetForm;
+/* ---------- per array/pool preferences ---------- */
+const SMART = [[0, "Never"], [60, "every hour"], [180, "every 3 hours"], [360, "every 6 hours"], [720, "every 12 hours"], [1440, "daily"], [10080, "weekly"]];
+let storageServer = null;
+function openStorage(r) {
+  storageServer = r;
+  const panel = document.getElementById("storage-panel"); panel.hidden = false;
+  document.getElementById("storage-title").textContent = `Arrays & pools – ${r.name}`;
+  const prefs = r.storage || { groups: {} }, groups = r.groups || [];
+  const spin = g => g.disks === g.ssd ? `${g.disks} SSD` : `${g.spinning} spinning · ${g.standby} spun down${g.ssd ? ` · ${g.ssd} SSD` : ""}`;
+  document.getElementById("storage-groups").innerHTML = groups.length ? `<table><thead><tr><th>Array / pool</th><th>Disks</th><th>Monitor</th><th>SMART check (only while all disks spin)</th></tr></thead><tbody>` +
+    groups.map(g => { const p = (prefs.groups || {})[g.name] || {}; return `<tr data-g="${LG.esc(g.name)}">
+      <td><b>${LG.esc(g.name)}</b> <span class="muted small">${g.kind}${g.fsType ? " · " + LG.esc(g.fsType) : ""}</span></td>
+      <td class="small">${g.excluded ? "excluded" : spin(g)}</td>
+      <td><label class="chk"><input type="checkbox" class="g-mon" ${p.exclude ? "" : "checked"}> show &amp; alert</label></td>
+      <td><select class="g-smart">${SMART.map(([v, l]) => `<option value="${v}" ${(p.smart_minutes || 0) === v ? "selected" : ""}>${l}</option>`).join("")}</select></td></tr>`; }).join("") + `</tbody></table>`
+    : `<div class="empty">No array or pool data received from this server yet – wait a minute and reopen.</div>`;
+  document.getElementById("sensor-temps").value = prefs.sensor_temps || "auto";
+  const pol = (r.status || {}).disk_policy || {};
+  document.getElementById("temps-note").innerHTML = pol.api ? (pol.temps_never_wake
+    ? `Unraid API ${LG.esc(pol.api)}: temperature sensors never wake disks, read every poll.`
+    : `Unraid API ${LG.esc(pol.api)} reads temperatures by running smartctl on every disk, which wakes spun-down disks. In Auto they are only read (every 10 minutes) while all disks spin anyway; update the Unraid API to a version newer than 4.37.5 to get them all the time.`) : "";
+  document.getElementById("storage-msg").textContent = "";
+  panel.scrollIntoView({ behavior: "smooth" });
+}
+document.getElementById("storage-close").onclick = () => { document.getElementById("storage-panel").hidden = true; };
+document.getElementById("storage-save").onclick = async () => {
+  const groups = {};
+  document.querySelectorAll("#storage-groups tr[data-g]").forEach(tr => {
+    groups[tr.dataset.g] = { exclude: !tr.querySelector(".g-mon").checked, smart_minutes: Number(tr.querySelector(".g-smart").value) };
+  });
+  const m = document.getElementById("storage-msg");
+  try {
+    await LG.api(`/api/unraid/servers/${storageServer.id}/storage`, { method: "PUT", body: { sensor_temps: document.getElementById("sensor-temps").value, groups } });
+    m.className = "small ok-msg"; m.textContent = "Saved – applies within a minute."; load();
+  } catch (e) { m.className = "small err"; m.textContent = e.message; }
+};
 load(); setInterval(load, 30000);
 </script>
 {% endblock %}
