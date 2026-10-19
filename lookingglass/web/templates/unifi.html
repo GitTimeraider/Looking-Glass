@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top">
+  <h1>UniFi</h1>
+  <span class="muted small" id="updated"></span>
+  <div class="seg" id="range"><button data-v="1">1h</button><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button></div>
+</header>
+<div id="notconf" class="card" hidden>UniFi is not connected yet. Enter the controller URL and an API key (or a local
+  username / password) under <a href="/settings#unifi">Settings › UniFi</a>.</div>
+<div id="err" class="card" hidden></div>
+<div class="tabs" id="tabs">
+  <button data-t="overview" class="on">Overview</button><button data-t="devices">Devices</button>
+  <button data-t="clients">Clients</button><button data-t="air">Neighbouring Wi-Fi</button>
+</div>
+<section data-s="overview">
+  <div class="grid kpis" id="kpis"></div>
+  <div class="grid g3" style="margin-top:14px">
+    <div class="card span2"><h3>Clients over time</h3><div class="chart-box sm"><canvas id="c-clients"></canvas></div></div>
+    <div class="card"><h3>Health</h3><div id="health"></div></div>
+    <div class="card"><h3>Clients per Wi-Fi network</h3><div class="chart-box sm"><canvas id="c-ssid"></canvas></div></div>
+    <div class="card"><h3>Clients per access point</h3><div class="chart-box sm"><canvas id="c-ap"></canvas></div></div>
+    <div class="card"><h3>Wi-Fi experience (avg satisfaction %)</h3><div class="chart-box sm"><canvas id="c-sat"></canvas></div></div>
+    <div class="card"><h3>Device CPU %</h3><div class="chart-box sm"><canvas id="c-cpu"></canvas></div></div>
+    <div class="card span2"><h3>Device uplink throughput</h3><div class="chart-box sm"><canvas id="c-tp"></canvas></div></div>
+  </div>
+</section>
+<section data-s="devices" hidden>
+  <div class="card"><h3>Access points, switches &amp; consoles <span class="muted small">click a switch for its ports</span></h3><div id="devices"></div></div>
+  <div class="card" id="ports-card" style="margin-top:14px" hidden><h3 id="ports-title">Ports</h3><div id="ports"></div></div>
+</section>
+<section data-s="clients" hidden>
+  <div class="filters"><input id="cfilter" placeholder="Filter: name, IP, MAC, vendor, AP, SSID…" style="min-width:280px">
+    <select id="ctype"><option value="">all clients</option><option value="wifi">Wi-Fi</option><option value="wired">wired</option>
+      <option value="weak">weak signal (&lt; -75 dBm)</option><option value="guest">guests</option></select>
+    <span class="muted small" id="cinfo"></span></div>
+  <div class="card"><div id="clients"></div></div>
+</section>
+<section data-s="air" hidden>
+  <div class="card"><h3>Access points your UniFi devices can hear</h3>
+    <p class="small muted">A foreign access point using one of <i>your</i> Wi-Fi names is flagged as a possible “evil twin”
+      (it can lure your devices into connecting to it). Everything else is just a neighbour.</p>
+    <div id="rogue"></div></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+let hours = Number(localStorage.getItem("lg-hours-unifi") || 24), tab = (location.hash || "#overview").slice(1), D = null;
+LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours-unifi", v); charts(); });
+function showTab(t) {
+  tab = ["overview", "devices", "clients", "air"].includes(t) ? t : "overview";
+  document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x.dataset.t === tab));
+  document.querySelectorAll("section[data-s]").forEach(s => s.hidden = s.dataset.s !== tab);
+  history.replaceState(null, "", tab === "overview" ? location.pathname : "#" + tab);
+  if (tab === "overview") charts();
+}
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => showTab(b.dataset.t));
+const k = (l, v, c = "") => `<div class="card kpi ${c}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+const dur = s => { s = Number(s); if (!s) return ""; const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`; };
+const sig = v => v === null || v === undefined ? "" : `<span class="${v < -75 ? "state-EXITED" : v < -67 ? "state-PAUSED" : "state-RUNNING"}">${v} dBm</span>`;
+const pct = v => v === null || v === undefined ? "" : `${Math.round(v)}%`;
+const stateCls = s => s === "online" ? "ok" : /offline|heartbeat|isolated|interrupted|failed|error/.test(s || "") ? "bad" : "warn";
+
+async function load() {
+  try { D = await LG.api("/api/unifi"); } catch (e) { return; }
+  document.getElementById("notconf").hidden = D.configured;
+  const st = D.status || {};
+  const err = document.getElementById("err");
+  err.hidden = !(D.configured && st.ok === false);
+  if (!err.hidden) err.innerHTML = `<span class="dot bad"></span>Controller not reachable: ${LG.esc(st.error || "")}`;
+  document.getElementById("updated").textContent = D.updated ? `${LG.esc(st.mode || "")} · Network ${LG.esc(st.version || "?")} · updated ${LG.ago(D.updated)}` : "";
+  const devs = D.devices || [], cl = D.clients || [], rogue = D.rogue || [];
+  const wifi = cl.filter(c => !c.wired), aps = devs.filter(d => d.kind === "access point"), sws = devs.filter(d => d.kind === "switch");
+  const off = devs.filter(d => d.state !== "online"), twins = rogue.filter(r => r.evil_twin);
+  const sats = wifi.map(c => c.satisfaction).filter(v => v !== null && v !== undefined);
+  document.getElementById("kpis").innerHTML = k("Access points", `${aps.filter(d => d.state === "online").length} / ${aps.length}`, aps.some(d => d.state !== "online") ? "bad" : "ok") +
+    k("Switches", `${sws.filter(d => d.state === "online").length} / ${sws.length}`, sws.some(d => d.state !== "online") ? "bad" : "ok") +
+    k("Wi-Fi clients", wifi.length) + k("Wired clients", cl.length - wifi.length) + k("Guests", cl.filter(c => c.guest).length) +
+    k("Weak signal", wifi.filter(c => c.signal !== null && c.signal < -75).length, wifi.some(c => c.signal !== null && c.signal < -75) ? "warn" : "") +
+    (sats.length ? k("Wi-Fi experience", Math.round(sats.reduce((a, b) => a + b, 0) / sats.length) + "%") : "") +
+    k("Updates available", devs.filter(d => d.upgradable).length, devs.some(d => d.upgradable) ? "warn" : "") +
+    k("Evil-twin APs", twins.length, twins.length ? "bad" : "");
+  const h = D.health || [];
+  document.getElementById("health").innerHTML = h.length ? `<div class="kv">` + h.filter(x => x.status !== "unknown").map(x =>
+    `<div>${LG.esc(x.subsystem.toUpperCase())}</div><div><span class="dot ${x.status === "ok" ? "ok" : x.status === "warning" ? "warn" : "bad"}"></span>${LG.esc(x.status)}` +
+    `${x.num_ap !== undefined ? ` · ${x.num_ap} APs` : ""}${x.num_sw !== undefined ? ` · ${x.num_sw} switches` : ""}${x.num_user !== undefined ? ` · ${x.num_user} users` : ""}${x.num_disconnected ? ` · <b class="state-EXITED">${x.num_disconnected} disconnected</b>` : ""}</div>`).join("") +
+    `</div><p class="small muted">WAN / VPN are handled by OPNsense, not UniFi.</p>` : `<div class="empty">Health needs the classic API (username / password, or an API key on a UniFi OS console).</div>`;
+
+  LG.table("#devices", [
+    {k: "state", l: "State", f: v => `<span class="dot ${stateCls(v)}"></span>${LG.esc(v)}`},
+    {k: "name", l: "Name", f: (v, r) => `<b>${LG.esc(v)}</b>${r.kind === "switch" && (r.ports || []).length ? ` <a href="#" data-ports="${LG.esc(r.mac)}" class="small">ports →</a>` : ""}`},
+    {k: "kind", l: "Type"}, {k: "model", l: "Model"}, {k: "ip", l: "IP", f: LG.ip},
+    {k: "version", l: "Firmware", f: (v, r) => `${LG.esc(v || "")}${r.upgradable ? ` <span class="badge warn">update</span>` : ""}`},
+    {k: "uptime", l: "Uptime", num: true, f: dur}, {k: "clients", l: "Clients", num: true},
+    {k: "cpu", l: "CPU", num: true, f: pct}, {k: "mem", l: "Memory", num: true, f: pct},
+    {k: "temperature", l: "Temp", num: true, f: v => v ? v + "°C" : ""},
+    {k: "radios", l: "Radios", f: v => (v || []).map(r => `<span class="pill" title="channel utilisation ${r.utilisation ?? "?"}%">${LG.esc(r.radio)} ch ${LG.esc(r.channel)} · ${r.clients ?? 0}</span>`).join("")},
+    {k: "uplink_name", l: "Uplink", f: (v, r) => v ? `${LG.esc(v)}${r.uplink_port ? " port " + r.uplink_port : ""}` : ""},
+  ], devs, "No UniFi devices yet", undefined, { sortAll: true, order: null });
+  document.querySelectorAll("[data-ports]").forEach(a => a.onclick = e => { e.preventDefault(); ports(a.dataset.ports); });
+  if (portsFor) ports(portsFor);
+  clients();
+  LG.table("#rogue", [
+    {k: "evil_twin", l: "", f: v => v ? `<span class="badge high">evil twin?</span>` : ""},
+    {k: "essid", l: "Wi-Fi name", f: v => v ? LG.esc(v) : `<span class="muted">(hidden)</span>`}, {k: "bssid", l: "BSSID", f: v => `<span class="mono small">${LG.esc(v)}</span>`},
+    {k: "vendor", l: "Vendor"}, {k: "band", l: "Band"}, {k: "channel", l: "Channel", num: true}, {k: "security", l: "Security"},
+    {k: "signal", l: "Signal", num: true, f: sig}, {k: "heard_by", l: "Heard by"}, {k: "last_seen", l: "Last seen", desc: true, f: v => v ? LG.ago(v * 1000) : ""},
+  ], [...rogue].sort((a, b) => (b.evil_twin - a.evil_twin) || ((b.signal ?? -999) - (a.signal ?? -999))),
+     "Nothing yet (needs the classic API; refreshed every 10 minutes)", undefined, { sortAll: true, order: null });
+}
+let portsFor = null;
+function ports(mac) {
+  portsFor = mac;
+  const d = (D.devices || []).find(x => x.mac === mac); if (!d) return;
+  document.getElementById("ports-card").hidden = false;
+  document.getElementById("ports-title").textContent = `Ports of ${d.name}`;
+  const who = {};
+  for (const c of D.clients || []) if (c.wired && c.switch === d.name && c.port) (who[c.port] = who[c.port] || []).push(c.known_as || c.alias || c.hostname || c.ip || c.mac);
+  for (const x of D.devices || []) if (x.uplink_mac === d.mac && x.uplink_port) (who[x.uplink_port] = who[x.uplink_port] || []).push(x.name);
+  LG.table("#ports", [{k: "idx", l: "Port", num: true}, {k: "name", l: "Name"},
+    {k: "up", l: "Link", f: (v, r) => !r.enabled ? `<span class="muted">disabled</span>` : `<span class="dot ${v ? "ok" : ""}"></span>${v ? (r.speed >= 1000 ? r.speed / 1000 + " Gbit/s" : r.speed + " Mbit/s") : "down"}`},
+    {k: "uplink", l: "", f: v => v ? `<span class="pill">uplink</span>` : ""},
+    {k: "idx", l: "Connected", f: v => LG.esc((who[v] || []).join(", "))},
+    {k: "poe_w", l: "PoE", num: true, f: v => v ? v.toFixed(1) + " W" : ""},
+    {k: "rx_bytes", l: "Received", num: true, f: v => v ? LG.bytes(v) : ""}, {k: "tx_bytes", l: "Sent", num: true, f: v => v ? LG.bytes(v) : ""},
+    {k: "errors", l: "Errors", num: true, f: v => v ? `<b class="state-EXITED">${v}</b>` : "0"}, {k: "dropped", l: "Dropped", num: true}],
+    d.ports || [], "No port data", undefined, { sortAll: true, order: { k: "idx", dir: 1 } });
+}
+function clients() {
+  const f = document.getElementById("cfilter").value.toLowerCase(), t = document.getElementById("ctype").value;
+  const rows = (D.clients || []).map(c => ({ ...c, name: c.known_as || c.alias || c.hostname || "",
+    where: c.wired ? `${c.switch || "?"}${c.port ? " port " + c.port : ""}` : `${c.ap || "?"}`, traffic: (c.tx_bytes || 0) + (c.rx_bytes || 0) }))
+    .filter(c => (!f || [c.name, c.ip, c.mac, c.vendor, c.where, c.ssid, c.network].join(" ").toLowerCase().includes(f)) &&
+      (!t || (t === "wifi" && !c.wired) || (t === "wired" && c.wired) || (t === "guest" && c.guest) || (t === "weak" && !c.wired && c.signal !== null && c.signal < -75)));
+  document.getElementById("cinfo").textContent = `${rows.length} shown`;
+  LG.table("#clients", [
+    {k: "name", l: "Name", f: (v, r) => `<b>${LG.esc(v || "–")}</b>${r.guest ? ` <span class="pill">guest</span>` : ""}${r.blocked ? ` <span class="badge high">blocked</span>` : ""}`},
+    {k: "ip", l: "IP", f: LG.ip}, {k: "mac", l: "MAC", f: v => `<span class="mono small">${LG.esc(v)}</span>`}, {k: "vendor", l: "Vendor"},
+    {k: "wired", l: "Type", s: r => r.wired ? "wired" : "wifi", f: v => v ? "wired" : "Wi-Fi"},
+    {k: "where", l: "Connected to"}, {k: "ssid", l: "SSID", f: (v, r) => v ? `${LG.esc(v)}${r.radio ? `<div class="small muted">${LG.esc(r.radio)}${r.channel ? " ch " + r.channel : ""}</div>` : ""}` : ""},
+    {k: "network", l: "Network", f: (v, r) => `${LG.esc(v || "")}${r.vlan ? `<span class="small muted"> vlan ${r.vlan}</span>` : ""}`},
+    {k: "signal", l: "Signal", num: true, f: sig}, {k: "satisfaction", l: "Experience", num: true, f: pct},
+    {k: "traffic", l: "Traffic", num: true, f: (v, r) => v ? `${LG.bytes(r.rx_bytes || 0)} ↓ ${LG.bytes(r.tx_bytes || 0)} ↑` : ""},
+    {k: "uptime", l: "Connected", num: true, f: dur},
+  ], rows, D.configured ? "No clients" : "UniFi not configured", r => { if (r.ip) location.href = LG.drillUrl({ ip: r.ip, hours }); },
+  { sortAll: true, order: null });
+}
+document.getElementById("cfilter").oninput = () => D && clients();
+document.getElementById("ctype").onchange = () => D && clients();
+async function charts() {
+  const m = await LG.api(`/api/metrics/multi?hours=${hours}&names=unifi_clients,unifi_ssid_clients,unifi_ap_clients,unifi_wifi_satisfaction,unifi_device_cpu,unifi_device_tx_bps,unifi_device_rx_bps`);
+  const o = { hours };
+  LG.lineChart("c-clients", m.unifi_clients || {}, { ...o, fill: true, rename: l => l === "wifi" ? "Wi-Fi" : l });
+  LG.lineChart("c-ssid", m.unifi_ssid_clients || {}, o);
+  LG.lineChart("c-ap", m.unifi_ap_clients || {}, o);
+  LG.lineChart("c-sat", m.unifi_wifi_satisfaction || {}, { ...o, min: 0, max: 100, rename: () => "experience", fmt: v => Math.round(v) + "%" });
+  LG.lineChart("c-cpu", m.unifi_device_cpu || {}, { ...o, min: 0, fmt: v => Math.round(v) + "%" });
+  const tp = {};
+  for (const [k2, v] of Object.entries(m.unifi_device_rx_bps || {})) tp[k2 + " down"] = v;
+  for (const [k2, v] of Object.entries(m.unifi_device_tx_bps || {})) tp[k2 + " up"] = v;
+  LG.lineChart("c-tp", tp, { ...o, fmt: v => LG.bps(v), neg: l => l.endsWith(" up") });
+}
+showTab(tab); load();
+setInterval(() => { load(); if (tab === "overview") charts(); }, 60000);
+</script>
+{% endblock %}

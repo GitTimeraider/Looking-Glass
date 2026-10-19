@@ -284,8 +284,74 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                     f"FROM events WHERE source = 'vpn' AND action IN ('login_success', 'login_failed', 'vpn_connect') AND {W} ORDER BY ts DESC LIMIT 50"},
             log_panel("source = 'vpn'"),
         ]},
+    "unifi": {
+        "title": "Wi-Fi & clients", "source": "unifi", "group": "unifi", "panels": [
+            {"id": "kpi", "type": "stat", "span": 3, "sql":
+                "SELECT (SELECT count(*) FROM snapshots s, jsonb_array_elements(coalesce(s.data, '[]')) c "
+                "WHERE s.key = 'unifi:clients' AND NOT coalesce((c->>'wired')::boolean, false)) AS \"Wi-Fi clients now\", "
+                "(SELECT count(*) FROM snapshots s, jsonb_array_elements(coalesce(s.data, '[]')) c "
+                "WHERE s.key = 'unifi:clients' AND coalesce((c->>'wired')::boolean, false)) AS \"Wired clients now\", "
+                f"count(*) FILTER (WHERE action = 'client_connect') AS \"Connects\", "
+                f"count(*) FILTER (WHERE action = 'client_roam') AS \"Roams\", "
+                f"count(*) FILTER (WHERE action = 'device_offline') AS \"Device offline\", "
+                f"count(*) FILTER (WHERE action IN ('rogue_ap', 'rogue_dhcp')) AS \"Rogue AP / DHCP\" "
+                f"FROM events WHERE source = 'unifi' AND {W}",
+             "drill": {"tiles": {"Wi-Fi clients now": {"url": "/unifi#clients"}, "Wired clients now": {"url": "/unifi#clients"},
+                                 "Connects": {"action": "client_connect"}, "Roams": {"action": "client_roam"},
+                                 "Device offline": {"action": "device_offline"}, "Rogue AP / DHCP": {"action": "rogue_ap,rogue_dhcp"}}}},
+            {"id": "sec", "title": "Clients with security events (UniFi location + OPNsense findings)", "type": "table", "span": 3,
+             "drill": {"base": {"source": ""}, "by": {"ip": "ip"}},
+             "cols": [["name", "Device"], ["ip", "IP", "ip"], ["where", "Connected to"], ["signal", "Signal", "num"],
+                      ["fw", "Firewall blocks", "num"], ["dns", "DNS blocked", "num"], ["threats", "Threat events", "num"],
+                      ["alerts", "Open alerts", "num"]],
+             "sql": "WITH ev AS (SELECT src_ip, count(*) FILTER (WHERE source = 'firewall' AND action = 'block') fw, "
+                    "count(*) FILTER (WHERE source = 'unbound' AND action IN ('block', 'drop')) dns, "
+                    "count(*) FILTER (WHERE source IN ('suricata', 'crowdsec', 'qfeeds') OR (source = 'zenarmor' AND action = 'block')) threats "
+                    f"FROM events WHERE {W} AND src_ip IS NOT NULL AND source IN ('firewall', 'unbound', 'suricata', 'crowdsec', 'qfeeds', 'zenarmor') GROUP BY 1) "
+                    "SELECT coalesce(d.hostname, d.mac) name, host(d.ip) ip, d.conn_where \"where\", d.conn_signal signal, ev.fw, ev.dns, ev.threats, "
+                    "(SELECT count(*) FROM alerts a WHERE a.src_ip = d.ip AND a.status = 'open') alerts "
+                    "FROM devices d JOIN ev ON ev.src_ip = d.ip WHERE d.conn_where IS NOT NULL "
+                    "ORDER BY 7 DESC, 8 DESC, 5 + 6 DESC LIMIT 30"},
+            {"id": "ts", "title": "UniFi events over time", "type": "timeseries", "span": 2, "drill": {"series": "action"},
+             "sql": f"SELECT {B} t, action series, count(*) v FROM events WHERE source = 'unifi' AND {W} GROUP BY 1, 2 ORDER BY 1"},
+            {"id": "ssid", "title": "Clients per Wi-Fi network (now)", "type": "pie", "drill": {"url": "/unifi#clients"},
+             "sql": "SELECT CASE WHEN coalesce((c->>'wired')::boolean, false) THEN 'wired' ELSE coalesce(c->>'ssid', '?') END label, count(*) v "
+                    "FROM snapshots s, jsonb_array_elements(coalesce(s.data, '[]')) c WHERE s.key = 'unifi:clients' AND $1::float8 > 0 "
+                    "GROUP BY 1 ORDER BY 2 DESC"},
+            {"id": "ap", "title": "Clients per access point (now)", "type": "hbar", "drill": {"url": "/unifi#devices"},
+             "sql": "SELECT coalesce(c->>'ap', '?') label, count(*) v FROM snapshots s, jsonb_array_elements(coalesce(s.data, '[]')) c "
+                    "WHERE s.key = 'unifi:clients' AND NOT coalesce((c->>'wired')::boolean, false) AND $1::float8 > 0 GROUP BY 1 ORDER BY 2 DESC LIMIT 20"},
+            {"id": "weak", "title": "Weakest Wi-Fi signal (now)", "type": "table", "drill": {"base": {"source": ""}, "by": {"ip": "ip"}},
+             "cols": [["name", "Client"], ["ip", "IP", "ip"], ["ap", "AP"], ["signal", "Signal dBm", "num"], ["sat", "Experience %", "num"]],
+             "sql": "SELECT coalesce(c->>'alias', c->>'hostname', c->>'mac') name, c->>'ip' ip, c->>'ap' ap, (c->>'signal')::numeric signal, "
+                    "(c->>'satisfaction')::numeric sat FROM snapshots s, jsonb_array_elements(coalesce(s.data, '[]')) c "
+                    "WHERE s.key = 'unifi:clients' AND c->>'signal' IS NOT NULL AND $1::float8 > 0 ORDER BY 4 LIMIT 20"},
+            {"id": "roam", "title": "Most roaming clients", "type": "table", "drill": {"base": {"source": "unifi", "action": "client_roam"}, "by": {"ip": "ip"}},
+             "cols": [["name", "Client"], ["ip", "IP", "ip"], ["n", "Roams", "num"], ["last", "Last", "ago"]],
+             "sql": "SELECT coalesce(max(d.hostname), e.data->>'mac') name, host(e.src_ip) ip, count(*) n, max(e.ts) last FROM events e "
+                    "LEFT JOIN devices d ON d.mac = e.data->>'mac' WHERE e.source = 'unifi' AND e.action = 'client_roam' "
+                    "AND e.ts > now() - make_interval(secs => $1) GROUP BY e.data->>'mac', 2 ORDER BY 3 DESC LIMIT 20"},
+            {"id": "traffic", "title": "Top clients by traffic (current sessions)", "type": "table", "drill": {"base": {"source": ""}, "by": {"ip": "ip"}},
+             "cols": [["name", "Client"], ["ip", "IP", "ip"], ["where", "Via"], ["down", "Down", "bytes"], ["up", "Up", "bytes"]],
+             "sql": "SELECT coalesce(c->>'alias', c->>'hostname', c->>'mac') name, c->>'ip' ip, coalesce(c->>'ap', c->>'switch') \"where\", "
+                    "(c->>'rx_bytes')::numeric down, (c->>'tx_bytes')::numeric up FROM snapshots s, jsonb_array_elements(coalesce(s.data, '[]')) c "
+                    "WHERE s.key = 'unifi:clients' AND c->>'rx_bytes' IS NOT NULL AND $1::float8 > 0 "
+                    "ORDER BY coalesce((c->>'rx_bytes')::numeric, 0) + coalesce((c->>'tx_bytes')::numeric, 0) DESC LIMIT 20"},
+            {"id": "dev", "title": "Device events (offline, restarts, PoE, rogue)", "type": "table", "span": 2,
+             "drill": {"base": {"source": "unifi"}, "by": {"action": "action"}},
+             "cols": [["ts", "Time", "time"], ["action", "Event"], ["message", "Message"]],
+             "sql": f"SELECT ts, action, left(message, 200) message FROM events WHERE source = 'unifi' AND action IN ('device_offline', "
+                    f"'device_online', 'device_restart', 'device_isolated', 'device_upgraded', 'poe_disconnect', 'poe_overload', 'overheat', "
+                    f"'stp_blocking', 'rogue_ap', 'rogue_dhcp', 'ips_alert', 'admin_login') AND {W} ORDER BY ts DESC LIMIT 50"},
+            {"id": "air", "title": "Foreign APs using your Wi-Fi names", "type": "table", "drill": {"url": "/unifi#air"},
+             "cols": [["essid", "Wi-Fi name"], ["bssid", "BSSID"], ["signal", "Signal", "num"], ["heard_by", "Heard by"]],
+             "sql": "SELECT r->>'essid' essid, r->>'bssid' bssid, (r->>'signal')::numeric signal, r->>'heard_by' heard_by "
+                    "FROM snapshots s, jsonb_array_elements(coalesce(s.data, '[]')) r WHERE s.key = 'unifi:rogue' "
+                    "AND (r->>'evil_twin')::boolean AND $1::float8 > 0 ORDER BY 3 DESC NULLS LAST"},
+            log_panel("source = 'unifi'"),
+        ]},
     "syslog": {
-        "title": "System logs", "source": "system,dhcp,unraid", "group": "general", "panels": [
+        "title": "System logs", "source": "system,dhcp,unraid", "group": "tools", "panels": [
             {"id": "kpi", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) AS \"Messages\", count(*) FILTER (WHERE severity <= 3) AS \"Errors+\", count(*) FILTER (WHERE severity = 4) AS \"Warnings\", "
                 f"count(DISTINCT program) AS \"Programs\", count(DISTINCT host) AS \"Hosts\" FROM events WHERE source IN ('system', 'dhcp', 'unraid') AND {W}",

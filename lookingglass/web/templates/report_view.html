@@ -34,7 +34,9 @@ const SECTIONS = [
   ["dns_blocked", "DNS blocked", [{k: "domain", l: "Domain"}, {k: "blocklist", l: "List"}, {k: "n", l: "Hits", num: true}]],
   ["dns_clients", "DNS clients", [{k: "client", l: "Client"}, {k: "blocked", l: "Blocked", num: true}, {k: "n", l: "Queries", num: true}]],
   ["top_talkers_internal", "Internal top talkers", [{k: "ip", l: "Host"}, {k: "peers", l: "Peers", num: true}, {k: "n", l: "Events", num: true}]],
-  ["new_devices", "New devices", [{k: "mac", l: "MAC"}, {k: "ip", l: "IP"}, {k: "hostname", l: "Hostname"}, {k: "first_seen", l: "First seen", f: LG.time}]],
+  ["new_devices", "New devices", [{k: "mac", l: "MAC"}, {k: "ip", l: "IP"}, {k: "hostname", l: "Hostname"}, {k: "conn_where", l: "Connected to"}, {k: "first_seen", l: "First seen", f: LG.time}]],
+  ["clients_with_security_events", "Clients with security events (UniFi + OPNsense)", [{k: "name", l: "Device"}, {k: "ip", l: "IP"}, {k: "conn_where", l: "Connected to"}, {k: "fw", l: "FW blocks", num: true}, {k: "dns", l: "DNS blocked", num: true}, {k: "threats", l: "Threats", num: true}]],
+  ["unifi_events", "UniFi events", [{k: "action", l: "Event"}, {k: "clients", l: "Clients", num: true}, {k: "n", l: "Count", num: true}]],
 ];
 (async () => {
   const r = await LG.api("/api/reports/{{ report_id }}");

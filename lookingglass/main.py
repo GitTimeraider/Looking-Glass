@@ -18,6 +18,7 @@ from .enrich import Enricher
 from .ingest import EventWriter, SyslogServer
 from .opnsense import Poller
 from .reports import build_report
+from .unifi import UnifiPoller
 from .unraid import UnraidManager
 from .web.app import create_app
 from .web.wizard import Wizard
@@ -68,6 +69,26 @@ async def opnsense_supervisor(settings, writer: EventWriter) -> None:
             elif not announced:
                 log.warning("OPNsense API not configured - set URL, API key and secret under Settings in the web UI")
                 announced = True
+        await asyncio.sleep(5)
+
+
+async def unifi_supervisor(settings, writer: EventWriter) -> None:
+    """Run the UniFi poller while it is configured; restart it whenever its settings change."""
+    poller: UnifiPoller | None = None
+    task: asyncio.Task | None = None
+    sig = None
+    while True:
+        new_sig = app_config.signature(settings, "unifi")
+        if new_sig != sig or (task is not None and task.done()):
+            if poller is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await poller.stop()
+                poller = task = None
+            sig = new_sig
+            if settings.unifi_enabled:
+                poller = UnifiPoller(settings, writer)
+                task = asyncio.create_task(poller.run(), name="unifi")
         await asyncio.sleep(5)
 
 
@@ -161,6 +182,7 @@ async def amain() -> None:
         await SyslogServer(settings, writer).start()
     tasks.append(asyncio.create_task(opnsense_supervisor(settings, writer), name="opnsense"))
     tasks.append(asyncio.create_task(UnraidManager(settings, writer).run(), name="unraid"))
+    tasks.append(asyncio.create_task(unifi_supervisor(settings, writer), name="unifi"))
     tasks.append(asyncio.create_task(daily_ai_report(settings, analyst), name="daily_report"))
 
     app = create_app(settings, analyst)

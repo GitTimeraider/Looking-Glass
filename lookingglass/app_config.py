@@ -34,6 +34,7 @@ class Field:
 
 GROUPS = {
     "opnsense": "OPNsense",
+    "unifi": "UniFi",
     "ai": "AI analyst",
     "zenarmor": "Zenarmor stream",
     "ingest": "Log ingestion & network",
@@ -61,6 +62,22 @@ FIELDS: list[Field] = [
           "nginx plugin: its access logs are never sent by OPNsense remote syslog, so they are read via the API."),
     Field("vpn_pull", "opnsense", "Pull VPN status (WireGuard, OpenVPN, IPsec)", "bool",
           "Peers, handshakes, sessions and traffic. WireGuard does not log connections, so this is the only source."),
+    # UniFi
+    Field("unifi_url", "unifi", "UniFi controller URL", "str",
+          "UniFi OS console (UDM, UCG, Cloud Key Gen2+, UniFi OS Server): https://<ip>. "
+          "Self-hosted Network Application: https://<ip>:8443.", placeholder="https://192.168.1.2"),
+    Field("unifi_api_key", "unifi", "API key", "secret",
+          "UniFi Network › Settings › Control Plane › Integrations › Create API key. Recommended (read-only use)."),
+    Field("unifi_username", "unifi", "Username (instead of an API key)", "str",
+          "Only when no API key is possible (older self-hosted versions): a local admin with a View Only role, no MFA."),
+    Field("unifi_password", "unifi", "Password", "secret", "Password of that local account."),
+    Field("unifi_site", "unifi", "Site", "str", "Site name as in the URL (…/manage/<site>/…), usually 'default'.",
+          placeholder="default"),
+    Field("unifi_verify_ssl", "unifi", "Verify TLS certificate", "bool", "Off accepts the controller's self-signed certificate."),
+    Field("unifi_poll_interval", "unifi", "Poll interval (seconds)", "int",
+          "Devices, clients and health. Events and rogue APs follow every 2 minutes.", min=30, max=3600),
+    Field("unifi_events", "unifi", "Collect UniFi events", "bool",
+          "Client connects / roams, AP / switch offline, rogue APs - shown in Event search and the UniFi dashboard."),
     # AI
     Field("ai_base_url", "ai", "API base URL", "str",
           "Any OpenAI-compatible endpoint. Claude: https://api.anthropic.com/v1/ · OpenAI: https://api.openai.com/v1/ · "
@@ -94,7 +111,9 @@ BY_KEY = {f.key: f for f in FIELDS}
 SECRET_KEYS = {f.key for f in FIELDS if f.kind == "secret"}
 
 # which groups restart which component
-RESTART_GROUPS = {"opnsense": ("opnsense_url", "opnsense_api_key", "opnsense_api_secret", "opnsense_verify_ssl",
+RESTART_GROUPS = {"unifi": ("unifi_url", "unifi_api_key", "unifi_username", "unifi_password", "unifi_site",
+                            "unifi_verify_ssl", "unifi_poll_interval", "unifi_events"),
+                  "opnsense": ("opnsense_url", "opnsense_api_key", "opnsense_api_secret", "opnsense_verify_ssl",
                                "opnsense_ca_pem", "poll_interval", "firewall_log_pull", "unbound_query_pull",
                                "crowdsec_pull", "qfeeds_pull", "ids_pull", "nginx_pull", "vpn_pull")}
 

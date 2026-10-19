@@ -293,6 +293,29 @@ async def run(settings: Settings) -> dict[str, Any]:
               "Connected." if st.get("ok") else f"Not reachable: {st.get('error')}",
               [] if st.get("ok") else ["Looking Glass › Settings › Unraid servers: check URL and API key (Test connection)."],
               last_seen=st.get("last"), link="/unraid")
+    uni = await db.get_snapshot("unifi:status") or {}
+    if not settings.unifi_enabled:
+        check("unifi", "UniFi controller", "optional", [], "Not configured. Optional: access points, switches, Wi-Fi clients "
+              "and where each device is connected (shown in alerts).", ["Looking Glass › Settings › UniFi: URL + API key "
+              "(UniFi OS console) or a local username / password (self-hosted Network Application)."], link="/settings#unifi")
+    elif uni.get("ok") is False:
+        check("unifi", "UniFi controller", "action", ["API"], f"Not reachable: {uni.get('error')}",
+              ["Looking Glass › Settings › UniFi: check URL, port and credentials with Test connection."],
+              last_seen=uni.get("last"), link="/settings#unifi")
+    elif not uni:
+        check("unifi", "UniFi controller", "info", ["API"], "Connecting…", link="/unifi")
+    else:
+        classic = "classic" in str(uni.get("mode") or "")
+        sections = uni.get("sections") or {}
+        failed = [k for k, v in sections.items() if not v.get("ok")]
+        check("unifi", "UniFi controller", "ok" if classic and not failed else "info", ["API"],
+              f"Connected ({uni.get('mode')}, Network {uni.get('version')})." +
+              (f" Not working: {', '.join(failed)}." if failed else "") +
+              ("" if classic else " Only the integration API answers: no SSID, signal, switch ports, events or rogue APs."),
+              [] if classic else ["For full data: also enter a local UniFi username / password with a View Only role "
+                                  "(Looking Glass › Settings › UniFi)."],
+              avoid=["Turning on UniFi's SIEM / remote syslog towards Looking Glass as well - the API already delivers "
+                     "these events."], count=n("unifi"), last_seen=last("unifi") or uni.get("last"), link="/unifi")
     geo = settings.geoip_db and os.path.exists(settings.geoip_db)
     check("geoip", "GeoIP countries", "ok" if geo else "optional", [], "GeoLite2 database loaded." if geo else
           "No GeoLite2 database - countries stay empty. Optional: download GeoLite2-City.mmdb (free MaxMind account) "
