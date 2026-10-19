@@ -129,7 +129,8 @@ async def root():
 @app.post("/api/auth/login")
 async def os_login(request: Request):
     if CFG["selfhosted"]:
-        raise HTTPException(404)
+        # a self-hosted controller treats this as just another protected /api path
+        return Response('{"meta":{"rc":"error","msg":"api.err.LoginRequired"},"data":[]}', 401, media_type="application/json")
     body = await request.json()
     if (body.get("username"), body.get("password")) != (USER, PASSWORD):
         raise HTTPException(401, "AUTHENTICATION_FAILED")
@@ -149,6 +150,7 @@ async def classic_login(request: Request):
     STATE["logins"] += 1
     r = Response('{"meta":{"rc":"ok"},"data":[]}', media_type="application/json")
     r.set_cookie("unifises", "ok")
+    r.set_cookie("csrf_token", "csrf-selfhosted")
     return r
 
 
@@ -187,6 +189,8 @@ async def v1(path: str, request: Request):
 # ----------------------------------------------------------- classic API ---
 async def classic(path: str, request: Request):
     authed(request, legacy=True)
+    if CFG["selfhosted"] and request.method == "POST" and request.headers.get("x-csrf-token") != "csrf-selfhosted":
+        return Response('{"meta":{"rc":"error","msg":"api.err.InvalidCSRFToken"},"data":[]}', 403, media_type="application/json")
     ok = lambda data: {"meta": {"rc": "ok"}, "data": data}  # noqa: E731
     if path == "stat/sysinfo":
         return ok([{"version": CFG["version"], "hostname": "unifi", "timezone": "Europe/Amsterdam", "update_available": False}])
