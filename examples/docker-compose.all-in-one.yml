@@ -1,4 +1,4 @@
-# Everything in one file with inline settings (no .env) - handy for Portainer stacks / Dockge.
+# Everything in one file (no .env) - handy for Portainer stacks / Dockge.
 # Replace every CHANGE-ME value before deploying.
 services:
   looking-glass:
@@ -10,22 +10,11 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://lookingglass:CHANGE-ME-db-password@db:5432/lookingglass
-      ADMIN_USER: admin
-      ADMIN_PASSWORD: CHANGE-ME-initial-password      # only used to create the first account
-      TIMEZONE: Europe/Amsterdam
-      OPNSENSE_URL: https://192.168.1.1
-      OPNSENSE_API_KEY: CHANGE-ME
-      OPNSENSE_API_SECRET: CHANGE-ME
-      OPNSENSE_VERIFY_SSL: "false"
-      SYSLOG_ALLOWED_SENDERS: 192.168.1.1              # IP of your OPNsense
-      AI_BASE_URL: https://api.anthropic.com/v1/
-      AI_MODEL: claude-opus-5-5
-      AI_API_KEY: CHANGE-ME                            # leave empty to disable the AI analyst
-      # optional: first Unraid server (more can be added in the UI under Integrations)
-      UNRAID_NAME: Tower
-      UNRAID_URL: http://192.168.1.10
-      UNRAID_API_KEY: ""
-      RETENTION_DAYS: "30"
+      ADMIN_USER: admin                                # first account; password is printed in the log
+      PUID: "10001"
+      PGID: "10001"
+      # Everything else (OPNsense API, AI key, Zenarmor, Unraid, retention ...) is configured in the web UI
+      # under Settings and stored encrypted - do not put API keys in this file.
     ports:
       - "8080:8080"
       - "514:5514/udp"

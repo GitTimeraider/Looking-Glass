@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from . import db
+from . import crypto, db
 from .config import Settings
 from .detections import raise_alert
 from .ingest import EventWriter
@@ -84,7 +84,7 @@ class UnraidClient:
     def __init__(self, server: dict[str, Any]) -> None:
         self.server = server
         self.http = httpx.AsyncClient(base_url=server["url"].rstrip("/"), verify=server["verify_ssl"],
-                                      headers={"x-api-key": server["api_key"], "Content-Type": "application/json",
+                                      headers={"x-api-key": crypto.decrypt(server["api_key"]), "Content-Type": "application/json",
                                                "Accept": "application/json"},
                                       timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=True)
         self.docker = None
@@ -475,14 +475,20 @@ class UnraidManager:
         self.signatures: dict[int, tuple] = {}
 
     async def bootstrap_from_env(self) -> None:
+        """Legacy: import UNRAID_* environment variables once; encrypt any plaintext stored keys."""
+        for r in await db.pool().fetch("SELECT id, api_key FROM unraid_servers"):
+            if r["api_key"] and not crypto.is_encrypted(r["api_key"]):
+                await db.pool().execute("UPDATE unraid_servers SET api_key = $2 WHERE id = $1", r["id"], crypto.encrypt(r["api_key"]))
         s = self.settings
         if s.unraid_url and s.unraid_api_key:
             exists = await db.pool().fetchval("SELECT count(*) FROM unraid_servers WHERE url = $1", s.unraid_url)
             if not exists:
                 await db.pool().execute(
                     "INSERT INTO unraid_servers (name, url, api_key, verify_ssl, docker_url) VALUES ($1, $2, $3, $4, $5)",
-                    s.unraid_name or "Unraid", s.unraid_url, s.unraid_api_key, s.unraid_verify_ssl, s.unraid_docker_url or None)
-                log.info("added Unraid server %s from environment", s.unraid_url)
+                    s.unraid_name or "Unraid", s.unraid_url, crypto.encrypt(s.unraid_api_key), s.unraid_verify_ssl,
+                    s.unraid_docker_url or None)
+                log.warning("imported Unraid server %s from UNRAID_* environment variables into the encrypted settings "
+                            "store - remove them from your compose/.env file and manage servers under Settings", s.unraid_url)
 
     async def run(self) -> None:
         await self.bootstrap_from_env()
@@ -509,7 +515,8 @@ def _sig(s: dict[str, Any]) -> tuple:
 
 
 async def test_connection(url: str, api_key: str, verify_ssl: bool, docker_url: str | None) -> dict[str, Any]:
-    client = UnraidClient({"url": url, "api_key": api_key, "verify_ssl": verify_ssl, "docker_url": docker_url})
+    client = UnraidClient({"url": url, "api_key": crypto.encrypt(api_key) if api_key else "", "verify_ssl": verify_ssl,
+                           "docker_url": docker_url})
     out: dict[str, Any] = {}
     try:
         d = await client.query("{ info { os { hostname release } versions { core { unraid api } } } }")

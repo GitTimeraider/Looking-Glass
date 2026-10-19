@@ -19,7 +19,7 @@ services:
       - "514:5514/tcp"     # syslog from OPNsense (TCP)
       - "9200:9200"        # Zenarmor "Stream Reporting Data to External Elasticsearch" (free edition)
     volumes:
-      - ./data:/data       # optional: GeoLite2-City.mmdb
+      - ./data:/data       # encryption key for stored credentials (back it up!) + optional GeoLite2-City.mmdb
     logging:               # reset codes are printed to this log - keep a few MB of it
       driver: json-file
       options: { max-size: "20m", max-file: "3" }

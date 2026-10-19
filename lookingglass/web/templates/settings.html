@@ -1,6 +1,26 @@
 {% extends "base.html" %}
 {% block body %}
-<header class="top"><h1>Integrations</h1></header>
+<header class="top"><h1>Settings</h1></header>
+<p class="small muted">Stored in the database; API keys, secrets and passwords are encrypted with a key that only exists in
+  the container's data volume and are never shown again after saving (leave a secret field empty to keep the current value).
+  Changes apply immediately - no restart needed.</p>
+<div class="tabs" id="tabs">
+  <button data-t="opnsense" class="on">OPNsense</button><button data-t="ai">AI analyst</button><button data-t="zenarmor">Zenarmor</button>
+  <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button>
+</div>
+{% for g in ["opnsense", "ai", "zenarmor", "ingest", "data"] %}
+<section data-s="{{ g }}" {% if g != "opnsense" %}hidden{% endif %}>
+  <div class="card">
+    <form class="settings-form" data-group="{{ g }}"></form>
+    <div class="filters" style="margin-top:12px">
+      <button type="button" data-save="{{ g }}">Save</button>
+      {% if g in ("opnsense", "ai") %}<button type="button" class="secondary" data-test="{{ g }}">Test connection</button>{% endif %}
+    </div>
+    <div class="small" id="msg-{{ g }}"></div>
+  </div>
+</section>
+{% endfor %}
+<section data-s="unraid" hidden>
 <div class="card">
   <h3>Unraid servers</h3>
   <div id="list"></div>
@@ -30,15 +50,65 @@
     </ol>
   </details>
 </div>
-<div class="card" style="margin-top:14px">
-  <h3>OPNsense &amp; AI</h3>
-  <p class="small">The OPNsense API and the AI endpoint are configured with environment variables (<code>OPNSENSE_URL</code>,
-    <code>OPNSENSE_API_KEY</code>, <code>OPNSENSE_API_SECRET</code>, <code>AI_API_KEY</code>, …) in your <code>.env</code> / compose file.
-    Their live status is on <a href="/setup">Setup &amp; status</a>.</p>
-</div>
+</section>
 {% endblock %}
 {% block scripts %}
 <script>
+/* ---------- generic settings tabs ---------- */
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll("section[data-s]").forEach(sec => sec.hidden = sec.dataset.s !== b.dataset.t);
+  history.replaceState(null, "", "#" + b.dataset.t);
+});
+if (location.hash) { const b = document.querySelector(`#tabs [data-t="${location.hash.slice(1)}"]`); if (b) b.click(); }
+let FIELDS = [];
+function fieldHtml(f) {
+  const id = "s-" + f.key, help = f.help ? `<div class="small muted">${LG.esc(f.help)}</div>` : "";
+  let input;
+  if (f.kind === "bool") input = `<label class="chk"><input type="checkbox" id="${id}" ${f.value ? "checked" : ""}> ${LG.esc(f.label)}</label>`;
+  else if (f.kind === "choice") input = `<select id="${id}">${f.choices.map(c => `<option ${c === f.value ? "selected" : ""}>${LG.esc(c)}</option>`).join("")}</select>`;
+  else if (f.kind === "text") input = `<textarea id="${id}" rows="4" placeholder="${LG.esc(f.placeholder || "")}">${LG.esc(f.value || "")}</textarea>`;
+  else if (f.kind === "secret") input = `<div class="secret-row"><input type="password" id="${id}" autocomplete="new-password"
+      placeholder="${f.is_set ? "•••••••• stored - type to replace" : "not set"}">
+      ${f.is_set ? `<label class="chk small"><input type="checkbox" id="${id}-clear"> remove</label>` : ""}</div>`;
+  else input = `<input id="${id}" type="${f.kind === "int" ? "number" : "text"}" value="${LG.esc(f.value ?? "")}" placeholder="${LG.esc(f.placeholder || "")}"
+      ${f.min != null ? `min="${f.min}"` : ""} ${f.max != null ? `max="${f.max}"` : ""}>`;
+  return f.kind === "bool" ? `<div class="setting">${input}${help}</div>`
+    : `<div class="setting"><label for="${id}"><b>${LG.esc(f.label)}</b>${f.kind === "secret" ? ` <span class="badge ${f.is_set ? "ok" : ""}">${f.is_set ? "set" : "empty"}</span>` : ""}</label>${input}${help}</div>`;
+}
+function groupValues(g) {
+  const out = {};
+  for (const f of FIELDS.filter(x => x.group === g)) {
+    const el = document.getElementById("s-" + f.key);
+    if (f.kind === "bool") out[f.key] = el.checked;
+    else if (f.kind === "secret") { const clr = document.getElementById("s-" + f.key + "-clear"); out[f.key] = clr && clr.checked ? null : el.value; }
+    else out[f.key] = el.value;
+  }
+  return out;
+}
+async function loadSettings() {
+  const d = await LG.api("/api/settings"); FIELDS = d.fields;
+  document.querySelectorAll(".settings-form").forEach(form => form.innerHTML = FIELDS.filter(f => f.group === form.dataset.group).map(fieldHtml).join(""));
+}
+const gmsg = (g, html, ok) => { const m = document.getElementById("msg-" + g); m.innerHTML = html; m.className = "small " + (ok ? "ok-msg" : "err"); };
+document.querySelectorAll("[data-save]").forEach(b => b.onclick = async () => {
+  const g = b.dataset.save;
+  try {
+    const r = await LG.api("/api/settings", { method: "PUT", body: { values: groupValues(g) } });
+    await loadSettings(); gmsg(g, r.changed.length ? `Saved (${r.changed.length} changed) - applied immediately.` : "Nothing changed.", true);
+  } catch (e) { gmsg(g, LG.esc(e.message)); }
+});
+document.querySelectorAll("[data-test]").forEach(b => b.onclick = async () => {
+  const g = b.dataset.test; gmsg(g, `<span class="spinner"></span> testing…`, true);
+  try {
+    const r = await LG.api(`/api/settings/test/${g}`, { method: "POST", body: { values: groupValues(g) } });
+    if (!r.ok) return gmsg(g, "Failed: " + LG.esc(r.error));
+    gmsg(g, g === "opnsense" ? `Connected to ${LG.esc(r.name)} – ${LG.esc((r.versions || [])[0] || "")}. Click Save to keep these settings.`
+                             : `The model answered: “${LG.esc(r.reply)}”. Click Save to keep these settings.`, true);
+  } catch (e) { gmsg(g, LG.esc(e.message)); }
+});
+loadSettings();
+/* ---------- Unraid servers ---------- */
 const f = document.getElementById("f"), msg = (t, ok) => { const m = document.getElementById("msg"); m.innerHTML = t; m.className = "small " + (ok ? "ok-msg" : "err"); };
 function payload() {
   return { id: f.id.value ? Number(f.id.value) : null, name: f.name.value, url: f.url.value, api_key: f.api_key.value, docker_url: f.docker_url.value,

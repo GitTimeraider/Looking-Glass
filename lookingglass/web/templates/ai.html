@@ -6,7 +6,7 @@
 {% block body %}
 <header class="top"><h1>AI security analyst</h1><span class="muted small">model: {{ ai_model }}</span></header>
 {% if not ai_enabled %}
-<div class="card">The AI analyst is not configured. Set <code>AI_API_KEY</code> (and optionally <code>AI_BASE_URL</code> / <code>AI_MODEL</code>) — see <a href="/setup">Setup</a>.</div>
+<div class="card">The AI analyst is not configured yet. Enter the API key (and optionally base URL / model) under <a href="/settings#ai">Settings › AI analyst</a>.</div>
 {% else %}
 <div class="chat">
   <div class="card list"><button style="width:100%;margin-bottom:8px" id="new">+ New chat</button><div id="chats"></div></div>

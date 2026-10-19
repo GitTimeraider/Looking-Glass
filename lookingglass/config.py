@@ -1,18 +1,31 @@
-"""Runtime configuration, read from environment variables (or a .env file)."""
+"""Configuration.
+
+Two kinds of settings live on the same object:
+
+* **Infrastructure** (``ENV_FIELDS``): how the container runs - database connection, listen ports, initial admin,
+  log level. These come from environment variables (or ``<NAME>_FILE`` for Docker secrets) and need a restart.
+* **Application** (everything in ``app_config.FIELDS``): OPNsense / AI / Zenarmor credentials, retention, detection
+  tuning ... These are edited in the web UI (Settings), stored in the database (secrets encrypted) and applied
+  live. Environment values for them are only imported once on first start, then ignored.
+"""
 from __future__ import annotations
 
+import logging
+import os
 from functools import lru_cache
+from urllib.parse import quote
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+log = logging.getLogger(__name__)
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", validate_assignment=False)
 
-    # --- database -----------------------------------------------------------
+    # ===================== infrastructure (environment) =====================
     database_url: str = "postgresql://lookingglass:lookingglass@db:5432/lookingglass"
-
-    # --- web UI -------------------------------------------------------------
+    data_dir: str = "/data"  # persistent volume: encryption key file, optional GeoIP database
     web_host: str = "0.0.0.0"
     web_port: int = 8080
     admin_user: str = "admin"
@@ -21,37 +34,32 @@ class Settings(BaseSettings):
     public_url: str = ""  # e.g. https://looking-glass.home.lan - used as WebAuthn origin (auto-detected if empty)
     webauthn_rp_id: str = ""  # passkey relying party id (defaults to the host name of public_url / the request)
     cookie_secure: bool = False  # set true when served over HTTPS
-    timezone: str = "UTC"
-
-    # --- syslog receiver ----------------------------------------------------
     syslog_enabled: bool = True
     syslog_host: str = "0.0.0.0"
     syslog_udp_port: int = 5514
     syslog_tcp_port: int = 5514
-    # comma separated list of IPs allowed to send syslog; empty = accept everyone
+    zenarmor_es_port: int = 9200  # Zenarmor Elasticsearch-compatible receiver port, 0 disables
+    log_level: str = "INFO"
+
+    # ================ application (web UI -> Settings, database) ============
+    # Defaults below; see app_config.FIELDS for labels and help texts.
+    timezone: str = "UTC"
     syslog_allowed_senders: str = ""
-
-    # --- Zenarmor "Stream Reporting Data to External Elasticsearch" receiver (works on the free edition) ---
-    zenarmor_es_port: int = 9200  # 0 disables
-    zenarmor_es_user: str = ""  # optional basic auth, must match Zenarmor's streaming username/password
+    internal_networks: str = ""
+    zenarmor_es_user: str = ""
     zenarmor_es_password: str = ""
-    zenarmor_es_allowed: str = ""  # allowed sender IPs/CIDRs (defaults to SYSLOG_ALLOWED_SENDERS)
-
-    # --- OPNsense API -------------------------------------------------------
-    opnsense_url: str = ""  # e.g. https://192.168.1.1  (or https://fw.lan:8443)
+    zenarmor_es_allowed: str = ""
+    opnsense_url: str = ""
     opnsense_api_key: str = ""
     opnsense_api_secret: str = ""
     opnsense_verify_ssl: bool = False
-    opnsense_ca_file: str = ""
-    poll_interval: int = 60  # seconds between status/metric polls
-    # pull the firewall log through the API when no filterlog lines arrive via syslog
-    firewall_log_pull: str = "auto"  # auto | always | never
+    opnsense_ca_pem: str = ""
+    poll_interval: int = 60
+    firewall_log_pull: str = "auto"
     unbound_query_pull: bool = True
     crowdsec_pull: bool = True
     qfeeds_pull: bool = True
     ids_pull: bool = True
-
-    # --- AI assistant (any OpenAI compatible chat/completions endpoint) -------
     ai_base_url: str = "https://api.anthropic.com/v1/"
     ai_api_key: str = ""
     ai_model: str = "claude-opus-5-5"
@@ -59,22 +67,17 @@ class Settings(BaseSettings):
     ai_timeout: int = 300
     ai_daily_report: bool = False
     ai_daily_report_hour: int = 7
-
-    # --- Unraid (optional bootstrap; more servers can be added in the web UI under Settings) ---
-    unraid_name: str = "Unraid"
-    unraid_url: str = ""  # e.g. http://192.168.1.10  (GraphQL API at /graphql)
-    unraid_api_key: str = ""
-    unraid_verify_ssl: bool = False
-    unraid_docker_url: str = ""  # optional docker-socket-proxy, e.g. http://192.168.1.10:2375
-
-    # --- enrichment / housekeeping -----------------------------------------
-    geoip_db: str = "/data/GeoLite2-City.mmdb"  # optional MaxMind mmdb (City or Country)
+    geoip_db: str = "/data/GeoLite2-City.mmdb"
     retention_days: int = 30
     metrics_retention_days: int = 90
     detection_interval: int = 60
-    # comma separated CIDRs considered "internal" (RFC1918 etc. are always internal)
-    internal_networks: str = ""
-    log_level: str = "INFO"
+
+    # legacy: only imported once into the Unraid server list (Settings -> Integrations)
+    unraid_name: str = "Unraid"
+    unraid_url: str = ""
+    unraid_api_key: str = ""
+    unraid_verify_ssl: bool = False
+    unraid_docker_url: str = ""
 
     @property
     def opnsense_enabled(self) -> bool:
@@ -85,7 +88,31 @@ class Settings(BaseSettings):
         return bool(self.ai_base_url and self.ai_model and self.ai_api_key)
 
 
+# Docker secrets: DATABASE_URL_FILE=/run/secrets/db_url etc.
+_FILE_VARS = ("database_url", "admin_password", "secret_key")
+
+
 @lru_cache
 def get_settings() -> Settings:
     s = Settings()
+    for name in _FILE_VARS:
+        path = os.environ.get(f"{name.upper()}_FILE")
+        if path:
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    setattr(s, name, fh.read().strip())
+            except OSError as exc:
+                log.error("cannot read %s_FILE (%s): %s", name.upper(), path, exc)
+    # DATABASE_PASSWORD_FILE: same secret file as POSTGRES_PASSWORD_FILE, injected into DATABASE_URL
+    pw_file = os.environ.get("DATABASE_PASSWORD_FILE")
+    if pw_file:
+        try:
+            with open(pw_file, encoding="utf-8") as fh:
+                password = quote(fh.read().strip(), safe="")
+            scheme, rest = s.database_url.split("://", 1)
+            creds, host = rest.rsplit("@", 1)
+            user = creds.split(":", 1)[0]
+            s.database_url = f"{scheme}://{user}:{password}@{host}"
+        except (OSError, ValueError) as exc:
+            log.error("cannot use DATABASE_PASSWORD_FILE (%s): %s", pw_file, exc)
     return s

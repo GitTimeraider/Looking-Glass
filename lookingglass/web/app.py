@@ -6,13 +6,14 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from .. import __version__, db
+from .. import __version__, app_config, crypto, db
 from ..ai import Analyst
 from ..config import Settings
 from ..ingest import STATS
@@ -283,7 +284,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if not text:
             raise HTTPException(400, "empty message")
         if not settings.ai_enabled:
-            raise HTTPException(400, "AI is not configured (AI_API_KEY / AI_BASE_URL / AI_MODEL)")
+            raise HTTPException(400, "AI is not configured - enter the API key under Settings › AI analyst")
         chat_id = payload.get("chat_id")
         history: list[dict[str, Any]] = []
         if chat_id:
@@ -376,7 +377,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     # ------------------------------------------------------------- unraid ---
     def _server_out(r: Any) -> dict[str, Any]:
         d = db.jsonable(dict(r))
-        d["api_key"] = ("•" * 8 + d["api_key"][-4:]) if d.get("api_key") else ""
+        d["api_key"] = "set" if d.get("api_key") else ""  # never returned, not even partially
         return d
 
     @app.get("/api/unraid/servers")
@@ -404,7 +405,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             raise HTTPException(400, "API key is required")
         sid = await db.pool().fetchval(
             "INSERT INTO unraid_servers (name, url, api_key, verify_ssl, docker_url, collect_logs, enabled) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id", *v.values())
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id", *{**v, "api_key": crypto.encrypt(v["api_key"])}.values())
         return {"id": sid}
 
     @app.put("/api/unraid/servers/{sid}")
@@ -412,7 +413,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         v = _validate_server(payload)
         await db.pool().execute(
             "UPDATE unraid_servers SET name = $2, url = $3, api_key = COALESCE(nullif($4, ''), api_key), verify_ssl = $5, "
-            "docker_url = $6, collect_logs = $7, enabled = $8 WHERE id = $1", sid, *v.values())
+            "docker_url = $6, collect_logs = $7, enabled = $8 WHERE id = $1", sid,
+            *{**v, "api_key": crypto.encrypt(v["api_key"]) if v["api_key"] else ""}.values())
         return {"ok": True}
 
     @app.delete("/api/unraid/servers/{sid}")
@@ -425,7 +427,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def test_unraid(payload: dict = Body(...)):
         v = _validate_server(payload)
         if not v["api_key"] and payload.get("id"):
-            v["api_key"] = await db.pool().fetchval("SELECT api_key FROM unraid_servers WHERE id = $1", int(payload["id"])) or ""
+            v["api_key"] = crypto.decrypt(await db.pool().fetchval("SELECT api_key FROM unraid_servers WHERE id = $1",
+                                                                  int(payload["id"])) or "")
         return await unraid_test(v["url"], v["api_key"], v["verify_ssl"], v["docker_url"])
 
     @app.get("/api/unraid/{sid}")
@@ -451,5 +454,66 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             f"SELECT ts, program, severity, action, message FROM events WHERE host = $1 AND {cond} "
             f"AND ts > now() - make_interval(secs => $2) ORDER BY ts DESC LIMIT $3", *args)
         return db.records(rows)
+
+    # ------------------------------------------------------- app settings ---
+    @app.get("/api/settings")
+    async def get_app_settings():
+        return app_config.public_view(settings)
+
+    @app.put("/api/settings")
+    async def put_app_settings(payload: dict = Body(...)):
+        try:
+            changed = await app_config.save(settings, payload.get("values") or {})
+        except app_config.SettingsError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"ok": True, "changed": changed}
+
+    def _candidate(values: dict) -> Any:
+        """Settings copy with the (unsaved) form values; empty secrets fall back to the stored ones."""
+        update = {}
+        for key, value in (values or {}).items():
+            f = app_config.BY_KEY.get(key)
+            if f is None or (f.kind == "secret" and not value):
+                continue
+            try:
+                update[key] = value if f.kind == "secret" else app_config._coerce(f, value)
+            except app_config.SettingsError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        return settings.model_copy(update=update)
+
+    @app.post("/api/settings/test/opnsense")
+    async def test_opnsense(payload: dict = Body(...)):
+        from ..opnsense import ApiError, OPNsenseClient
+
+        cand = _candidate(payload.get("values"))
+        if not cand.opnsense_enabled:
+            return {"ok": False, "error": "URL, API key and API secret are required"}
+        client = OPNsenseClient(cand)
+        try:
+            info = await client.get("diagnostics/system/systemInformation")
+            return {"ok": True, "name": info.get("name"), "versions": info.get("versions")}
+        except ApiError as exc:
+            hint = " (wrong key/secret?)" if exc.status == 401 else " (user lacks the privilege for this page)" if exc.status == 403 else ""
+            return {"ok": False, "error": f"{exc}{hint}"}
+        except httpx.HTTPError as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            await client.close()
+
+    @app.post("/api/settings/test/ai")
+    async def test_ai(payload: dict = Body(...)):
+        cand = _candidate(payload.get("values"))
+        if not cand.ai_enabled:
+            return {"ok": False, "error": "base URL, API key and model are required"}
+        body = {"model": cand.ai_model, "max_tokens": 20, "messages": [{"role": "user", "content": "Reply with the single word OK."}]}
+        try:
+            async with httpx.AsyncClient(base_url=cand.ai_base_url.rstrip("/") + "/", timeout=60,
+                                         headers={"Authorization": f"Bearer {cand.ai_api_key}"}) as client:
+                r = await client.post("chat/completions", json=body)
+            if r.status_code >= 400:
+                return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+            return {"ok": True, "reply": (r.json()["choices"][0]["message"].get("content") or "")[:100], "model": cand.ai_model}
+        except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     return app

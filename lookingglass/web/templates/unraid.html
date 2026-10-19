@@ -6,7 +6,7 @@
   <span class="muted small" id="updated"></span>
   <div class="seg" id="range"><button data-v="1">1h</button><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button></div>
 </header>
-<div id="empty" class="card" hidden>No Unraid server configured yet. Add one under <a href="/settings">Integrations</a>.</div>
+<div id="empty" class="card" hidden>No Unraid server configured yet. Add one under <a href="/settings#unraid">Settings › Unraid servers</a>.</div>
 <div id="main" hidden>
   <div class="tabs" id="tabs">
     <button data-t="overview" class="on">Overview</button><button data-t="storage">Array &amp; disks</button>
@@ -196,7 +196,7 @@ async function logs() {
   const rows = await LG.api(`/api/unraid/${sid}/logs?${p}`);
   document.getElementById("logview").innerHTML = rows.length ? rows.slice().reverse().map(r =>
     `<div class="l${r.severity}"><span class="ts">${LG.time(r.ts)}</span> <b>${LG.esc(r.program || "")}</b> ${LG.esc(r.message)}</div>`).join("")
-    : `<div class="empty">No log lines. Container logs need "Collect logs" enabled for this server (Integrations).</div>`;
+    : `<div class="empty">No log lines. Container logs need "Collect logs" enabled for this server (Settings › Unraid servers).</div>`;
   const lv = document.getElementById("logview"); lv.scrollTop = lv.scrollHeight;
   const per = {}, err = {};
   rows.forEach(r => { per[r.program] = (per[r.program] || 0) + 1; if (r.severity <= 4) err[r.program] = (err[r.program] || 0) + 1; });

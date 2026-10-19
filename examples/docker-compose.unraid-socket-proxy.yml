@@ -4,7 +4,7 @@
 # Unraid without the compose plugin: Docker tab > Add Container, Repository: ghcr.io/tecnativa/docker-socket-proxy:v0.5.0,
 # add a Path /var/run/docker.sock -> /var/run/docker.sock (read only), a Port 2375 -> 2375 and the
 # Variables CONTAINERS=1, INFO=1, VERSION=1, POST=0.
-# Then in Looking Glass: Integrations > your Unraid server > Docker API = http://<unraid-ip>:2375
+# Then in Looking Glass: Settings > Unraid servers > your server > Docker API = http://<unraid-ip>:2375
 #
 # Restrict access: only Looking Glass's host should reach port 2375 (firewall rule in OPNsense or bind to a specific IP).
 services:

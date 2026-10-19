@@ -13,6 +13,7 @@ from . import db
 from .config import Settings
 from .enrich import Enricher
 from .parsers import parse_line
+from .parsers.common import parse_networks
 
 log = logging.getLogger(__name__)
 
@@ -100,23 +101,29 @@ class SyslogServer:
     def __init__(self, settings: Settings, writer: EventWriter) -> None:
         self.settings = settings
         self.writer = writer
-        try:
-            self.tz = ZoneInfo(settings.timezone)
-        except Exception:  # noqa: BLE001
-            self.tz = timezone.utc
-        self.allowed: list[ipaddress._BaseNetwork] = []
-        for part in settings.syslog_allowed_senders.split(","):
-            if part.strip():
-                self.allowed.append(ipaddress.ip_network(part.strip(), strict=False))
+        self._tz_name: str | None = None
+        self._tz: Any = timezone.utc
+
+    @property
+    def tz(self):
+        # settings can change at runtime (web UI) - resolve lazily
+        if self.settings.timezone != self._tz_name:
+            self._tz_name = self.settings.timezone
+            try:
+                self._tz = ZoneInfo(self._tz_name or "UTC")
+            except Exception:  # noqa: BLE001
+                self._tz = timezone.utc
+        return self._tz
 
     def _allowed(self, addr: str) -> bool:
-        if not self.allowed:
+        allowed = parse_networks(self.settings.syslog_allowed_senders)
+        if not allowed:
             return True
         try:
             ip = ipaddress.ip_address(addr)
         except ValueError:
             return False
-        return any(ip in n for n in self.allowed)
+        return any(ip in n for n in allowed)
 
     def handle(self, line: str, sender: str) -> None:
         STATS.received += 1

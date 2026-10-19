@@ -143,3 +143,11 @@ CREATE TABLE IF NOT EXISTS unraid_servers (
     enabled     BOOLEAN NOT NULL DEFAULT true,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ------------------------------------------------------- app settings ---
+-- settings edited in the web UI; secrets are Fernet-encrypted ("fernet:..."), key file lives in the data volume
+CREATE TABLE IF NOT EXISTS app_settings (
+    key        TEXT PRIMARY KEY,
+    value      JSONB,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

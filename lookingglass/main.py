@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import uvicorn
 
-from . import __version__, auth, db
+from . import __version__, app_config, auth, crypto, db
 from .ai import Analyst
 from .config import get_settings
 from .detections import DetectionEngine, dhcp_listener, zenarmor_device_listener
@@ -45,13 +45,40 @@ async def housekeeping(settings) -> None:
         await asyncio.sleep(3600)
 
 
+async def opnsense_supervisor(settings, writer: EventWriter) -> None:
+    """Run the OPNsense poller and restart it whenever its settings change in the web UI."""
+    poller: Poller | None = None
+    task: asyncio.Task | None = None
+    sig = None
+    announced = False
+    while True:
+        new_sig = app_config.signature(settings, "opnsense")
+        if new_sig != sig or (task is not None and task.done()):
+            if poller is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await poller.stop()
+                poller = task = None
+            sig = new_sig
+            if settings.opnsense_enabled:
+                poller = Poller(settings, writer)
+                task = asyncio.create_task(poller.run(), name="poller")
+                announced = False
+            elif not announced:
+                log.warning("OPNsense API not configured - set URL, API key and secret under Settings in the web UI")
+                announced = True
+        await asyncio.sleep(5)
+
+
 async def daily_ai_report(settings, analyst: Analyst) -> None:
-    try:
-        tz = ZoneInfo(settings.timezone)
-    except Exception:  # noqa: BLE001
-        tz = timezone.utc
     while True:
         await asyncio.sleep(300)
+        if not settings.ai_daily_report:
+            continue
+        try:
+            tz = ZoneInfo(settings.timezone or "UTC")
+        except Exception:  # noqa: BLE001
+            tz = timezone.utc
         now = datetime.now(tz)
         if now.hour != settings.ai_daily_report_hour:
             continue
@@ -74,13 +101,19 @@ async def amain() -> None:
     logging.basicConfig(level=settings.log_level.upper(), format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     log.info("Looking Glass %s starting", __version__)
+    try:
+        crypto.init(settings.data_dir)
+    except crypto.KeyFileError as exc:
+        log.critical("%s", exc)
+        raise SystemExit(2) from exc
     await db.connect(settings.database_url)
+    await app_config.load(settings)
     if not settings.secret_key:
         # persist a generated cookie key so logins survive restarts
         settings.secret_key = await db.kv_get("secret_key") or secrets.token_urlsafe(48)
         await db.kv_set("secret_key", settings.secret_key)
     await auth.ensure_admin(settings.admin_user, settings.admin_password)
-    enricher = Enricher(settings.geoip_db, settings.internal_networks)
+    enricher = Enricher(settings)
     writer = EventWriter(enricher)
     writer.listeners.append(dhcp_listener)
     writer.listeners.append(zenarmor_device_listener)
@@ -91,13 +124,9 @@ async def amain() -> None:
              asyncio.create_task(housekeeping(settings), name="housekeeping")]
     if settings.syslog_enabled:
         await SyslogServer(settings, writer).start()
-    if settings.opnsense_enabled:
-        tasks.append(asyncio.create_task(Poller(settings, writer).run(), name="poller"))
-    else:
-        log.warning("OPNSENSE_URL / OPNSENSE_API_KEY / OPNSENSE_API_SECRET not set - API polling disabled")
+    tasks.append(asyncio.create_task(opnsense_supervisor(settings, writer), name="opnsense"))
     tasks.append(asyncio.create_task(UnraidManager(settings, writer).run(), name="unraid"))
-    if settings.ai_daily_report:
-        tasks.append(asyncio.create_task(daily_ai_report(settings, analyst), name="daily_report"))
+    tasks.append(asyncio.create_task(daily_ai_report(settings, analyst), name="daily_report"))
 
     app = create_app(settings, analyst)
     server = uvicorn.Server(uvicorn.Config(app, host=settings.web_host, port=settings.web_port, log_level="warning",

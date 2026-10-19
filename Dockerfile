@@ -10,10 +10,11 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY lookingglass ./lookingglass
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN useradd --system --uid 10001 --home /data lookingglass \
     && mkdir -p /data && chown lookingglass /data
 
-USER lookingglass
+# starts as root only to fix /data ownership, then drops to PUID/PGID (default 10001) - see docker-entrypoint.sh
 VOLUME ["/data"]
 # 8080 = web UI, 5514 = syslog (udp + tcp), 9200 = Zenarmor Elasticsearch-compatible stream receiver
 EXPOSE 8080 5514/udp 5514/tcp 9200
@@ -26,4 +27,5 @@ LABEL org.opencontainers.image.title="Looking Glass" \
       org.opencontainers.image.description="OPNsense security monitoring: log collection, dashboards, detections, reports and an AI analyst" \
       org.opencontainers.image.version="${VERSION}"
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "-m", "lookingglass.main"]
