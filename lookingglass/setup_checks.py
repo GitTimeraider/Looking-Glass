@@ -259,11 +259,11 @@ async def run(settings: Settings) -> dict[str, Any]:
               ["Looking Glass › Settings › OPNsense › Pull VPN status: on."])
     elif forbidden_vpn:
         check("vpn", "VPN (WireGuard, OpenVPN, IPsec)", "action", ["API"], f"The API user may not read: {', '.join(forbidden_vpn)}.",
-              [f"{PRIV}: add the VPN pages for {', '.join(forbidden_vpn)} (or 'GUI - All pages')."], link="/dash/auth")
+              [f"{PRIV}: add the VPN pages for {', '.join(forbidden_vpn)} (or 'GUI - All pages')."], link="/dash/vpn")
     elif vj.get("ok"):
         check("vpn", "VPN (WireGuard, OpenVPN, IPsec)", "ok", ["API"] + (["syslog"] if n("vpn:syslog") else []),
               ("; ".join(parts) or "No VPN configured") + ". Live status via the API (WireGuard writes no connection logs).",
-              count=n("vpn"), last_seen=last("vpn"), link="/dash/auth")
+              count=n("vpn"), last_seen=last("vpn"), link="/dash/vpn")
     else:
         check("vpn", "VPN (WireGuard, OpenVPN, IPsec)", "info", [], _api_problem(vj, "VPN status") or "Waiting for the first poll.")
 

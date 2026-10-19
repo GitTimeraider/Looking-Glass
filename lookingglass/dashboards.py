@@ -30,7 +30,7 @@ def log_panel(where: str, title: str = "Live log", limit: int = 150) -> dict[str
 
 DASHBOARDS: dict[str, dict[str, Any]] = {
     "firewall": {
-        "title": "Firewall", "source": "firewall", "panels": [
+        "title": "Firewall", "source": "firewall", "group": "opnsense", "panels": [
             {"id": "kpi", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) AS \"Events\", count(*) FILTER (WHERE action = 'block') AS \"Blocked\", "
                 f"count(*) FILTER (WHERE action = 'pass') AS \"Passed (logged)\", "
@@ -75,7 +75,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             log_panel("source = 'firewall'"),
         ]},
     "dns": {
-        "title": "DNS (Unbound)", "source": "unbound", "panels": [
+        "title": "DNS (Unbound)", "source": "unbound", "group": "opnsense", "panels": [
             {"id": "kpi", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) AS \"Queries\", count(*) FILTER (WHERE action IN ('block', 'drop')) AS \"Blocked\", "
                 f"count(*) FILTER (WHERE action = 'nxdomain' OR data->>'rcode' = 'NXDOMAIN') AS \"NXDOMAIN\", "
@@ -104,7 +104,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             log_panel("source = 'unbound'"),
         ]},
     "web": {
-        "title": "Web server (nginx)", "source": "nginx", "panels": [
+        "title": "Web server (nginx)", "source": "nginx", "group": "opnsense", "panels": [
             {"id": "kpi", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) AS \"Requests\", count(*) FILTER (WHERE action ~ '^http_4') AS \"4xx\", "
                 f"count(*) FILTER (WHERE action ~ '^http_5') AS \"5xx\", "
@@ -134,7 +134,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             log_panel("source = 'nginx'"),
         ]},
     "threats": {
-        "title": "Threats (IDS · CrowdSec · Q-Feeds)", "source": "suricata,crowdsec,qfeeds", "panels": [
+        "title": "Threats (IDS · CrowdSec · Q-Feeds)", "source": "suricata,crowdsec,qfeeds", "group": "opnsense", "panels": [
             {"id": "kpi", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) FILTER (WHERE source = 'suricata') AS \"IDS events\", "
                 f"count(*) FILTER (WHERE source = 'crowdsec' AND action = 'alert') AS \"CrowdSec alerts\", "
@@ -173,7 +173,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
     "zenarmor": {
         # field names: Zenarmor ES/syslog stream (see parsers/security.py). Only conn records carry app_name /
         # app_category; dns/tls/http carry a web "category" (dns: domain_categories) instead.
-        "title": "Zenarmor", "source": "zenarmor", "panels": [
+        "title": "Zenarmor", "source": "zenarmor", "group": "opnsense", "panels": [
             {"id": "kpi", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) AS \"Events\", count(*) FILTER (WHERE action = 'block') AS \"Blocked\", "
                 f"count(*) FILTER (WHERE data->>'family' = 'alert' OR coalesce(data->>'security', '') <> '') AS \"Threats\", "
@@ -220,16 +220,16 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             log_panel("source = 'zenarmor'"),
         ]},
     "auth": {
-        "title": "Authentication & VPN", "source": "auth,vpn", "panels": [
+        "title": "Authentication", "source": "auth,vpn", "group": "opnsense", "panels": [
             {"id": "kpi", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) FILTER (WHERE action = 'login_failed') AS \"Failed logins\", "
                 f"count(*) FILTER (WHERE action = 'login_success') AS \"Successful logins\", "
-                f"count(DISTINCT src_ip) FILTER (WHERE action = 'login_failed') AS \"Attacking IPs\", "
+                f"count(DISTINCT src_ip) FILTER (WHERE action = 'login_failed') AS \"IPs with failed logins\", "
                 f"count(DISTINCT username) FILTER (WHERE action = 'login_failed') AS \"Usernames tried\", "
                 f"count(*) FILTER (WHERE action = 'config_change') AS \"Config changes\" "
                 f"FROM events WHERE source IN ('auth', 'vpn', 'system') AND {W}",
              "drill": {"base": {"source": ""}, "tiles": {"Failed logins": {"action": "login_failed"}, "Successful logins": {"action": "login_success"},
-                                                         "Attacking IPs": {"action": "login_failed"}, "Usernames tried": {"action": "login_failed"},
+                                                         "IPs with failed logins": {"action": "login_failed"}, "Usernames tried": {"action": "login_failed"},
                                                          "Config changes": {"action": "config_change"}}}},
             {"id": "ts", "title": "Logins over time", "type": "timeseries", "span": 2, "drill": {"base": {"source": "", "action": "login_failed,login_success,vpn_connect"}},
              "sql": f"SELECT {B} t, source || ' ' || action series, count(*) v FROM events WHERE action IN ('login_failed', 'login_success', 'vpn_connect') AND {W} GROUP BY 1, 2 ORDER BY 1"},
@@ -241,6 +241,10 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
              "sql": f"SELECT ts, username, host(src_ip) ip, coalesce(program, source) prog FROM events WHERE action IN ('login_success', 'vpn_connect') AND {W} ORDER BY ts DESC LIMIT 50"},
             {"id": "cfg", "title": "Configuration changes", "type": "table", "drill": {"base": {"source": "", "action": "config_change"}, "by": {"host": "host"}}, "cols": [["ts", "Time", "time"], ["host", "Host"], ["message", "Message"]],
              "sql": f"SELECT ts, host, left(message, 200) message FROM events WHERE action = 'config_change' AND {W} ORDER BY ts DESC LIMIT 50"},
+            log_panel("source = 'auth'"),
+        ]},
+    "vpn": {
+        "title": "VPN", "source": "vpn", "group": "opnsense", "panels": [
             {"id": "vpnkpi", "type": "stat", "span": 3, "drill": {"base": {"source": "vpn"}, "tiles": {"VPN connects": {"action": "vpn_connect"}}},
              "sql": "SELECT (SELECT count(*) FROM snapshots s, jsonb_array_elements(coalesce(s.data->'wireguard'->'peers', '[]')) p "
                     "WHERE s.key = 'vpn' AND p->>'peer-status' = 'online') AS \"WireGuard peers online\", "
@@ -272,10 +276,15 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                     "FROM snapshots s, jsonb_array_elements(coalesce(s.data->'ipsec', '[]')) t WHERE s.key = 'vpn' AND $1::float8 > 0"},
             {"id": "vpnev", "title": "VPN connects / disconnects", "type": "timeseries", "span": 3, "drill": {"base": {"source": "vpn"}, "series": "action"},
              "sql": f"SELECT {B} t, action series, count(*) v FROM events WHERE source = 'vpn' AND action IN ('vpn_connect', 'vpn_disconnect', 'login_success', 'login_failed') AND {W} GROUP BY 1, 2 ORDER BY 1"},
-            log_panel("source IN ('auth', 'vpn')"),
+            {"id": "vpnlogins", "title": "VPN logins", "type": "table", "span": 3,
+             "drill": {"base": {"source": "vpn", "action": "login_success,login_failed,vpn_connect"}, "by": {"ip": "ip", "user": "username"}},
+             "cols": [["ts", "Time", "time"], ["action", "Result"], ["username", "User"], ["ip", "From", "ip"], ["country", "", "flag"], ["prog", "Via"]],
+             "sql": f"SELECT ts, replace(action, '_', ' ') action, username, host(src_ip) ip, src_country country, coalesce(program, source) prog "
+                    f"FROM events WHERE source = 'vpn' AND action IN ('login_success', 'login_failed', 'vpn_connect') AND {W} ORDER BY ts DESC LIMIT 50"},
+            log_panel("source = 'vpn'"),
         ]},
     "syslog": {
-        "title": "System logs", "source": "system,dhcp,unraid", "panels": [
+        "title": "System logs", "source": "system,dhcp,unraid", "group": "general", "panels": [
             {"id": "kpi", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) AS \"Messages\", count(*) FILTER (WHERE severity <= 3) AS \"Errors+\", count(*) FILTER (WHERE severity = 4) AS \"Warnings\", "
                 f"count(DISTINCT program) AS \"Programs\", count(DISTINCT host) AS \"Hosts\" FROM events WHERE source IN ('system', 'dhcp', 'unraid') AND {W}",
