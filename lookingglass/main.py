@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import uvicorn
 
-from . import __version__, app_config, auth, crypto, db
+from . import __version__, app_config, auth, crypto, db, db_config
 from .ai import Analyst
 from .config import get_settings
 from .detections import DetectionEngine, dhcp_listener, zenarmor_device_listener
@@ -20,6 +20,7 @@ from .opnsense import Poller
 from .reports import build_report
 from .unraid import UnraidManager
 from .web.app import create_app
+from .web.wizard import Wizard
 from .zenarmor_es import create_es_app
 
 log = logging.getLogger("lookingglass")
@@ -96,6 +97,25 @@ async def daily_ai_report(settings, analyst: Analyst) -> None:
             log.exception("daily report failed")
 
 
+async def run_wizard(settings, need_db: bool, need_admin: bool, stop: asyncio.Event) -> bool:
+    """Serve the first-start wizard until the database and the first account exist. False = shut down instead."""
+    wizard = Wizard(settings, need_db, need_admin)
+    server = uvicorn.Server(uvicorn.Config(wizard.app(), host=settings.web_host, port=settings.web_port,
+                                           log_level="warning", proxy_headers=True, forwarded_allow_ips="*"))
+    server.install_signal_handlers = lambda: None
+    web = asyncio.create_task(server.serve(), name="wizard")
+    waiters = [asyncio.create_task(wizard.done.wait()), asyncio.create_task(stop.wait())]
+    await asyncio.wait([web, *waiters], return_when=asyncio.FIRST_COMPLETED)
+    if wizard.done.is_set():
+        await asyncio.sleep(1)  # let the browser receive the last answer
+        log.info("setup complete")
+    server.should_exit = True
+    await asyncio.gather(web, return_exceptions=True)
+    for w in waiters:
+        w.cancel()
+    return wizard.done.is_set()
+
+
 async def amain() -> None:
     settings = get_settings()
     logging.basicConfig(level=settings.log_level.upper(), format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
@@ -106,13 +126,28 @@ async def amain() -> None:
     except crypto.KeyFileError as exc:
         log.critical("%s", exc)
         raise SystemExit(2) from exc
-    await db.connect(settings.database_url)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+
+    # database: DATABASE_URL from the environment, else the connection saved by the setup wizard
+    need_db = False
+    if settings.database_url:
+        await db.connect(settings.database_url)
+    elif cfg := db_config.load(settings.data_dir):
+        await db.connect(**db_config.connect_kwargs(cfg))
+    else:
+        need_db = True
+    need_admin = not need_db and not await auth.ensure_admin(settings.admin_user, settings.admin_password)
+    if (need_db or need_admin) and not await run_wizard(settings, need_db, need_admin, stop):
+        await db.close()
+        return
     await app_config.load(settings)
     if not settings.secret_key:
         # persist a generated cookie key so logins survive restarts
         settings.secret_key = await db.kv_get("secret_key") or secrets.token_urlsafe(48)
         await db.kv_set("secret_key", settings.secret_key)
-    await auth.ensure_admin(settings.admin_user, settings.admin_password)
     enricher = Enricher(settings)
     writer = EventWriter(enricher)
     writer.listeners.append(dhcp_listener)
@@ -132,10 +167,6 @@ async def amain() -> None:
     server = uvicorn.Server(uvicorn.Config(app, host=settings.web_host, port=settings.web_port, log_level="warning",
                                            proxy_headers=True, forwarded_allow_ips="*"))
     server.install_signal_handlers = lambda: None  # we handle signals ourselves
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
 
     web = asyncio.create_task(server.serve(), name="web")
     es_server = None

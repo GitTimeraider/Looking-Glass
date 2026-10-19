@@ -47,23 +47,22 @@ def password_problem(password: str) -> str | None:
 
 
 # ------------------------------------------------------------------ users ---
-async def ensure_admin(username: str, password: str) -> None:
-    """Create the initial admin user on first start."""
-    pool = db.pool()
-    if await pool.fetchval("SELECT count(*) FROM users"):
-        return
-    generated = not password
-    if generated:
-        password = secrets.token_urlsafe(12)
+async def ensure_admin(username: str, password: str) -> bool:
+    """Create the first account from ADMIN_USER / ADMIN_PASSWORD if given.
+
+    Returns False while no account exists, so the setup wizard asks for one."""
+    if await db.pool().fetchval("SELECT count(*) FROM users"):
+        return True
+    if not password:
+        return False
+    await create_user(username, password)
+    log.info("initial admin user %r created from ADMIN_USER/ADMIN_PASSWORD", username)
+    return True
+
+
+async def create_user(username: str, password: str) -> None:
     pw_hash = await asyncio.to_thread(hash_password, password)
-    await pool.execute("INSERT INTO users (username, password_hash) VALUES ($1, $2)", username, pw_hash)
-    if generated:
-        log.warning("=" * 72)
-        log.warning("Initial admin account created: user=%s password=%s", username, password)
-        log.warning("Log in and change it; you will be asked to set up MFA (TOTP or passkey).")
-        log.warning("=" * 72)
-    else:
-        log.info("initial admin user %r created from ADMIN_USER/ADMIN_PASSWORD", username)
+    await db.pool().execute("INSERT INTO users (username, password_hash) VALUES ($1, $2)", username, pw_hash)
 
 
 async def get_user(user_id: int) -> dict[str, Any] | None:

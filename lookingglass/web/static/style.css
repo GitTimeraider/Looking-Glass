@@ -154,3 +154,16 @@ input[type=checkbox] { width: auto; min-width: 0; padding: 0; flex: none; }
 label.chk { white-space: nowrap; flex: none; }
 .settings-form .secret-row { display: flex; gap: 8px; align-items: center; }
 .settings-form .secret-row input[type=password] { flex: 1; min-width: 0; }
+
+/* first-start wizard */
+[hidden] { display: none !important; }
+.login.wizard { max-width: 440px; margin-top: 8vh; }
+.wizard label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
+.wizard label input, .wizard label select { width: 100%; }
+.wizard .row-btns { display: flex; gap: 8px; } .wizard .row-btns button { flex: 1; }
+.wizard code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+.wizard #msg { margin-top: 10px; overflow-wrap: anywhere; }
+.steps { display: flex; gap: 6px; list-style: none; padding: 0; margin: 0 0 12px; counter-reset: st; }
+.steps li { flex: 1; padding: 4px 6px; border-radius: 6px; background: var(--panel2); color: var(--muted); text-align: center; counter-increment: st; }
+.steps li::before { content: counter(st) ". "; }
+.steps li.cur { background: var(--accent); color: #fff; } .steps li.ok { color: var(--ok); }

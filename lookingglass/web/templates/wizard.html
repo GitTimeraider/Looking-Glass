@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Setup · Looking Glass</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ version }}">
+  <script src="/static/app.js?v={{ version }}"></script>
+</head>
+<body>
+<div class="login wizard card">
+  <h2>Looking<span style="color:var(--accent2)">Glass</span></h2>
+  <p class="muted small">First-time setup</p>
+  <ol class="steps small"><li id="s-code">Setup code</li><li id="s-db">Database</li><li id="s-admin">Account</li></ol>
+
+  <form id="f-code" hidden>
+    <p class="small">Enter the setup code from the container log. Show the log on the Docker host with
+      <code>docker logs looking-glass</code> (Unraid: Docker tab › container icon › <i>Logs</i>; Portainer:
+      container › <i>Logs</i>). It is the line after <i>FIRST-TIME SETUP</i>.</p>
+    <input name="code" placeholder="XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" required autofocus>
+    <button type="submit">Continue</button>
+  </form>
+
+  <form id="f-db" hidden>
+    <p class="small">PostgreSQL 14 or newer. For the bundled <code>db</code> container from the compose file keep the
+      defaults and enter the password from your <code>db_password</code> file
+      (<code>cat ~/looking-glass/secrets/db_password</code>).</p>
+    <label>Host <input name="host" value="db" required></label>
+    <label>Port <input name="port" value="5432" inputmode="numeric" required></label>
+    <label>Database <input name="database" value="lookingglass" required></label>
+    <label>User <input name="user" value="lookingglass" autocomplete="off" required></label>
+    <label>Password <input name="password" type="password" autocomplete="new-password"></label>
+    <label>SSL <select name="ssl">
+      <option value="prefer">prefer (use SSL when the server offers it)</option>
+      <option value="require">require (encrypted, certificate not checked)</option>
+      <option value="disable">disable</option>
+    </select></label>
+    <div class="row-btns"><button type="button" id="db-test" class="secondary">Test connection</button>
+      <button type="submit">Save &amp; continue</button></div>
+  </form>
+
+  <form id="f-admin" hidden>
+    <p class="small">Create your login. After signing in you will set up a second factor (authenticator app or
+      passkey).</p>
+    <input name="username" value="admin" placeholder="User name" autocomplete="username" required>
+    <input name="password" type="password" placeholder="Password (at least 10 characters)" autocomplete="new-password" required>
+    <input name="password2" type="password" placeholder="Repeat password" autocomplete="new-password" required>
+    <button type="submit">Create account</button>
+  </form>
+
+  <div id="f-done" hidden>
+    <p class="ok-msg">Setup complete. Looking Glass is starting…</p>
+  </div>
+
+  <div id="msg" class="small"></div>
+</div>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const msg = (text, ok) => { $("msg").textContent = text || ""; $("msg").className = "small " + (ok ? "ok-msg" : "err"); };
+  let code = sessionStorage.getItem("lg-setup-code") || "";
+  const post = (path, body) => LG.api(path, { method: "POST", body: { code, ...body } });
+  const formData = (f) => Object.fromEntries(new FormData(f).entries());
+
+  function show(state) {
+    const step = !code ? "code" : state.done ? "done" : state.need_db ? "db" : "admin";
+    for (const s of ["code", "db", "admin", "done"]) { const f = $("f-" + s); if (f) f.hidden = s !== step; }
+    const order = ["code", "db", "admin"];
+    order.forEach((s, i) => { $("s-" + s).className = s === step ? "cur" : order.indexOf(step) > i || step === "done" ? "ok" : ""; });
+    if (!state.need_db) $("s-db").className = "ok";
+    const first = $("f-" + step)?.querySelector("input"); if (first) first.focus();
+    if (step === "done") waitForApp();
+  }
+
+  async function waitForApp() {
+    sessionStorage.removeItem("lg-setup-code");
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try { const r = await fetch("/healthz", { cache: "no-store" }); const j = await r.json(); if (j.status !== "setup") break; } catch (e) { /* restarting */ }
+    }
+    location.href = "/login";
+  }
+
+  $("f-code").onsubmit = async (e) => {
+    e.preventDefault(); msg("");
+    code = formData(e.target).code.trim();
+    try { const st = await post("/wizard/code", {}); sessionStorage.setItem("lg-setup-code", code); show(st); }
+    catch (err) { code = ""; msg(err.message); }
+  };
+  $("db-test").onclick = async () => {
+    msg("Testing…", true);
+    try { const r = await post("/wizard/database", { ...formData($("f-db")), test_only: true }); msg(r.message, true); }
+    catch (err) { msg(err.message); }
+  };
+  $("f-db").onsubmit = async (e) => {
+    e.preventDefault(); msg("Connecting and creating tables…", true);
+    try { const st = await post("/wizard/database", formData(e.target)); msg(""); show(st); }
+    catch (err) { msg(err.message); }
+  };
+  $("f-admin").onsubmit = async (e) => {
+    e.preventDefault(); msg("");
+    const d = formData(e.target);
+    if (d.password !== d.password2) return msg("The passwords do not match.");
+    try { const st = await post("/wizard/admin", { username: d.username, password: d.password }); show(st); }
+    catch (err) { msg(err.message); }
+  };
+
+  (async () => {
+    const st = await LG.api("/wizard/state");
+    if (code) { try { await post("/wizard/code", {}); } catch (e) { code = ""; sessionStorage.removeItem("lg-setup-code"); } }
+    show(st);
+  })();
+})();
+</script>
+</body>
+</html>

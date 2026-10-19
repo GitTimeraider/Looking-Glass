@@ -2,8 +2,9 @@
 # Create the database once (psql on the database server):
 #   CREATE USER lookingglass WITH PASSWORD 'long-random-password';
 #   CREATE DATABASE lookingglass OWNER lookingglass;
-# Then set DATABASE_URL in .env, e.g.
-#   DATABASE_URL=postgresql://lookingglass:long-random-password@192.168.1.20:5432/lookingglass
+# Then start it (mkdir -p data && sudo chown 10001:10001 data; docker compose -f docker-compose.external-postgres.yml up -d),
+# open http://<docker-host>:8080 and enter the server, database, user and password in the setup wizard
+# (setup code: docker logs looking-glass). They are stored encrypted in ./data, not in the environment.
 services:
   looking-glass:
     image: ghcr.io/gittimeraider/looking-glass:latest
@@ -12,7 +13,9 @@ services:
     user: "${PUID:-10001}:${PGID:-10001}"   # uid:gid to run as (PUID/PGID in .env); must own the data folder
     cap_drop: [ALL]                   # needs no Linux capabilities
     security_opt: ["no-new-privileges:true"]
-    env_file: .env
+    env_file:              # optional: PUBLIC_URL, LOG_LEVEL ... (see .env.example)
+      - path: .env
+        required: false
     ports:
       - "8080:8080"
       - "514:5514/udp"
