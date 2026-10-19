@@ -7,7 +7,7 @@
     <button data-v="1">1h</button><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button>
   </div>
 </header>
-<div class="grid g3" id="panels"></div>
+<div class="grid g3" id="panels" style="grid-auto-flow: row dense"></div>
 {% endblock %}
 {% block scripts %}
 <script>
@@ -51,18 +51,33 @@ function go(p, params, url) {
 function build(d) {
   const box = document.getElementById("panels");
   box.innerHTML = d.panels.map(p => {
-    const span = p.span === 3 || p.type === "stat" || p.type === "log" ? "span3" : p.span === 2 ? "span2" : "";
+    // a table with 5+ columns gets at least two thirds of the width, so its count columns are not cut off
+    const wide = p.type === "table" && (p.cols || []).length >= 5;
+    const span = p.span === 3 || p.type === "stat" || p.type === "log" ? "span3" : p.span === 2 || wide ? "span2" : "";
     const body = p.type === "stat" ? `<div class="grid kpis" id="p-${p.id}"></div>`
       : ["timeseries", "bar", "hbar", "pie"].includes(p.type) ? `<div class="chart-box${p.type === "hbar" ? " tall" : ""}"><canvas id="c-${p.id}"></canvas></div>`
       : `<div id="p-${p.id}"></div>`;
-    return p.type === "stat" ? `<div class="${span}">${body}</div>` : `<div class="card ${span}"><h3>${LG.esc(p.title || "")}<span class="sp"></span>${p.type === "log" ? `<a class="small" href="/events?source=${encodeURIComponent(d.source || "")}&hours=${hours}">search all →</a>` : ""}</h3>${body}</div>`;
+    return p.type === "stat" ? `<div class="${span}">${body}</div>` : `<div class="card ${span}"><h3>${LG.esc(p.title || "")}${SORTABLE_CHARTS.includes(p.type) ? `<span data-sort-slot="${p.id}"></span>` : ""}<span class="sp"></span>${p.type === "log" ? `<a class="small" href="/events?source=${encodeURIComponent(d.source || "")}&hours=${hours}">search all →</a>` : ""}</h3>${body}</div>`;
   }).join("");
+  box.querySelectorAll("[data-sort-slot]").forEach(slot => {
+    const id = slot.dataset.sortSlot, t = LG.sortToggle(`${NAME}:${id}`, () => { if (lastData) render(lastData, id); });
+    chartSort[id] = t.mode; slot.replaceWith(t.el);
+  });
   built = true;
 }
 
-function render(d) {
+const SORTABLE_CHARTS = ["hbar", "pie"], chartSort = {};
+let lastData = null;
+// table columns: label for the unlabelled country column, newest / biggest first for times and sizes
+const tableCols = p => (p.cols || Object.keys((p.rows || [])[0] || {}).filter(k => !/^[fo]_/.test(k)).map(k => [k, k]))
+  .map(([k, l, f]) => ({ k, l: l || (f === "flag" ? "Country" : ""), num: f === "num", desc: ["time", "ago", "bytes"].includes(f),
+                         f: f && f !== "num" ? FMT[f] : undefined }));
+
+function render(d, only) {
   step = d.step || step;
+  lastData = d;
   for (const p of d.panels) {
+    if (only && p.id !== only) continue;
     const base = drillBase(p, d);
     if (p.error) { const el = document.getElementById("p-" + p.id) || document.getElementById("c-" + p.id)?.parentElement; if (el) el.innerHTML = `<div class="empty">query failed: ${LG.esc(p.error)}</div>`; continue; }
     const rows = p.rows || [];
@@ -79,12 +94,14 @@ function render(d) {
                 ...(ser ? { [ser]: s === null || s === "?" ? "none" : s } : {}) });
       }) });
     } else if (p.type === "pie") {
-      LG.pieChart("c-" + p.id, rows, base && (r => go(p, { ...base, ...rowFilters(p, r) })));
+      const sorted = LG.sortRows(rows, chartSort[p.id] && chartSort[p.id]());
+      LG.pieChart("c-" + p.id, sorted, base && (r => go(p, { ...base, ...rowFilters(p, r) })));
     } else if (p.type === "bar" || p.type === "hbar") {
-      LG.barChart("c-" + p.id, rows, p.type === "hbar", base && (r => go(p, { ...base, ...rowFilters(p, r) })));
+      const sorted = p.type === "hbar" ? LG.sortRows(rows, chartSort[p.id] && chartSort[p.id]()) : rows;
+      LG.barChart("c-" + p.id, sorted, p.type === "hbar", base && (r => go(p, { ...base, ...rowFilters(p, r) })));
     } else if (p.type === "table") {
-      LG.table("#p-" + p.id, (p.cols || Object.keys(rows[0] || {}).filter(k => !/^[fo]_/.test(k)).map(k => [k, k])).map(([k, l, f]) => ({ k, l, num: f === "num", f: f && f !== "num" ? FMT[f] : undefined })), rows,
-               "No data", base && (r => go(p, { ...base, ...rowFilters(p, r) })));
+      LG.table("#p-" + p.id, tableCols(p), rows, "No data", base && (r => go(p, { ...base, ...rowFilters(p, r) })),
+               { sortAll: true, order: p.order });
     } else if (p.type === "log") {
       LG.table("#p-" + p.id, [{k: "ts", l: "Time", f: LG.time}, {k: "source", l: "Src", f: LG.src}, {k: "action", l: "Action"},
         {k: "src_ip", l: "From", f: (v, r) => `${LG.ip(v)}${r.src_port ? `<span class="muted">:${r.src_port}</span>` : ""} ${LG.flag(r.src_country)}`},

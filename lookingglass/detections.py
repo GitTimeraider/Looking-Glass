@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from . import db
+from .parsers.common import real_name
 from .config import Settings
 from .ingest import STATS
 from .parsers.common import is_internal_ip, parse_networks
@@ -24,6 +25,14 @@ SUSPICIOUS_OUT_PORTS = {
     9030: "Tor dir", 5900: "VNC", 1080: "SOCKS", 3128: "proxy", 8333: "Bitcoin", 3333: "mining pool",
     4242: "mining pool", 14444: "Monero pool", 25: "SMTP (spam?)",
 }
+
+
+# a name from a better source replaces one from a worse source, never the other way round
+NAME_RANK = {"manual": 100, "dnsmasq-static": 60, "dhcp": 50, "dns": 30, "zenarmor": 25, "arp": 20}
+
+
+def name_rank(source: str) -> int:
+    return NAME_RANK.get(source, NAME_RANK["dhcp"] if source.startswith("dhcp") else 10)
 
 
 async def device_info(ip: str | None) -> dict[str, Any] | None:
@@ -110,18 +119,27 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
         return
     first_run = not await pool.fetchval("SELECT EXISTS (SELECT 1 FROM devices)")
     for d in devices:
+        d["hostname"] = real_name(d.get("hostname"))
+        source = (d.get("name_source") or origin) if d["hostname"] else None
         new = await pool.fetchval(
-            "INSERT INTO devices (mac, ip, hostname, vendor, interface, sources, lease_type, lease_expires, online) "
-            "VALUES ($1, $2, $3, $4, $5, ARRAY[$6::text], $7, $8, $9) "
+            "INSERT INTO devices (mac, ip, hostname, vendor, interface, sources, lease_type, lease_expires, online, "
+            "name_source, name_rank) "
+            "VALUES ($1, $2, $3, $4, $5, ARRAY[$6::text], $7, $8, $9, $10, $11) "
             "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(EXCLUDED.ip, devices.ip), "
-            "hostname = COALESCE(EXCLUDED.hostname, devices.hostname), vendor = COALESCE(EXCLUDED.vendor, devices.vendor), "
+            "hostname = CASE WHEN EXCLUDED.hostname IS NOT NULL AND EXCLUDED.name_rank >= devices.name_rank "
+            "THEN EXCLUDED.hostname ELSE devices.hostname END, "
+            "name_source = CASE WHEN EXCLUDED.hostname IS NOT NULL AND EXCLUDED.name_rank >= devices.name_rank "
+            "THEN EXCLUDED.name_source ELSE devices.name_source END, "
+            "name_rank = GREATEST(devices.name_rank, CASE WHEN EXCLUDED.hostname IS NOT NULL THEN EXCLUDED.name_rank ELSE 0 END), "
+            "vendor = COALESCE(EXCLUDED.vendor, devices.vendor), "
             "interface = COALESCE(EXCLUDED.interface, devices.interface), "
             "sources = (SELECT array_agg(DISTINCT s) FROM unnest(devices.sources || EXCLUDED.sources) s), "
             "lease_type = COALESCE(EXCLUDED.lease_type, devices.lease_type), "
             "lease_expires = COALESCE(EXCLUDED.lease_expires, devices.lease_expires), "
             "online = devices.online OR EXCLUDED.online, last_seen = now() "
             "RETURNING (xmax = 0)", d["mac"], d.get("ip"), d.get("hostname") or None, d.get("vendor") or None,
-            d.get("interface") or None, origin, d.get("lease_type"), d.get("lease_expires"), bool(d.get("online")))
+            d.get("interface") or None, origin, d.get("lease_type"), d.get("lease_expires"), bool(d.get("online")),
+            source, name_rank(source) if source else 0)
         if new and not first_run:
             await raise_alert(
                 "new_device", "low", f"New device on network: {d['mac']} ({d.get('hostname') or d.get('ip') or '?'})",

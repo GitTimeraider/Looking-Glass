@@ -72,3 +72,12 @@ def event(ts: datetime, source: str, **kw: Any) -> dict[str, Any]:
             kw[key] = int_or_none(kw[key])
     ev.update({k: v for k, v in kw.items() if v not in (None, "")})
     return ev
+
+
+PLACEHOLDER_NAMES = {"", "*", "-", "?", "unknown", "<unknown>", "(unknown)"}
+
+
+def real_name(value: Any) -> str | None:
+    """Host name, or None for the placeholders dnsmasq ("*") and the ARP table ("-", "?") use for "no name"."""
+    name = str(value or "").strip().rstrip(".")
+    return None if name.lower() in PLACEHOLDER_NAMES else name

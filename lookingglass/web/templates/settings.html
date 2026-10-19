@@ -73,8 +73,9 @@
         <code>unraid-api apikey --create --name lookingglass --roles VIEWER --json</code>.</li>
       <li><b>Unraid 6.12 – 7.1</b>: install the <i>Unraid Connect</i> plugin from Community Apps first (it ships the API), then do the same.</li>
       <li>URL: the address you use for the Unraid web UI (e.g. <code>http://192.168.1.10</code> or <code>https://tower.local</code>).</li>
-      <li>Optional Docker API: run the <code>docker-socket-proxy</code> container on Unraid (see <code>examples/docker-compose.unraid-socket-proxy.yml</code>)
-        to get per-container CPU / memory graphs. Never expose the raw Docker socket.</li>
+      <li>CPU / memory per container comes from the Unraid API itself (API 4.29 or newer). Only on older versions:
+        run the <code>docker-socket-proxy</code> container on Unraid (see <code>examples/docker-compose.unraid-socket-proxy.yml</code>)
+        and enter it as Docker API. Never expose the raw Docker socket.</li>
     </ol>
   </details>
 </div>

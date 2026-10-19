@@ -22,18 +22,20 @@
 <div class="layout">
   <nav class="side" id="side">
     <div class="brand">Looking<span>Glass</span></div>
+    {% macro dash_links(group) %}{% for key, label, grp in dashboards if grp == group %}<a href="/dash/{{ key }}" class="{{ 'active' if path == '/dash/' ~ key }}">{{ label }}</a>{% endfor %}{% endmacro %}
+    <div class="grp">General</div>
     <a href="/" class="{{ 'active' if path == '/' }}">Overview</a>
     <a href="/alerts" class="{{ 'active' if path == '/alerts' }}">Alerts</a>
-    <div class="grp">Security dashboards</div>
-    {% for key, label in dashboards %}<a href="/dash/{{ key }}" class="{{ 'active' if path == '/dash/' ~ key }}">{{ label }}</a>{% endfor %}
-    <div class="grp">Infrastructure</div>
-    <a href="/system" class="{{ 'active' if path == '/system' }}">OPNsense</a>
-    <a href="/devices" class="{{ 'active' if path == '/devices' }}">Devices</a>
-    <a href="/unraid" class="{{ 'active' if path == '/unraid' }}">Unraid</a>
-    <div class="grp">Tools</div>
     <a href="/events" class="{{ 'active' if path == '/events' }}">Event search</a>
+    {{ dash_links("general") }}
     <a href="/reports" class="{{ 'active' if path == '/reports' }}">Reports</a>
     <a href="/ai" class="{{ 'active' if path == '/ai' }}">AI Analyst</a>
+    <div class="grp">OPNsense</div>
+    <a href="/system" class="{{ 'active' if path == '/system' }}">System &amp; hardware</a>
+    {{ dash_links("opnsense") }}
+    <a href="/devices" class="{{ 'active' if path == '/devices' }}">Devices</a>
+    <div class="grp">Unraid</div>
+    <a href="/unraid" class="{{ 'active' if path == '/unraid' }}">Unraid</a>
     <div class="grp">Admin</div>
     <a href="/settings" class="{{ 'active' if path == '/settings' }}">Settings</a>
     <a href="/setup" class="{{ 'active' if path == '/setup' }}">Setup &amp; status</a>

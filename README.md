@@ -22,7 +22,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 | SSH / web GUI / OpenVPN / IPsec | syslog | failed and successful logins, config changes |
 | DHCP leases (Kea, dnsmasq, ISC) + ARP | API + syslog | **device list**: name, IP, MAC, vendor, interface, lease, online state, per-device activity; **new/rogue device** alerts |
 | System / hardware | API | CPU %, load, memory, swap, ZFS ARC, disks, temperatures, states, interface throughput/errors, gateways, services, top processes, firmware updates |
-| **Unraid** | Unraid API (GraphQL) + optional Docker socket proxy | CPU/cores, memory, temperatures, network, array/parity, disks (temp, errors, SMART), shares, **Docker containers** (state, updates, CPU/mem) and **their logs**, Unraid syslog, **notifications**, VMs, UPS |
+| **Unraid** | Unraid API (GraphQL) + optional Docker socket proxy | CPU/cores, memory, temperatures, network, array/parity, disks (temp, errors, SMART), shares, **Docker containers** (state, CPU/mem) and **their logs**, Unraid syslog, **notifications**, VMs, UPS |
 
 ## Built-in detections
 
@@ -74,7 +74,7 @@ Other ready-made compose files are in [`examples/`](examples):
 | [`examples/docker-compose.all-in-one.yml`](examples/docker-compose.all-in-one.yml) | Portainer / Dockge stacks: no files next to the stack |
 | [`examples/docker-compose.secrets.yml`](examples/docker-compose.secrets.yml) | unattended install without the wizard (database + first login from Docker secret files) |
 | [`examples/docker-compose.build.yml`](examples/docker-compose.build.yml) | build the image from source |
-| [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml) | run **on Unraid** for per-container CPU/memory graphs |
+| [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml) | run **on Unraid** for per-container CPU/memory on Unraid API older than 4.29 |
 | [`examples/unraid/looking-glass.xml`](examples/unraid/looking-glass.xml) | run Looking Glass itself **on Unraid** as a Docker template |
 
 ### 3. Optional: `.env` (shell on your Docker host, in `~/looking-glass`)
@@ -331,7 +331,8 @@ Things to know:
    copy the key. (Or in the Unraid terminal: `unraid-api apikey --create --name lookingglass --roles VIEWER --json`.)
 2. **Looking Glass web UI**: *Settings › Unraid servers* › fill in name, URL (e.g. `http://192.168.1.10`) and the API key ›
    *Test connection* › *Add server*. Add as many servers as you like.
-3. Optional, for per-container CPU / memory graphs: on Unraid start
+3. CPU / memory per container comes from the Unraid API (version 4.29 or newer; the version is shown on the
+   Unraid page). Only on an older API: on Unraid start
    [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml)
    (a read-only Docker API) and enter `http://<unraid-ip>:2375` as *Docker API* for that server.
 
@@ -379,7 +380,9 @@ metrics, no alerts.
 * **Alerts** – detections ranked by severity, naming the device behind an IP (from the device list) and the evidence
   (e.g. the non-existent domains looked up); **Events** opens exactly the events behind an alert; acknowledge / close;
   **Ask AI** investigates one alert.
-* **Security dashboards** (one per function, each with KPIs, charts over time, breakdowns, top-N tables and a live log).
+* **Menu**: *General* (overview, alerts, event search, system logs, reports, AI analyst – over all sources), then one
+  group per product: *OPNsense* (system & hardware, its security dashboards, devices) and *Unraid*.
+* **Dashboards** (one per function, each with KPIs, charts over time, breakdowns, top-N tables and a live log).
   **Everything is clickable**: a tile, a bar, a pie slice, a moment in a time chart or a table row opens *Event search*
   with exactly those events (same filters and time span):
   *Firewall* (actions, interfaces, protocols, ports, countries, rules, allowed inbound, internal hosts being blocked),
@@ -388,14 +391,21 @@ metrics, no alerts.
   *Threats* (IDS, CrowdSec, Q-Feeds, alerts by rule/severity, top attackers across all sources, active bans),
   *Zenarmor* (record types, applications and app categories, web categories, DNS/TLS/HTTP, hosts and devices, blocked
   destinations, threats, top talkers),
-  *Authentication & VPN* (failed/successful logins, usernames tried, config changes, live WireGuard peers, OpenVPN
-  sessions and IPsec tunnels) and *System logs* (OPNsense and Unraid, per host and program).
-* **OPNsense** – tab *Overview*: gateways, interfaces, services, firmware, devices; tab *Hardware & performance*: CPU,
-  load, memory/swap/ARC, temperatures, disks, states, interface throughput/errors, gateway latency/loss, top processes.
+  *Authentication* (failed/successful logins, IPs with failed logins, usernames tried, config changes),
+  *VPN* (live WireGuard peers, OpenVPN sessions and IPsec tunnels, connects/disconnects, VPN logins) and
+  *System logs* (OPNsense and Unraid, per host and program).
+* **OPNsense › System & hardware** – tab *Overview* (hardware & performance): CPU, load, memory/swap/ARC, temperatures, disk usage, states,
+  interface throughput/errors, gateway latency/loss, services, ARP/DHCP devices, top processes; tab *System & network*:
+  system, firmware, disks & temperature, gateways, interfaces.
 * **Devices** – everything connected to OPNsense (ARP + DHCP leases from dnsmasq / Kea / ISC + Zenarmor device
   fingerprints): online state, name,
   IP, MAC, vendor, interface, lease, first/last seen, events/blocks/DNS queries/alerts per device; mark devices as
   trusted, rename them, add notes.
+  Names come from, best first: a name you typed (never replaced; clear it to go back to automatic) → a dnsmasq
+  *Hosts* entry for the MAC or IP (*Services > Dnsmasq DNS & DHCP > Hosts*) → the host name the device sent with its
+  DHCP request → the name Unbound shows for the IP → the ARP table / Zenarmor. The placeholders dnsmasq (`*`) and the
+  ARP table (`-`, `?`) use for "no name" are ignored. A device that still has no name sends none and has no Hosts
+  entry: add one in OPNsense (host name + its MAC) or name it on the Devices page.
 * **Unraid** – see above.
 * **Settings › Data & detection › Delete collected data** – wipe logs/events, alerts, graphs, reports, AI conversations
   and optionally the device list to start over. Settings, credentials, accounts/MFA, Unraid servers and the encryption

@@ -23,6 +23,7 @@ from ..ingest import STATS
 from ..dashboards import DASHBOARDS, run_dashboard
 from ..reports import build_report, timeline
 from .. import setup_checks, unraid_storage
+from ..parsers.common import real_name
 from ..unraid import test_connection as unraid_test
 from .auth_routes import PUBLIC_PATHS, SETUP_PATHS, current_user
 from .auth_routes import register as register_auth
@@ -30,7 +31,8 @@ from .auth_routes import register as register_auth
 log = logging.getLogger(__name__)
 HERE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(HERE / "templates"))
-DASH_NAV = [(k, v["title"].split(" (")[0]) for k, v in DASHBOARDS.items()]
+# (key, menu label, menu group): "general" dashboards cover every source, the others sit under their product
+DASH_NAV = [(k, v["title"].split(" (")[0], v.get("group", "general")) for k, v in DASHBOARDS.items()]
 templates.env.globals["dashboards"] = DASH_NAV
 
 PAGES = {
@@ -100,7 +102,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
 
     @app.get("/hardware")
     async def hardware_moved():  # merged into the OPNsense page
-        return RedirectResponse("/system#hardware")
+        return RedirectResponse("/system")
 
     @app.get("/reports/{report_id}", response_class=HTMLResponse)
     async def report_page(request: Request, report_id: int):
@@ -365,6 +367,16 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         await db.pool().execute("DELETE FROM ai_chats WHERE id = $1", chat_id)
         return {"ok": True}
 
+    @app.post("/api/ai/chats/delete")
+    async def delete_chats(payload: dict = Body(...)):
+        try:
+            ids = [int(i) for i in payload.get("ids") or []]
+        except (TypeError, ValueError):
+            raise HTTPException(400, "ids must be a list of chat ids")
+        deleted = await db.pool().fetchval(
+            "WITH d AS (DELETE FROM ai_chats WHERE id = ANY($1::bigint[]) RETURNING 1) SELECT count(*) FROM d", ids)
+        return {"ok": True, "deleted": deleted}
+
     @app.post("/api/ai/message")
     async def ai_message(payload: dict = Body(...)):
         text = str(payload.get("text", "")).strip()
@@ -440,7 +452,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     @app.get("/api/devices")
     async def devices(hours: float = Query(24, gt=0)):
         rows = await db.pool().fetch(
-            "SELECT d.mac, host(d.ip) ip, d.hostname, d.vendor, d.interface, d.sources, d.lease_type, d.lease_expires, "
+            "SELECT d.mac, host(d.ip) ip, d.hostname, d.name_source, d.vendor, d.interface, d.sources, d.lease_type, d.lease_expires, "
             "d.online, d.trusted, d.notes, d.first_seen, d.last_seen, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = d.ip AND e.ts > now() - make_interval(secs => $1)) events, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = d.ip AND e.action = 'block' AND e.ts > now() - make_interval(secs => $1)) blocked, "
@@ -451,9 +463,14 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
 
     @app.post("/api/devices/{mac}")
     async def update_device(mac: str, payload: dict = Body(...)):
-        await db.pool().execute("UPDATE devices SET trusted = COALESCE($2, trusted), notes = COALESCE($3, notes), "
-                                "hostname = COALESCE(nullif($4, ''), hostname) WHERE mac = $1",
-                                mac.lower(), payload.get("trusted"), payload.get("notes"), payload.get("hostname"))
+        pool = db.pool()
+        await pool.execute("UPDATE devices SET trusted = COALESCE($2, trusted), notes = COALESCE($3, notes) WHERE mac = $1",
+                           mac.lower(), payload.get("trusted"), payload.get("notes"))
+        if "hostname" in payload:
+            # a name typed here is never replaced by DHCP / DNS; an empty name hands naming back to them
+            name = real_name(payload.get("hostname"))
+            await pool.execute("UPDATE devices SET hostname = $2, name_source = $3, name_rank = $4 WHERE mac = $1",
+                               mac.lower(), name, "manual" if name else None, 100 if name else 0)
         return {"ok": True}
 
     @app.delete("/api/devices/{mac}")

@@ -18,7 +18,7 @@ from .config import Settings
 from .ingest import STATS, EventWriter
 from .parsers import filterlog
 from .parsers import nginx as nginx_parser
-from .parsers.common import event, ip_or_none
+from .parsers.common import event, ip_or_none, real_name
 from .parsers.security import (crowdsec_alert_from_api, crowdsec_decision_from_api, ids_from_api,
                                unbound_from_api)
 from .parsers.syslog import parse_iso
@@ -99,6 +99,8 @@ class Poller:
         self.status: dict[str, dict[str, Any]] = {}
         self._fw_digest = ""
         self._vpn_state: dict[str, str] = {}
+        self._static_names: dict[str, str] = {}  # MAC or IP -> host name from dnsmasq "Hosts" entries
+        self._dns_ip_names: dict[str, str] = {}  # IP -> host name Unbound reports for a client
         self._prev_if: dict[str, tuple[float, float, float]] = {}
         p = max(15, settings.poll_interval)
         self.jobs: list[tuple[str, int, Callable[[], Awaitable[None]]]] = [
@@ -293,9 +295,9 @@ class Poller:
             mac = (r.get("mac") or "").lower()
             if not mac or mac == "(incomplete)" or r.get("expired"):
                 continue
-            devices.append({"mac": mac, "ip": ip_or_none(r.get("ip")), "hostname": r.get("hostname") or None,
-                            "vendor": r.get("manufacturer") or None, "interface": r.get("intf_description") or r.get("intf"),
-                            "online": True})
+            devices.append(self._named({"mac": mac, "ip": ip_or_none(r.get("ip")), "hostname": r.get("hostname") or None,
+                                        "vendor": r.get("manufacturer") or None,
+                                        "interface": r.get("intf_description") or r.get("intf"), "online": True}))
         from .detections import track_devices  # local import to avoid a cycle
         await track_devices(devices, origin="arp", mark_online=True)
 
@@ -303,6 +305,7 @@ class Poller:
         """DHCP leases from whichever DHCP server is in use: Kea, dnsmasq or ISC dhcpd (plugin)."""
         from .detections import track_devices
 
+        await self._load_static_names()
         found = False
         for path, kind in (("kea/leases4/search", "kea"), ("dnsmasq/leases/search", "dnsmasq"),
                            ("dhcpv4/leases/search_lease", "isc")):
@@ -317,15 +320,45 @@ class Poller:
                 mac = (r.get("hwaddr") or r.get("mac") or "").lower()
                 if not mac:
                     continue
-                devices.append({
+                devices.append(self._named({
                     "mac": mac, "ip": ip_or_none(r.get("address")), "hostname": r.get("hostname") or None,
                     "vendor": r.get("mac_info") or r.get("man") or None, "interface": r.get("if_descr") or r.get("if"),
                     "lease_type": r.get("lease_type") or r.get("type"),
                     "lease_expires": str(r.get("expire") or r.get("ends") or "") or None,
-                    "online": str(r.get("status", "")).lower() == "online"})
+                    "online": str(r.get("status", "")).lower() == "online"}))
             await track_devices(devices, origin=f"dhcp-{kind}")
         if not found:
             raise ApiError(404, "no DHCP lease API found (Kea, dnsmasq or ISC DHCP)")
+
+    async def _load_static_names(self) -> None:
+        """Names from dnsmasq "Hosts" entries (Services > Dnsmasq DNS & DHCP > Hosts): static DHCP reservations
+        and local DNS names, keyed by MAC and by IP. Kept from the last good read when the call fails."""
+        try:
+            rows = await self.api.search("dnsmasq/settings/search_host", rows=5000)
+        except (ApiError, httpx.HTTPError, ValueError):
+            return
+        names: dict[str, str] = {}
+        for r in rows:
+            name = real_name(r.get("host")) or real_name(r.get("descr"))
+            if not name:
+                continue
+            for key in ("hwaddr", "ip"):
+                vals = r.get(key) or []
+                for v in vals if isinstance(vals, list) else str(vals).split(","):
+                    v = v.strip().lower()
+                    if v and (key == "hwaddr" or ip_or_none(v)):
+                        names.setdefault(v, name)
+        self._static_names = names
+
+    def _named(self, d: dict[str, Any]) -> dict[str, Any]:
+        """Best known name: dnsmasq Hosts entry > name from the lease / ARP table > the name Unbound shows for the IP.
+        Placeholders such as "*" (dnsmasq: client sent no name) and "-" / "?" (ARP) count as no name."""
+        static = self._static_names.get(d["mac"]) or (d.get("ip") and self._static_names.get(d["ip"]))
+        if static:
+            d.update(hostname=static, name_source="dnsmasq-static")
+        elif not real_name(d.get("hostname")) and d.get("ip") in self._dns_ip_names:
+            d.update(hostname=self._dns_ip_names[d["ip"]], name_source="dns")
+        return d
 
     async def poll_activity(self) -> None:
         """CPU usage and top processes from the 'top' based activity endpoint."""
@@ -384,6 +417,7 @@ class Poller:
                     host = (info or {}).get("hostname") if isinstance(info, dict) else None
                     if host and ip_or_none(ip):
                         names[str(host).lower()] = ip
+                        self._dns_ip_names[ip] = str(host)
         except (ApiError, httpx.HTTPError, ValueError):
             pass
         for name, ip in list(names.items()):

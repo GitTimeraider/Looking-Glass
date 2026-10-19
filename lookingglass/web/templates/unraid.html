@@ -47,7 +47,7 @@
       <div class="card"><h3>Containers running</h3><div class="chart-box sm"><canvas id="c-ctr"></canvas></div></div>
       <div class="card"><h3>Container CPU % (top 8)</h3><div class="chart-box sm"><canvas id="c-ccpu"></canvas></div></div>
       <div class="card"><h3>Container memory (top 8)</h3><div class="chart-box sm"><canvas id="c-cmem"></canvas></div></div>
-      <div class="card span3"><h3>Containers</h3><div id="containers"></div></div>
+      <div class="card span3"><h3>Containers <span class="muted small">click a column header to sort</span></h3><div class="small muted" id="dk-note"></div><div id="containers"></div></div>
     </div>
   </section>
   <section data-s="logs" hidden>
@@ -172,22 +172,24 @@ async function load() {
     {k: "checked", l: "Checked", f: v => v ? LG.ago(v) : ""}], D("disks") || [],
     "SMART check is off. Turn it on per array/pool under Settings › Unraid servers › arrays & pools – it only runs while all disks spin, so it never wakes one.");
   // docker
-  const ctrs = D("docker") || [], stats = D("docker_stats") || [];
-  const sByName = Object.fromEntries(stats.map(s => [s.name, s]));
+  const stats = D("docker_stats") || [], sByName = Object.fromEntries(stats.map(s => [s.name, s]));
+  const ctrs = (D("docker") || []).map(c => { const name = (c.names || [])[0]?.replace(/^\//, "") || ""; return { ...c, name, st: sByName[name] }; });
   const k = (l, v, c = "") => `<div class="card kpi ${c}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
   document.getElementById("dk-kpis").innerHTML = k("Containers", ctrs.length) + k("Running", ctrs.filter(c => c.state === "RUNNING").length, "ok") +
     k("Stopped", ctrs.filter(c => c.state !== "RUNNING").length, ctrs.some(c => c.state === "EXITED" && c.autoStart) ? "bad" : "") +
-    k("Updates available", ctrs.filter(c => c.isUpdateAvailable).length, ctrs.some(c => c.isUpdateAvailable) ? "warn" : "") +
     (stats.length ? k("Total CPU %", stats.reduce((a, s) => a + s.cpu_pct, 0).toFixed(1)) + k("Total memory", LG.bytes(stats.reduce((a, s) => a + s.mem_bytes, 0))) : "");
+  const dsec = (st.sections || {}).docker_stats;
+  document.getElementById("dk-note").innerHTML = dsec && !dsec.ok
+    ? `CPU / memory per container unavailable: ${LG.esc(dsec.error || "")}. It needs Unraid API 4.29 or newer (Unraid 7.2+ or the Unraid Connect plugin), or a Docker API endpoint under Settings › Unraid servers.` : "";
   LG.table("#containers", [
-    {k: "names", l: "Container", f: (v, r) => `${r.iconUrl ? `<img src="${LG.esc(r.iconUrl)}" width="16" height="16" style="vertical-align:middle;margin-right:6px" onerror="this.remove()">` : ""}<b>${LG.esc((v || [])[0]?.replace(/^\//, ""))}</b>`},
-    {k: "image", l: "Image", f: v => `<span class="small mono">${LG.esc(v)}</span>`},
-    {k: "state", l: "State", f: (v, r) => `<span class="state-${LG.esc(v)}">${LG.esc(v)}</span><div class="small muted">${LG.esc(r.status)}</div>`},
-    {k: "autoStart", l: "Autostart", f: v => v ? "yes" : ""}, {k: "isUpdateAvailable", l: "Update", f: v => v ? `<span class="badge warn">available</span>` : ""},
+    {k: "name", l: "Container", s: true, f: (v, r) => `${r.iconUrl ? `<img src="${LG.esc(r.iconUrl)}" width="16" height="16" style="vertical-align:middle;margin-right:6px" onerror="this.remove()">` : ""}<b>${LG.esc(v)}</b>`},
+    {k: "image", l: "Image", s: true, f: v => `<span class="small mono">${LG.esc(v)}</span>`},
+    {k: "state", l: "State", s: true, f: (v, r) => `<span class="state-${LG.esc(v)}">${LG.esc(v)}</span> <span class="small muted">${LG.esc(r.status)}</span>`},
+    {k: "autoStart", l: "Autostart", f: v => v ? "yes" : ""},
     {k: "ports", l: "Ports", f: v => (v || []).filter(p => p.publicPort).map(p => `<span class="pill">${p.publicPort}→${p.privatePort}/${LG.esc(p.type || "").toLowerCase()}</span>`).join("")},
-    {k: "names", l: "CPU", num: true, f: v => sByName[(v || [])[0]?.replace(/^\//, "")] ? sByName[(v || [])[0].replace(/^\//, "")].cpu_pct.toFixed(1) + "%" : ""},
-    {k: "names", l: "Memory", num: true, f: v => sByName[(v || [])[0]?.replace(/^\//, "")] ? LG.bytes(sByName[(v || [])[0].replace(/^\//, "")].mem_bytes) : ""},
-    {k: "names", l: "", f: v => `<a href="#" data-logs="${LG.esc((v || [])[0]?.replace(/^\//, ""))}">logs</a>`},
+    {k: "st", l: "CPU", num: true, s: r => r.st ? r.st.cpu_pct : null, f: v => v ? v.cpu_pct.toFixed(1) + "%" : ""},
+    {k: "st", l: "Memory", num: true, s: r => r.st ? r.st.mem_bytes : null, f: v => v ? LG.bytes(v.mem_bytes) + (v.mem_pct ? `<span class="small muted"> ${v.mem_pct.toFixed(1)}%</span>` : "") : ""},
+    {k: "name", l: "", f: v => `<a href="#" data-logs="${LG.esc(v)}">logs</a>`},
     {k: "webUiUrl", l: "", f: v => v ? `<a href="${LG.esc(v)}" target="_blank" rel="noopener">web UI</a>` : ""}], ctrs, "No container data");
   document.querySelectorAll("[data-logs]").forEach(a => a.onclick = e => { e.preventDefault(); document.getElementById("lg-kind").value = "docker"; ctrSel(a.dataset.logs); document.querySelector('#tabs [data-t="logs"]').click(); });
   ctrSel();
