@@ -19,9 +19,12 @@
       <code>secret=</code> downloads. Enter the URL (e.g. <code>https://192.168.1.1</code>), key and secret under
       <a href="/settings#opnsense">Settings › OPNsense</a> and click <i>Test connection</i>, then <i>Save</i>.</li>
     <li><b>Remote syslog</b> — <i>System › Settings › Logging</i>, tab <i>Remote</i> (called <i>Logging / targets</i> on older versions), click <b>+</b>:
-      Enabled ✓, Transport <code>UDP(4)</code> (or <code>TCP(4)</code>), Applications: leave empty to send everything (recommended) or pick
-      <code>filter (filterlog)</code>, <code>unbound</code>, <code>nginx</code>, <code>crowdsec</code>, <code>suricata</code>, <code>sshd</code>,
-      <code>audit</code>, <code>openvpn</code>, <code>dhcpd</code>/<code>kea</code>…; Levels: everything from <i>info</i> up;
+      Enabled ✓, Transport <code>UDP(4)</code> (or <code>TCP(4)</code>), <b>Applications: leave empty</b> (recommended). Only then
+      are the general <i>System</i> logs (kernel, opnsense …), sshd logins and API-key failures sent; none of these
+      has an entry in the list. If you pick instead: <code>filter (filterlog)</code>, <code>resolver (unbound)</code>,
+      <code>audit (audit)</code>, <code>lighttpd</code>, <code>openvpn</code>, <code>ipsec (charon)</code>,
+      <code>wireguard</code>, <code>suricata</code>, <code>kea</code>/<code>dnsmasq</code>/<code>dhcpd</code>,
+      <code>configd</code>, <code>kernel</code>. Levels: everything from <i>info</i> up (Unbound query lines are <i>info</i>);
       Hostname: the IP of the Docker host running Looking Glass; Port: the host port mapped to Looking Glass's syslog port
       (<code>514</code> in the example compose file, container port <code>{{ syslog_port }}</code>); <b>rfc5424</b> ✓. Save &amp; Apply.</li>
     <li><b>Firewall logging</b> — default block rules are logged out of the box (<i>Firewall › Settings › Advanced › Logging</i>).
@@ -29,10 +32,16 @@
       Without syslog Looking Glass pulls the live firewall log via the API instead (<code>FIREWALL_LOG_PULL=auto</code>).</li>
     <li><b>Unbound DNS</b> — enable the Unbound DNS statistics in <i>Reporting › Settings</i> (off by default) so Looking Glass can pull per-client queries via the API,
       and/or <i>Services › Unbound DNS › Advanced</i> › <i>Log Queries</i> (+ <i>Log Replies</i>) for full query logs over syslog.</li>
-    <li><b>nginx plugin</b> — error logs reach syslog automatically. For access logs open <i>Services › Nginx › Configuration</i>,
-      tab <i>Other › SYSLOG Targets</i>, add a target with Host = Docker host, Port = 514, then select it under <i>HTTP(S) › HTTP Server › SYSLOG targets</i>
-      (Access Log Format <code>main</code> or <code>main_ext</code>). nginx then sends access logs straight to Looking Glass.</li>
-    <li><b>CrowdSec</b> (os-crowdsec) — nothing extra: alerts and decisions are pulled via the API; its log lines arrive through syslog.</li>
+    <li><b>nginx plugin</b> — OPNsense remote syslog only forwards nginx's global error log, never the access logs (they are
+      files on the firewall). Looking Glass therefore reads access, error and stream logs through the nginx API
+      (<a href="/settings#opnsense">Settings › OPNsense</a> › <i>Pull nginx access / error logs</i>, on by default; the API
+      user needs the nginx pages). For real-time delivery instead, open <i>Services › Nginx › Configuration</i>, tab
+      <i>Other › SYSLOG Targets</i>, add a target with Host = Docker host, Port = the Looking Glass syslog port, Severity
+      <i>info</i>, then select it under <i>HTTP(S) › HTTP Server › SYSLOG targets</i>. nginx sends straight over UDP.</li>
+    <li><b>VPN</b> — WireGuard writes no connection logs at all, so peers, handshakes and traffic come from the API
+      (<i>Pull VPN status</i>, on by default), as do OpenVPN sessions and IPsec tunnels. Logins and connects of OpenVPN /
+      IPsec also arrive via syslog (<code>openvpn</code>, <code>ipsec (charon)</code>).</li>
+    <li><b>CrowdSec</b> (os-crowdsec) — nothing extra: alerts and decisions are pulled via the API (CrowdSec writes no syslog on OPNsense).</li>
     <li><b>Suricata IDS/IPS</b> — <i>Services › Intrusion Detection › Administration</i>: tick <i>Enable syslog alerts</i> (and optionally
       <i>Enable eve syslog output</i>). Alerts are also pulled from the API.</li>
     <li><b>Zenarmor</b> — <i>Zenarmor › Settings › Streaming Data</i>. Works on every edition including free Home:

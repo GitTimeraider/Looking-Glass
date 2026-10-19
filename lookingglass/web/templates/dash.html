@@ -19,7 +19,34 @@ const FMT = {
   ip: LG.ip, flag: LG.flag, ago: LG.ago, time: LG.time, sev: LG.sev, src: LG.src, bytes: LG.bytes,
   num: LG.num,
 };
-let built = false;
+let built = false, step = 3600;
+
+/* ---- click-through: every chart element, table row and tile opens Event search with matching filters ----
+   panel.drill = {base: {...}, by: "param" | {param: column}, series: "param", tiles: {"Tile": {...} | null}, url}
+   Row columns named f_<param> are used as filters directly (null -> "none" = empty value). */
+function drillBase(p, d) {
+  if (p.drill === false) return null;
+  const dr = p.drill || {};
+  const params = { hours, ...(dr.base || {}) };
+  if (!("source" in params) && d.source) params.source = d.source;
+  return params;
+}
+function rowFilters(p, r) {
+  const out = {}, by = (p.drill || {}).by;
+  for (const [k, v] of Object.entries(r)) {
+    if (k.startsWith("f_")) out[k.slice(2)] = v === null || v === undefined ? "none" : v;          // f_: always (null = empty)
+    else if (k.startsWith("o_") && v !== null && v !== undefined && v !== "") out[k.slice(2)] = v;  // o_: only when set
+  }
+  if (typeof by === "string" && !(by in out) && "label" in r) out[by] = r.label === null || r.label === "?" ? "none" : r.label;
+  else if (by && typeof by === "object")
+    for (const [param, col] of Object.entries(by)) if (!(param in out) && r[col] !== null && r[col] !== undefined && r[col] !== "") out[param] = r[col];
+  return out;
+}
+function go(p, params, url) {
+  url = url || (p.drill || {}).url;
+  const { url: _ignored, ...rest } = params;
+  location.href = url ? url : LG.drillUrl(rest);
+}
 
 function build(d) {
   const box = document.getElementById("panels");
@@ -28,31 +55,42 @@ function build(d) {
     const body = p.type === "stat" ? `<div class="grid kpis" id="p-${p.id}"></div>`
       : ["timeseries", "bar", "hbar", "pie"].includes(p.type) ? `<div class="chart-box${p.type === "hbar" ? " tall" : ""}"><canvas id="c-${p.id}"></canvas></div>`
       : `<div id="p-${p.id}"></div>`;
-    return p.type === "stat" ? `<div class="${span}">${body}</div>` : `<div class="card ${span}"><h3>${LG.esc(p.title || "")}<span class="sp"></span>${p.type === "log" ? `<a class="small" href="/events?source=${encodeURIComponent(d.source || "")}">search all →</a>` : ""}</h3>${body}</div>`;
+    return p.type === "stat" ? `<div class="${span}">${body}</div>` : `<div class="card ${span}"><h3>${LG.esc(p.title || "")}<span class="sp"></span>${p.type === "log" ? `<a class="small" href="/events?source=${encodeURIComponent(d.source || "")}&hours=${hours}">search all →</a>` : ""}</h3>${body}</div>`;
   }).join("");
   built = true;
 }
 
 function render(d) {
+  step = d.step || step;
   for (const p of d.panels) {
+    const base = drillBase(p, d);
     if (p.error) { const el = document.getElementById("p-" + p.id) || document.getElementById("c-" + p.id)?.parentElement; if (el) el.innerHTML = `<div class="empty">query failed: ${LG.esc(p.error)}</div>`; continue; }
     const rows = p.rows || [];
     if (p.type === "stat") {
-      const r = rows[0] || {};
-      document.getElementById("p-" + p.id).innerHTML = Object.entries(r).map(([k, v]) => `<div class="card kpi"><div class="v">${LG.num(v)}</div><div class="l">${LG.esc(k)}</div></div>`).join("");
+      const r = rows[0] || {}, tiles = (p.drill || {}).tiles || {};
+      const el = document.getElementById("p-" + p.id);
+      el.innerHTML = Object.entries(r).map(([k, v]) => `<div class="card kpi${base && tiles[k] !== null ? " clickable" : ""}" data-k="${LG.esc(k)}" title="${base && tiles[k] !== null ? "Show these events" : ""}"><div class="v">${LG.num(v)}</div><div class="l">${LG.esc(k)}</div></div>`).join("");
+      if (base) el.querySelectorAll(".kpi.clickable").forEach(t => t.onclick = () => go(p, { ...base, ...(tiles[t.dataset.k] || {}) }, (tiles[t.dataset.k] || {}).url));
     } else if (p.type === "timeseries") {
-      LG.seriesChart("c-" + p.id, rows, { hours });
+      const ser = (p.drill || {}).series;
+      LG.seriesChart("c-" + p.id, rows, { hours, onClick: base && ((t, s) => {
+        const t0 = new Date(t);
+        go(p, { ...base, hours: undefined, start: t0.toISOString(), end: new Date(t0.getTime() + step * 1000).toISOString(),
+                ...(ser ? { [ser]: s === null || s === "?" ? "none" : s } : {}) });
+      }) });
     } else if (p.type === "pie") {
-      LG.pieChart("c-" + p.id, rows);
+      LG.pieChart("c-" + p.id, rows, base && (r => go(p, { ...base, ...rowFilters(p, r) })));
     } else if (p.type === "bar" || p.type === "hbar") {
-      LG.barChart("c-" + p.id, rows, p.type === "hbar");
+      LG.barChart("c-" + p.id, rows, p.type === "hbar", base && (r => go(p, { ...base, ...rowFilters(p, r) })));
     } else if (p.type === "table") {
-      LG.table("#p-" + p.id, (p.cols || Object.keys(rows[0] || {}).map(k => [k, k])).map(([k, l, f]) => ({ k, l, num: f === "num", f: f && f !== "num" ? FMT[f] : undefined })), rows);
+      LG.table("#p-" + p.id, (p.cols || Object.keys(rows[0] || {}).filter(k => !/^[fo]_/.test(k)).map(k => [k, k])).map(([k, l, f]) => ({ k, l, num: f === "num", f: f && f !== "num" ? FMT[f] : undefined })), rows,
+               "No data", base && (r => go(p, { ...base, ...rowFilters(p, r) })));
     } else if (p.type === "log") {
       LG.table("#p-" + p.id, [{k: "ts", l: "Time", f: LG.time}, {k: "source", l: "Src", f: LG.src}, {k: "action", l: "Action"},
         {k: "src_ip", l: "From", f: (v, r) => `${LG.ip(v)}${r.src_port ? `<span class="muted">:${r.src_port}</span>` : ""} ${LG.flag(r.src_country)}`},
         {k: "dst_ip", l: "To", f: (v, r) => `${LG.ip(v)}${r.dst_port ? `<span class="muted">:${r.dst_port}</span>` : ""}`},
-        {k: "message", l: "Message", f: (v, r) => `<span class="mono small msgtxt">${LG.esc(r.domain && !String(v).includes(r.domain) ? r.domain + " · " : "")}${LG.esc(v)}</span>`}], rows, "No events in this period");
+        {k: "message", l: "Message", f: (v, r) => `<span class="mono small msgtxt">${LG.esc(r.domain && !String(v).includes(r.domain) ? r.domain + " · " : "")}${LG.esc(v)}</span>`}], rows, "No events in this period",
+        r => go(p, { hours, source: r.source, ...(r.src_ip ? { ip: r.src_ip } : r.domain ? { domain: r.domain } : { q: (r.message || "").slice(0, 60) }) }));
     }
   }
 }

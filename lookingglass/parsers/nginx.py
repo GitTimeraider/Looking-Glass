@@ -115,3 +115,49 @@ def _parse_json(ts: datetime, host: str | None, program: str | None, d: dict[str
                  src_ip=d.get("remote_addr") or d.get("client_ip"), domain=d.get("server_name") or d.get("host"),
                  proto="http", message=f'{d.get("request_method", "")} {path} {status}',
                  data={**{k: d[k] for k in list(d)[:40]}, "path": path, "status": status, "user_agent": ua, "tags": tags})
+
+
+# ---- os-nginx log API (/api/nginx/logs/...) - access logs never reach OPNsense remote syslog ----
+# Access lines: remote_ip, username, time ($time_local), status, size, user_agent, request_line, forwarded_for,
+# http_referer. Error lines: date, time, severity, number, message. Stream lines: remote_ip, time, status,
+# bytes_sent, bytes_received, session_time  (plugins: www/nginx .../library/OPNsense/Nginx/*LogParser.php)
+def _q(v: Any) -> str:
+    return str(v if v not in (None, "") else "-").replace('"', "'")
+
+
+def access_from_api(line: dict[str, Any], server: str | None, ts: datetime, host: str | None = None) -> dict[str, Any] | None:
+    if not line.get("remote_ip"):
+        return None
+    raw = (f'{_q(server)} {line["remote_ip"]} - {_q(line.get("username"))} [{line.get("time") or ""}] '
+           f'"{_q(line.get("request_line"))}" {line.get("status") or 0} {line.get("size") or 0} '
+           f'"{_q(line.get("http_referer"))}" "{_q(line.get("user_agent"))}" "{_q(line.get("forwarded_for"))}"')
+    ev = parse(ts, host, "nginx", raw)
+    if ev and server:
+        ev["domain"] = ev.get("domain") or server
+    return ev
+
+
+def error_from_api(line: dict[str, Any], server: str | None, ts: datetime, host: str | None = None,
+                   tz: Any = None) -> dict[str, Any] | None:
+    """``tz``: the firewall's time zone (error log times carry none)."""
+    if not line.get("message"):
+        return None
+    t = None
+    try:
+        t = datetime.strptime(f'{line.get("date")} {line.get("time")}', "%Y/%m/%d %H:%M:%S").replace(tzinfo=tz or ts.tzinfo)
+    except ValueError:
+        pass
+    ev = parse(t or ts, host, "nginx-error", f'{line.get("date")} {line.get("time")} [{line.get("severity") or "error"}] {line["message"]}')
+    if ev and server and server != "global":
+        ev["domain"] = ev.get("domain") or server
+    return ev
+
+
+def stream_from_api(line: dict[str, Any], server: str | None, ts: datetime, host: str | None = None) -> dict[str, Any] | None:
+    if not line.get("remote_ip"):
+        return None
+    ev = parse(ts, host, "nginx", f'{line["remote_ip"]} [{line.get("time") or ""}] TCP {line.get("status") or 0} '
+                                  f'{line.get("bytes_sent") or 0} {line.get("bytes_received") or 0} {line.get("session_time") or 0}')
+    if ev and server:
+        ev["domain"] = f"stream {server}"
+    return ev

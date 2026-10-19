@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 import time
 from collections import Counter, defaultdict
 from typing import Any
@@ -25,11 +26,46 @@ SUSPICIOUS_OUT_PORTS = {
 }
 
 
+async def device_info(ip: str | None) -> dict[str, Any] | None:
+    """Name / MAC / vendor of a local device from the device list, for alert context."""
+    if not ip:
+        return None
+    try:
+        row = await db.pool().fetchrow(
+            "SELECT mac, hostname, vendor, notes FROM devices WHERE ip = $1::inet ORDER BY last_seen DESC LIMIT 1", ip)
+    except Exception:  # noqa: BLE001 - invalid ip text etc.
+        return None
+    if not row:
+        return None
+    return {k: row[k] for k in ("mac", "hostname", "vendor", "notes") if row[k]}
+
+
+def who(ip: str | None, dev: dict[str, Any] | None = None) -> str:
+    if not ip:
+        return "an unknown client"
+    name = (dev or {}).get("hostname")
+    return f"{name} ({ip})" if name else ip
+
+
 async def raise_alert(rule: str, severity: str, title: str, fingerprint: str, description: str = "",
                       src_ip: str | None = None, dst_ip: str | None = None, data: dict | None = None,
-                      count: int = 1, mode: str = "add") -> None:
-    """Create an alert or update the matching open one (dedupe by fingerprint within 24h)."""
+                      count: int = 1, mode: str = "add", events: dict[str, Any] | None = None) -> None:
+    """Create an alert or update the matching open one (dedupe by fingerprint within 24h).
+
+    ``events``: Event-search filters that show the events behind the alert (default: the source IP);
+    the alerts page links to them for the alert's time span. The device name of ``src_ip`` is added."""
     pool = db.pool()
+    data = dict(data or {})
+    if events is None and (src_ip or dst_ip):
+        events = {"ip": src_ip or dst_ip}
+    if events:
+        data["events"] = {k: v for k, v in events.items() if v not in (None, "")}
+    dev = await device_info(src_ip)
+    if dev:
+        data["device"] = dev
+        name = dev.get("hostname")
+        if name and name not in title:  # "192.168.1.20" -> "laptop (192.168.1.20)"
+            title = re.sub(rf"(?<![\d.:]){re.escape(src_ip)}(?![\d.:])", f"{name} ({src_ip})", title, count=1)
     row = await pool.fetchrow(
         "SELECT id, severity FROM alerts WHERE fingerprint = $1 AND status <> 'closed' "
         "AND last_seen > now() - interval '24 hours' ORDER BY id DESC LIMIT 1", fingerprint)
@@ -176,7 +212,7 @@ class DetectionEngine:
             sev = "high" if internal or r["ports"] >= 100 else "medium"
             await raise_alert(
                 "port_scan", sev, f"{'Internal' if internal else 'External'} port scan from {ip} ({r['ports']} ports)",
-                f"port_scan:{ip}", src_ip=ip, count=r["hits"], mode="max",
+                f"port_scan:{ip}", src_ip=ip, events={"source": "firewall", "ip": ip, "action": "block"}, count=r["hits"], mode="max",
                 description=f"{ip} hit {r['ports']} distinct blocked ports on {r['hosts']} host(s) in 10 minutes "
                             f"({r['hits']} packets). Sample ports: {list(r['port_list'] or [])[:30]}."
                             + (" Source is INTERNAL - possible compromised host / lateral movement." if internal else ""),
@@ -191,7 +227,7 @@ class DetectionEngine:
             ip = str(r["src_ip"])
             await raise_alert(
                 "host_sweep", "high" if self.internal(ip) else "medium",
-                f"Host sweep from {ip} on port {r['dst_port']} ({r['hosts']} hosts)", f"host_sweep:{ip}:{r['dst_port']}",
+                f"Host sweep from {ip} on port {r['dst_port']} ({r['hosts']} hosts)", f"host_sweep:{ip}:{r['dst_port']}", events={"source": "firewall", "ip": ip, "port": r["dst_port"]},
                 src_ip=ip, count=r["hits"], mode="max",
                 description=f"{ip} tried port {r['dst_port']} on {r['hosts']} different hosts within 10 minutes.")
 
@@ -207,7 +243,7 @@ class DetectionEngine:
                 continue
             await raise_alert(
                 "internal_blocked_outbound", "medium", f"Internal host {ip} blocked towards {r['dsts']} destinations",
-                f"int_blocked:{ip}", src_ip=ip, count=r["hits"], mode="max",
+                f"int_blocked:{ip}", src_ip=ip, events={"source": "firewall", "ip": ip, "action": "block"}, count=r["hits"], mode="max",
                 description=f"Internal host {ip} was blocked {r['hits']} times towards {r['dsts']} destinations in 10 "
                             f"minutes (ports {list(r['ports'] or [])[:20]}). Could be malware beaconing, a misconfigured "
                             "device or a blocked policy.")
@@ -226,7 +262,7 @@ class DetectionEngine:
             await raise_alert(
                 "suspicious_outbound_port", "medium" if passed else "low",
                 f"{src} → {dst}:{r['dst_port']} ({SUSPICIOUS_OUT_PORTS[r['dst_port']]}) {'ALLOWED' if passed else r['action']}",
-                f"susp_port:{src}:{r['dst_port']}", src_ip=src, dst_ip=dst, count=r["hits"],
+                f"susp_port:{src}:{r['dst_port']}", src_ip=src, events={"source": "firewall", "ip": src, "port": r["dst_port"]}, dst_ip=dst, count=r["hits"],
                 description=f"Internal host {src} connected to external {dst} on port {r['dst_port']} "
                             f"({SUSPICIOUS_OUT_PORTS[r['dst_port']]}); action={r['action']}.")
         await self._commit("susp_ports", current)
@@ -241,7 +277,7 @@ class DetectionEngine:
             ip = str(r["src_ip"])
             await raise_alert(
                 "brute_force", "high", f"Brute force against {r['source'].upper()} from {ip} ({r['hits']} failures)",
-                f"brute_force:{r['source']}:{ip}", src_ip=ip, count=r["hits"], mode="max",
+                f"brute_force:{r['source']}:{ip}", src_ip=ip, events={"source": r["source"], "ip": ip, "action": "login_failed"}, count=r["hits"], mode="max",
                 description=f"{r['hits']} failed logins from {ip} in 15 minutes. Usernames tried: {list(r['users'] or [])[:20]}.")
 
     async def success_after_failures(self) -> None:
@@ -256,7 +292,7 @@ class DetectionEngine:
                 await raise_alert(
                     "success_after_failures", "critical",
                     f"Successful {r['source']} login for '{r['username']}' from {ip} after {r['failures']} failures",
-                    f"succ_after_fail:{ip}:{r['username']}", src_ip=ip, mode="max",
+                    f"succ_after_fail:{ip}:{r['username']}", src_ip=ip, events={"ip": ip, "action": "login_failed,login_success"}, mode="max",
                     description="A login succeeded right after a series of failures - possible password guessing success. "
                                 "Verify this login was legitimate.")
 
@@ -271,7 +307,7 @@ class DetectionEngine:
             await raise_alert(
                 "admin_login", "info" if internal else "high",
                 f"{'Login' if internal else 'Login from EXTERNAL address'}: '{r['username']}' via {r['program'] or r['source']} from {ip}",
-                f"login:{ip}:{r['username']}", src_ip=ip, count=r["n"],
+                f"login:{ip}:{r['username']}", src_ip=ip, events={"ip": ip, "action": "login_success"}, count=r["n"],
                 description="Administrative login to the firewall." + ("" if internal else " The source is a public IP address."))
         await self._commit("ext_login", current)
 
@@ -281,7 +317,7 @@ class DetectionEngine:
             "SELECT host, program, message, ts FROM events WHERE id > $1 AND id <= $2 AND action = 'config_change' LIMIT 50", last, current)
         for r in rows:
             await raise_alert("config_change", "info", f"Configuration change on {r['host'] or 'firewall'}",
-                              f"config:{r['host']}", description=r["message"][:1000])
+                              f"config:{r['host']}", events={"action": "config_change", "host": r["host"]}, description=r["message"][:1000])
         await self._commit("config", current)
 
     # --------------------------------------------------------- web rules ---
@@ -296,7 +332,7 @@ class DetectionEngine:
             ip = str(r["src_ip"]) if r["src_ip"] else "unknown"
             sev = "high" if r["tag"] in ("rce", "sqli") else "medium" if r["tag"] in ("path_traversal", "sensitive_file", "xss") else "low"
             await raise_alert(
-                "web_attack", sev, f"Web attack ({r['tag']}) from {ip} on nginx", f"web:{ip}:{r['tag']}", src_ip=r["src_ip"] and ip,
+                "web_attack", sev, f"Web attack ({r['tag']}) from {ip} on nginx", f"web:{ip}:{r['tag']}", src_ip=r["src_ip"] and ip, events={"source": "nginx", "ip": r["src_ip"] and ip},
                 count=r["hits"], description=f"{r['hits']} request(s) matching '{r['tag']}'. Samples: {list(r['samples'])[:5]}")
         await self._commit("web_attacks", current)
 
@@ -308,7 +344,7 @@ class DetectionEngine:
         for r in rows:
             ip = str(r["src_ip"])
             await raise_alert("web_scanner", "medium", f"Web scanning from {ip} ({r['hits']} 4xx responses)",
-                              f"web_scan:{ip}", src_ip=ip, count=r["hits"], mode="max",
+                              f"web_scan:{ip}", src_ip=ip, events={"source": "nginx", "ip": ip, "action": "http_4*"}, count=r["hits"], mode="max",
                               description=f"{ip} produced {r['hits']} client errors over {r['paths']} distinct paths in 10 minutes "
                                           "(directory brute forcing / vulnerability scanning).")
 
@@ -322,6 +358,7 @@ class DetectionEngine:
         for r in rows:
             sev = {0: "critical", 1: "critical", 2: "high", 3: "medium", 4: "low"}.get(r["sev"], "low")
             await raise_alert("ids", sev, f"IDS: {r['message']}", f"ids:{r['src_ip']}:{r['message']}",
+                              events={"source": "suricata", "ip": str(r["src_ip"]) if r["src_ip"] else None, "q": r["message"][:80]},
                               src_ip=str(r["src_ip"]) if r["src_ip"] else None, dst_ip=str(r["dst_ip"]) if r["dst_ip"] else None,
                               count=r["hits"], description=f"Suricata signature '{r['message']}' ({r['cls'] or 'n/a'}) "
                                                            f"{r['src_ip']} -> {r['dst_ip']}, {r['hits']} hit(s).")
@@ -338,7 +375,7 @@ class DetectionEngine:
             internal = self.internal(ip) if ip else False
             await raise_alert("crowdsec", "high" if internal else "medium",
                               f"CrowdSec: {r['scenario']} from {ip}{' (INTERNAL)' if internal else ''}",
-                              f"crowdsec:{ip}:{r['scenario']}", src_ip=ip, count=r["hits"],
+                              f"crowdsec:{ip}:{r['scenario']}", src_ip=ip, events={"source": "crowdsec", "ip": ip}, count=r["hits"],
                               description=f"CrowdSec detected behaviour '{r['scenario']}' from {ip}.")
         await self._commit("crowdsec", current)
 
@@ -353,7 +390,7 @@ class DetectionEngine:
             if src and self.internal(src):
                 await raise_alert(
                     "threat_intel_outbound", "high", f"Internal host {src} contacted threat-intel listed IP {dst}",
-                    f"qf_out:{src}:{dst}", src_ip=src, dst_ip=dst, count=r["hits"],
+                    f"qf_out:{src}:{dst}", src_ip=src, events={"source": "qfeeds", "ip": src}, dst_ip=dst, count=r["hits"],
                     description=f"Q-Feeds blocked traffic from internal {src} to known malicious {dst}:{r['dst_port']}. "
                                 "The internal host may be compromised (C2 / malware beacon). Investigate it.")
             elif src:
@@ -361,7 +398,7 @@ class DetectionEngine:
         for src, hits in inbound.items():
             if hits >= 20:
                 await raise_alert("threat_intel_inbound", "low", f"Threat-intel listed IP {src} is probing you",
-                                  f"qf_in:{src}", src_ip=src, count=hits,
+                                  f"qf_in:{src}", src_ip=src, events={"source": "qfeeds", "ip": src}, count=hits,
                                   description=f"{hits} connection attempts from {src} (Q-Feeds listed) were blocked.")
         await self._commit("qfeeds", current)
 
@@ -378,7 +415,7 @@ class DetectionEngine:
             src = str(r["src_ip"]) if r["src_ip"] else None
             sev = "high" if any(w in threat.lower() for w in ("malware", "botnet", "phishing", "command", "c2", "ransom", "crypto")) else "medium"
             await raise_alert("zenarmor_threat", sev, f"Zenarmor: {src} → {r['target']} ({threat[:60]})",
-                              f"zen:{src}:{r['target']}", src_ip=src, count=r["hits"],
+                              f"zen:{src}:{r['target']}", src_ip=src, events={"source": "zenarmor", "ip": src}, count=r["hits"],
                               description=f"Zenarmor flagged traffic from {src} to {r['target']} as '{threat}' "
                                           f"({'blocked' if r['blocked'] else 'NOT blocked'}).")
         await self._commit("zenarmor", current)
@@ -391,6 +428,7 @@ class DetectionEngine:
         per_client_sub: dict[tuple[str, str], set[str]] = defaultdict(set)
         dga: dict[str, set[str]] = defaultdict(set)
         nx: Counter = Counter()
+        nx_domains: dict[str, Counter] = defaultdict(Counter)
         bad_block: dict[str, set[str]] = defaultdict(set)
         for r in rows:
             client = str(r["src_ip"]) if r["src_ip"] else "?"
@@ -405,29 +443,52 @@ class DetectionEngine:
                 dga[client].add(domain)
             if (r["rcode"] or "").upper() == "NXDOMAIN" or r["action"] == "nxdomain":
                 nx[client] += 1
+                nx_domains[client][domain] += 1
             if r["action"] in ("block", "drop") and any(w in (r["bl"] or "").lower() for w in ("malware", "phish", "threat", "crypto", "ransom", "botnet", "c2", "abuse", "qfeed", "q-feed")):
                 bad_block[client].add(domain)
+        no_client = ("The DNS log lines carry no client IP, so the device can't be named. Unbound query logging via "
+                     "Reporting › Settings › Unbound DNS statistics (API) or Services › Unbound DNS › Advanced › "
+                     "Log queries (syslog) includes it.")
+
+        async def name(client: str) -> tuple[str | None, str]:
+            ip = client if client != "?" else None
+            return ip, who(ip, await device_info(ip))
+
         for (client, reg), subs in per_client_sub.items():
             long_subs = [s for s in subs if len(s) > 30]
             if len(subs) >= 150 and len(long_subs) >= 50:
-                await raise_alert("dns_tunnel", "high", f"Possible DNS tunneling: {client} → *.{reg} ({len(subs)} unique subdomains)",
-                                  f"dns_tunnel:{client}:{reg}", src_ip=client if client != "?" else None, count=len(subs), mode="max",
-                                  description=f"{client} queried {len(subs)} unique subdomains of {reg} in 10 minutes, "
-                                              f"{len(long_subs)} longer than 30 chars. Samples: {long_subs[:5]}")
+                ip, label = await name(client)
+                await raise_alert("dns_tunnel", "high", f"Possible DNS tunneling: {label} → *.{reg} ({len(subs)} unique subdomains)",
+                                  f"dns_tunnel:{client}:{reg}", src_ip=ip, count=len(subs), mode="max",
+                                  events={"source": "unbound", "ip": ip, "q": reg},
+                                  description=f"{label} queried {len(subs)} unique subdomains of {reg} in 10 minutes, "
+                                              f"{len(long_subs)} longer than 30 chars. Samples: {', '.join(long_subs[:5])}"
+                                              + ("" if ip else f" {no_client}"))
         for client, domains in dga.items():
             if len(domains) >= 8:
-                await raise_alert("dns_dga", "medium", f"Possible DGA/malware DNS from {client} ({len(domains)} random-looking domains)",
-                                  f"dns_dga:{client}", src_ip=client if client != "?" else None, count=len(domains), mode="max",
-                                  description=f"High-entropy domain names queried by {client}: {sorted(domains)[:10]}")
+                ip, label = await name(client)
+                await raise_alert("dns_dga", "medium", f"Possible DGA/malware DNS from {label} ({len(domains)} random-looking domains)",
+                                  f"dns_dga:{client}", src_ip=ip, count=len(domains), mode="max",
+                                  events={"source": "unbound", "ip": ip},
+                                  description=f"High-entropy domain names queried by {label}: {', '.join(sorted(domains)[:10])}"
+                                              + ("" if ip else f" {no_client}"))
         for client, n in nx.items():
             if n >= 150:
-                await raise_alert("dns_nxdomain", "medium", f"{client} produced {n} NXDOMAIN answers in 10 minutes",
-                                  f"dns_nx:{client}", src_ip=client if client != "?" else None, count=n, mode="max",
-                                  description="Large amounts of non-existent domain lookups are typical for DGA malware or misconfiguration.")
+                ip, label = await name(client)
+                top = ", ".join(f"{d} ({c}×)" for d, c in nx_domains[client].most_common(8))
+                await raise_alert("dns_nxdomain", "medium", f"{label} produced {n} NXDOMAIN answers in 10 minutes",
+                                  f"dns_nx:{client}", src_ip=ip, count=n, mode="max",
+                                  events={"source": "unbound", "ip": ip, "d_rcode": "NXDOMAIN"},
+                                  data={"top_domains": nx_domains[client].most_common(25)},
+                                  description=f"Most looked-up non-existent names: {top}. Many failing lookups are typical for "
+                                              f"DGA malware, a misconfigured device or a removed service." + ("" if ip else f" {no_client}"))
         for client, domains in bad_block.items():
-            await raise_alert("dns_malicious_blocked", "high", f"{client} tried to resolve {len(domains)} malicious domain(s)",
-                              f"dns_bad:{client}", src_ip=client if client != "?" else None, count=len(domains), mode="max",
-                              description=f"Blocked by a security blocklist: {sorted(domains)[:15]}")
+            ip, label = await name(client)
+            await raise_alert("dns_malicious_blocked", "high", f"{label} tried to resolve {len(domains)} malicious domain(s)",
+                              f"dns_bad:{client}", src_ip=ip, count=len(domains), mode="max",
+                              events={"source": "unbound", "ip": ip, "action": "block,drop"},
+                              description=f"Blocked by a security blocklist: {', '.join(sorted(domains)[:15])}"
+                                          + ("" if ip else f" {no_client}"))
 
     # ------------------------------------------------------ system rules ---
     async def system_health(self) -> None:

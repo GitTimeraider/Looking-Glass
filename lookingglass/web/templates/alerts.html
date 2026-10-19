@@ -21,6 +21,19 @@ async function load() {
   alerts = await LG.api(`/api/alerts?status=${status}`);
   render();
 }
+/** Event-search link for the events behind an alert (its filters over its time span, with some margin) */
+function eventsUrl(a) {
+  const f = (a.data || {}).events || (a.src_ip ? { ip: a.src_ip } : null);
+  if (!f) return null;
+  const start = new Date(new Date(a.created_at).getTime() - 15 * 60000).toISOString();
+  const end = new Date(new Date(a.last_seen).getTime() + 5 * 60000).toISOString();
+  return LG.drillUrl({ ...f, start, end });
+}
+function device(a) {
+  const d = (a.data || {}).device;
+  if (!d) return "";
+  return `<div class="small muted">${LG.esc([d.hostname, d.vendor, d.mac].filter(Boolean).join(" · "))}</div>`;
+}
 function render() {
   const f = document.getElementById("filter").value.toLowerCase();
   const rows = alerts.filter(a => !f || JSON.stringify(a).toLowerCase().includes(f));
@@ -30,9 +43,9 @@ function render() {
     rows.map(a => `<tr id="a${a.id}">
       <td><input type="checkbox" value="${a.id}"></td><td>${LG.sev(a.severity)}</td>
       <td><b>${LG.esc(a.title)}</b><div class="small muted">${LG.esc(a.description || "")}</div></td>
-      <td class="small">${LG.esc(a.rule)}</td><td>${LG.ip(a.src_ip)}</td><td class="num">${LG.num(a.count)}</td>
+      <td class="small">${LG.esc(a.rule)}</td><td>${a.src_ip ? LG.ip(a.src_ip) : `<span class="muted">–</span>`}${device(a)}</td><td class="num">${LG.num(a.count)}</td>
       <td class="small">${LG.time(a.created_at)}</td><td class="small">${LG.ago(a.last_seen)}</td><td class="small">${LG.esc(a.status)}</td>
-      <td>{% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do.`)}">Ask AI</a>{% endif %}</td>
+      <td style="white-space:nowrap">${eventsUrl(a) ? `<a class="btn secondary small" href="${eventsUrl(a)}">Events</a> ` : ""}{% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do.`)}">Ask AI</a>{% endif %}</td>
     </tr>`).join("") + "</tbody></table></div>";
   if (location.hash) { const t = document.querySelector(location.hash.replace("#", "#a")); if (t) { t.scrollIntoView(); t.style.outline = "2px solid var(--accent)"; } }
 }

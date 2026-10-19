@@ -167,3 +167,11 @@ label.chk { white-space: nowrap; flex: none; }
 .steps li { flex: 1; padding: 4px 6px; border-radius: 6px; background: var(--panel2); color: var(--muted); text-align: center; counter-increment: st; }
 .steps li::before { content: counter(st) ". "; }
 .steps li.cur { background: var(--accent); color: #fff; } .steps li.ok { color: var(--ok); }
+
+/* click-through */
+tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--panel2); }
+.card.kpi.clickable { cursor: pointer; } .card.kpi.clickable:hover { border-color: var(--accent); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: -4px 0 12px; }
+.chip { background: var(--panel2); border: 1px solid var(--border); border-radius: 12px; padding: 2px 4px 2px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; }
+.chip button { background: none; border: 0; color: var(--muted); padding: 0 6px; font-weight: 400; }
+.chip button:hover { color: var(--bad); }

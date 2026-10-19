@@ -20,7 +20,6 @@
     {% for key, label in dashboards %}<a href="/dash/{{ key }}" class="{{ 'active' if path == '/dash/' ~ key }}">{{ label }}</a>{% endfor %}
     <div class="grp">Infrastructure</div>
     <a href="/system" class="{{ 'active' if path == '/system' }}">OPNsense</a>
-    <a href="/hardware" class="{{ 'active' if path == '/hardware' }}">Hardware</a>
     <a href="/devices" class="{{ 'active' if path == '/devices' }}">Devices</a>
     <a href="/unraid" class="{{ 'active' if path == '/unraid' }}">Unraid</a>
     <div class="grp">Tools</div>

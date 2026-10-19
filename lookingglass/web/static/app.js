@@ -54,16 +54,21 @@ const LG = {
     return String.fromCodePoint(...[...cc.toUpperCase()].map(c => 0x1F1A5 + c.charCodeAt(0))) + " " + LG.esc(cc);
   },
   /** Render a table. cols: [{k, l, f?: (v,row)=>html, num?: bool}] */
-  table(el, cols, rows, empty = "No data") {
+  /** onRow(row): makes rows clickable (e.g. open the matching events) */
+  table(el, cols, rows, empty = "No data", onRow) {
     if (typeof el === "string") el = document.querySelector(el);
     if (!rows || !rows.length) { el.innerHTML = `<div class="empty">${LG.esc(empty)}</div>`; return; }
     const head = cols.map(c => `<th class="${c.num ? "num" : ""}">${LG.esc(c.l)}</th>`).join("");
-    const body = rows.map(r => "<tr>" + cols.map(c => {
+    const body = rows.map((r, i) => `<tr${onRow ? ` class="clickable" data-row="${i}" title="Show matching events"` : ""}>` + cols.map(c => {
       const v = r[c.k];
       const html = c.f ? c.f(v, r) : (c.num ? LG.num(v) : LG.esc(Array.isArray(v) ? v.join(", ") : v));
       return `<td class="${c.num ? "num" : ""}">${html}</td>`;
     }).join("") + "</tr>").join("");
     el.innerHTML = `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    if (onRow) el.querySelectorAll("tr[data-row]").forEach(tr => tr.onclick = e => {
+      if (e.target.closest("a")) return;
+      onRow(rows[Number(tr.dataset.row)]);
+    });
   },
   md(text) {
     if (window.marked && window.DOMPurify) return DOMPurify.sanitize(marked.parse(text || ""));
@@ -71,7 +76,8 @@ const LG = {
   },
   palette: ["#3b82f6", "#ef4444", "#22c55e", "#f59e0b", "#a855f7", "#14b8a6", "#ec4899", "#eab308", "#64748b", "#06b6d4", "#f97316", "#84cc16"],
   sourceColors: { firewall: "#3b82f6", nginx: "#22c55e", unbound: "#14b8a6", crowdsec: "#f97316", suricata: "#ef4444",
-                  zenarmor: "#a855f7", qfeeds: "#ec4899", auth: "#eab308", vpn: "#06b6d4", dhcp: "#84cc16", system: "#64748b" },
+                  zenarmor: "#a855f7", qfeeds: "#ec4899", auth: "#eab308", vpn: "#06b6d4", dhcp: "#84cc16", system: "#64748b",
+                  unraid: "#f43f5e", docker: "#0ea5e9" },
   charts: {},
   chart(id, config) {
     if (LG.charts[id]) LG.charts[id].destroy();
@@ -114,6 +120,18 @@ const LG = {
       return out;
     },
   },
+  /* ---- click-through to event search ---- */
+  drillUrl(params) {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(params || {})) if (v !== undefined && v !== null && v !== "") p.set(k, v);
+    return "/events?" + p.toString();
+  },
+  /** Chart.js options that call fn(index, datasetIndex) on click and show a pointer over clickable elements */
+  clickOpts(fn) {
+    if (!fn) return {};
+    return { onClick: (e, els) => { if (els.length) fn(els[0].index, els[0].datasetIndex); },
+             onHover: (e, els) => { e.native.target.style.cursor = els.length ? "pointer" : "default"; } };
+  },
   /* ---- chart helpers ---- */
   color(i) { return LG.palette[i % LG.palette.length]; },
   timeLabel(t, hours) {
@@ -133,8 +151,9 @@ const LG = {
       return opts.line ? { label: s ?? "?", data, borderColor: c, backgroundColor: c + "33", fill: !!opts.fill, pointRadius: 0, tension: .25, borderWidth: 1.5 }
                        : { label: s ?? "?", data, backgroundColor: c, stack: "s" };
     });
+    const click = opts.onClick ? LG.clickOpts((i, ds) => opts.onClick(buckets[i], series[ds])) : {};
     return LG.chart(id, { type: opts.line ? "line" : "bar", data: { labels: buckets.map(b => LG.timeLabel(b, opts.hours || 24)), datasets },
-      options: { maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false },
+      options: { ...click, maintainAspectRatio: false, animation: false, interaction: { mode: opts.onClick ? "nearest" : "index", intersect: !!opts.onClick },
         scales: { x: { stacked: !opts.line, ticks: { maxTicksLimit: 10, maxRotation: 0 } }, y: { stacked: !opts.line, beginAtZero: true, ticks: { callback: opts.fmt || (v => v) } } },
         plugins: { legend: { position: "bottom", labels: { boxWidth: 10 } } } } });
   },
@@ -151,15 +170,17 @@ const LG = {
       plugins: { legend: { display: datasets.length > 1, position: "bottom", labels: { boxWidth: 10 } },
                  tooltip: { callbacks: { title: i => new Date(i[0].parsed.x).toLocaleString(), label: c => `${c.dataset.label}: ${fmt(Math.abs(c.parsed.y))}` } } } } });
   },
-  pieChart(id, rows) {
+  pieChart(id, rows, onClick) {
     return LG.chart(id, { type: "doughnut", data: { labels: rows.map(r => r.label ?? "?"),
       datasets: [{ data: rows.map(r => Number(r.v)), backgroundColor: rows.map((r, i) => LG.sourceColors[r.label] || LG.color(i)), borderWidth: 0 }] },
-      options: { maintainAspectRatio: false, animation: false, plugins: { legend: { position: "right", labels: { boxWidth: 10 } } } } });
+      options: { ...LG.clickOpts(onClick && (i => onClick(rows[i]))), maintainAspectRatio: false, animation: false,
+                 plugins: { legend: { position: "right", labels: { boxWidth: 10 },
+                                      onClick: onClick ? (e, item) => onClick(rows[item.index]) : undefined } } } });
   },
-  barChart(id, rows, horizontal) {
+  barChart(id, rows, horizontal, onClick) {
     return LG.chart(id, { type: "bar", data: { labels: rows.map(r => r.label ?? "?"),
       datasets: [{ data: rows.map(r => Number(r.v)), backgroundColor: rows.map((r, i) => LG.color(horizontal ? 0 : i)) }] },
-      options: { indexAxis: horizontal ? "y" : "x", maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } },
+      options: { ...LG.clickOpts(onClick && (i => onClick(rows[i]))), indexAxis: horizontal ? "y" : "x", maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } },
                  scales: { y: { ticks: { autoSkip: false, font: { size: 11 } } } } } });
   },
   gauge(pct, label, sub) {

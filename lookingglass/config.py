@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     crowdsec_pull: bool = True
     qfeeds_pull: bool = True
     ids_pull: bool = True
+    nginx_pull: bool = True
+    vpn_pull: bool = True
     ai_base_url: str = "https://api.anthropic.com/v1/"
     ai_api_key: str = ""
     ai_model: str = "claude-opus-5-5"
