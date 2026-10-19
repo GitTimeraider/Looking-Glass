@@ -71,6 +71,13 @@ input, select, textarea, button { font: inherit; color: var(--text); background:
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 button, .btn { cursor: pointer; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; display: inline-block; }
 button.secondary, .btn.secondary { background: var(--panel2); border-color: var(--border); color: var(--text); }
+/* links that look like buttons: same box as <button> */
+.btn { border: 1px solid var(--accent); border-radius: 6px; padding: 7px 10px; text-decoration: none; line-height: 1.2; }
+.btn.secondary { border-color: var(--border); }
+.btn:hover { text-decoration: none; filter: brightness(1.15); }
+button.small, .btn.small { padding: 4px 9px; font-size: 12px; }
+.actions { display: flex; flex-direction: column; gap: 5px; width: 128px; }
+.actions > .btn, .actions > button { text-align: center; white-space: nowrap; }
 button.danger { background: #b91c1c; border-color: #b91c1c; }
 button:disabled { opacity: .5; cursor: wait; }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
@@ -274,3 +281,5 @@ details.card > summary { cursor: pointer; }
 .rule-groups { align-items: start; }
 .rule-groups label.chk { flex-wrap: wrap; }
 .rule-groups label.chk .mono { font-size: 10px; overflow-wrap: anywhere; }
+.rule-cell { overflow-wrap: anywhere; min-width: 80px; max-width: 130px; }
+.seen-cell { min-width: 110px; }

@@ -186,3 +186,25 @@ CREATE TABLE IF NOT EXISTS alert_filters (
 );
 ALTER TABLE alert_filters ADD COLUMN IF NOT EXISTS match_mode TEXT NOT NULL DEFAULT 'all';  -- conditions: all (AND) / any (OR)
 ALTER TABLE alert_filters ADD COLUMN IF NOT EXISTS text_mode TEXT NOT NULL DEFAULT 'any';   -- text terms: any (OR) / all (AND)
+ALTER TABLE alert_filters ADD COLUMN IF NOT EXISTS set_severity TEXT;  -- action 'severity': the severity alerts get
+
+-- email notification rules (Settings › Email & notifications)
+CREATE TABLE IF NOT EXISTS notification_rules (
+    id            BIGSERIAL PRIMARY KEY,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    name          TEXT,
+    enabled       BOOLEAN NOT NULL DEFAULT true,
+    recipients    TEXT NOT NULL,
+    min_severity  TEXT,                 -- this severity and above
+    rules         TEXT[] NOT NULL DEFAULT '{}',
+    contains      TEXT,
+    networks      TEXT,
+    match_mode    TEXT NOT NULL DEFAULT 'all',
+    text_mode     TEXT NOT NULL DEFAULT 'any',
+    on_escalation BOOLEAN NOT NULL DEFAULT true,  -- mail again when an alert's severity goes up
+    min_interval  INTEGER NOT NULL DEFAULT 0,     -- minutes: at most one mail per interval (alerts are bundled)
+    last_sent     TIMESTAMPTZ,
+    sent_count    BIGINT NOT NULL DEFAULT 0,
+    last_error    TEXT,
+    last_error_at TIMESTAMPTZ
+);

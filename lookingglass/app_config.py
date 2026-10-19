@@ -35,6 +35,7 @@ class Field:
 GROUPS = {
     "opnsense": "OPNsense",
     "unifi": "UniFi",
+    "email": "Email",
     "ai": "AI analyst",
     "zenarmor": "Zenarmor stream",
     "ingest": "Log ingestion & network",
@@ -78,6 +79,19 @@ FIELDS: list[Field] = [
           "Devices, clients and health. Events and rogue APs follow every 2 minutes.", min=30, max=3600),
     Field("unifi_events", "unifi", "Collect UniFi events", "bool",
           "Client connects / roams, AP / switch offline, rogue APs - shown in Event search and the UniFi dashboard."),
+    # email
+    Field("smtp_host", "email", "SMTP server", "str", "Mail server that sends the notifications, e.g. smtp.gmail.com, "
+          "smtp.office365.com, your provider's server or a local relay.", placeholder="smtp.example.com"),
+    Field("smtp_port", "email", "Port", "int", "587 with STARTTLS (most common), 465 with SSL/TLS, 25 without encryption.",
+          min=1, max=65535),
+    Field("smtp_security", "email", "Encryption", "choice", "starttls = upgrade to TLS on port 587; ssl = TLS from the start "
+          "(port 465); none = only for a relay inside your network.", choices=("starttls", "ssl", "none")),
+    Field("smtp_username", "email", "Username", "str", "Usually your full mail address; empty if the server needs no login."),
+    Field("smtp_password", "email", "Password", "secret", "Gmail / Microsoft 365 with MFA: an app password."),
+    Field("smtp_from", "email", "Sender address", "str", "From address of the notifications (many providers require your "
+          "own address).", placeholder="looking-glass@example.com"),
+    Field("mail_link_url", "email", "Looking Glass address for links", "str", "How you open Looking Glass in the browser - "
+          "used for the links in mails.", placeholder="http://192.168.1.10:8080"),
     # AI
     Field("ai_base_url", "ai", "API base URL", "str",
           "Any OpenAI-compatible endpoint. Claude: https://api.anthropic.com/v1/ · OpenAI: https://api.openai.com/v1/ · "

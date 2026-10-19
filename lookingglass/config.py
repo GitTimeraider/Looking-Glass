@@ -74,6 +74,13 @@ class Settings(BaseSettings):
     unifi_verify_ssl: bool = False
     unifi_poll_interval: int = 60
     unifi_events: bool = True
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_security: str = "starttls"
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    mail_link_url: str = ""
     ai_base_url: str = "https://api.anthropic.com/v1/"
     ai_api_key: str = ""
     ai_model: str = "claude-opus-5-5"
@@ -100,6 +107,10 @@ class Settings(BaseSettings):
     @property
     def unifi_enabled(self) -> bool:
         return bool(self.unifi_url and (self.unifi_api_key or (self.unifi_username and self.unifi_password)))
+
+    @property
+    def smtp_enabled(self) -> bool:
+        return bool(self.smtp_host and self.smtp_from)
 
     @property
     def ai_enabled(self) -> bool:

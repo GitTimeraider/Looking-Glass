@@ -6,18 +6,73 @@
   Changes apply immediately - no restart needed.</p>
 <div class="tabs" id="tabs">
   <button data-t="opnsense" class="on">OPNsense</button><button data-t="unifi">UniFi</button><button data-t="ai">AI analyst</button><button data-t="zenarmor">Zenarmor</button>
-  <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button><button data-t="filters">Alert filters</button>
+  <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button><button data-t="filters">Alert filters</button><button data-t="email">Email &amp; notifications</button>
 </div>
-{% for g in ["opnsense", "unifi", "ai", "zenarmor", "ingest", "data"] %}
+{% for g in ["opnsense", "unifi", "ai", "zenarmor", "ingest", "data", "email"] %}
 <section data-s="{{ g }}" {% if g != "opnsense" %}hidden{% endif %}>
   <div class="card">
+    {% if g == "email" %}<h3>Mail server (SMTP)</h3>
+    <p class="small muted">The account Looking Glass sends notification mails with. Below the mail server you choose what you want to be mailed about.</p>{% endif %}
     <form class="settings-form" data-group="{{ g }}"></form>
     <div class="filters" style="margin-top:12px">
       <button type="button" data-save="{{ g }}">Save</button>
       {% if g in ("opnsense", "unifi", "ai") %}<button type="button" class="secondary" data-test="{{ g }}">Test connection</button>{% endif %}
+      {% if g == "email" %}<input id="mail-test-to" placeholder="Test recipient (default: the sender address)" style="min-width:260px">
+      <button type="button" class="secondary" data-test="email">Send test mail</button>{% endif %}
     </div>
     <div class="small" id="msg-{{ g }}"></div>
   </div>
+  {% if g == "email" %}
+  <div class="card" style="margin-top:14px">
+    <h3>Notification rules</h3>
+    <p class="small muted">Mail me when an alert matches… Every matching alert is mailed once per rule (several at the same time
+      arrive bundled in one mail); with <i>also when the severity goes up</i> you get another mail if a known alert escalates.
+      Muted alerts (Alert filters) are never mailed; only alerts that occur after a rule was created are mailed by it.</p>
+    <div id="nr-list"></div>
+  </div>
+  <div class="card" style="margin-top:14px" id="nr-form-card">
+    <h3 id="nr-form-title">New notification rule</h3>
+    <form id="nr-form" class="filter-form" onsubmit="return false">
+      <input type="hidden" name="rid">
+      <label>Name <span class="muted small">(optional)</span><input name="name" placeholder="e.g. Everything high and above"></label>
+      <label>Send to <span class="muted small">(one or more mail addresses, comma separated)</span><input name="recipients" placeholder="you@example.com"></label>
+      <label>Severity
+        <select name="min_severity">
+          <option value="">any severity</option>
+          <option value="critical">critical only</option>
+          <option value="high" selected>high and above</option>
+          <option value="medium">medium and above</option>
+          <option value="low">low and above</option>
+          <option value="info">info and above (everything)</option>
+        </select></label>
+      <label>Text in the title or description <span class="muted small">(comma separated)</span>
+        <span class="inline-pair"><input name="contains" placeholder="e.g. root, vpn">
+        <select name="text_mode"><option value="any">any of these (OR)</option><option value="all">all of these (AND)</option></select></span></label>
+      <label>IP address / network <span class="muted small">(source or destination)</span>
+        <input name="networks" placeholder="e.g. 192.168.1.10, 192.168.30.0/24"></label>
+      <label>Send at most one mail every
+        <select name="min_interval"><option value="0">no limit (right away)</option><option value="5">5 minutes</option>
+          <option value="15">15 minutes</option><option value="60">hour</option><option value="240">4 hours</option>
+          <option value="1440">day (daily digest)</option></select>
+        <span class="muted small">alerts in between are bundled into the next mail</span></label>
+      <div class="full"><div class="lbl">Rules / sources <span class="muted small">(none ticked = all rules)</span></div>
+        <div id="nr-rules" class="rule-groups"></div></div>
+      <div class="full radio-row"><span class="lbl">Combine the conditions</span>
+        <label class="chk"><input type="radio" name="match_mode" value="all" checked> all must match (AND)</label>
+        <label class="chk"><input type="radio" name="match_mode" value="any"> any one is enough (OR)</label></div>
+      <div class="full radio-row">
+        <label class="chk"><input type="checkbox" name="on_escalation" checked> also mail when the severity of an alert I was mailed about goes up</label>
+        <label class="chk" style="margin-left:auto"><input type="checkbox" name="enabled" checked> enabled</label></div>
+    </form>
+    <div class="filters" style="margin-top:12px">
+      <button type="button" class="secondary" id="nr-preview">Preview (last 7 days)</button>
+      <button type="button" id="nr-save">Save rule</button>
+      <button type="button" class="secondary" id="nr-cancel" hidden>Cancel editing</button>
+    </div>
+    <div class="small" id="nr-msg"></div>
+    <div id="nr-preview-out"></div>
+  </div>
+  {% endif %}
   {% if g == "data" %}
   <div class="card danger-zone" style="margin-top:14px">
     <h3>Delete collected data</h3>
@@ -83,7 +138,7 @@
 <section data-s="filters" hidden>
   <div class="card">
     <h3>Alert filters</h3>
-    <p class="small muted">Stop alerts you don't want to see. Fill in one or more conditions and choose whether
+    <p class="small muted">Stop alerts you don't want to see, or give them your own severity. Fill in one or more conditions and choose whether
       <b>all</b> of them (AND) or <b>any</b> of them (OR) must match; empty conditions are ignored. <b>Don't create</b> drops the alert completely; <b>Create as closed</b> keeps it under
       Alerts › Closed for reference. Logs and dashboards are not affected - only alerts. Tip: on the Alerts page,
       <i>Mute similar…</i> fills in a filter for you.</p>
@@ -118,6 +173,9 @@
       <div class="full radio-row"><span class="lbl">Action</span>
         <label class="chk"><input type="radio" name="action" value="suppress" checked> Don't create the alert</label>
         <label class="chk"><input type="radio" name="action" value="close"> Create it as closed</label>
+        <label class="chk"><input type="radio" name="action" value="severity"> Change the severity to
+          <select name="set_severity"><option value="">…</option><option value="info">info</option><option value="low">low</option>
+            <option value="medium">medium</option><option value="high">high</option><option value="critical">critical</option></select></label>
         <label class="chk" style="margin-left:auto"><input type="checkbox" name="enabled" checked> enabled</label></div>
     </form>
     <div class="filters" style="margin-top:12px">
@@ -179,9 +237,11 @@ document.querySelectorAll("[data-save]").forEach(b => b.onclick = async () => {
 document.querySelectorAll("[data-test]").forEach(b => b.onclick = async () => {
   const g = b.dataset.test; gmsg(g, `<span class="spinner"></span> testing…`, true);
   try {
-    const r = await LG.api(`/api/settings/test/${g}`, { method: "POST", body: { values: groupValues(g) } });
+    const r = await LG.api(`/api/settings/test/${g}`, { method: "POST", body: { values: groupValues(g),
+                                                                               to: g === "email" ? document.getElementById("mail-test-to").value : undefined } });
     if (!r.ok) return gmsg(g, "Failed: " + LG.esc(r.error));
     gmsg(g, g === "opnsense" ? `Connected to ${LG.esc(r.name)} – ${LG.esc((r.versions || [])[0] || "")}. Click Save to keep these settings.`
+      : g === "email" ? `Test mail sent to ${LG.esc(r.to)} - check the inbox (and the spam folder). Click Save to keep these settings.`
       : g === "unifi" ? `Connected to UniFi Network ${LG.esc(r.version || "")} (${LG.esc(r.mode)}): site “${LG.esc(r.site)}”, ${r.devices} devices, ${r.clients} clients.` +
                         (r.sites && r.sites.length > 1 ? ` Other sites: ${LG.esc(r.sites.join(", "))}.` : "") + (r.note ? ` ⚠ ${LG.esc(r.note)}` : "") + " Click Save to keep these settings."
       : `The model answered: “${LG.esc(r.reply)}”. Click Save to keep these settings.`, true);
@@ -314,9 +374,11 @@ async function loadFilters() {
     {k: "enabled", l: "On", f: (v, r) => `<input type="checkbox" data-ftoggle="${r.id}" ${v ? "checked" : ""} title="Untick to pause this filter (unmute for now, keep it for later)">`},
     {k: "name", l: "Name", f: v => LG.esc(v || "–")},
     {k: "id", l: "Matches", f: (v, r) => fltSummary(r)},
-    {k: "action", l: "Action", f: v => v === "close" ? "create as closed" : "don't create"},
+    {k: "action", l: "Action", f: (v, r) => v === "close" ? "create as closed" : v === "severity" ? `severity → ${LG.sev(r.set_severity)}` : "don't create"},
     {k: "hits", l: "Hits", num: true}, {k: "last_hit", l: "Last hit", f: v => v ? LG.ago(v) : "never"},
-    {k: "id", l: "", f: v => `<a href="#" data-fedit="${v}">edit</a> · <a href="#" data-fapply="${v}" title="Close the open / acknowledged alerts this filter matches">close matching</a> · <a href="#" data-fdel="${v}" title="Delete the filter: these alerts are created again">unmute (delete)</a>`},
+    {k: "id", l: "", f: v => `<a href="#" data-fedit="${v}">edit</a> · <a href="#" data-fapply="${v}" title="Apply to the open / acknowledged alerts this filter matches">${(FLT.filters.find(x => x.id === v) || {}).action === "severity" ? "re-rate matching" : "close matching"}</a> · ${(FLT.filters.find(x => x.id === v) || {}).action === "severity"
+      ? `<a href="#" data-fdel="${v}" title="Delete this severity rule: open alerts it changed get their own severity back">delete</a>`
+      : `<a href="#" data-fdel="${v}" title="Delete the filter: these alerts are created again">unmute (delete)</a>`}`},
   ], FLT.filters, "No filters yet - every alert is created.");
   document.querySelectorAll("[data-ftoggle]").forEach(c => c.onchange = async () => {
     const f = FLT.filters.find(x => x.id === Number(c.dataset.ftoggle));
@@ -324,13 +386,13 @@ async function loadFilters() {
   });
   document.querySelectorAll("[data-fedit]").forEach(a => a.onclick = e => { e.preventDefault(); editFilter(FLT.filters.find(x => x.id === Number(a.dataset.fedit))); });
   document.querySelectorAll("[data-fdel]").forEach(a => a.onclick = async e => {
-    e.preventDefault(); if (!confirm("Unmute: delete this filter? Alerts it stopped are created again from now on.")) return;
+    e.preventDefault(); if (!confirm("Delete this filter? Muted alerts are created again from now on; alerts whose severity it changed get their own severity back.")) return;
     await LG.api(`/api/alert-filters/${a.dataset.fdel}`, { method: "DELETE" }); loadFilters();
   });
   document.querySelectorAll("[data-fapply]").forEach(a => a.onclick = async e => {
     e.preventDefault();
     const r = await LG.api(`/api/alert-filters/${a.dataset.fapply}/apply`, { method: "POST" });
-    fmsg(`${r.closed} open / acknowledged alert(s) closed.`, true);
+    fmsg(r.changed !== undefined ? `Severity changed on ${r.changed} open / acknowledged alert(s).` : `${r.closed} open / acknowledged alert(s) closed.`, true);
   });
 }
 function ruleCounts() {
@@ -345,7 +407,8 @@ function fltValues() {
   return { name: f.name.value, max_severity: f.max_severity.value, contains: f.contains.value, networks: f.networks.value,
            rules: [...f.querySelectorAll('input[name="rules"]:checked')].map(c => c.value),
            action: f.querySelector('input[name="action"]:checked').value, enabled: f.enabled.checked,
-           match_mode: f.querySelector('input[name="match_mode"]:checked').value, text_mode: f.text_mode.value };
+           match_mode: f.querySelector('input[name="match_mode"]:checked').value, text_mode: f.text_mode.value,
+           set_severity: f.set_severity.value };
 }
 function editFilter(x) {
   const f = document.getElementById("flt-form");
@@ -356,6 +419,7 @@ function editFilter(x) {
     f.querySelector(`input[name="action"][value="${x.action || "suppress"}"]`).checked = true;
     f.querySelector(`input[name="match_mode"][value="${x.match_mode || "all"}"]`).checked = true;
     f.text_mode.value = x.text_mode || "any";
+    f.set_severity.value = x.set_severity || "";
     f.querySelectorAll('input[name="rules"]').forEach(c => c.checked = (x.rules || []).includes(c.value));
     document.querySelectorAll("#flt-rules details").forEach(d => d.open = !!d.querySelector("input:checked"));
   }
@@ -366,6 +430,9 @@ function editFilter(x) {
   document.getElementById("flt-form-card").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 document.getElementById("flt-cancel").onclick = () => editFilter(null);
+document.querySelector('#flt-form [name="set_severity"]').onchange = e => {
+  if (e.target.value) document.querySelector('#flt-form input[name="action"][value="severity"]').checked = true;
+};
 document.getElementById("flt-preview").onclick = async () => {
   try {
     const r = await LG.api("/api/alert-filters/preview", { method: "POST", body: fltValues() });
@@ -382,12 +449,100 @@ document.getElementById("flt-save").onclick = async () => {
     loadFilters();
   } catch (e) { fmsg(LG.esc(e.message)); }
 };
+/* ---------- notification rules ---------- */
+let NR = { rules: [] };
+const MIN_TXT = { critical: "critical", high: "high and above", medium: "medium and above", low: "low and above", info: "everything" };
+const EVERY = { 0: "right away", 5: "max. every 5 min", 15: "max. every 15 min", 60: "max. hourly", 240: "max. every 4 h", 1440: "daily digest" };
+function nrSummary(r) {
+  const parts = [];
+  if (r.min_severity) parts.push(`severity ${MIN_TXT[r.min_severity]}`);
+  if ((r.rules || []).length) parts.push(`rule ${r.rules.map(x => FLT.labels[x] || x).join(", ")}`);
+  if (r.contains) parts.push(`text ${r.contains.split(",").map(x => `“${x.trim()}”`).join(r.text_mode === "all" ? " and " : " or ")}`);
+  if (r.networks) parts.push(`IP ${r.networks}`);
+  return parts.map(LG.esc).join(r.match_mode === "any" ? " <b>or</b> " : " <b>and</b> ");
+}
+const nmsg = (t, ok) => { const el = document.getElementById("nr-msg"); el.className = "small " + (ok ? "ok-msg" : "err"); el.innerHTML = t; };
+async function loadRules() {
+  NR = await LG.api("/api/notification-rules");
+  document.getElementById("nr-rules").innerHTML = document.getElementById("flt-rules").innerHTML.replaceAll("data-count=", "data-ncount=");
+  LG.table("#nr-list", [
+    {k: "enabled", l: "On", f: (v, r) => `<input type="checkbox" data-ntoggle="${r.id}" ${v ? "checked" : ""} title="Untick to pause these mails">`},
+    {k: "name", l: "Name", f: v => LG.esc(v || "–")},
+    {k: "recipients", l: "To"},
+    {k: "id", l: "When", f: (v, r) => nrSummary(r) + (r.on_escalation ? ` <span class="muted small">(+ escalations)</span>` : "")},
+    {k: "min_interval", l: "How often", f: v => EVERY[v] || `max. every ${v} min`},
+    {k: "sent_count", l: "Mails", num: true},
+    {k: "last_sent", l: "Last mail", f: (v, r) => (v ? LG.ago(v) : "never") + (r.last_error ? `<div class="err small" title="${LG.esc(r.last_error)}">⚠ ${LG.esc(r.last_error.slice(0, 80))}</div>` : "")},
+    {k: "id", l: "", f: v => `<a href="#" data-nedit="${v}">edit</a> · <a href="#" data-ntest="${v}" title="Mail the newest matching alert now">send test</a> · <a href="#" data-ndel="${v}">delete</a>`},
+  ], NR.rules, NR.smtp ? "No notification rules yet - nothing is mailed." : "Set up the mail server above first, then add a rule here.");
+  document.querySelectorAll("[data-ntoggle]").forEach(c => c.onchange = async () => {
+    const r = NR.rules.find(x => x.id === Number(c.dataset.ntoggle));
+    await LG.api(`/api/notification-rules/${r.id}`, { method: "PUT", body: { ...r, enabled: c.checked } }); loadRules();
+  });
+  document.querySelectorAll("[data-nedit]").forEach(a => a.onclick = e => { e.preventDefault(); editRule(NR.rules.find(x => x.id === Number(a.dataset.nedit))); });
+  document.querySelectorAll("[data-ndel]").forEach(a => a.onclick = async e => {
+    e.preventDefault(); if (!confirm("Delete this notification rule? No more mails are sent for it.")) return;
+    await LG.api(`/api/notification-rules/${a.dataset.ndel}`, { method: "DELETE" }); loadRules();
+  });
+  document.querySelectorAll("[data-ntest]").forEach(a => a.onclick = async e => {
+    e.preventDefault(); nmsg(`<span class="spinner"></span> sending…`, true);
+    const r = await LG.api(`/api/notification-rules/${a.dataset.ntest}/test`, { method: "POST" });
+    r.ok ? nmsg(r.example ? "Test mail sent (with an example alert - nothing matched this rule yet)." : "Test mail sent with the newest matching alert.", true)
+         : nmsg("Failed: " + LG.esc(r.error));
+  });
+}
+function nrValues() {
+  const f = document.getElementById("nr-form");
+  return { name: f.name.value, recipients: f.recipients.value, min_severity: f.min_severity.value, contains: f.contains.value,
+           text_mode: f.text_mode.value, networks: f.networks.value, min_interval: Number(f.min_interval.value),
+           rules: [...f.querySelectorAll('input[name="rules"]:checked')].map(c => c.value),
+           match_mode: f.querySelector('input[name="match_mode"]:checked').value,
+           on_escalation: f.on_escalation.checked, enabled: f.enabled.checked };
+}
+function editRule(x) {
+  const f = document.getElementById("nr-form");
+  f.reset(); f.rid.value = x ? x.id : "";
+  if (x) {
+    f.name.value = x.name || ""; f.recipients.value = x.recipients || ""; f.min_severity.value = x.min_severity || "";
+    f.contains.value = x.contains || ""; f.text_mode.value = x.text_mode || "any"; f.networks.value = x.networks || "";
+    f.min_interval.value = String(x.min_interval || 0); f.on_escalation.checked = !!x.on_escalation; f.enabled.checked = !!x.enabled;
+    f.querySelector(`input[name="match_mode"][value="${x.match_mode || "all"}"]`).checked = true;
+    f.querySelectorAll('input[name="rules"]').forEach(c => c.checked = (x.rules || []).includes(c.value));
+    document.querySelectorAll("#nr-rules details").forEach(d => d.open = !!d.querySelector("input:checked"));
+  }
+  document.getElementById("nr-form-title").textContent = x ? "Edit notification rule" : "New notification rule";
+  document.getElementById("nr-cancel").hidden = !x;
+  document.getElementById("nr-preview-out").innerHTML = ""; nmsg("", true);
+  if (x) document.getElementById("nr-form-card").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+document.getElementById("nr-cancel").onclick = () => editRule(null);
+document.getElementById("nr-preview").onclick = async () => {
+  try {
+    const r = await LG.api("/api/notification-rules/preview", { method: "POST", body: nrValues() });
+    nmsg(`This rule matches <b>${r.total}</b> alert(s) of the last 7 days.`, true);
+    LG.table("#nr-preview-out", [{k: "severity", l: "Sev", f: LG.sev}, {k: "title", l: "Alert"}, {k: "rule", l: "Rule"},
+      {k: "last_seen", l: "Last", f: LG.ago}], r.sample, "Nothing matched.");
+  } catch (e) { nmsg(LG.esc(e.message)); }
+};
+document.getElementById("nr-save").onclick = async () => {
+  const id = document.getElementById("nr-form").rid.value;
+  try {
+    await LG.api(id ? `/api/notification-rules/${id}` : "/api/notification-rules", { method: id ? "PUT" : "POST", body: nrValues() });
+    editRule(null); nmsg("Saved. New matching alerts are mailed within a minute.", true); loadRules();
+  } catch (e) { nmsg(LG.esc(e.message)); }
+};
 loadFilters().then(() => {
+  loadRules();
   // "Mute similar…" from the alerts page: /settings?mute=1&rule=…&ip=…&sev=…#filters
   const q = new URLSearchParams(location.search);
-  if (q.get("mute")) {
+  if (q.get("edit")) {  // "✎" from the alerts page: open that filter for adjusting
+    const f = FLT.filters.find(x => x.id === Number(q.get("edit")));
+    if (f) editFilter(f);
+    history.replaceState(null, "", location.pathname + "#filters");
+  } else if (q.get("mute")) {
     editFilter({ rules: q.get("rule") ? [q.get("rule")] : [], networks: q.get("ip") || "", max_severity: q.get("sev") || "",
-                 contains: q.get("text") || "", name: q.get("name") || "" });
+                 contains: q.get("text") || "", name: q.get("name") || "", action: q.get("action") || "suppress",
+                 set_severity: q.get("to") || "" });
     history.replaceState(null, "", location.pathname + "#filters");
   }
 });

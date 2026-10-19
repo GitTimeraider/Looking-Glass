@@ -10,6 +10,7 @@
   <button class="secondary" id="close">Close</button>
   <button class="secondary" id="reopen">Re-open</button>
   <input id="filter" placeholder="filter…" style="flex:1">
+  <a class="btn secondary" href="/settings#filters" id="filters-link" title="Mute filters and severity rules: see, adjust, pause or remove them">Mute &amp; severity rules</a>
 </div>
 <div class="card"><div id="list"></div></div>
 {% endblock %}
@@ -25,6 +26,10 @@ async function load() {
     b.innerHTML = `${LG.esc(b.dataset.label || (b.dataset.label = b.textContent))} <span class="n">${LG.num(n)}</span>`;
   });
   document.getElementById("count").textContent = LG.num(counts[status] ?? alerts.length);
+  LG.api("/api/alert-filters").then(r => {
+    const on = r.filters.filter(f => f.enabled).length;
+    document.getElementById("filters-link").textContent = `Mute & severity rules (${on} active)`;
+  }).catch(() => {});
   render();
 }
 /** Event-search link for the events behind an alert (its filters over its time span, with some margin) */
@@ -42,8 +47,17 @@ function why(a) {
 }
 const desc = a => (a.description || "").replace(/(^|\n\n)Severity (info|low|medium|high|critical): [^\n]*/, "").trim();
 // alert filter pre-filled from this alert: same rule, same source IP (when there is one)
-const muteUrl = a => "/settings?" + new URLSearchParams({ mute: 1, rule: a.rule, ...(a.src_ip ? { ip: a.src_ip } : {}),
-  name: `Mute ${a.rule}${a.src_ip ? " from " + a.src_ip : ""}` }) + "#filters";
+const muteUrl = (a, action) => "/settings?" + new URLSearchParams({ mute: 1, rule: a.rule, ...(a.src_ip ? { ip: a.src_ip } : {}),
+  ...(action ? { action, to: a.severity } : {}),
+  name: `${action ? "Severity of" : "Mute"} ${a.rule}${a.src_ip ? " from " + a.src_ip : ""}` }) + "#filters";
+function override(a) {
+  const o = (a.data || {}).severity_override;
+  if (!o) return "";
+  const f = o.filter || {};
+  return `<div class="small muted-by">⚙ Severity changed by ${a.override_active ? `<a href="/settings?edit=${f.id}#filters" title="Adjust this rule">${LG.esc(f.name || "filter #" + f.id)} ✎</a>` : LG.esc(f.name || "a rule")} (was ${LG.esc(o.from)})` +
+    (a.override_active ? ` <button type="button" class="secondary small" data-undo="${f.id}" title="Delete this severity rule: open alerts it changed get their own severity back">Undo rule</button>` : ` <span class="muted">(rule removed or paused)</span>`) +
+    ` <button type="button" class="secondary small" data-restore="${a.id}" title="Give only this alert its own severity back (${LG.esc(o.from)})">Restore ${LG.esc(o.from)}</button></div>`;
+}
 function device(a) {
   const d = (a.data || {}).device;
   if (!d) return "";
@@ -61,16 +75,23 @@ function render() {
   const rows = alerts.filter(a => !f || JSON.stringify(a).toLowerCase().includes(f));
   const el = document.getElementById("list");
   if (!rows.length) { el.innerHTML = `<div class="empty">No alerts.</div>`; return; }
-  el.innerHTML = `<div class="table-wrap tall"><table><thead><tr><th></th><th>Sev</th><th>Alert</th><th>Rule</th><th>Source</th><th class="num">Count</th><th>First</th><th>Last</th><th>Status</th><th></th></tr></thead><tbody>` +
+  el.innerHTML = `<div class="table-wrap tall"><table><thead><tr><th></th><th>Sev</th><th>Alert</th><th>Rule</th><th>Source</th><th class="num">Count</th><th>Seen</th><th></th></tr></thead><tbody>` +
     rows.map(a => `<tr id="a${a.id}">
       <td><input type="checkbox" value="${a.id}"></td><td>${LG.sev(a.severity)}</td>
-      <td><b>${LG.esc(a.title)}</b>${a.muted_by ? `<div class="small muted-by">🔇 Muted by <a href="/settings#filters">${LG.esc(a.muted_by.name)}</a>${a.muted_by.action === "close" ? " (created as closed)" : " - new alerts like this are not created"}</div>` : ""}${why(a)}<div class="small muted">${LG.esc(desc(a))}</div></td>
-      <td class="small">${LG.esc(a.rule)}</td><td>${a.src_ip ? LG.ip(a.src_ip) : `<span class="muted">–</span>`}${device(a)}</td><td class="num">${LG.num(a.count)}</td>
-      <td class="small">${LG.time(a.created_at)}</td><td class="small">${LG.ago(a.last_seen)}</td><td class="small">${LG.esc(a.status)}</td>
-      <td style="white-space:nowrap">${eventsUrl(a) ? `<a class="btn secondary small" href="${eventsUrl(a)}">Events</a> ` : ""}${a.muted_by ? `<button type="button" class="secondary small" data-unmute="${a.muted_by.id}" title="Delete the filter “${LG.esc(a.muted_by.name)}” so alerts like this are created again">Unmute</button>`
-        : `<a class="btn secondary small" href="${muteUrl(a)}" title="Create a filter that stops alerts like this one">Mute similar…</a>`} {% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do.`)}">Ask AI</a>{% endif %}</td>
+      <td><b>${LG.esc(a.title)}</b>${a.muted_by ? `<div class="small muted-by">🔇 Muted by <a href="/settings?edit=${a.muted_by.id}#filters" title="Adjust this filter">${LG.esc(a.muted_by.name)} ✎</a>${a.muted_by.action === "close" ? " (created as closed)" : " - new alerts like this are not created"}</div>` : ""}${override(a)}${why(a)}<div class="small muted">${LG.esc(desc(a))}</div></td>
+      <td class="small rule-cell">${LG.esc(a.rule)}</td><td>${a.src_ip ? LG.ip(a.src_ip) : `<span class="muted">–</span>`}${device(a)}</td><td class="num">${LG.num(a.count)}</td>
+      <td class="small seen-cell" title="first ${LG.esc(LG.time(a.created_at))}">last ${LG.ago(a.last_seen)}<div class="muted">first ${LG.time(a.created_at)}</div><span class="pill">${LG.esc(a.status)}</span></td>
+      <td><div class="actions">${eventsUrl(a) ? `<a class="btn secondary small" href="${eventsUrl(a)}" title="Show the events behind this alert">Events</a>` : ""}${a.muted_by ? `<button type="button" class="secondary small" data-unmute="${a.muted_by.id}" title="Delete the filter “${LG.esc(a.muted_by.name)}” so alerts like this are created again">Unmute</button>`
+        : `<a class="btn secondary small" href="${muteUrl(a)}" title="Create a filter that stops alerts like this one">Mute similar…</a>`}<a class="btn secondary small" href="${muteUrl(a, "severity")}" title="Give alerts like this one your own severity from now on">Change severity…</a>{% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do.`)}" title="Let the AI analyst investigate this alert">Ask AI</a>{% endif %}</div></td>
     </tr>`).join("") + "</tbody></table></div>";
   el.querySelectorAll("[data-unmute]").forEach(b => b.onclick = () => unmute(Number(b.dataset.unmute)));
+  el.querySelectorAll("[data-restore]").forEach(b => b.onclick = async () => {
+    await LG.api(`/api/alerts/${b.dataset.restore}/restore-severity`, { method: "POST" }); load();
+  });
+  el.querySelectorAll("[data-undo]").forEach(b => b.onclick = async () => {
+    if (!confirm("Undo: delete this severity rule? Open alerts it changed get their own severity back, and new ones keep their normal severity.")) return;
+    await LG.api(`/api/alert-filters/${b.dataset.undo}`, { method: "DELETE" }); load();
+  });
   if (location.hash) { const t = document.querySelector(location.hash.replace("#", "#a")); if (t) { t.scrollIntoView(); t.style.outline = "2px solid var(--accent)"; } }
 }
 function selected() { return [...document.querySelectorAll("#list input:checked")].map(i => Number(i.value)); }

@@ -229,11 +229,15 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         # which enabled alert filter (mute) matches each alert - the alerts page offers "Unmute" for those
         from .. import alert_filters
 
-        filters = await alert_filters._filters()
+        all_filters = await alert_filters._filters()
+        active_ids = {f["id"] for f in all_filters}
+        filters = [f for f in all_filters if f["action"] != "severity"]
         for a in out:
             f = next((f for f in filters if alert_filters.matches(f, a["rule"], a["severity"], a["title"], a.get("description") or "",
                                                                  a.get("src_ip"), a.get("dst_ip"))), None)
             a["muted_by"] = {"id": f["id"], "name": f.get("name") or f"filter #{f['id']}", "action": f["action"]} if f else None
+            ov = (a.get("data") or {}).get("severity_override")
+            a["override_active"] = bool(ov and (ov.get("filter") or {}).get("id") in active_ids)
         return out
 
     # ------------------------------------------------------------ layouts ---
@@ -298,8 +302,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def add_filter(payload: dict = Body(...)):
         f = _clean_filter(payload)
         row = await db.pool().fetchrow(
-            "INSERT INTO alert_filters (name, enabled, max_severity, rules, contains, networks, action, match_mode, text_mode) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *", *f.values())
+            "INSERT INTO alert_filters (name, enabled, max_severity, rules, contains, networks, action, match_mode, text_mode, "
+            "set_severity) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *", *f.values())
         af.invalidate()
         return _filter_out(row)
 
@@ -308,7 +312,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         f = _clean_filter(payload)
         row = await db.pool().fetchrow(
             "UPDATE alert_filters SET name = $2, enabled = $3, max_severity = $4, rules = $5, contains = $6, networks = $7, "
-            "action = $8, match_mode = $9, text_mode = $10 WHERE id = $1 RETURNING *", fid, *f.values())
+            "action = $8, match_mode = $9, text_mode = $10, set_severity = $11 WHERE id = $1 RETURNING *", fid, *f.values())
         if not row:
             raise HTTPException(404)
         af.invalidate()
@@ -317,8 +321,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     @app.delete("/api/alert-filters/{fid}")
     async def delete_filter(fid: int):
         await db.pool().execute("DELETE FROM alert_filters WHERE id = $1", fid)
+        # a removed severity rule: open / acknowledged alerts it changed get their own severity back
+        restored = await db.pool().execute(
+            "UPDATE alerts SET severity = data->'severity_override'->>'from', data = data - 'severity_override' "
+            "WHERE status <> 'closed' AND data ? 'severity_override' "
+            "AND (data->'severity_override'->'filter'->>'id') = $1::text", str(fid))
         af.invalidate()
-        return {"ok": True}
+        return {"ok": True, "restored": int(restored.split()[-1])}
 
     async def _matching_alerts(f: dict[str, Any], statuses: tuple[str, ...]) -> list[dict[str, Any]]:
         rows = await db.pool().fetch(
@@ -336,13 +345,106 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return {"total": len(hits), "open": open_n,
                 "sample": db.jsonable([{k: h[k] for k in ("id", "severity", "rule", "title", "status", "last_seen")} for h in hits[:15]])}
 
+    # ---- email notification rules
+    from .. import notify
+
+    _NR_COLS = ("name", "enabled", "recipients", "min_severity", "rules", "contains", "networks", "match_mode", "text_mode",
+                "on_escalation", "min_interval")
+
+    def _clean_nrule(payload: dict) -> dict[str, Any]:
+        try:
+            return notify.clean(payload)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/notification-rules")
+    async def list_nrules():
+        rows = await db.pool().fetch("SELECT * FROM notification_rules ORDER BY id")
+        return {"rules": [_filter_out(r) for r in rows], "smtp": settings.smtp_enabled}
+
+    @app.post("/api/notification-rules")
+    async def add_nrule(payload: dict = Body(...)):
+        n = _clean_nrule(payload)
+        row = await db.pool().fetchrow(
+            f"INSERT INTO notification_rules ({', '.join(_NR_COLS)}) VALUES ({', '.join(f'${i + 1}' for i in range(len(_NR_COLS)))}) "
+            "RETURNING *", *(n[c] for c in _NR_COLS))
+        return _filter_out(row)
+
+    @app.put("/api/notification-rules/{rid}")
+    async def edit_nrule(rid: int, payload: dict = Body(...)):
+        n = _clean_nrule(payload)
+        sets = ", ".join(f"{c} = ${i + 2}" for i, c in enumerate(_NR_COLS))
+        row = await db.pool().fetchrow(f"UPDATE notification_rules SET {sets}, last_error = NULL WHERE id = $1 RETURNING *",
+                                       rid, *(n[c] for c in _NR_COLS))
+        if not row:
+            raise HTTPException(404)
+        return _filter_out(row)
+
+    @app.delete("/api/notification-rules/{rid}")
+    async def delete_nrule(rid: int):
+        await db.pool().execute("DELETE FROM notification_rules WHERE id = $1", rid)
+        return {"ok": True}
+
+    @app.post("/api/notification-rules/preview")
+    async def preview_nrule(payload: dict = Body(...)):
+        """How many alerts of the last 7 days this rule would have mailed."""
+        n = _clean_nrule(payload)
+        rows = await db.pool().fetch(
+            "SELECT id, rule, severity, title, coalesce(description, '') description, host(src_ip) src_ip, host(dst_ip) dst_ip, "
+            "last_seen FROM alerts WHERE last_seen > now() - interval '7 days' ORDER BY last_seen DESC LIMIT 20000")
+        hits = [r for r in rows if af.matches(n, r["rule"], r["severity"], r["title"], r["description"], r["src_ip"], r["dst_ip"])]
+        return {"total": len(hits), "sample": db.jsonable([{k: h[k] for k in ("id", "severity", "rule", "title", "last_seen")}
+                                                           for h in hits[:10]])}
+
+    @app.post("/api/notification-rules/{rid}/test")
+    async def test_nrule(rid: int):
+        """Mail the newest matching alert (or an example) to this rule's recipients."""
+        row = await db.pool().fetchrow("SELECT * FROM notification_rules WHERE id = $1", rid)
+        if not row:
+            raise HTTPException(404)
+        rule = dict(row)
+        rows = await db.pool().fetch(
+            "SELECT id, rule, severity, title, coalesce(description, '') description, host(src_ip) src_ip, host(dst_ip) dst_ip, "
+            "data FROM alerts ORDER BY last_seen DESC LIMIT 5000")
+        hit = next((dict(r) for r in rows if af.matches(rule, r["rule"], r["severity"], r["title"], r["description"],
+                                                        r["src_ip"], r["dst_ip"])), None)
+        example = hit or {"id": 0, "rule": "example", "severity": rule.get("min_severity") or "high",
+                          "title": "Example alert (no alert matched this rule yet)", "data": {}}
+        subject, text, body = notify.compose(rule, [example], settings.mail_link_url or settings.public_url)
+        try:
+            await notify.send(settings, notify.recipients(rule["recipients"]), "[TEST] " + subject, text, body)
+        except (notify.MailError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "example": hit is None}
+
+    @app.post("/api/alerts/{aid}/restore-severity")
+    async def restore_severity(aid: int):
+        """Undo a severity change on one alert (e.g. after its rule was paused): back to the severity it had."""
+        row = await db.pool().fetchrow("SELECT data FROM alerts WHERE id = $1", aid)
+        ov = ((row or {}).get("data") or {}).get("severity_override") if row else None
+        if not ov:
+            raise HTTPException(404, "this alert has no changed severity")
+        await db.pool().execute("UPDATE alerts SET severity = $2, data = data - 'severity_override' WHERE id = $1", aid, ov["from"])
+        return {"ok": True, "severity": ov["from"]}
+
     @app.post("/api/alert-filters/{fid}/apply")
     async def apply_filter(fid: int):
-        """Close the open / acknowledged alerts this filter matches."""
+        """Apply a filter to the open / acknowledged alerts it matches: close them, or change their severity."""
         row = await db.pool().fetchrow("SELECT * FROM alert_filters WHERE id = $1", fid)
         if not row:
             raise HTTPException(404)
-        ids = [h["id"] for h in await _matching_alerts(dict(row), ("open", "acknowledged"))]
+        f = dict(row)
+        hits = await _matching_alerts(f, ("open", "acknowledged"))
+        if f["action"] == "severity":
+            for h in hits:
+                if h["severity"] == f["set_severity"]:
+                    continue
+                note = {"from": h["severity"], "to": f["set_severity"], "filter": {"id": f["id"], "name": f.get("name")}}
+                await db.pool().execute(
+                    "UPDATE alerts SET severity = $2, data = coalesce(data, '{}'::jsonb) || jsonb_build_object('severity_override', $3::jsonb) "
+                    "WHERE id = $1", h["id"], f["set_severity"], note)
+            return {"changed": len(hits), "closed": 0}
+        ids = [h["id"] for h in hits]
         if ids:
             await db.pool().execute("UPDATE alerts SET status = 'closed' WHERE id = ANY($1::bigint[])", ids)
         return {"closed": len(ids)}
@@ -773,6 +875,25 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if not cand.unifi_enabled:
             return {"ok": False, "error": "URL and an API key (or username + password) are required"}
         return await test_connection(cand)
+
+    @app.post("/api/settings/test/email")
+    async def test_email(payload: dict = Body(...)):
+        from .. import notify
+
+        cand = _candidate(payload.get("values"))
+        if not cand.smtp_enabled:
+            return {"ok": False, "error": "SMTP server and sender address are required"}
+        try:
+            to = notify.recipients(payload.get("to")) or notify.recipients(cand.smtp_from)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        try:
+            await notify.send(cand, to, "[Looking Glass] Test mail",
+                              "This is a test mail from Looking Glass. Mail notifications work.\n\n"
+                              "Set up what you want to be mailed about under Settings › Email & notifications.")
+        except notify.MailError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "to": ", ".join(to)}
 
     @app.post("/api/settings/test/ai")
     async def test_ai(payload: dict = Body(...)):

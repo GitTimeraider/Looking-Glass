@@ -32,6 +32,10 @@ def test_validation():
         with pytest.raises(ValueError):
             af.clean(bad)
     assert af.clean({"contains": " a ,, b "})["contains"] == "a, b"
+    with pytest.raises(ValueError):
+        af.clean({"rules": ["port_scan"], "action": "severity"})  # no target severity
+    assert af.clean({"rules": ["port_scan"], "action": "severity", "set_severity": "high"})["set_severity"] == "high"
+    assert af.clean({"rules": ["port_scan"], "set_severity": "high"})["set_severity"] is None  # only for that action
 
 
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
@@ -53,6 +57,36 @@ def test_filters_stop_or_close_alerts():
             assert "ps:1" not in rows and rows["ps:2"] == "open" and rows["firmware"] == "closed"
             hits = {r["name"]: r["hits"] for r in await pool.fetch("SELECT name, hits FROM alert_filters")}
             assert hits == {"noise": 1, "keep closed": 1}
+            await pool.execute("TRUNCATE alerts, alert_filters")
+            af.invalidate()
+        finally:
+            await db.close()
+
+    asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_severity_rules_come_before_muting():
+    from lookingglass.detections import Rating, raise_alert
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE alerts, alert_filters")
+            # new devices on the IoT network matter to me: high; and mute everything that ends up "info"
+            await pool.execute("INSERT INTO alert_filters (name, rules, networks, action, set_severity) VALUES "
+                               "('iot', '{new_device}', '192.168.30.0/24', 'severity', 'high'), "
+                               "('quiet', '{port_scan}', NULL, 'severity', 'info')")
+            await pool.execute("INSERT INTO alert_filters (name, max_severity, action) VALUES ('drop info', 'info', 'suppress')")
+            af.invalidate()
+            await raise_alert("new_device", Rating("low", "unknown MAC", sticky=True), "New device", "nd:1", src_ip="192.168.30.7")
+            await raise_alert("new_device", Rating("low", "unknown MAC", sticky=True), "New device", "nd:2", src_ip="192.168.1.7")
+            await raise_alert("port_scan", Rating("medium", "inside"), "Internal port scan", "ps:1", src_ip="192.168.1.9")
+            rows = {r["fingerprint"]: r for r in await pool.fetch("SELECT fingerprint, severity, data FROM alerts")}
+            assert rows["nd:1"]["severity"] == "high" and rows["nd:1"]["data"]["severity_override"]["from"] == "low"
+            assert rows["nd:2"]["severity"] == "low" and "severity_override" not in rows["nd:2"]["data"]
+            assert "ps:1" not in rows  # re-rated to info first, then muted by "drop info"
             await pool.execute("TRUNCATE alerts, alert_filters")
             af.invalidate()
         finally:

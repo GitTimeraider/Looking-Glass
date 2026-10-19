@@ -178,6 +178,15 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
             description = (description + "\n\n" if description else "") + (
                 f"Connected to: {dev['conn_where']}{signal} (UniFi). To cut it off quickly: UniFi Network › Client Devices › "
                 f"{name or dev.get('mac')} › Block, or an OPNsense firewall rule for {src_ip}.")
+    # your own severity rules (Settings › Alert filters › "Change the severity") come first; mute filters see the result
+    if ov := await alert_filters.check(rule, severity, title, description, src_ip, dst_ip, kind="severity"):
+        if ov["set_severity"] != severity:
+            label = ov.get("name") or f"filter #{ov['id']}"
+            data["severity_override"] = {"from": severity, "to": ov["set_severity"], "filter": {"id": ov["id"], "name": ov.get("name")}}
+            data["severity_why"] = list(data.get("severity_why") or []) + [f"→ set to {ov['set_severity']} by your rule “{label}” (was {severity})"]
+            description += f"\n\nSeverity set to {ov['set_severity']} by your alert rule “{label}” (was {severity})."
+            severity = ov["set_severity"]
+            keep_max = False  # your choice replaces the stored level, also downwards
     status = "open"
     if flt := await alert_filters.check(rule, severity, title, description, src_ip, dst_ip):
         if flt["action"] == "suppress":
