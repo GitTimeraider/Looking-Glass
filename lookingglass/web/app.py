@@ -1,6 +1,7 @@
 """FastAPI web application: dashboards, event search, alerts, reports, system view and the AI chat."""
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import datetime
@@ -15,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from .. import __version__, app_config, crypto, db
+from .. import __version__, app_config, auth, crypto, db
 from ..ai import Analyst
 from ..config import Settings
 from ..ingest import STATS
@@ -260,6 +261,43 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 "syslog": {"udp": settings.syslog_udp_port, "tcp": settings.syslog_tcp_port, "enabled": settings.syslog_enabled},
                 "db_size": await db.pool().fetchval("SELECT pg_size_pretty(pg_database_size(current_database()))"),
                 "events_total": await db.pool().fetchval("SELECT reltuples::bigint FROM pg_class WHERE relname = 'events'")}
+
+    # ------------------------------------------------- delete collected data ---
+    # What can be wiped. Never touched: settings, credentials, accounts / MFA, Unraid servers, encryption key.
+    PURGE = {
+        "events": ("events", "Logs / events"),
+        "alerts": ("alerts", "Alerts"),
+        "metrics": ("metrics", "Graphs (metrics history)"),
+        "reports": ("reports", "Reports"),
+        "ai_chats": ("ai_chats", "AI analyst conversations"),
+        "devices": ("devices", "Device list (incl. names, notes and trusted marks you set)"),
+    }
+
+    @app.get("/api/admin/data")
+    async def data_sizes():
+        out = []
+        for key, (table, label) in PURGE.items():
+            row = await db.pool().fetchrow(
+                f"SELECT pg_size_pretty(pg_total_relation_size('{table}')) size, "
+                f"(SELECT reltuples::bigint FROM pg_class WHERE relname = '{table}') approx")
+            exact = await db.pool().fetchval(f"SELECT count(*) FROM {table}") if (row["approx"] or 0) < 100000 else None
+            out.append({"key": key, "label": label, "size": row["size"], "rows": exact if exact is not None else max(0, row["approx"])})
+        return out
+
+    @app.post("/api/admin/purge")
+    async def purge(request: Request, payload: dict = Body(...)):
+        parts = [p for p in payload.get("parts") or [] if p in PURGE]
+        if not parts:
+            raise HTTPException(400, "Select what to delete.")
+        if str(payload.get("confirm", "")).strip() != "DELETE":
+            raise HTTPException(400, "Type DELETE to confirm.")
+        user = request.state.user
+        if not await asyncio.to_thread(auth.verify_password, str(payload.get("password", "")), user["password_hash"]):
+            raise HTTPException(403, "Wrong password.")
+        # TRUNCATE without RESTART IDENTITY: event ids keep growing, so the detection rules' watermarks stay valid
+        await db.pool().execute(f"TRUNCATE {', '.join(PURGE[p][0] for p in parts)}")
+        log.warning("user %s deleted collected data: %s", user["username"], ", ".join(parts))
+        return {"ok": True, "deleted": parts}
 
     @app.get("/api/setup/checks")
     async def setup_status():

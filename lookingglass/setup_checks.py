@@ -216,6 +216,13 @@ async def run(settings: Settings) -> dict[str, Any]:
     # ----------------------------------------------------------- Zenarmor ---
     zes, zsys = n("zenarmor:es"), n("zenarmor:syslog")
     if zes and zsys:
+        # Before program "zenarmor-es" existed, stream records were stored as "zenarmor" too: only syslog records
+        # received after the first labelled stream record prove a real second channel.
+        zsys = await pool.fetchval(
+            "SELECT count(*) FROM events WHERE source = 'zenarmor' AND program = 'zenarmor' AND ts > now() - interval '24 hours' "
+            "AND received_at > (SELECT min(received_at) FROM events WHERE source = 'zenarmor' AND program = 'zenarmor-es' "
+            "AND ts > now() - interval '24 hours')") or 0
+    if zes and zsys:
         check("zenarmor", "Zenarmor", "duplicate", ["ES stream", "syslog"], "Zenarmor streams both to the Elasticsearch receiver and to syslog.",
               ["OPNsense › Zenarmor › Settings › Streaming Data: keep one of the two streams."], count=zes, last_seen=last("zenarmor"), link="/dash/zenarmor")
     elif zes or zsys:

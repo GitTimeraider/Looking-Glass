@@ -397,6 +397,9 @@ metrics, no alerts.
   IP, MAC, vendor, interface, lease, first/last seen, events/blocks/DNS queries/alerts per device; mark devices as
   trusted, rename them, add notes.
 * **Unraid** – see above.
+* **Settings › Data & detection › Delete collected data** – wipe logs/events, alerts, graphs, reports, AI conversations
+  and optionally the device list to start over. Settings, credentials, accounts/MFA, Unraid servers and the encryption
+  key are kept; needs your password and typing DELETE.
 * **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range; filters that come
   from a dashboard click (program, host, domain, user, port, protocol, interface, country, time span, any data field)
   show as removable chips. Click an event for all its fields.

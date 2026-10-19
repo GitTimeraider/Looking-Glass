@@ -11,8 +11,16 @@
   {% block head %}{% endblock %}
 </head>
 <body>
+<header class="mbar">
+  <button type="button" class="menu-btn" id="menu-btn" aria-label="Open menu" aria-controls="side" aria-expanded="false">
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+  </button>
+  <span class="brand">Looking<span>Glass</span></span>
+  <span class="mbar-title">{{ title }}</span>
+</header>
+<div class="scrim" id="scrim"></div>
 <div class="layout">
-  <nav class="side">
+  <nav class="side" id="side">
     <div class="brand">Looking<span>Glass</span></div>
     <a href="/" class="{{ 'active' if path == '/' }}">Overview</a>
     <a href="/alerts" class="{{ 'active' if path == '/alerts' }}">Alerts</a>
@@ -37,6 +45,18 @@
     {% block body %}{% endblock %}
   </main>
 </div>
+<script>
+/* mobile: the sidebar is a drawer behind the hamburger button */
+(() => {
+  const btn = document.getElementById("menu-btn"), body = document.body;
+  const set = open => { body.classList.toggle("menu-open", open); btn.setAttribute("aria-expanded", open); btn.setAttribute("aria-label", open ? "Close menu" : "Open menu"); };
+  btn.onclick = () => set(!body.classList.contains("menu-open"));
+  document.getElementById("scrim").onclick = () => set(false);
+  document.querySelectorAll("#side a").forEach(a => a.addEventListener("click", () => set(false)));
+  document.addEventListener("keydown", e => { if (e.key === "Escape") set(false); });
+  matchMedia("(min-width: 761px)").addEventListener("change", e => { if (e.matches) set(false); });
+})();
+</script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -27,6 +27,10 @@ def test_channels_and_duplicates():
             ]
             await db.insert_events_dedup([e for e in evs if e.get("uid")])
             await db.copy_events([e for e in evs if not e.get("uid")])
+            # Zenarmor: a stream record stored before program "zenarmor-es" existed must not count as syslog ...
+            await pool.execute("INSERT INTO events (ts, received_at, source, program, severity, host) VALUES "
+                               "(now() - interval '2 hours', now() - interval '2 hours', 'zenarmor', 'zenarmor', 6, 'setup-test'), "
+                               "(now() - interval '1 hour', now() - interval '1 hour', 'zenarmor', 'zenarmor-es', 6, 'setup-test')")
             await db.set_snapshot("poller_status", {"system": {"ok": True}, "nginx_logs": {"ok": True}, "ids": {"ok": True},
                                                     "crowdsec": {"ok": False, "forbidden": True, "error": "HTTP 403"}})
             res = await setup_checks.run(Settings(opnsense_url="http://x", opnsense_api_key="k", opnsense_api_secret="s"))
@@ -36,6 +40,11 @@ def test_channels_and_duplicates():
             assert by["ids"]["status"] == "ok" and by["ids"]["via"] == ["API"]
             assert by["crowdsec"]["status"] == "action" and "Privileges" in by["crowdsec"]["todo"][0]
             assert by["api"]["status"] == "info" and "crowdsec" in by["api"]["summary"]
+            assert by["zenarmor"]["status"] == "ok" and by["zenarmor"]["via"] == ["ES stream"]
+            # ... but a syslog record received after the stream started does
+            await pool.execute("INSERT INTO events (ts, source, program, severity, host) VALUES (now(), 'zenarmor', 'zenarmor', 6, 'setup-test')")
+            res = await setup_checks.run(Settings(opnsense_url="http://x", opnsense_api_key="k", opnsense_api_secret="s"))
+            assert {c["id"]: c for c in res["checks"]}["zenarmor"]["status"] == "duplicate"
         finally:
             await db.pool().execute("DELETE FROM events WHERE host = 'setup-test'")
             await db.pool().execute("DELETE FROM snapshots WHERE key = 'poller_status'")

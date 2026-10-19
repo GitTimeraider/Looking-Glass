@@ -148,8 +148,6 @@ def create_es_app(settings: Settings, writer: EventWriter) -> Starlette:
                         ev = zenarmor_record(family, doc, now, host=peer, program="zenarmor-es")
                         writer.put(ev)
                         stats["docs"] += 1
-                        STATS.by_source["zenarmor"] = STATS.by_source.get("zenarmor", 0) + 1
-                        STATS.last_by_source["zenarmor"] = time.time()
             items.append({op: {"_index": idx, "_id": (meta or {}).get("_id") or "0", "_version": 1, "result": "created",
                                "_shards": {"total": 1, "successful": 1, "failed": 0}, "status": 201}})
         stats.update(bulk=stats["bulk"] + 1, last=time.time(), peer=peer)

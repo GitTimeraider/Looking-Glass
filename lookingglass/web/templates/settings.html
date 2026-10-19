@@ -18,6 +18,20 @@
     </div>
     <div class="small" id="msg-{{ g }}"></div>
   </div>
+  {% if g == "data" %}
+  <div class="card danger-zone" style="margin-top:14px">
+    <h3>Delete collected data</h3>
+    <p class="small muted">Start again with an empty history. Everything you configured is kept: these settings, all
+      credentials, accounts and MFA, Unraid servers and the encryption key. Collecting continues right away.</p>
+    <div id="purge-parts"></div>
+    <div class="purge-confirm">
+      <input type="password" id="purge-pw" placeholder="Your password" autocomplete="current-password">
+      <input id="purge-confirm" placeholder="Type DELETE" autocomplete="off">
+      <button type="button" class="danger" id="purge-go">Delete selected data</button>
+    </div>
+    <div class="small" id="purge-msg"></div>
+  </div>
+  {% endif %}
 </section>
 {% endfor %}
 <section data-s="unraid" hidden>
@@ -122,6 +136,26 @@ document.querySelectorAll("[data-test]").forEach(b => b.onclick = async () => {
   } catch (e) { gmsg(g, LG.esc(e.message)); }
 });
 loadSettings();
+/* ---------- delete collected data ---------- */
+async function loadPurge() {
+  const rows = await LG.api("/api/admin/data");
+  document.getElementById("purge-parts").innerHTML = rows.map(r => `<label class="chk purge-row"><input type="checkbox" value="${r.key}" ${r.key === "devices" ? "" : "checked"}>
+    <span>${LG.esc(r.label)}</span><span class="muted small">${LG.num(r.rows)} rows · ${LG.esc(r.size)}</span></label>`).join("");
+}
+document.getElementById("purge-go").onclick = async () => {
+  const parts = [...document.querySelectorAll("#purge-parts input:checked")].map(i => i.value);
+  const m = document.getElementById("purge-msg");
+  if (!parts.length) { m.className = "small err"; m.textContent = "Select what to delete."; return; }
+  if (!confirm(`Permanently delete: ${parts.join(", ")}? This cannot be undone.`)) return;
+  try {
+    await LG.api("/api/admin/purge", { method: "POST", body: { parts, password: document.getElementById("purge-pw").value,
+                                                                confirm: document.getElementById("purge-confirm").value } });
+    m.className = "small ok-msg"; m.textContent = "Deleted. New data appears within a minute.";
+    document.getElementById("purge-pw").value = ""; document.getElementById("purge-confirm").value = "";
+    loadPurge();
+  } catch (e) { m.className = "small err"; m.textContent = e.message; }
+};
+loadPurge();
 /* ---------- Unraid servers ---------- */
 const f = document.getElementById("f"), msg = (t, ok) => { const m = document.getElementById("msg"); m.innerHTML = t; m.className = "small " + (ok ? "ok-msg" : "err"); };
 function payload() {
