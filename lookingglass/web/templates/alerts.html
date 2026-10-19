@@ -41,11 +41,20 @@ function why(a) {
   return w && w.length ? `<div class="small why sev-${LG.esc(a.severity)}"><b>Why ${LG.esc(a.severity)}:</b> ${w.map(LG.esc).join(" · ")}</div>` : "";
 }
 const desc = a => (a.description || "").replace(/(^|\n\n)Severity (info|low|medium|high|critical): [^\n]*/, "").trim();
+// alert filter pre-filled from this alert: same rule, same source IP (when there is one)
+const muteUrl = a => "/settings?" + new URLSearchParams({ mute: 1, rule: a.rule, ...(a.src_ip ? { ip: a.src_ip } : {}),
+  name: `Mute ${a.rule}${a.src_ip ? " from " + a.src_ip : ""}` }) + "#filters";
 function device(a) {
   const d = (a.data || {}).device;
   if (!d) return "";
   return `<div class="small muted">${LG.esc([d.hostname, d.vendor, d.mac].filter(Boolean).join(" · "))}</div>` +
     (d.conn_where ? `<div class="small muted" title="Where UniFi sees this device">📍 ${LG.esc(d.conn_where)}${d.conn_signal ? ` · ${d.conn_signal} dBm` : ""}</div>` : "");
+}
+async function unmute(id) {
+  const a = alerts.find(x => x.muted_by && x.muted_by.id === id);
+  if (!confirm(`Unmute: delete the filter “${a ? a.muted_by.name : id}”? Alerts it stopped are created again from now on.`)) return;
+  await LG.api(`/api/alert-filters/${id}`, { method: "DELETE" });
+  load();
 }
 function render() {
   const f = document.getElementById("filter").value.toLowerCase();
@@ -55,11 +64,13 @@ function render() {
   el.innerHTML = `<div class="table-wrap tall"><table><thead><tr><th></th><th>Sev</th><th>Alert</th><th>Rule</th><th>Source</th><th class="num">Count</th><th>First</th><th>Last</th><th>Status</th><th></th></tr></thead><tbody>` +
     rows.map(a => `<tr id="a${a.id}">
       <td><input type="checkbox" value="${a.id}"></td><td>${LG.sev(a.severity)}</td>
-      <td><b>${LG.esc(a.title)}</b>${why(a)}<div class="small muted">${LG.esc(desc(a))}</div></td>
+      <td><b>${LG.esc(a.title)}</b>${a.muted_by ? `<div class="small muted-by">🔇 Muted by <a href="/settings#filters">${LG.esc(a.muted_by.name)}</a>${a.muted_by.action === "close" ? " (created as closed)" : " - new alerts like this are not created"}</div>` : ""}${why(a)}<div class="small muted">${LG.esc(desc(a))}</div></td>
       <td class="small">${LG.esc(a.rule)}</td><td>${a.src_ip ? LG.ip(a.src_ip) : `<span class="muted">–</span>`}${device(a)}</td><td class="num">${LG.num(a.count)}</td>
       <td class="small">${LG.time(a.created_at)}</td><td class="small">${LG.ago(a.last_seen)}</td><td class="small">${LG.esc(a.status)}</td>
-      <td style="white-space:nowrap">${eventsUrl(a) ? `<a class="btn secondary small" href="${eventsUrl(a)}">Events</a> ` : ""}{% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do.`)}">Ask AI</a>{% endif %}</td>
+      <td style="white-space:nowrap">${eventsUrl(a) ? `<a class="btn secondary small" href="${eventsUrl(a)}">Events</a> ` : ""}${a.muted_by ? `<button type="button" class="secondary small" data-unmute="${a.muted_by.id}" title="Delete the filter “${LG.esc(a.muted_by.name)}” so alerts like this are created again">Unmute</button>`
+        : `<a class="btn secondary small" href="${muteUrl(a)}" title="Create a filter that stops alerts like this one">Mute similar…</a>`} {% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do.`)}">Ask AI</a>{% endif %}</td>
     </tr>`).join("") + "</tbody></table></div>";
+  el.querySelectorAll("[data-unmute]").forEach(b => b.onclick = () => unmute(Number(b.dataset.unmute)));
   if (location.hash) { const t = document.querySelector(location.hash.replace("#", "#a")); if (t) { t.scrollIntoView(); t.style.outline = "2px solid var(--accent)"; } }
 }
 function selected() { return [...document.querySelectorAll("#list input:checked")].map(i => Number(i.value)); }

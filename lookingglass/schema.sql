@@ -169,3 +169,20 @@ CREATE TABLE IF NOT EXISTS app_settings (
 UPDATE events SET data = coalesce(data, '{}'::jsonb) || jsonb_build_object('scenario', split_part(message, ' from ', 1))
  WHERE source = 'crowdsec' AND action = 'alert' AND data->>'scenario' IS NULL AND data->>'reason' IS NULL
    AND message LIKE '% from %' AND split_part(message, ' from ', 1) NOT IN ('', 'None');
+
+-- alert filters (Settings › Alert filters): stop or auto-close alerts by severity, rule, text and IP / network
+CREATE TABLE IF NOT EXISTS alert_filters (
+    id           BIGSERIAL PRIMARY KEY,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    name         TEXT,
+    enabled      BOOLEAN NOT NULL DEFAULT true,
+    max_severity TEXT,                 -- matches this severity and everything below it
+    rules        TEXT[] NOT NULL DEFAULT '{}',
+    contains     TEXT,                 -- case-insensitive, title or description
+    networks     TEXT,                 -- comma separated IPs / CIDRs, source or destination
+    action       TEXT NOT NULL DEFAULT 'suppress',  -- suppress (not created) | close (created as closed)
+    hits         BIGINT NOT NULL DEFAULT 0,
+    last_hit     TIMESTAMPTZ
+);
+ALTER TABLE alert_filters ADD COLUMN IF NOT EXISTS match_mode TEXT NOT NULL DEFAULT 'all';  -- conditions: all (AND) / any (OR)
+ALTER TABLE alert_filters ADD COLUMN IF NOT EXISTS text_mode TEXT NOT NULL DEFAULT 'any';   -- text terms: any (OR) / all (AND)

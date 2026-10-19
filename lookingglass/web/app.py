@@ -225,7 +225,16 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             f"SELECT id, created_at, last_seen, rule, severity, title, description, host(src_ip) src_ip, host(dst_ip) dst_ip, count, status, data "
             f"FROM alerts WHERE last_seen > now() - make_interval(secs => $1) {cond} "
             f"ORDER BY array_position(ARRAY['critical','high','medium','low','info'], severity), last_seen DESC LIMIT $2", *args)
-        return db.records(rows)
+        out = db.records(rows)
+        # which enabled alert filter (mute) matches each alert - the alerts page offers "Unmute" for those
+        from .. import alert_filters
+
+        filters = await alert_filters._filters()
+        for a in out:
+            f = next((f for f in filters if alert_filters.matches(f, a["rule"], a["severity"], a["title"], a.get("description") or "",
+                                                                 a.get("src_ip"), a.get("dst_ip"))), None)
+            a["muted_by"] = {"id": f["id"], "name": f.get("name") or f"filter #{f['id']}", "action": f["action"]} if f else None
+        return out
 
     # ------------------------------------------------------------ layouts ---
     # per user page layouts (Overview widgets): [{"id": "timeline", "w": 1-3, "h": 1-2}, ...]
@@ -262,6 +271,81 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def reset_layout(page: str, request: Request):
         await db.pool().execute("DELETE FROM kv WHERE key = $1", _layout_key(request, page))
         return {"ok": True}
+
+    # -------------------------------------------------------- alert filters ---
+    from .. import alert_filters as af
+
+    def _filter_out(r: Any) -> dict[str, Any]:
+        return db.jsonable({k: v for k, v in dict(r).items()})
+
+    @app.get("/api/alert-filters")
+    async def list_filters():
+        rows = await db.pool().fetch("SELECT * FROM alert_filters ORDER BY id")
+        seen = {r["rule"] for r in await db.pool().fetch("SELECT DISTINCT rule FROM alerts")}
+        groups = {g: [{"rule": r, "label": label} for r, label in items] for g, items in af.RULES.items()}
+        extra = sorted(seen - af.RULE_NAMES)
+        if extra:
+            groups["Other"] = [{"rule": r, "label": r} for r in extra]
+        return {"filters": [_filter_out(r) for r in rows], "rules": groups, "severities": af.SEVERITIES}
+
+    def _clean_filter(payload: dict) -> dict[str, Any]:
+        try:
+            return af.clean(payload)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/alert-filters")
+    async def add_filter(payload: dict = Body(...)):
+        f = _clean_filter(payload)
+        row = await db.pool().fetchrow(
+            "INSERT INTO alert_filters (name, enabled, max_severity, rules, contains, networks, action, match_mode, text_mode) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *", *f.values())
+        af.invalidate()
+        return _filter_out(row)
+
+    @app.put("/api/alert-filters/{fid}")
+    async def edit_filter(fid: int, payload: dict = Body(...)):
+        f = _clean_filter(payload)
+        row = await db.pool().fetchrow(
+            "UPDATE alert_filters SET name = $2, enabled = $3, max_severity = $4, rules = $5, contains = $6, networks = $7, "
+            "action = $8, match_mode = $9, text_mode = $10 WHERE id = $1 RETURNING *", fid, *f.values())
+        if not row:
+            raise HTTPException(404)
+        af.invalidate()
+        return _filter_out(row)
+
+    @app.delete("/api/alert-filters/{fid}")
+    async def delete_filter(fid: int):
+        await db.pool().execute("DELETE FROM alert_filters WHERE id = $1", fid)
+        af.invalidate()
+        return {"ok": True}
+
+    async def _matching_alerts(f: dict[str, Any], statuses: tuple[str, ...]) -> list[dict[str, Any]]:
+        rows = await db.pool().fetch(
+            "SELECT id, rule, severity, title, coalesce(description, '') description, host(src_ip) src_ip, host(dst_ip) dst_ip, "
+            "status, last_seen FROM alerts WHERE last_seen > now() - interval '30 days' AND status = ANY($1::text[]) "
+            "ORDER BY last_seen DESC LIMIT 20000", list(statuses))
+        return [dict(r) for r in rows if af.matches(f, r["rule"], r["severity"], r["title"], r["description"], r["src_ip"], r["dst_ip"])]
+
+    @app.post("/api/alert-filters/preview")
+    async def preview_filter(payload: dict = Body(...)):
+        """Which alerts of the last 30 days this filter would have caught."""
+        f = _clean_filter(payload)
+        hits = await _matching_alerts(f, ("open", "acknowledged", "closed"))
+        open_n = sum(1 for h in hits if h["status"] != "closed")
+        return {"total": len(hits), "open": open_n,
+                "sample": db.jsonable([{k: h[k] for k in ("id", "severity", "rule", "title", "status", "last_seen")} for h in hits[:15]])}
+
+    @app.post("/api/alert-filters/{fid}/apply")
+    async def apply_filter(fid: int):
+        """Close the open / acknowledged alerts this filter matches."""
+        row = await db.pool().fetchrow("SELECT * FROM alert_filters WHERE id = $1", fid)
+        if not row:
+            raise HTTPException(404)
+        ids = [h["id"] for h in await _matching_alerts(dict(row), ("open", "acknowledged"))]
+        if ids:
+            await db.pool().execute("UPDATE alerts SET status = 'closed' WHERE id = ANY($1::bigint[])", ids)
+        return {"closed": len(ids)}
 
     @app.get("/api/alerts/counts")
     async def alert_counts(hours: float = Query(24 * 30, gt=0)):

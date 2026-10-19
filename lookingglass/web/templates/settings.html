@@ -6,7 +6,7 @@
   Changes apply immediately - no restart needed.</p>
 <div class="tabs" id="tabs">
   <button data-t="opnsense" class="on">OPNsense</button><button data-t="unifi">UniFi</button><button data-t="ai">AI analyst</button><button data-t="zenarmor">Zenarmor</button>
-  <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button>
+  <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button><button data-t="filters">Alert filters</button>
 </div>
 {% for g in ["opnsense", "unifi", "ai", "zenarmor", "ingest", "data"] %}
 <section data-s="{{ g }}" {% if g != "opnsense" %}hidden{% endif %}>
@@ -79,6 +79,55 @@
     </ol>
   </details>
 </div>
+</section>
+<section data-s="filters" hidden>
+  <div class="card">
+    <h3>Alert filters</h3>
+    <p class="small muted">Stop alerts you don't want to see. Fill in one or more conditions and choose whether
+      <b>all</b> of them (AND) or <b>any</b> of them (OR) must match; empty conditions are ignored. <b>Don't create</b> drops the alert completely; <b>Create as closed</b> keeps it under
+      Alerts › Closed for reference. Logs and dashboards are not affected - only alerts. Tip: on the Alerts page,
+      <i>Mute similar…</i> fills in a filter for you.</p>
+    <div id="flt-list"></div>
+  </div>
+  <div class="card" style="margin-top:14px" id="flt-form-card">
+    <h3 id="flt-form-title">New filter</h3>
+    <form id="flt-form" class="filter-form" onsubmit="return false">
+      <input type="hidden" name="fid">
+      <label>Name <span class="muted small">(optional)</span><input name="name" placeholder="e.g. Internet scanner noise"></label>
+      <label>Severity
+        <select name="max_severity">
+          <option value="">any severity</option>
+          <option value="info">info only</option>
+          <option value="low">low and below</option>
+          <option value="medium">medium and below</option>
+          <option value="high">high and below</option>
+          <option value="critical">critical and below (everything)</option>
+        </select></label>
+      <label>Text in the title or description <span class="muted small">(not case sensitive, several terms: comma separated)</span>
+        <span class="inline-pair"><input name="contains" placeholder="e.g. wpad.home.lan, crowdsecurity/http-probing">
+        <select name="text_mode" title="With several terms"><option value="any">any of these (OR)</option><option value="all">all of these (AND)</option></select></span></label>
+      <label>IP address / network <span class="muted small">(source or destination, comma separated)</span>
+        <input name="networks" placeholder="e.g. 192.168.1.50, 192.168.30.0/24"></label>
+      <div class="full"><div class="lbl">Rules / sources <span class="muted small">(none ticked = all rules)</span></div>
+        <div id="flt-rules" class="rule-groups"></div></div>
+      <div class="full radio-row"><span class="lbl">Combine the conditions above</span>
+        <label class="chk"><input type="radio" name="match_mode" value="all" checked> all must match (AND)</label>
+        <label class="chk"><input type="radio" name="match_mode" value="any"> any one is enough (OR)</label>
+        <span class="muted small">Inside one condition it is always “or” (any ticked rule, any listed IP). Several filters work
+          as “or” too, so “(A and B) or C” is two filters.</span></div>
+      <div class="full radio-row"><span class="lbl">Action</span>
+        <label class="chk"><input type="radio" name="action" value="suppress" checked> Don't create the alert</label>
+        <label class="chk"><input type="radio" name="action" value="close"> Create it as closed</label>
+        <label class="chk" style="margin-left:auto"><input type="checkbox" name="enabled" checked> enabled</label></div>
+    </form>
+    <div class="filters" style="margin-top:12px">
+      <button type="button" class="secondary" id="flt-preview">Preview (last 30 days)</button>
+      <button type="button" id="flt-save">Save filter</button>
+      <button type="button" class="secondary" id="flt-cancel" hidden>Cancel editing</button>
+    </div>
+    <div class="small" id="flt-msg"></div>
+    <div id="flt-preview-out"></div>
+  </div>
 </section>
 {% endblock %}
 {% block scripts %}
@@ -239,5 +288,108 @@ document.getElementById("storage-save").onclick = async () => {
   } catch (e) { m.className = "small err"; m.textContent = e.message; }
 };
 load(); setInterval(load, 30000);
+
+/* ---------- alert filters ---------- */
+let FLT = { filters: [], rules: {}, labels: {} };
+const SEV_TXT = { info: "info only", low: "low and below", medium: "medium and below", high: "high and below", critical: "any (≤ critical)" };
+function fltSummary(f) {
+  const parts = [];
+  if (f.max_severity) parts.push(`severity ${SEV_TXT[f.max_severity]}`);
+  if ((f.rules || []).length) parts.push(`rule ${f.rules.map(r => FLT.labels[r] || r).join(", ")}`);
+  if (f.contains) { const t = f.contains.split(",").map(x => `“${x.trim()}”`);
+    parts.push(`text ${t.join(f.text_mode === "all" ? " and " : " or ")}`); }
+  if (f.networks) parts.push(`IP ${f.networks}`);
+  return parts.map(LG.esc).join(f.match_mode === "any" ? " <b>or</b> " : " <b>and</b> ");
+}
+async function loadFilters() {
+  FLT = await LG.api("/api/alert-filters");
+  FLT.labels = {};
+  Object.values(FLT.rules).flat().forEach(r => FLT.labels[r.rule] = r.label);
+  document.getElementById("flt-rules").innerHTML = Object.entries(FLT.rules).map(([g, rules]) =>
+    `<details><summary>${LG.esc(g)} <span class="muted small" data-count="${LG.esc(g)}"></span></summary>` +
+    rules.map(r => `<label class="chk"><input type="checkbox" name="rules" value="${LG.esc(r.rule)}"> ${LG.esc(r.label)} <span class="muted small mono">${LG.esc(r.rule)}</span></label>`).join("") +
+    `</details>`).join("");
+  document.querySelectorAll('#flt-rules input').forEach(c => c.onchange = ruleCounts);
+  LG.table("#flt-list", [
+    {k: "enabled", l: "On", f: (v, r) => `<input type="checkbox" data-ftoggle="${r.id}" ${v ? "checked" : ""} title="Untick to pause this filter (unmute for now, keep it for later)">`},
+    {k: "name", l: "Name", f: v => LG.esc(v || "–")},
+    {k: "id", l: "Matches", f: (v, r) => fltSummary(r)},
+    {k: "action", l: "Action", f: v => v === "close" ? "create as closed" : "don't create"},
+    {k: "hits", l: "Hits", num: true}, {k: "last_hit", l: "Last hit", f: v => v ? LG.ago(v) : "never"},
+    {k: "id", l: "", f: v => `<a href="#" data-fedit="${v}">edit</a> · <a href="#" data-fapply="${v}" title="Close the open / acknowledged alerts this filter matches">close matching</a> · <a href="#" data-fdel="${v}" title="Delete the filter: these alerts are created again">unmute (delete)</a>`},
+  ], FLT.filters, "No filters yet - every alert is created.");
+  document.querySelectorAll("[data-ftoggle]").forEach(c => c.onchange = async () => {
+    const f = FLT.filters.find(x => x.id === Number(c.dataset.ftoggle));
+    await LG.api(`/api/alert-filters/${f.id}`, { method: "PUT", body: { ...f, enabled: c.checked } }); loadFilters();
+  });
+  document.querySelectorAll("[data-fedit]").forEach(a => a.onclick = e => { e.preventDefault(); editFilter(FLT.filters.find(x => x.id === Number(a.dataset.fedit))); });
+  document.querySelectorAll("[data-fdel]").forEach(a => a.onclick = async e => {
+    e.preventDefault(); if (!confirm("Unmute: delete this filter? Alerts it stopped are created again from now on.")) return;
+    await LG.api(`/api/alert-filters/${a.dataset.fdel}`, { method: "DELETE" }); loadFilters();
+  });
+  document.querySelectorAll("[data-fapply]").forEach(a => a.onclick = async e => {
+    e.preventDefault();
+    const r = await LG.api(`/api/alert-filters/${a.dataset.fapply}/apply`, { method: "POST" });
+    fmsg(`${r.closed} open / acknowledged alert(s) closed.`, true);
+  });
+}
+function ruleCounts() {
+  document.querySelectorAll("#flt-rules details").forEach(d => {
+    const n = d.querySelectorAll("input:checked").length;
+    d.querySelector("[data-count]").textContent = n ? `(${n} ticked)` : "";
+  });
+}
+const fmsg = (t, ok) => { const el = document.getElementById("flt-msg"); el.className = "small " + (ok ? "ok-msg" : "err"); el.innerHTML = t; };
+function fltValues() {
+  const f = document.getElementById("flt-form");
+  return { name: f.name.value, max_severity: f.max_severity.value, contains: f.contains.value, networks: f.networks.value,
+           rules: [...f.querySelectorAll('input[name="rules"]:checked')].map(c => c.value),
+           action: f.querySelector('input[name="action"]:checked').value, enabled: f.enabled.checked,
+           match_mode: f.querySelector('input[name="match_mode"]:checked').value, text_mode: f.text_mode.value };
+}
+function editFilter(x) {
+  const f = document.getElementById("flt-form");
+  f.reset(); f.fid.value = x ? x.id || "" : "";
+  if (x) {
+    f.name.value = x.name || ""; f.max_severity.value = x.max_severity || ""; f.contains.value = x.contains || "";
+    f.networks.value = x.networks || ""; f.enabled.checked = x.enabled !== false;
+    f.querySelector(`input[name="action"][value="${x.action || "suppress"}"]`).checked = true;
+    f.querySelector(`input[name="match_mode"][value="${x.match_mode || "all"}"]`).checked = true;
+    f.text_mode.value = x.text_mode || "any";
+    f.querySelectorAll('input[name="rules"]').forEach(c => c.checked = (x.rules || []).includes(c.value));
+    document.querySelectorAll("#flt-rules details").forEach(d => d.open = !!d.querySelector("input:checked"));
+  }
+  ruleCounts();
+  document.getElementById("flt-form-title").textContent = x && x.id ? "Edit filter" : "New filter";
+  document.getElementById("flt-cancel").hidden = !(x && x.id);
+  document.getElementById("flt-preview-out").innerHTML = ""; fmsg("", true);
+  document.getElementById("flt-form-card").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+document.getElementById("flt-cancel").onclick = () => editFilter(null);
+document.getElementById("flt-preview").onclick = async () => {
+  try {
+    const r = await LG.api("/api/alert-filters/preview", { method: "POST", body: fltValues() });
+    fmsg(`This filter would have caught <b>${r.total}</b> alert(s) in the last 30 days (${r.open} still open / acknowledged).`, true);
+    LG.table("#flt-preview-out", [{k: "severity", l: "Sev", f: LG.sev}, {k: "title", l: "Alert"}, {k: "rule", l: "Rule"},
+      {k: "status", l: "Status"}, {k: "last_seen", l: "Last", f: LG.ago}], r.sample, "Nothing matched.");
+  } catch (e) { fmsg(LG.esc(e.message)); }
+};
+document.getElementById("flt-save").onclick = async () => {
+  const id = document.getElementById("flt-form").fid.value;
+  try {
+    await LG.api(id ? `/api/alert-filters/${id}` : "/api/alert-filters", { method: id ? "PUT" : "POST", body: fltValues() });
+    editFilter(null); fmsg("Saved. It applies to new alerts right away; use “close matching” for alerts that already exist.", true);
+    loadFilters();
+  } catch (e) { fmsg(LG.esc(e.message)); }
+};
+loadFilters().then(() => {
+  // "Mute similar…" from the alerts page: /settings?mute=1&rule=…&ip=…&sev=…#filters
+  const q = new URLSearchParams(location.search);
+  if (q.get("mute")) {
+    editFilter({ rules: q.get("rule") ? [q.get("rule")] : [], networks: q.get("ip") || "", max_severity: q.get("sev") || "",
+                 contains: q.get("text") || "", name: q.get("name") || "" });
+    history.replaceState(null, "", location.pathname + "#filters");
+  }
+});
 </script>
 {% endblock %}
