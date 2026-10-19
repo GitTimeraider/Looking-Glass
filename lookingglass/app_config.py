@@ -40,6 +40,7 @@ GROUPS = {
     "zenarmor": "Zenarmor stream",
     "ingest": "Log ingestion & network",
     "data": "Data & detection",
+    "display": "Display",
 }
 
 FIELDS: list[Field] = [
@@ -114,6 +115,10 @@ FIELDS: list[Field] = [
           "CIDRs treated as internal besides RFC1918/CGNAT/ULA, e.g. public ranges you own.", placeholder="203.0.113.0/28"),
     Field("timezone", "ingest", "Time zone", "str", "IANA name; used for syslog timestamps without zone and daily reports.",
           placeholder="Europe/Amsterdam"),
+    # display
+    Field("time_format", "display", "Time format", "choice", "24h = 14:05, 12h = 2:05 PM, browser = whatever your browser's "
+          "language uses. Applies to the web UI, notification mails and the AI analyst's answers and reports (mails and "
+          "AI use the Time zone under Ingestion & network; browser = 24h there).", choices=("24h", "12h", "browser")),
     # data
     Field("retention_days", "data", "Keep events (days)", "int", "", min=1, max=3650),
     Field("metrics_retention_days", "data", "Keep metrics (days)", "int", "", min=1, max=3650),

@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/style.css?v={{ version }}">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='13' cy='13' r='9' fill='none' stroke='%233b82f6' stroke-width='4'/><path d='M20 20l9 9' stroke='%233b82f6' stroke-width='5' stroke-linecap='round'/></svg>">
   <script src="/static/vendor/chart.umd.min.js"></script>
+  <script>window.LG_TIME_FORMAT = "{{ time_format() if time_format is defined else 'browser' }}";</script>
   <script src="/static/app.js?v={{ version }}"></script>
   {% block head %}{% endblock %}
 </head>

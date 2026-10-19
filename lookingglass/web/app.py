@@ -51,6 +51,7 @@ PAGES = {
 
 
 def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, Any] | None = None) -> FastAPI:
+    templates.env.globals["time_format"] = lambda: settings.time_format  # live setting, read per page
     app = FastAPI(title="Looking Glass", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")
@@ -405,12 +406,12 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         rule = dict(row)
         rows = await db.pool().fetch(
             "SELECT id, rule, severity, title, coalesce(description, '') description, host(src_ip) src_ip, host(dst_ip) dst_ip, "
-            "data FROM alerts ORDER BY last_seen DESC LIMIT 5000")
+            "data, last_seen FROM alerts ORDER BY last_seen DESC LIMIT 5000")
         hit = next((dict(r) for r in rows if af.matches(rule, r["rule"], r["severity"], r["title"], r["description"],
                                                         r["src_ip"], r["dst_ip"])), None)
         example = hit or {"id": 0, "rule": "example", "severity": rule.get("min_severity") or "high",
                           "title": "Example alert (no alert matched this rule yet)", "data": {}}
-        subject, text, body = notify.compose(rule, [example], settings.mail_link_url or settings.public_url)
+        subject, text, body = notify.compose(rule, [example], settings.mail_link_url or settings.public_url, settings)
         try:
             await notify.send(settings, notify.recipients(rule["recipients"]), "[TEST] " + subject, text, body)
         except (notify.MailError, ValueError) as exc:

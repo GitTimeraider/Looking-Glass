@@ -102,7 +102,7 @@ async function now() {
   }
   LG.table("#disks", [{k: "mountpoint", l: "Mount"}, {k: "type", l: "Type"}, {k: "used", l: "Used"}, {k: "blocks", l: "Size"},
     {k: "used_pct", l: "%", f: v => `${LG.esc(v)}%<div class="bar ${v > 90 ? "bad" : v > 75 ? "warn" : ""}"><i style="width:${Number(v) || 0}%"></i></div>`}], (sys.disk || {}).devices || []);
-  document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  document.getElementById("updated").textContent = "updated " + LG.clock();
 }
 async function overview() {
   const d = await LG.api("/api/system");

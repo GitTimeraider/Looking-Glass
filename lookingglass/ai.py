@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 
 from . import db
-from .config import Settings
+from .config import Settings, local_time, time_style
 from .reports import build_report
 
 log = logging.getLogger(__name__)
@@ -83,7 +83,8 @@ How to work:
   Client Devices › Block, move it to an isolated SSID / VLAN, disable the switch port, or an OPNsense rule).
 - Be concise; use markdown headings, bullet lists and tables.
 
-Current time (UTC): {now}
+Current time: {now} UTC = {local}. Timestamps in the data are UTC; when you write times for the user, convert them
+to {style} (convert in SQL with AT TIME ZONE '{zone}' or yourself).
 Data volume in the last 24h by source: {volumes}
 """ + SCHEMA_DOC
 
@@ -275,6 +276,8 @@ class Analyst:
         volumes = ", ".join(f"{r['source']}={r['n']}" for r in rows) or "no events yet"
         # str.replace, not str.format: the schema documentation contains braces
         return (SYSTEM_PROMPT.replace("{now}", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
+                .replace("{local}", local_time(self.settings, date=True) + f" {self.settings.timezone or 'UTC'}")
+                .replace("{style}", time_style(self.settings)).replace("{zone}", self.settings.timezone or "UTC")
                 .replace("{volumes}", volumes))
 
     async def _complete(self, client: httpx.AsyncClient, messages: list[dict[str, Any]]) -> dict[str, Any]:

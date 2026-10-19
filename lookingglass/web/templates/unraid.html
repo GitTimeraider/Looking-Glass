@@ -198,7 +198,7 @@ async function load() {
   document.getElementById("nt-kpis").innerHTML = k("Unread", ov.total ?? "–") + k("Alerts", ov.alert ?? "–", ov.alert ? "bad" : "") + k("Warnings", ov.warning ?? "–", ov.warning ? "warn" : "") + k("Info", ov.info ?? "–") + k("Archived", ((nt.overview || {}).archive || {}).total ?? "–");
   LG.table("#notifs", [{k: "importance", l: "Level", f: v => LG.sev({ ALERT: "high", WARNING: "medium", INFO: "info" }[v] || "info")}, {k: "timestamp", l: "Time", f: v => LG.time(isNaN(v) ? v : Number(v))},
     {k: "subject", l: "Subject", f: (v, r) => `<b>${LG.esc(r.title)}</b> – ${LG.esc(v)}<div class="small muted">${LG.esc(r.description)}</div>`}], nt.list || [], "No unread notifications");
-  document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  document.getElementById("updated").textContent = "updated " + LG.clock();
   charts();
 }
 function ctrSel(selected) {

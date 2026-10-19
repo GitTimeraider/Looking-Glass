@@ -95,7 +95,7 @@ async function checks() {
     {k: "summary", l: "Status / what to do", f: (v, r) => `<div>${LG.esc(v)}</div>` +
       r.todo.map(t => `<div class="todo ${r.status === "duplicate" ? "dup" : ""}">→ ${LG.esc(t)}</div>`).join("") +
       r.avoid.map(t => `<div class="avoid">✕ Don't: ${LG.esc(t)}</div>`).join("")}], rows);
-  document.getElementById("updated").textContent = "checked " + new Date().toLocaleTimeString();
+  document.getElementById("updated").textContent = "checked " + LG.clock();
 }
 checks(); setInterval(checks, 60000);
 (async () => {
