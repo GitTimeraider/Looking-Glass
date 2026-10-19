@@ -31,7 +31,7 @@ services:
       options: { max-size: "20m", max-file: "3" }
 
   db:
-    image: postgres:18-alpine
+    image: postgres:18
     container_name: looking-glass-db
     restart: unless-stopped
     user: postgres                    # start directly as the postgres user, so no capabilities are needed
