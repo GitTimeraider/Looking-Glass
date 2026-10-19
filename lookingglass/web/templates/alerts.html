@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block body %}
 <header class="top">
-  <h1>Alerts</h1>
+  <h1>Alerts <span class="count-badge" id="count" title="Alerts in the selected category (last 30 days)"></span></h1>
   <div class="seg" id="status"><button data-v="open">Open</button><button data-v="acknowledged">Acknowledged</button><button data-v="closed">Closed</button><button data-v="all">All</button></div>
 </header>
 <div class="filters">
@@ -18,7 +18,13 @@
 let status = "open", alerts = [];
 LG.seg(document.getElementById("status"), status, v => { status = v; load(); });
 async function load() {
-  alerts = await LG.api(`/api/alerts?status=${status}`);
+  const [list, counts] = await Promise.all([LG.api(`/api/alerts?status=${status}`), LG.api("/api/alerts/counts")]);
+  alerts = list;
+  document.querySelectorAll("#status button").forEach(b => {
+    const n = counts[b.dataset.v] ?? 0;
+    b.innerHTML = `${LG.esc(b.dataset.label || (b.dataset.label = b.textContent))} <span class="n">${LG.num(n)}</span>`;
+  });
+  document.getElementById("count").textContent = LG.num(counts[status] ?? alerts.length);
   render();
 }
 /** Event-search link for the events behind an alert (its filters over its time span, with some margin) */
