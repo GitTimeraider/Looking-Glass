@@ -216,8 +216,38 @@ Create a free account at MaxMind, download **GeoLite2-City.mmdb** (or Country) a
 then `docker compose restart looking-glass`. Make sure the file belongs to the container user
 (`sudo chown -R 10001:10001 ~/looking-glass/data`, or your `PUID:PGID`).
 
-> **PostgreSQL 18:** the compose files use `postgres:18-alpine`, whose image mounts the volume at
-> `/var/lib/postgresql` (not `/var/lib/postgresql/data` as in 17 and older). Fresh installs need nothing extra.
+> **PostgreSQL 18:** the compose files use the official `postgres:18` image. Its volume goes at `/var/lib/postgresql`,
+> not `/var/lib/postgresql/data` as in 17 and older. Mounted at the old path, it refuses to start. Fresh installs need
+> nothing extra.
+
+### Switching an existing database from `postgres:18-alpine` to `postgres:18`
+
+Compose files before October 2026 used `postgres:18-alpine`. The two images differ in two ways that matter for an
+existing database:
+
+* The `postgres` user is uid **70** in Alpine and **999** in the Debian-based `postgres:18`. Without a chown, the new
+  image can't read the old files and refuses to start.
+* Text sorts differently (musl vs glibc). Indexes built by Alpine are out of order for the new image, so lookups can
+  silently miss rows until the indexes are rebuilt. In a test, a lookup for an existing row returned 0 rows before
+  `reindexdb` and 1 after.
+
+Shell on the Docker host, in `~/looking-glass`, after downloading the new `docker-compose.yml`:
+
+```bash
+docker compose stop
+# give the database files to the new image's postgres user (uid 999)
+docker compose run --rm --no-deps --user root --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --entrypoint chown db -R postgres:postgres /var/lib/postgresql
+docker compose up -d db
+docker compose exec db reindexdb -U lookingglass --all     # rebuild indexes for the new sort order
+docker compose up -d
+```
+
+Running PostgreSQL as a separate container on Unraid? Stop it and change its image to `postgres:18`. In the Unraid
+terminal run `chown -R 999:999 /mnt/user/appdata/<db folder>`. Start the container, then run
+`docker exec <db container> reindexdb -U lookingglass --all`.
+
+You can also stay on `postgres:18-alpine`: keep that image name in your compose file and nothing changes.
 
 ### Updating (shell on your Docker host, in `~/looking-glass`)
 
@@ -270,7 +300,7 @@ Things to know:
   `/data` and then drops to `PUID:PGID`. Only that mode needs capabilities. With `--cap-drop=ALL` add back
   `--cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=SETUID --cap-add=SETGID`. It still works with
   `no-new-privileges`. Prefer `--user`.
-* **PostgreSQL** (bundled `postgres:18-alpine`): started with `user: postgres` it skips its root start-up step and
+* **PostgreSQL** (bundled `postgres:18`): started with `user: postgres` it skips its root start-up step and
   also runs with `cap_drop: [ALL]` and `no-new-privileges`, as in the compose files. Started as root (its default),
   it needs `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETUID` and `SETGID` back.
 * **Docker secrets** (`examples/docker-compose.secrets.yml`): plain compose mounts the secret file with its host
