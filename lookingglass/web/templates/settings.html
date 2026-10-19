@@ -83,7 +83,7 @@
 <section data-s="filters" hidden>
   <div class="card">
     <h3>Alert filters</h3>
-    <p class="small muted">Stop alerts you don't want to see. Fill in one or more conditions and choose whether
+    <p class="small muted">Stop alerts you don't want to see, or give them your own severity. Fill in one or more conditions and choose whether
       <b>all</b> of them (AND) or <b>any</b> of them (OR) must match; empty conditions are ignored. <b>Don't create</b> drops the alert completely; <b>Create as closed</b> keeps it under
       Alerts › Closed for reference. Logs and dashboards are not affected - only alerts. Tip: on the Alerts page,
       <i>Mute similar…</i> fills in a filter for you.</p>
@@ -118,6 +118,9 @@
       <div class="full radio-row"><span class="lbl">Action</span>
         <label class="chk"><input type="radio" name="action" value="suppress" checked> Don't create the alert</label>
         <label class="chk"><input type="radio" name="action" value="close"> Create it as closed</label>
+        <label class="chk"><input type="radio" name="action" value="severity"> Change the severity to
+          <select name="set_severity"><option value="">…</option><option value="info">info</option><option value="low">low</option>
+            <option value="medium">medium</option><option value="high">high</option><option value="critical">critical</option></select></label>
         <label class="chk" style="margin-left:auto"><input type="checkbox" name="enabled" checked> enabled</label></div>
     </form>
     <div class="filters" style="margin-top:12px">
@@ -314,9 +317,11 @@ async function loadFilters() {
     {k: "enabled", l: "On", f: (v, r) => `<input type="checkbox" data-ftoggle="${r.id}" ${v ? "checked" : ""} title="Untick to pause this filter (unmute for now, keep it for later)">`},
     {k: "name", l: "Name", f: v => LG.esc(v || "–")},
     {k: "id", l: "Matches", f: (v, r) => fltSummary(r)},
-    {k: "action", l: "Action", f: v => v === "close" ? "create as closed" : "don't create"},
+    {k: "action", l: "Action", f: (v, r) => v === "close" ? "create as closed" : v === "severity" ? `severity → ${LG.sev(r.set_severity)}` : "don't create"},
     {k: "hits", l: "Hits", num: true}, {k: "last_hit", l: "Last hit", f: v => v ? LG.ago(v) : "never"},
-    {k: "id", l: "", f: v => `<a href="#" data-fedit="${v}">edit</a> · <a href="#" data-fapply="${v}" title="Close the open / acknowledged alerts this filter matches">close matching</a> · <a href="#" data-fdel="${v}" title="Delete the filter: these alerts are created again">unmute (delete)</a>`},
+    {k: "id", l: "", f: v => `<a href="#" data-fedit="${v}">edit</a> · <a href="#" data-fapply="${v}" title="Apply to the open / acknowledged alerts this filter matches">${(FLT.filters.find(x => x.id === v) || {}).action === "severity" ? "re-rate matching" : "close matching"}</a> · ${(FLT.filters.find(x => x.id === v) || {}).action === "severity"
+      ? `<a href="#" data-fdel="${v}" title="Delete this severity rule: open alerts it changed get their own severity back">delete</a>`
+      : `<a href="#" data-fdel="${v}" title="Delete the filter: these alerts are created again">unmute (delete)</a>`}`},
   ], FLT.filters, "No filters yet - every alert is created.");
   document.querySelectorAll("[data-ftoggle]").forEach(c => c.onchange = async () => {
     const f = FLT.filters.find(x => x.id === Number(c.dataset.ftoggle));
@@ -324,13 +329,13 @@ async function loadFilters() {
   });
   document.querySelectorAll("[data-fedit]").forEach(a => a.onclick = e => { e.preventDefault(); editFilter(FLT.filters.find(x => x.id === Number(a.dataset.fedit))); });
   document.querySelectorAll("[data-fdel]").forEach(a => a.onclick = async e => {
-    e.preventDefault(); if (!confirm("Unmute: delete this filter? Alerts it stopped are created again from now on.")) return;
+    e.preventDefault(); if (!confirm("Delete this filter? Muted alerts are created again from now on; alerts whose severity it changed get their own severity back.")) return;
     await LG.api(`/api/alert-filters/${a.dataset.fdel}`, { method: "DELETE" }); loadFilters();
   });
   document.querySelectorAll("[data-fapply]").forEach(a => a.onclick = async e => {
     e.preventDefault();
     const r = await LG.api(`/api/alert-filters/${a.dataset.fapply}/apply`, { method: "POST" });
-    fmsg(`${r.closed} open / acknowledged alert(s) closed.`, true);
+    fmsg(r.changed !== undefined ? `Severity changed on ${r.changed} open / acknowledged alert(s).` : `${r.closed} open / acknowledged alert(s) closed.`, true);
   });
 }
 function ruleCounts() {
@@ -345,7 +350,8 @@ function fltValues() {
   return { name: f.name.value, max_severity: f.max_severity.value, contains: f.contains.value, networks: f.networks.value,
            rules: [...f.querySelectorAll('input[name="rules"]:checked')].map(c => c.value),
            action: f.querySelector('input[name="action"]:checked').value, enabled: f.enabled.checked,
-           match_mode: f.querySelector('input[name="match_mode"]:checked').value, text_mode: f.text_mode.value };
+           match_mode: f.querySelector('input[name="match_mode"]:checked').value, text_mode: f.text_mode.value,
+           set_severity: f.set_severity.value };
 }
 function editFilter(x) {
   const f = document.getElementById("flt-form");
@@ -356,6 +362,7 @@ function editFilter(x) {
     f.querySelector(`input[name="action"][value="${x.action || "suppress"}"]`).checked = true;
     f.querySelector(`input[name="match_mode"][value="${x.match_mode || "all"}"]`).checked = true;
     f.text_mode.value = x.text_mode || "any";
+    f.set_severity.value = x.set_severity || "";
     f.querySelectorAll('input[name="rules"]').forEach(c => c.checked = (x.rules || []).includes(c.value));
     document.querySelectorAll("#flt-rules details").forEach(d => d.open = !!d.querySelector("input:checked"));
   }
@@ -366,6 +373,9 @@ function editFilter(x) {
   document.getElementById("flt-form-card").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 document.getElementById("flt-cancel").onclick = () => editFilter(null);
+document.querySelector('#flt-form [name="set_severity"]').onchange = e => {
+  if (e.target.value) document.querySelector('#flt-form input[name="action"][value="severity"]').checked = true;
+};
 document.getElementById("flt-preview").onclick = async () => {
   try {
     const r = await LG.api("/api/alert-filters/preview", { method: "POST", body: fltValues() });
@@ -387,7 +397,8 @@ loadFilters().then(() => {
   const q = new URLSearchParams(location.search);
   if (q.get("mute")) {
     editFilter({ rules: q.get("rule") ? [q.get("rule")] : [], networks: q.get("ip") || "", max_severity: q.get("sev") || "",
-                 contains: q.get("text") || "", name: q.get("name") || "" });
+                 contains: q.get("text") || "", name: q.get("name") || "", action: q.get("action") || "suppress",
+                 set_severity: q.get("to") || "" });
     history.replaceState(null, "", location.pathname + "#filters");
   }
 });

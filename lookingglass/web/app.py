@@ -229,11 +229,15 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         # which enabled alert filter (mute) matches each alert - the alerts page offers "Unmute" for those
         from .. import alert_filters
 
-        filters = await alert_filters._filters()
+        all_filters = await alert_filters._filters()
+        active_ids = {f["id"] for f in all_filters}
+        filters = [f for f in all_filters if f["action"] != "severity"]
         for a in out:
             f = next((f for f in filters if alert_filters.matches(f, a["rule"], a["severity"], a["title"], a.get("description") or "",
                                                                  a.get("src_ip"), a.get("dst_ip"))), None)
             a["muted_by"] = {"id": f["id"], "name": f.get("name") or f"filter #{f['id']}", "action": f["action"]} if f else None
+            ov = (a.get("data") or {}).get("severity_override")
+            a["override_active"] = bool(ov and (ov.get("filter") or {}).get("id") in active_ids)
         return out
 
     # ------------------------------------------------------------ layouts ---
@@ -298,8 +302,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def add_filter(payload: dict = Body(...)):
         f = _clean_filter(payload)
         row = await db.pool().fetchrow(
-            "INSERT INTO alert_filters (name, enabled, max_severity, rules, contains, networks, action, match_mode, text_mode) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *", *f.values())
+            "INSERT INTO alert_filters (name, enabled, max_severity, rules, contains, networks, action, match_mode, text_mode, "
+            "set_severity) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *", *f.values())
         af.invalidate()
         return _filter_out(row)
 
@@ -308,7 +312,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         f = _clean_filter(payload)
         row = await db.pool().fetchrow(
             "UPDATE alert_filters SET name = $2, enabled = $3, max_severity = $4, rules = $5, contains = $6, networks = $7, "
-            "action = $8, match_mode = $9, text_mode = $10 WHERE id = $1 RETURNING *", fid, *f.values())
+            "action = $8, match_mode = $9, text_mode = $10, set_severity = $11 WHERE id = $1 RETURNING *", fid, *f.values())
         if not row:
             raise HTTPException(404)
         af.invalidate()
@@ -317,8 +321,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     @app.delete("/api/alert-filters/{fid}")
     async def delete_filter(fid: int):
         await db.pool().execute("DELETE FROM alert_filters WHERE id = $1", fid)
+        # a removed severity rule: open / acknowledged alerts it changed get their own severity back
+        restored = await db.pool().execute(
+            "UPDATE alerts SET severity = data->'severity_override'->>'from', data = data - 'severity_override' "
+            "WHERE status <> 'closed' AND data ? 'severity_override' "
+            "AND (data->'severity_override'->'filter'->>'id') = $1::text", str(fid))
         af.invalidate()
-        return {"ok": True}
+        return {"ok": True, "restored": int(restored.split()[-1])}
 
     async def _matching_alerts(f: dict[str, Any], statuses: tuple[str, ...]) -> list[dict[str, Any]]:
         rows = await db.pool().fetch(
@@ -338,11 +347,22 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
 
     @app.post("/api/alert-filters/{fid}/apply")
     async def apply_filter(fid: int):
-        """Close the open / acknowledged alerts this filter matches."""
+        """Apply a filter to the open / acknowledged alerts it matches: close them, or change their severity."""
         row = await db.pool().fetchrow("SELECT * FROM alert_filters WHERE id = $1", fid)
         if not row:
             raise HTTPException(404)
-        ids = [h["id"] for h in await _matching_alerts(dict(row), ("open", "acknowledged"))]
+        f = dict(row)
+        hits = await _matching_alerts(f, ("open", "acknowledged"))
+        if f["action"] == "severity":
+            for h in hits:
+                if h["severity"] == f["set_severity"]:
+                    continue
+                note = {"from": h["severity"], "to": f["set_severity"], "filter": {"id": f["id"], "name": f.get("name")}}
+                await db.pool().execute(
+                    "UPDATE alerts SET severity = $2, data = coalesce(data, '{}'::jsonb) || jsonb_build_object('severity_override', $3::jsonb) "
+                    "WHERE id = $1", h["id"], f["set_severity"], note)
+            return {"changed": len(hits), "closed": 0}
+        ids = [h["id"] for h in hits]
         if ids:
             await db.pool().execute("UPDATE alerts SET status = 'closed' WHERE id = ANY($1::bigint[])", ids)
         return {"closed": len(ids)}

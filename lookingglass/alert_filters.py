@@ -17,7 +17,7 @@ from typing import Any
 from . import db
 
 SEVERITIES = ["info", "low", "medium", "high", "critical"]
-ACTIONS = ("suppress", "close")
+ACTIONS = ("suppress", "close", "severity")  # severity = change it to set_severity (applied before muting)
 MODES = ("all", "any")
 
 # every rule that can raise an alert, grouped for the settings page
@@ -72,12 +72,17 @@ def clean(payload: dict[str, Any]) -> dict[str, Any]:
     action = payload.get("action") or "suppress"
     if action not in ACTIONS:
         raise ValueError("unknown action")
+    set_sev = payload.get("set_severity") or None
+    if action == "severity" and set_sev not in SEVERITIES:
+        raise ValueError("Choose the severity these alerts should get.")
+    if action != "severity":
+        set_sev = None
     if not (max_sev or rules or contains or nets):
         raise ValueError("Fill in at least one condition - an empty filter would stop every alert.")
     return {"name": str(payload.get("name") or "").strip()[:100] or None, "enabled": bool(payload.get("enabled", True)),
             "max_severity": max_sev, "rules": rules, "contains": contains,
             "networks": ", ".join(str(n) for n in nets) or None, "action": action, "match_mode": match_mode,
-            "text_mode": text_mode}
+            "text_mode": text_mode, "set_severity": set_sev}
 
 
 def terms(value: Any) -> list[str]:
@@ -139,13 +144,16 @@ async def _filters() -> list[dict[str, Any]]:
 
 
 async def check(rule: str, severity: str, title: str, description: str, src_ip: str | None,
-                dst_ip: str | None) -> dict[str, Any] | None:
-    """The first enabled filter matching this alert (its hit counter is updated), or None."""
+                dst_ip: str | None, kind: str = "mute") -> dict[str, Any] | None:
+    """The first enabled filter of ``kind`` ("mute": suppress / close, "severity": change it) matching this alert
+    (its hit counter is updated), or None."""
     try:
         filters = await _filters()
     except Exception:  # noqa: BLE001 - table missing during an upgrade etc.: never lose alerts because of a filter
         return None
     for f in filters:
+        if (f["action"] == "severity") != (kind == "severity"):
+            continue
         if matches(f, rule, severity, title, description, src_ip, dst_ip):
             await db.pool().execute("UPDATE alert_filters SET hits = hits + 1, last_hit = now() WHERE id = $1", f["id"])
             return f

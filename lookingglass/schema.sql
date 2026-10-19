@@ -186,3 +186,4 @@ CREATE TABLE IF NOT EXISTS alert_filters (
 );
 ALTER TABLE alert_filters ADD COLUMN IF NOT EXISTS match_mode TEXT NOT NULL DEFAULT 'all';  -- conditions: all (AND) / any (OR)
 ALTER TABLE alert_filters ADD COLUMN IF NOT EXISTS text_mode TEXT NOT NULL DEFAULT 'any';   -- text terms: any (OR) / all (AND)
+ALTER TABLE alert_filters ADD COLUMN IF NOT EXISTS set_severity TEXT;  -- action 'severity': the severity alerts get

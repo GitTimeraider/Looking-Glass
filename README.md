@@ -49,8 +49,12 @@ offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, ga
   destination).
 * **AND / OR**: per filter choose *all conditions must match* or *any one is enough*. Inside one condition it is always
   "or" (any ticked rule, any listed IP), and filters together work as "or" - so "(A and B) or C" is two filters.
-* Action: **don't create** the alert, or **create it as closed** (kept under Alerts › Closed for reference).
-  Logs, dashboards and reports are never affected.
+* Action: **don't create** the alert, **create it as closed** (kept under Alerts › Closed for reference), or
+  **change the severity** to the level you choose - e.g. "new device on 192.168.30.0/24 → high" or "port scans → info".
+  Severity changes are applied first, mute filters then see the new severity. Logs, dashboards and reports are never
+  affected.
+* **Change severity…** on any alert pre-fills such a rule; re-rated alerts show "⚙ Severity changed by … (was low)"
+  with **Undo** (deleting the rule gives open alerts their own severity back).
 * **Preview** shows what a filter would have caught in the last 30 days; **close matching** closes existing ones.
 * **Unmute**: alerts matched by a filter show "🔇 Muted by …" with an **Unmute** button on the Alerts page; in the
   filter list, untick *On* to pause a filter or use *unmute (delete)*. Each filter counts its hits.
