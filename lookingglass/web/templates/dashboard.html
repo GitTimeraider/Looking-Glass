@@ -27,16 +27,16 @@
   <div class="card"><h3>Allowed inbound from internet</h3><div id="t-pass-in"></div></div>
   <div class="card"><h3>Auth failures</h3><div id="t-auth"></div></div>
   <div class="card"><h3>Successful logins</h3><div id="t-auth-ok"></div></div>
-  <div class="card"><h3>DNS top domains</h3><div id="t-dns"></div></div>
-  <div class="card"><h3>DNS blocked</h3><div id="t-dns-blocked"></div></div>
-  <div class="card"><h3>DNS clients</h3><div id="t-dns-clients"></div></div>
-  <div class="card"><h3>Web (nginx) responses<span id="sort-web"></span></h3><div class="chart-box sm"><canvas id="c-web"></canvas></div></div>
-  <div class="card"><h3>Web attack patterns</h3><div id="t-web-tags"></div></div>
-  <div class="card"><h3>Web top clients</h3><div id="t-web-clients"></div></div>
-  <div class="card"><h3>IDS (Suricata) signatures</h3><div id="t-ids"></div></div>
-  <div class="card"><h3>CrowdSec scenarios</h3><div id="t-cs"></div></div>
-  <div class="card"><h3>Q-Feeds threat-intel hits</h3><div id="t-qf"></div></div>
-  <div class="card"><h3>Zenarmor</h3><div id="t-zen"></div></div>
+  <div class="card" data-src="unbound"><h3>DNS top domains</h3><div id="t-dns"></div></div>
+  <div class="card" data-src="unbound"><h3>DNS blocked</h3><div id="t-dns-blocked"></div></div>
+  <div class="card" data-src="unbound"><h3>DNS clients</h3><div id="t-dns-clients"></div></div>
+  <div class="card" data-src="nginx"><h3>Web (nginx) responses<span id="sort-web"></span></h3><div class="chart-box sm"><canvas id="c-web"></canvas></div></div>
+  <div class="card" data-src="nginx"><h3>Web attack patterns</h3><div id="t-web-tags"></div></div>
+  <div class="card" data-src="nginx"><h3>Web top clients</h3><div id="t-web-clients"></div></div>
+  <div class="card" data-src="suricata"><h3>IDS (Suricata) signatures</h3><div id="t-ids"></div></div>
+  <div class="card" data-src="crowdsec"><h3>CrowdSec scenarios</h3><div id="t-cs"></div></div>
+  <div class="card" data-src="qfeeds"><h3>Q-Feeds threat-intel hits</h3><div id="t-qf"></div></div>
+  <div class="card" data-src="zenarmor"><h3>Zenarmor</h3><div id="t-zen"></div></div>
   <div class="card"><h3>Internal top talkers</h3><div id="t-talkers"></div></div>
   <div class="card"><h3>New devices</h3><div id="t-devices"></div></div>
 </div>
@@ -79,7 +79,9 @@ async function load() {
   let d;
   try { d = await LG.api(`/api/overview?hours=${hours}`); }
   catch (e) { document.getElementById("kpis").innerHTML = `<div class="card">Failed to load: ${LG.esc(e.message)}</div>`; return; }
-  const k = d.kpi, oa = k.open_alerts || {};
+  const k = d.kpi, oa = k.open_alerts || {}, on = d.sources || {};
+  // cards of optional sources that are switched off (Settings › OPNsense) and sent nothing in this period
+  document.querySelectorAll("[data-src]").forEach(c => c.hidden = on[c.dataset.src] === false);
   const crit = (oa.critical || 0) + (oa.high || 0);
   const openTotal = Object.values(oa).reduce((a, b) => a + b, 0);
   document.getElementById("kpis").innerHTML =
@@ -88,9 +90,9 @@ async function load() {
     kpi("Blocked IPs", LG.num(k.blocked_ips)) +
     kpi("Open alerts", `${openTotal}${crit ? ` <span class="small" style="color:var(--bad)">(${crit} high+)</span>` : ""}`, crit ? "bad" : openTotal ? "warn" : "ok") +
     kpi("Login failures", LG.num(k.login_failed), k.login_failed ? "warn" : "") +
-    kpi("IDS events", LG.num(k.ids), k.ids ? "warn" : "") +
-    kpi("DNS queries", LG.num(k.dns)) +
-    kpi("CrowdSec bans", k.crowdsec_decisions ?? "–") +
+    (on.suricata ? kpi("IDS events", LG.num(k.ids), k.ids ? "warn" : "") : "") +
+    (on.unbound ? kpi("DNS queries", LG.num(k.dns)) : "") +
+    (on.crowdsec ? kpi("CrowdSec bans", k.crowdsec_decisions ?? "–") : "") +
     kpi("Devices (24h)", LG.num(k.devices));
   document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
 

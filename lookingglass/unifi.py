@@ -67,6 +67,14 @@ EVENT_KEYS = {
 }
 
 
+def login_hint(status: int, text: str) -> str:
+    if status == 429 or "LIMIT_REACHED" in text:
+        return " (too many failed logins - wait a few minutes)"
+    if "2fa" in text.lower() or "mfa" in text.lower() or status == 499:
+        return " (this account has two-factor authentication - use a local account without it)"
+    return " (wrong username / password - it must be a local controller account, not a UI.com / cloud login)"
+
+
 class UnifiError(Exception):
     def __init__(self, status: int, text: str) -> None:
         super().__init__(f"HTTP {status}: {text}")
@@ -264,21 +272,40 @@ class UnifiClient:
         except ValueError as exc:
             raise UnifiError(r.status_code, f"not JSON: {r.text[:120]}") from exc
 
+    async def _unifi_os(self) -> bool | None:
+        """UniFi OS consoles answer / themselves; the self-hosted Network Application redirects to /manage."""
+        try:
+            r = await self.http.get("/")
+        except httpx.HTTPError:
+            return None
+        if r.status_code == 200:
+            return True
+        if r.is_redirect and "/manage" in r.headers.get("location", ""):
+            return False
+        return None
+
     async def _login(self) -> None:
-        body = {"username": self.s.unifi_username, "password": self.s.unifi_password, "rememberMe": True}
-        for path, prefix in (("/api/auth/login", "/proxy/network"), ("/api/login", "")):
+        body = {"username": self.s.unifi_username, "password": self.s.unifi_password, "rememberMe": True, "remember": True}
+        attempts = [("/api/auth/login", "/proxy/network"), ("/api/login", "")]
+        if await self._unifi_os() is False:
+            attempts.reverse()
+        last: UnifiError | None = None
+        for path, prefix in attempts:
             r = await self.http.post(path, json=body)
-            if r.status_code == 404:
+            text = r.text[:300]
+            # the other kind of controller: 404, or (self-hosted app) "LoginRequired" because /api/auth/* is just a
+            # protected path there
+            if r.status_code == 404 or (r.status_code == 401 and "LoginRequired" in text):
+                last = UnifiError(r.status_code, text)
                 continue
             if r.status_code >= 400:
-                hint = " (too many failed logins - wait a while)" if r.status_code == 429 else \
-                    " (wrong username / password, or MFA is on - use a local account without MFA)"
-                raise UnifiError(r.status_code, r.text[:200] + hint)
-            if token := r.headers.get("x-csrf-token"):
+                raise UnifiError(r.status_code, text + login_hint(r.status_code, text))
+            if token := r.headers.get("x-csrf-token") or self.http.cookies.get("csrf_token"):
                 self.http.headers["X-CSRF-Token"] = token
             self.prefix, self.logged_in = prefix, True
             return
-        raise UnifiError(404, "no UniFi login endpoint found - check the URL (self-hosted: https://<ip>:8443)")
+        raise UnifiError(last.status if last else 404, "no UniFi login endpoint accepted the request - check the URL "
+                                                       "(UniFi OS: https://<ip>, self-hosted: https://<ip>:8443)")
 
     async def legacy_get(self, path: str, body: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         url = f"{self.prefix}/api/s/{self.site}/{path}"

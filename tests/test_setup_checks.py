@@ -45,6 +45,12 @@ def test_channels_and_duplicates():
             await pool.execute("INSERT INTO events (ts, source, program, severity, host) VALUES (now(), 'zenarmor', 'zenarmor', 6, 'setup-test')")
             res = await setup_checks.run(Settings(opnsense_url="http://x", opnsense_api_key="k", opnsense_api_secret="s"))
             assert {c["id"]: c for c in res["checks"]}["zenarmor"]["status"] == "duplicate"
+            # Unbound's own service messages via syslog are no query logging - no duplicate
+            await pool.execute("DELETE FROM events WHERE host = 'setup-test' AND source = 'unbound' AND uid IS NULL")
+            await db.copy_events([event(now, "unbound", host="setup-test", severity=6, program="unbound",
+                                        message="[1234:0] info: start of service (unbound 1.22.0).")])
+            res = await setup_checks.run(Settings(opnsense_url="http://x", opnsense_api_key="k", opnsense_api_secret="s"))
+            assert {c["id"]: c for c in res["checks"]}["dns"]["status"] in ("ok", "info")
         finally:
             await db.pool().execute("DELETE FROM events WHERE host = 'setup-test'")
             await db.pool().execute("DELETE FROM snapshots WHERE key = 'poller_status'")

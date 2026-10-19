@@ -7,7 +7,7 @@ import json
 import ssl
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,21 @@ from .parsers.security import (crowdsec_alert_from_api, crowdsec_decision_from_a
 from .parsers.syslog import parse_iso
 
 log = logging.getLogger(__name__)
+
+
+def opnsense_utc_offset(text: Any, now: datetime | None = None) -> int | None:
+    """'Mon Oct 19 14:58:06 CEST 2026' (diagnostics/system/systemTime, PHP date 'D M j G:i:s T Y') -> 7200.
+    The wall clock minus the real UTC time, rounded to 15 minutes (works for any zone, daylight saving included)."""
+    parts = str(text or "").split()
+    if len(parts) != 6:
+        return None
+    try:
+        local = datetime.strptime(" ".join(parts[1:4] + parts[5:]), "%b %d %H:%M:%S %Y")
+    except ValueError:
+        return None
+    now = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
+    off = round((local - now).total_seconds() / 900) * 900
+    return off if abs(off) <= 14 * 3600 else None
 
 
 class ApiError(Exception):
@@ -52,14 +67,15 @@ class OPNsenseClient:
         r = await self.client.post(f"/api/{path.lstrip('/')}", json=payload or {})
         return self._result(r)
 
-    async def search(self, path: str, rows: int = 500) -> list[dict[str, Any]]:
-        """Call a ``search*`` endpoint (bootgrid style) and return its rows."""
+    async def search(self, path: str, rows: int = 500, sort: dict[str, str] | None = None) -> list[dict[str, Any]]:
+        """Call a ``search*`` endpoint (bootgrid style) and return its rows; ``sort`` e.g. {"timestamp": "desc"}."""
         try:
-            res = await self.post(path, {"current": 1, "rowCount": rows, "searchPhrase": "", "sort": {}})
+            res = await self.post(path, {"current": 1, "rowCount": rows, "searchPhrase": "", "sort": sort or {}})
         except ApiError as exc:
             if exc.status != 405:
                 raise
-            res = await self.get(path, current=1, rowCount=rows)
+            params = {f"sort[{k}]": v for k, v in (sort or {}).items()}
+            res = await self.get(path, current=1, rowCount=rows, **params)
         if isinstance(res, dict):
             return res.get("rows") or []
         return res if isinstance(res, list) else []
@@ -98,6 +114,7 @@ class Poller:
         self.api = OPNsenseClient(settings)
         self.status: dict[str, dict[str, Any]] = {}
         self._fw_digest = ""
+        self.utc_offset: int | None = None  # OPNsense's current UTC offset in seconds (from its wall clock)
         self._vpn_state: dict[str, str] = {}
         self._static_names: dict[str, str] = {}  # MAC or IP -> host name from dnsmasq "Hosts" entries
         self._dns_ip_names: dict[str, str] = {}  # IP -> host name Unbound reports for a client
@@ -120,7 +137,7 @@ class Poller:
         if settings.crowdsec_pull:
             self.jobs.append(("crowdsec", 120, self.poll_crowdsec))
         if settings.qfeeds_pull:
-            self.jobs.append(("qfeeds", 120, self.poll_qfeeds))
+            self.jobs.append(("qfeeds", 300, self.poll_qfeeds))  # expensive on OPNsense (log crawl), see poll_qfeeds
         if settings.ids_pull:
             self.jobs.append(("ids", 60, self.poll_ids))
         if settings.nginx_pull:
@@ -205,6 +222,8 @@ class Poller:
         total, used = _num(mem.get("total")), _num(mem.get("used"))
         if total and used is not None:
             metrics.append(("memory_used_pct", "", round(used / total * 100, 2)))
+        if isinstance(systime, dict) and (off := opnsense_utc_offset(systime.get("datetime"))) is not None:
+            self.utc_offset = off
         if isinstance(systime, dict) and systime.get("loadavg"):
             parts = [p.strip() for p in str(systime["loadavg"]).split(",")]
             if parts and _num(parts[0]) is not None:
@@ -392,10 +411,16 @@ class Poller:
         rows = await self.api.get("diagnostics/firewall/log", **params)
         if not isinstance(rows, list) or not rows:
             return
+        if self.utc_offset is None:  # needed to read the zone-less time stamps below
+            try:
+                self.utc_offset = opnsense_utc_offset((await self.api.get("diagnostics/system/systemTime") or {}).get("datetime"))
+            except (ApiError, httpx.HTTPError, AttributeError):
+                pass
         # newest first
         self._fw_digest = rows[0].get("__digest__", self._fw_digest)
         for row in rows:
-            ts = parse_iso(str(row.get("__timestamp__", "")).replace(" ", "T")) or datetime.now(timezone.utc)
+            # OPNsense strips the zone from this time stamp (read_log.py: split('+')[0]) - it is local time
+            ts = self.local_ts(str(row.get("__timestamp__", "")).replace(" ", "T")) or datetime.now(timezone.utc)
             ev = filterlog.from_api(row, ts)
             if ev:
                 self.writer.put(ev)
@@ -435,13 +460,27 @@ class Poller:
                 self.writer.put(ev)
 
     # ------------------------------------------------------------ nginx ---
+    def local_tz(self):
+        """OPNsense's local time zone: measured from its clock, else the Looking Glass time zone setting."""
+        if self.utc_offset is not None:
+            return timezone(timedelta(seconds=self.utc_offset))
+        try:
+            return ZoneInfo(self.settings.timezone or "UTC")
+        except Exception:  # noqa: BLE001
+            return timezone.utc
+
+    def local_ts(self, value: str) -> datetime | None:
+        """A time stamp written in OPNsense local time; one that carries its own zone is kept as it is."""
+        try:
+            dt = datetime.fromisoformat(value.strip())
+        except ValueError:
+            return parse_iso(value)
+        return dt if dt.tzinfo else dt.replace(tzinfo=self.local_tz()).astimezone(timezone.utc)
+
     async def poll_nginx(self) -> None:
         """os-nginx access / error / stream logs via its log API: OPNsense remote syslog only forwards nginx's
         global error log, the per-server access logs exist as files only (/var/log/nginx/<server>.access.log)."""
-        try:
-            tz = ZoneInfo(self.settings.timezone or "UTC")
-        except Exception:  # noqa: BLE001
-            tz = timezone.utc
+        tz = self.local_tz()  # nginx error log times are OPNsense local time without zone
         now = datetime.now(timezone.utc)
         kinds = (("accesses", nginx_parser.access_from_api), ("errors", nginx_parser.error_from_api),
                  ("streamaccesses", nginx_parser.stream_from_api))
@@ -530,7 +569,8 @@ class Poller:
         await db.set_snapshot("unbound_totals", res)
 
     async def poll_crowdsec(self) -> None:
-        alerts = await self.api.search("crowdsec/alerts/search", rows=1000)
+        # cscli lists every alert ever: ask for the newest ones (the default order is not guaranteed)
+        alerts = await self.api.search("crowdsec/alerts/search", rows=500, sort={"created": "desc"})
         for row in alerts:
             ev = crowdsec_alert_from_api(row)
             if ev:
@@ -543,9 +583,11 @@ class Poller:
                 self.writer.put(ev)
 
     async def poll_qfeeds(self) -> None:
-        rows = await self.api.search("q_feeds/settings/search_events", rows=5000)
+        # Q-Feeds has no event store: every call re-reads the firewall log files on OPNsense, oldest line of a file
+        # first - so ask for the newest rows explicitly (unsorted, the first rows are the oldest of the day)
+        rows = await self.api.search("q_feeds/settings/search_events", rows=1000, sort={"timestamp": "desc"})
         for r in rows:
-            ts = parse_iso(str(r.get("timestamp", ""))) or datetime.now(timezone.utc)
+            ts = self.local_ts(str(r.get("timestamp", ""))) or datetime.now(timezone.utc)
             src, dst = r.get("source"), r.get("destination")
             self.writer.put(event(
                 ts, "qfeeds", program="qfeeds", severity=4, action="block", src_ip=src, dst_ip=dst,

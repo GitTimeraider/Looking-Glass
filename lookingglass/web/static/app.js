@@ -28,6 +28,8 @@ const LG = {
   ago(iso) {
     if (!iso) return "never";
     const s = (Date.now() - (typeof iso === "number" ? iso * 1000 : new Date(iso).getTime())) / 1000;
+    if (isNaN(s)) return "–";
+    if (s < 5) return "just now";  // also small clock differences between browser and server
     if (s < 60) return Math.round(s) + "s ago";
     if (s < 3600) return Math.round(s / 60) + "m ago";
     if (s < 86400) return Math.round(s / 3600) + "h ago";

@@ -125,7 +125,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         decisions = await db.get_snapshot("crowdsec_decisions")
         devices = await pool.fetchval("SELECT count(*) FROM devices WHERE last_seen > now() - interval '1 day'")
         report = await build_report(hours)
+        # optional sources: hide their overview cards when their pull is off and they have no data in the period
+        has = {r["source"] for r in report.get("totals_by_source") or []}
+        enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
+                   "nginx": settings.nginx_pull, "unbound": settings.unbound_query_pull, "zenarmor": False}
+        enabled = {k: (v and settings.opnsense_enabled) or k in has for k, v in enabled.items()}
         return {
+            "sources": enabled,
             "kpi": {**db.jsonable(dict(kpi)), "open_alerts": {r["severity"]: r["n"] for r in alerts},
                     "crowdsec_decisions": len(decisions) if isinstance(decisions, list) else None, "devices": devices},
             "timeline": await timeline(hours),

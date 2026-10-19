@@ -32,6 +32,14 @@ async def housekeeping(settings) -> None:
     while True:
         try:
             pool = db.pool()
+            # events claiming a time after they were received come from a wrong time zone: use the receive time
+            # (once over all rows, then hourly for the newest ones)
+            if not await db.kv_get("fixed_future_ts_v1"):
+                fixed = await pool.execute("UPDATE events SET ts = received_at WHERE ts > received_at + interval '2 minutes'")
+                await db.kv_set("fixed_future_ts_v1", True)
+                log.info("time stamps after their receive time repaired: %s", fixed)
+            else:
+                await pool.execute("UPDATE events SET ts = received_at WHERE ts > now() + interval '2 minutes'")
             while True:
                 status = await pool.execute(
                     "DELETE FROM events WHERE id IN (SELECT id FROM events WHERE ts < now() - make_interval(days => $1) LIMIT 50000)",

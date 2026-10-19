@@ -38,14 +38,19 @@ async def run(settings: Settings) -> dict[str, Any]:
     pool = db.pool()
     rows = await pool.fetch(
         "SELECT source, uid IS NOT NULL AS api, coalesce(program, '') AS program, count(*) n, max(ts) last, "
-        "count(*) FILTER (WHERE action ~ '^http_') http, count(*) FILTER (WHERE src_ip IS NULL) no_ip "
+        "count(*) FILTER (WHERE action ~ '^http_') http, count(*) FILTER (WHERE src_ip IS NULL) no_ip, "
+        # Unbound syslog lines that are query / reply log lines (service messages have no action)
+        "count(*) FILTER (WHERE action IN ('query', 'reply') OR (source = 'unbound' AND action NOT IN ('block'))) queries, "
+        "count(*) FILTER (WHERE action = 'block') blocks "
         "FROM events WHERE ts > now() - interval '24 hours' GROUP BY 1, 2, 3")
     agg: dict[str, dict[str, Any]] = {}
 
     def add(key: str, r: Any) -> None:
-        a = agg.setdefault(key, {"n": 0, "last": None, "http": 0, "no_ip": 0})
+        a = agg.setdefault(key, {"n": 0, "last": None, "http": 0, "no_ip": 0, "queries": 0, "blocks": 0})
         a["n"] += r["n"]
         a["http"] += r["http"]
+        a["queries"] += r["queries"]
+        a["blocks"] += r["blocks"]
         a["no_ip"] += r["no_ip"]
         if r["last"] and (a["last"] is None or r["last"] > a["last"]):
             a["last"] = r["last"]
@@ -123,17 +128,23 @@ async def run(settings: Settings) -> dict[str, Any]:
                "(default block rules are logged already)."])
 
     # ---------------------------------------------------------------- DNS ---
-    dns_api, dns_sys = n("unbound:api"), n("unbound:syslog")
+    # only query / reply / blocked-name log lines duplicate the API - Unbound's own service messages don't
+    dns_api = n("unbound:api")
+    dns_q_sys = agg.get("unbound:syslog", {}).get("queries", 0)
+    dns_b_sys = agg.get("unbound:syslog", {}).get("blocks", 0)
+    dns_sys = dns_q_sys + dns_b_sys
     uq = _job(poller, "unbound_queries")
     dns_link = "/dash/dns"
     if not settings.unbound_query_pull and not dns_sys:
         check("dns", "DNS (Unbound)", "action", [], "API pull is switched off and no Unbound query logs arrive via syslog.",
               ["Looking Glass › Settings › OPNsense › Pull Unbound DNS queries: on."])
     elif dns_api and dns_sys:
-        check("dns", "DNS (Unbound)", "duplicate", ["API", "syslog"], "Every query arrives twice: from the Unbound statistics "
-              "API and as Unbound query log lines.",
-              ["OPNsense › Services › Unbound DNS › Advanced: untick 'Log queries' and 'Log replies' (the API already has every "
-               "query with client and blocklist, and query logging slows Unbound down)."],
+        what = [x for x, on in (("'Log queries'", dns_q_sys), ("'Log local actions'", dns_b_sys)) if on]
+        check("dns", "DNS (Unbound)", "duplicate", ["API", "syslog"],
+              f"Queries arrive twice: from the Unbound statistics API and as Unbound log lines ({dns_q_sys:,} query / reply "
+              f"lines, {dns_b_sys:,} blocked-name lines in 24h).",
+              [f"OPNsense › Services › Unbound DNS › Advanced: untick {' and '.join(what)} (and 'Log replies' if ticked), Save. "
+               "The API already has every query with client and blocklist."],
               count=dns_api, last_seen=last("unbound"), link=dns_link)
     elif dns_api:
         miss = agg.get("unbound:api", {}).get("no_ip", 0)
@@ -285,6 +296,21 @@ async def run(settings: Settings) -> dict[str, Any]:
                "(general system messages have no entry in that list), Save, Apply."], link="/dash/syslog")
     else:
         check("system", "OPNsense system logs", "action", [], "Only via remote syslog.", ["Set up remote syslog (above)."])
+
+    # --------------------------------------------------------- time stamps ---
+    if STATS.clock_offsets:
+        offs = ", ".join(f"{ip}: {o / 3600:+g} h" for ip, o in STATS.clock_offsets.items())
+        check("clock", "Syslog time stamps", "action", ["syslog"],
+              f"Time stamps from {offs} are off by whole hours: the sender writes local time without a time zone "
+              f"(BSD syslog format) and Looking Glass reads it as {settings.timezone or 'UTC'}. Corrected automatically, "
+              "but fix it at the source so times are exact around daylight-saving changes.",
+              ["OPNsense › System › Settings › Logging › Remote › your destination (pencil): tick 'RFC5424' (time "
+               "stamps with zone), Save, Apply.",
+               "Or: Looking Glass › Settings › Ingestion & network › Time zone: the zone of OPNsense, e.g. Europe/Amsterdam "
+               "(same as OPNsense › System › Settings › General › Timezone)."])
+    elif STATS.future_clamped > 20:
+        check("clock", "Event time stamps", "info", [], f"{STATS.future_clamped:,} events claimed a time in the future and "
+              "were stored with their receive time. Check the time zone settings of OPNsense and Looking Glass.")
 
     # ------------------------------------------------------------- extras ---
     status = await db.get_snapshot("unraid_status") or {}

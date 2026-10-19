@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from lookingglass.parsers import nginx
-from lookingglass.parsers.security import crowdsec_decision_from_api, parse_generic, unbound_from_api
+from lookingglass.parsers.security import crowdsec_alert_from_api, crowdsec_decision_from_api, parse_generic, unbound_from_api
 
 NOW = datetime(2026, 10, 19, 10, 0, tzinfo=timezone.utc)
 
@@ -27,6 +27,13 @@ def test_crowdsec_decision_opnsense_fields():
     ev = crowdsec_decision_from_api({"id": 9, "source": "crowdsec", "scope_value": "45.9.9.9", "reason": "crowdsecurity/ssh-bf",
                                      "action": "ban", "expiration": "3h"})
     assert ev["src_ip"] == "45.9.9.9" and ev["action"] == "ban" and ev["data"]["origin"] == "crowdsec"
+
+
+def test_crowdsec_alert_keeps_scenario():
+    # OPNsense's alert search calls the scenario "reason"
+    ev = crowdsec_alert_from_api({"id": 7, "value": "Ip:45.9.9.9", "reason": "crowdsecurity/ssh-bf", "country": "NL",
+                                  "decisions": "ban:1", "created": "2026-10-19T10:00:00Z"})
+    assert ev["data"]["scenario"] == "crowdsecurity/ssh-bf" and ev["src_ip"] == "45.9.9.9"
 
 
 def test_auth_and_vpn_lines():
