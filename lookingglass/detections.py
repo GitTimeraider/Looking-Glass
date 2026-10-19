@@ -219,6 +219,26 @@ def entropy(s: str) -> float:
     return -sum(c / len(s) * math.log2(c / len(s)) for c in counts.values())
 
 
+def ignored_domain(domain: str, ignore: list[str]) -> bool:
+    """``domain`` is one of the ``ignore`` domains or a subdomain of one."""
+    d = domain.lower().rstrip(".")
+    return any(d == i or d.endswith("." + i) for i in ignore)
+
+
+def ignore_list(csv: str) -> list[str]:
+    return [p.strip().lower().strip(".").removeprefix("*.") for p in (csv or "").replace(";", ",").split(",") if p.strip()]
+
+
+def dga_like(domain: str) -> bool:
+    """<random>.<tld>: a long, high-entropy first label. With hyphens, the longest part counts (echo-prod-3f9a1c.example
+    is a named service with an id, not a generated name). Deeper names are covered by the tunneling check."""
+    label = domain.split(".")[0]
+    if domain.count(".") > 2 or label.startswith("xn--"):
+        return False
+    part = max(label.split("-"), key=len)
+    return len(part) >= 16 and entropy(part) >= 3.6
+
+
 def registered_domain(domain: str) -> str:
     parts = domain.rstrip(".").split(".")
     if len(parts) >= 3 and len(parts[-2]) <= 3 and len(parts[-1]) == 2:  # co.uk, com.au, ...
@@ -665,16 +685,17 @@ class DetectionEngine:
         nx: Counter = Counter()
         nx_domains: dict[str, Counter] = defaultdict(Counter)
         bad_block: dict[str, set[str]] = defaultdict(set)
+        ignore = ignore_list(self.settings.dns_ignore_domains)  # Settings › Data & detection
         for r in rows:
             client = str(r["src_ip"]) if r["src_ip"] else "?"
             domain = r["domain"]
+            if ignore and ignored_domain(domain, ignore):
+                continue
             reg = registered_domain(domain)
             sub = domain[: -len(reg)].rstrip(".") if domain.endswith(reg) else ""
             if sub:
                 per_client_sub[(client, reg)].add(sub)
-            label = domain.split(".")[0]
-            # DGA domains look like <random>.<tld>; deeper names are covered by the tunneling check
-            if domain.count(".") <= 2 and len(label) >= 16 and entropy(label) >= 3.6 and not label.startswith("xn--"):
+            if dga_like(domain):
                 dga[client].add(domain)
             if (r["rcode"] or "").upper() == "NXDOMAIN" or r["action"] == "nxdomain":
                 nx[client] += 1
@@ -710,7 +731,8 @@ class DetectionEngine:
                                   f"dns_dga:{client}", src_ip=ip, count=len(domains), mode="max",
                                   events={"source": "unbound", "ip": ip},
                                   description=f"High-entropy domain names queried by {label}: {', '.join(sorted(domains)[:10])}"
-                                              + ("" if ip else f" {no_client}"))
+                                              + ("" if ip else f" {no_client}") + " A known service with random names? Add it "
+                                              "under Settings › Data & detection › DNS: domains to ignore.")
         for client, n in nx.items():
             if n >= 150:
                 ip, label = await name(client)

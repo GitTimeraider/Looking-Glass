@@ -40,6 +40,10 @@ outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), 
 offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, gateway down, resources
 (disk/memory/states) high, stopped services, firmware updates available and "logs stopped arriving" (possible tampering).
 
+*DGA domains* are random-looking names such as `kq3v9x7w2m8p4z1r.com`, which malware generates by the thousands
+(Domain Generation Algorithm) to find its control server. Some CDNs and latency probes use random names too: list
+those under *Settings › Data & detection › DNS: domains to ignore* (subdomains included) and the DNS checks skip them.
+
 ### Muting alerts (alert filters)
 
 *Settings › Alert filters* (or **Mute similar…** on any alert, which pre-fills one) stops alerts you don't want:
