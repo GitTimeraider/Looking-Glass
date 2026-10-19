@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import ssl
 import logging
 import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -14,6 +17,7 @@ from . import db
 from .config import Settings
 from .ingest import STATS, EventWriter
 from .parsers import filterlog
+from .parsers import nginx as nginx_parser
 from .parsers.common import event, ip_or_none
 from .parsers.security import (crowdsec_alert_from_api, crowdsec_decision_from_api, ids_from_api,
                                unbound_from_api)
@@ -94,6 +98,7 @@ class Poller:
         self.api = OPNsenseClient(settings)
         self.status: dict[str, dict[str, Any]] = {}
         self._fw_digest = ""
+        self._vpn_state: dict[str, str] = {}
         self._prev_if: dict[str, tuple[float, float, float]] = {}
         p = max(15, settings.poll_interval)
         self.jobs: list[tuple[str, int, Callable[[], Awaitable[None]]]] = [
@@ -116,6 +121,10 @@ class Poller:
             self.jobs.append(("qfeeds", 120, self.poll_qfeeds))
         if settings.ids_pull:
             self.jobs.append(("ids", 60, self.poll_ids))
+        if settings.nginx_pull:
+            self.jobs.append(("nginx_logs", 60, self.poll_nginx))
+        if settings.vpn_pull:
+            self.jobs.append(("vpn", p, self.poll_vpn))
         self._next: dict[str, float] = {}
         self._running: set[str] = set()
         self._tasks: set[asyncio.Task] = set()
@@ -358,14 +367,126 @@ class Poller:
             if ev:
                 self.writer.put(ev)
 
+    async def _dns_names(self) -> dict[str, str]:
+        """hostname -> IP, so queries whose client Unbound reports as a hostname keep their IP.
+        Sources: Unbound's own per-client statistics, then the device list (DHCP leases / ARP)."""
+        names: dict[str, str] = {}
+        try:
+            for r in await db.pool().fetch("SELECT DISTINCT ON (hostname) hostname, host(ip) ip FROM devices "
+                                           "WHERE hostname IS NOT NULL AND ip IS NOT NULL ORDER BY hostname, last_seen DESC"):
+                names[r["hostname"].lower()] = r["ip"]
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            rolling = await self.api.get("unbound/overview/Rolling/1/1")
+            for per_ts in (rolling or {}).values() if isinstance(rolling, dict) else []:
+                for ip, info in (per_ts or {}).items() if isinstance(per_ts, dict) else []:
+                    host = (info or {}).get("hostname") if isinstance(info, dict) else None
+                    if host and ip_or_none(ip):
+                        names[str(host).lower()] = ip
+        except (ApiError, httpx.HTTPError, ValueError):
+            pass
+        for name, ip in list(names.items()):
+            names.setdefault(name.split(".")[0], ip)
+        return names
+
     async def poll_unbound(self) -> None:
         rows = await self.api.get("unbound/overview/searchQueries")
         if isinstance(rows, dict):
             rows = rows.get("rows", [])
+        names = await self._dns_names() if any(r.get("client") and not ip_or_none(str(r.get("client"))) for r in rows or []) else {}
         for row in rows or []:
-            ev = unbound_from_api(row)
+            ev = unbound_from_api(row, names)
             if ev:
                 self.writer.put(ev)
+
+    # ------------------------------------------------------------ nginx ---
+    async def poll_nginx(self) -> None:
+        """os-nginx access / error / stream logs via its log API: OPNsense remote syslog only forwards nginx's
+        global error log, the per-server access logs exist as files only (/var/log/nginx/<server>.access.log)."""
+        try:
+            tz = ZoneInfo(self.settings.timezone or "UTC")
+        except Exception:  # noqa: BLE001
+            tz = timezone.utc
+        now = datetime.now(timezone.utc)
+        kinds = (("accesses", nginx_parser.access_from_api), ("errors", nginx_parser.error_from_api),
+                 ("streamaccesses", nginx_parser.stream_from_api))
+        for kind, convert in kinds:
+            try:
+                servers = await self.api.get(f"nginx/logs/{kind}")
+            except ApiError as exc:
+                if exc.status in (400, 404) and kind != "accesses":
+                    continue
+                raise
+            for srv in servers if isinstance(servers, list) else []:
+                sid = str(srv.get("id") or "")
+                if not sid or sid == "perm_ban":
+                    continue
+                name = srv.get("server_name") or (f"port {srv['port']}" if srv.get("port") else sid)
+                # newest file (-1); read the first and the last page so either sort order is covered
+                first = await self.api.get(f"nginx/logs/{kind}/{sid}/-1/1/1000")
+                if not isinstance(first, dict) or first.get("error"):
+                    continue
+                lines = list(first.get("lines") or [])
+                pages = int(first.get("pages") or 1)
+                if pages > 1:
+                    last = await self.api.get(f"nginx/logs/{kind}/{sid}/-1/{pages}/1000")
+                    lines += (last or {}).get("lines") or [] if isinstance(last, dict) else []
+                for line in lines:
+                    if not isinstance(line, dict):
+                        continue
+                    ev = convert(line, name, now, None, tz) if kind == "errors" else convert(line, name, now)
+                    if ev:
+                        ev["uid"] = "ngx:" + hashlib.sha1(f"{kind}|{sid}|{json.dumps(line, sort_keys=True)}".encode()).hexdigest()
+                        self.writer.put(ev)
+
+    # -------------------------------------------------------------- VPN ---
+    async def poll_vpn(self) -> None:
+        """WireGuard / OpenVPN / IPsec live status. WireGuard does not log handshakes, so peer state changes
+        are turned into events here."""
+        out: dict[str, Any] = {}
+        try:
+            wg = await self.api.get("wireguard/service/show")
+            rows = wg.get("rows", []) if isinstance(wg, dict) else wg or []
+            peers = [r for r in rows if r.get("type") == "peer"]
+            out["wireguard"] = {"interfaces": [r for r in rows if r.get("type") == "interface"], "peers": peers}
+            rx_rows = []
+            for p in peers:
+                key = f'{p.get("if")}:{p.get("public-key")}'
+                name = p.get("name") or (p.get("public-key") or "")[:10]
+                status = p.get("peer-status") or ("online" if (p.get("latest-handshake-age") or 1e9) <= 300 else "offline")
+                prev = self._vpn_state.get(key)
+                if prev is not None and prev != status and status in ("online", "offline", "stale"):
+                    ep = str(p.get("endpoint") or "")
+                    ep_ip = ip_or_none(ep.rsplit(":", 1)[0].strip("[]")) if ep and ep != "(none)" else None
+                    self.writer.put(event(datetime.now(timezone.utc), "vpn", program="wireguard", severity=5,
+                                          action="vpn_connect" if status == "online" else "vpn_disconnect",
+                                          src_ip=ep_ip, username=name,
+                                          message=f"WireGuard peer {name} on {p.get('ifname') or p.get('if')} is {status}"
+                                                  + (f" (endpoint {ep})" if ep_ip else ""),
+                                          data={"peer": name, "interface": p.get("if"), "endpoint": ep, "status": status,
+                                                "allowed_ips": p.get("allowed-ips")}))
+                self._vpn_state[key] = status
+                for direction, k in (("rx", "transfer-rx"), ("tx", "transfer-tx")):
+                    v = _num(p.get(k))
+                    if v is not None:
+                        rx_rows.append((f"wg_peer_{direction}_bytes", f"{p.get('if')}:{name}", v))
+            out["wireguard"]["online"] = sum(1 for p in peers if p.get("peer-status") == "online")
+            await db.add_metrics(rx_rows + [("wg_peers_online", "", float(out["wireguard"]["online"]))])
+        except ApiError as exc:
+            if exc.status not in (400, 403, 404):
+                raise
+        try:
+            out["openvpn"] = await self.api.search("openvpn/service/search_sessions", rows=500)
+        except ApiError as exc:
+            if exc.status not in (400, 403, 404):
+                raise
+        try:
+            out["ipsec"] = await self.api.search("ipsec/sessions/search_phase1", rows=500)
+        except ApiError as exc:
+            if exc.status not in (400, 403, 404):
+                raise
+        await db.set_snapshot("vpn", out)
 
     async def poll_unbound_totals(self) -> None:
         res = await self.api.get("unbound/overview/totals/25")

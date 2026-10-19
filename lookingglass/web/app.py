@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime
 import logging
 from pathlib import Path
 from typing import Any
@@ -35,7 +37,6 @@ PAGES = {
     "/events": ("events.html", "Events"),
     "/alerts": ("alerts.html", "Alerts"),
     "/system": ("system.html", "OPNsense"),
-    "/hardware": ("hardware.html", "Hardware"),
     "/devices": ("devices.html", "Devices"),
     "/unraid": ("unraid.html", "Unraid"),
     "/reports": ("reports.html", "Reports"),
@@ -96,6 +97,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     for p in PAGES:
         app.add_api_route(p, page(p), methods=["GET"], response_class=HTMLResponse)
 
+    @app.get("/hardware")
+    async def hardware_moved():  # merged into the OPNsense page
+        return RedirectResponse("/system#hardware")
+
     @app.get("/reports/{report_id}", response_class=HTMLResponse)
     async def report_page(request: Request, report_id: int):
         return templates.TemplateResponse(request, "report_view.html", {
@@ -127,34 +132,73 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         }
 
     @app.get("/api/events")
-    async def events(source: str | None = None, ip: str | None = None, action: str | None = None, q: str | None = None,
-                     hours: float = Query(24, gt=0), limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0),
-                     min_severity: int | None = Query(None, ge=0, le=7)):
-        where, args = ["ts > now() - make_interval(secs => $1)"], [hours * 3600]
+    async def events(request: Request, source: str | None = None, ip: str | None = None, action: str | None = None,
+                     q: str | None = None, hours: float = Query(24, gt=0), limit: int = Query(100, ge=1, le=1000),
+                     offset: int = Query(0, ge=0), min_severity: int | None = Query(None, ge=0, le=7),
+                     start: str | None = None, end: str | None = None):
+        """Event search. Besides the form fields every dashboard click-through filter is accepted:
+        program, host, domain, user, port, proto, iface, direction, country, start/end (ISO time) and
+        ``d_<key>=<value>`` for a key inside the event's JSON data (``none`` matches an empty value)."""
+        where: list[str] = []
+        args: list[Any] = []
+
+        def arg(v: Any) -> str:
+            args.append(v)
+            return f"${len(args)}"
+
+        if start or end:
+            try:
+                t0 = datetime.fromisoformat(start.replace("Z", "+00:00")) if start else None
+                t1 = datetime.fromisoformat(end.replace("Z", "+00:00")) if end else None
+            except ValueError as exc:
+                raise HTTPException(400, "start/end must be ISO timestamps") from exc
+            if t0:
+                where.append(f"ts >= {arg(t0)}")
+            if t1:
+                where.append(f"ts < {arg(t1)}")
+        else:
+            where.append(f"ts > now() - make_interval(secs => {arg(hours * 3600)})")
         if source:
-            args.append(source.split(","))
-            where.append(f"source = ANY(${len(args)}::text[])")
+            where.append(f"source = ANY({arg(source.split(','))}::text[])")
         if ip:
-            args.append(ip.strip())
-            if "/" in ip:
-                where.append(f"(src_ip << ${len(args)}::inet OR dst_ip << ${len(args)}::inet)")
-            else:
-                where.append(f"(src_ip = ${len(args)}::inet OR dst_ip = ${len(args)}::inet)")
-        if action:
-            args.append(action.split(","))
-            where.append(f"action = ANY(${len(args)}::text[])")
+            ip = ip.strip()
+            op = "<<=" if "/" in ip else "="
+            a = arg(ip)
+            where.append(f"(src_ip {op} {a}::inet OR dst_ip {op} {a}::inet)")
+        if action:  # "a,b" = any of; "http_4*" = prefix
+            acts = action.split(",")
+            exact, prefixes = [a for a in acts if not a.endswith("*")], [a[:-1] + "%" for a in acts if a.endswith("*")]
+            conds = ([f"action = ANY({arg(exact)}::text[])"] if exact else []) + \
+                    ([f"action LIKE ANY({arg(prefixes)}::text[])"] if prefixes else [])
+            where.append("(" + " OR ".join(conds) + ")")
         if q:
-            args.append(f"%{q}%")
-            where.append(f"(message ILIKE ${len(args)} OR domain ILIKE ${len(args)} OR username ILIKE ${len(args)})")
+            a = arg(f"%{q}%")
+            where.append(f"(message ILIKE {a} OR domain ILIKE {a} OR username ILIKE {a} OR program ILIKE {a})")
         if min_severity is not None:
-            args.append(min_severity)
-            where.append(f"severity <= ${len(args)}")
-        args += [limit + 1, offset]
+            where.append(f"severity <= {arg(min_severity)}")
+        qp = request.query_params
+        simple = {"program": "program", "host": "host", "domain": "domain", "user": "username", "proto": "proto",
+                  "iface": "interface", "direction": "direction", "country": "src_country"}
+        for param, col in simple.items():
+            v = qp.get(param)
+            if v is None:
+                continue
+            where.append(f"{col} IS NULL" if v == "none" else f"{col} = {arg(v)}")
+        if qp.get("port"):
+            try:
+                where.append(f"dst_port = {arg(int(qp['port']))}")
+            except ValueError as exc:
+                raise HTTPException(400, "port must be a number") from exc
+        for key, v in qp.items():
+            if key.startswith("d_") and re.fullmatch(r"d_[A-Za-z0-9_]{1,40}", key):
+                k = arg(key[2:])
+                where.append(f"coalesce(data->>{k}, '') = ''" if v == "none" else f"data->>{k} = {arg(v)}")
+        lim, off = arg(limit + 1), arg(offset)
         try:
             rows = await db.pool().fetch(
                 f"SELECT id, ts, source, host, program, severity, action, host(src_ip) src_ip, src_port, host(dst_ip) dst_ip, dst_port, "
                 f"proto, interface, direction, username, domain, src_country, dst_country, message, data FROM events "
-                f"WHERE {' AND '.join(where)} ORDER BY ts DESC LIMIT ${len(args) - 1} OFFSET ${len(args)}", *args)
+                f"WHERE {' AND '.join(where)} ORDER BY ts DESC LIMIT {lim} OFFSET {off}", *args)
         except Exception as exc:  # noqa: BLE001 - e.g. invalid inet literal
             raise HTTPException(400, f"invalid filter: {exc}") from exc
         out = db.records(rows)

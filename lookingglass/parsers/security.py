@@ -40,23 +40,54 @@ def parse_unbound(ts: datetime, host: str | None, program: str | None, message: 
     return event(ts, "unbound", host=host, program=program, severity=sev, message=msg[:4000])
 
 
-def unbound_from_api(row: dict[str, Any]) -> dict[str, Any] | None:
-    """Entry from ``/api/unbound/overview/searchQueries`` (Unbound reporting database)."""
+# Unbound reporting database codes (core: src/opnsense/scripts/unbound/stats.py). The API may return the
+# numbers or the names, depending on the OPNsense version - both are accepted.
+UNB_ACTIONS = {0: "pass", 1: "block", 2: "drop"}
+UNB_SOURCES = {0: "Recursion", 1: "Local", 2: "Local-data", 3: "Cache"}
+UNB_RCODES = {0: "NOERROR", 1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN", 4: "NOTIMPL", 5: "REFUSED", 6: "YXDOMAIN",
+              7: "YXRRSET", 8: "NXRRSET", 9: "NOTAUTH", 10: "NOTZONE"}
+UNB_DNSSEC = {0: "Unchecked", 1: "Bogus", 2: "Indeterminate", 3: "Insecure", 5: "Secure"}
+
+
+def _code(value: Any, names: dict[int, str]) -> str | None:
+    if value is None or value == "":
+        return None
+    try:
+        return names.get(int(value), str(value))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def unbound_from_api(row: dict[str, Any], ip_by_name: dict[str, str] | None = None) -> dict[str, Any] | None:
+    """Entry from ``/api/unbound/overview/searchQueries`` (Unbound reporting database, newest 1000 queries).
+
+    ``client`` is the client IP, or its hostname when Unbound knows one - ``ip_by_name`` maps those back."""
     t = row.get("time")
     try:
         ts = datetime.fromtimestamp(float(t), tz=timezone.utc)
     except (TypeError, ValueError):
         return None
-    action = str(row.get("action") or "Pass").lower()
-    rcode = row.get("rcode") or ""
+    action = (_code(row.get("action"), UNB_ACTIONS) or "pass").lower()
+    rcode = (_code(row.get("rcode"), UNB_RCODES) or "").upper()
+    source = _code(row.get("source"), UNB_SOURCES)
+    client = str(row.get("client") or "").strip()
+    client_ip = ip_or_none(client)
+    client_name = None
+    if client and not client_ip:
+        client_name = client
+        client_ip = (ip_by_name or {}).get(client.lower()) or (ip_by_name or {}).get(client.lower().split(".")[0])
     domain = (row.get("domain") or "").rstrip(".").lower()
+    data = {k: row.get(k) for k in ("type", "blocklist", "resolve_time_ms", "ttl", "category", "policy", "family")
+            if row.get(k) not in (None, "")}
+    data.update({k: v for k, v in (("rcode", rcode or None), ("source", source), ("client_name", client_name),
+                                   ("qtype", row.get("type")), ("dnssec_status", _code(row.get("dnssec_status"), UNB_DNSSEC)))
+                 if v})
     return event(
         ts, "unbound", program="unbound", severity=5 if action in ("block", "drop") or rcode not in ("", "NOERROR") else 6,
-        action="query" if action == "pass" else action, src_ip=row.get("client"), domain=domain, proto="dns", dst_port=53,
-        message=f'{row.get("type", "")} {domain} {rcode} {row.get("source", "")}'.strip(),
-        data={k: row.get(k) for k in ("type", "rcode", "source", "blocklist", "resolve_time_ms", "ttl", "category", "policy", "dnssec_status", "family")
-              if row.get(k) not in (None, "")},
-        uid=f'dns:{t}:{row.get("client")}:{domain}:{row.get("type")}',
+        action="query" if action == "pass" else action, src_ip=client_ip, domain=domain, proto="dns", dst_port=53,
+        message=f'{row.get("type", "")} {domain} {rcode} {source or ""}'.strip() + (f" from {client_name}" if client_name else ""),
+        data=data,
+        uid=f'dns:{row.get("uuid")}' if row.get("uuid") else f'dns:{t}:{client}:{domain}:{row.get("type")}',
     )
 
 
@@ -90,8 +121,8 @@ def parse_crowdsec(ts: datetime, host: str | None, program: str | None, message:
 
 
 def crowdsec_alert_from_api(row: dict[str, Any]) -> dict[str, Any] | None:
-    """Row of ``/api/crowdsec/alerts/search``."""
-    ts = parse_iso(str(row.get("created_at") or row.get("start_at") or "")) or datetime.now(timezone.utc)
+    """Row of ``/api/crowdsec/alerts/search`` (OPNsense: id, value, reason, country, as, decisions, created)."""
+    ts = parse_iso(str(row.get("created_at") or row.get("created") or row.get("start_at") or "")) or datetime.now(timezone.utc)
     src = row.get("source") or {}
     ip = src.get("ip") if isinstance(src, dict) else None
     if not ip:
@@ -106,14 +137,17 @@ def crowdsec_alert_from_api(row: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def crowdsec_decision_from_api(row: dict[str, Any]) -> dict[str, Any] | None:
-    """Row of ``/api/crowdsec/decisions/search``."""
+    """Row of ``/api/crowdsec/decisions/search`` (OPNsense: id, source (origin), scope_value, reason, action,
+    country, as, events_count, expiration, alert_id)."""
     ts = parse_iso(str(row.get("created_at") or row.get("created") or "")) or datetime.now(timezone.utc)
-    value = str(row.get("value") or row.get("source") or "")
+    value = str(row.get("scope_value") or row.get("value") or "")
+    row = {**row, "value": value, "origin": row.get("origin") or row.get("source"), "type": row.get("type") or row.get("action")}
     return event(ts, "crowdsec", program="crowdsec", severity=4, action=str(row.get("type") or "ban").lower(),
                  src_ip=ip_or_none(value.split("/")[0]) if value else None,
                  message=f'decision {row.get("type", "ban")} on {row.get("scope", "Ip")} {value} ({row.get("reason") or row.get("scenario", "")}), '
                          f'origin {row.get("origin", "")}, expires {row.get("expiration") or row.get("duration", "")}',
-                 data={k: row.get(k) for k in ("id", "scope", "value", "reason", "scenario", "origin", "duration", "expiration", "country", "as")
+                 data={k: row.get(k) for k in ("id", "scope", "value", "reason", "scenario", "origin", "duration", "expiration", "country", "as",
+                                               "events_count", "alert_id")
                        if row.get(k) not in (None, "")},
                  uid=f'cs-dec:{row.get("id")}')
 
@@ -295,6 +329,18 @@ def is_zenarmor_line(message: str) -> bool:
 # ----------------------------------------------------- auth / vpn / dhcp ---
 AUTH_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     # (regex, action, source)
+    # OPNsense AuthenticationFactory (program audit): "user root authenticated successfully for WebGui [using ...] at 1.2.3.4"
+    (re.compile(r"user (?P<user>\S+) authenticated successfully for (?P<svc>\S+) .*?\bat (?P<ip>[0-9a-fA-F:.]+)", re.I), "login_success", "auth"),
+    (re.compile(r"user (?P<user>\S+) could not authenticate for (?P<svc>\S+?)\.? .*?\bat (?P<ip>[0-9a-fA-F:.]+)", re.I), "login_failed", "auth"),
+    # OpenVPN daemon: "1.2.3.4:51820 TLS: Username/Password authentication succeeded for username 'bob'"
+    (re.compile(r"(?:(?P<ip>[0-9a-fA-F:.]+):\d+ )?TLS: Username/Password authentication succeeded for username '(?P<user>[^']+)'", re.I), "login_success", "vpn"),
+    (re.compile(r"(?:(?P<user>[^/\s]+)/)?(?P<ip>[0-9a-fA-F:.]+):\d+ \[[^\]]*\] Peer Connection Initiated", re.I), "vpn_connect", "vpn"),
+    # OPNsense OpenVPN user_pass_verify.php: "user 'bob' authenticated using 'Local Database'"
+    (re.compile(r"user '(?P<user>[^']+)' authenticated using", re.I), "login_success", "vpn"),
+    # IPsec (charon): "IKE_SA con1[3] established between 192.0.2.1[fw]...198.51.100.7[peer]"
+    (re.compile(r"IKE_SA (?P<user>[^\[\s]+)\[\d+\] established between \S+\.\.\.(?P<ip>[0-9a-fA-F:.]+)\[", re.I), "vpn_connect", "vpn"),
+    # OPNsense API key failures (program api)
+    (re.compile(r"uri \S+ authentication failed for api key (?P<user>\S+)", re.I), "login_failed", "auth"),
     (re.compile(r"Web GUI authentication error for '?(?P<user>[^' ]*)'? from (?P<ip>[0-9a-fA-F:.]+)", re.I), "login_failed", "auth"),
     (re.compile(r"Successful login for user '?(?P<user>[^' ]*)'? from:? (?P<ip>[0-9a-fA-F:.]+)", re.I), "login_success", "auth"),
     (re.compile(r"Failed (?:password|publickey|keyboard-interactive/pam|none) for (?:invalid user )?(?P<user>\S+) from (?P<ip>[0-9a-fA-F:.]+)"), "login_failed", "auth"),
@@ -316,8 +362,8 @@ _KEA_LEASE = re.compile(r"DHCP4_LEASE_ALLOC.*?hwtype=\d+ (?P<mac>[0-9a-f:]{17}).
 _DNSMASQ = re.compile(r"DHCPACK\((?P<iface>[^)]+)\) (?P<ip>[0-9.]+) (?P<mac>[0-9a-f:]{17})(?: (?P<host>\S+))?", re.I)
 _CONFIG_CHANGE = re.compile(r"(?:config(?:uration)? (?:change|changed)|user .* changed configuration|/conf/config\.xml)", re.I)
 
-VPN_PROGRAMS = ("openvpn", "charon", "ipsec", "wireguard", "wg", "strongswan")
-AUTH_PROGRAMS = ("sshd", "sshd-session", "audit", "login", "su", "sudo", "lighttpd", "php-cgi", "php", "webgui", "configd.py")
+VPN_PROGRAMS = ("openvpn", "charon", "ipsec", "wireguard", "wg", "strongswan")  # incl. openvpn_server1, openvpn_client2
+AUTH_PROGRAMS = ("sshd", "sshd-session", "audit", "login", "su", "sudo", "lighttpd", "php-cgi", "php", "webgui", "configd.py", "api")
 DHCP_PROGRAMS = ("dhcpd", "dhcpd6", "kea-dhcp4", "kea-dhcp6", "dnsmasq", "dnsmasq-dhcp", "dhcp6c", "dhclient")
 
 

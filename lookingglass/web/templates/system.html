@@ -1,51 +1,111 @@
 {% extends "base.html" %}
 {% block body %}
 <header class="top">
-  <h1>OPNsense system</h1>
-  <div class="seg" id="range"><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button></div>
+  <h1>OPNsense</h1>
+  <span class="muted small" id="updated"></span>
+  <div class="seg" id="range"><button data-v="1">1h</button><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button></div>
 </header>
+<div class="tabs" id="tabs">
+  <button data-t="overview" class="on">Overview</button><button data-t="hardware">Hardware &amp; performance</button>
+</div>
+<section data-s="overview">
+  <div class="grid g3">
+    <div class="card"><h3>System</h3><div id="sys"></div></div>
+    <div class="card"><h3>Firmware</h3><div id="fw"></div></div>
+    <div class="card"><h3>Disks &amp; temperature</h3><div id="disk"></div></div>
+  </div>
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card"><h3>Gateways</h3><div id="gws"></div></div>
+    <div class="card"><h3>Interfaces</h3><div id="ifs"></div></div>
+    <div class="card"><h3>Services</h3><div id="svcs"></div></div>
+    <div class="card"><h3>Devices (ARP / DHCP)<span class="sp"></span><a class="small" href="/devices">all devices →</a></h3><div id="devs"></div></div>
+  </div>
+</section>
+<section data-s="hardware" hidden>
 <div class="grid g3">
-  <div class="card"><h3>System</h3><div id="sys"></div></div>
-  <div class="card"><h3>Firmware</h3><div id="fw"></div></div>
-  <div class="card"><h3>Disks &amp; temperature</h3><div id="disk"></div></div>
-</div>
-<div class="grid g3" style="margin-top:14px">
-  <div class="card"><h3>Memory %</h3><div class="chart-box sm"><canvas id="c-mem"></canvas></div></div>
-  <div class="card"><h3>Load (1m)</h3><div class="chart-box sm"><canvas id="c-load"></canvas></div></div>
+  <div class="card span2"><h3>Utilisation now</h3><div class="gauges" id="gauges"></div></div>
+  <div class="card"><h3>Hardware</h3><div id="hw"></div></div>
+  <div class="card"><h3>CPU usage %</h3><div class="chart-box sm"><canvas id="c-cpu"></canvas></div></div>
+  <div class="card"><h3>Load average (1m)</h3><div class="chart-box sm"><canvas id="c-load"></canvas></div></div>
+  <div class="card"><h3>Memory / swap / ZFS ARC %</h3><div class="chart-box sm"><canvas id="c-mem"></canvas></div></div>
+  <div class="card"><h3>Temperatures °C</h3><div class="chart-box sm"><canvas id="c-temp"></canvas></div></div>
+  <div class="card"><h3>Disk usage %</h3><div class="chart-box sm"><canvas id="c-disk"></canvas></div></div>
   <div class="card"><h3>Firewall states</h3><div class="chart-box sm"><canvas id="c-states"></canvas></div></div>
-  <div class="card" style="grid-column: span 2"><h3>Interface throughput (rx+ / tx−)</h3><div class="chart-box"><canvas id="c-if"></canvas></div></div>
-  <div class="card"><h3>Gateway latency (ms)</h3><div class="chart-box"><canvas id="c-gw"></canvas></div></div>
+  <div class="card span3"><h3>Interface throughput (receive + / transmit −)</h3><div class="chart-box"><canvas id="c-if"></canvas></div></div>
+  <div class="card"><h3>Interface errors &amp; drops</h3><div class="chart-box sm"><canvas id="c-iferr"></canvas></div></div>
+  <div class="card"><h3>Gateway latency (ms)</h3><div class="chart-box sm"><canvas id="c-gw"></canvas></div></div>
+  <div class="card"><h3>Gateway packet loss %</h3><div class="chart-box sm"><canvas id="c-loss"></canvas></div></div>
+  <div class="card span2"><h3>Top processes</h3><div id="procs"></div></div>
+  <div class="card"><h3>Disks</h3><div id="disks"></div></div>
 </div>
-<div class="grid g2" style="margin-top:14px">
-  <div class="card"><h3>Gateways</h3><div id="gws"></div></div>
-  <div class="card"><h3>Interfaces</h3><div id="ifs"></div></div>
-  <div class="card"><h3>Services</h3><div id="svcs"></div></div>
-  <div class="card"><h3>Devices (ARP / DHCP)</h3><div id="devs"></div></div>
-</div>
+</section>
 {% endblock %}
 {% block scripts %}
 <script>
-let hours = 24;
-LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); charts(); });
-function line(id, series, opts = {}) {
-  const datasets = Object.entries(series).map(([label, pts], i) => ({ label: label || id, data: pts.map(p => ({ x: new Date(p[0]).getTime(), y: opts.neg && opts.neg(label) ? -p[1] : p[1] })),
-    borderColor: LG.palette[i % LG.palette.length], backgroundColor: LG.palette[i % LG.palette.length], pointRadius: 0, borderWidth: 1.5, tension: .2 }));
-  LG.chart(id, { type: "line", data: { datasets }, options: { maintainAspectRatio: false, animation: false, parsing: false,
-    scales: { x: { type: "linear", ticks: { callback: v => new Date(v).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), maxTicksLimit: 8 } },
-              y: { ticks: { callback: opts.fmt || (v => v) } } },
-    plugins: { legend: { display: datasets.length > 1, position: "bottom", labels: { boxWidth: 10 } },
-               tooltip: { callbacks: { label: c => `${c.dataset.label}: ${(opts.fmt || (v => v))(Math.abs(c.parsed.y))}` } } } } });
+let hours = Number(localStorage.getItem("lg-hours-hw") || 24), tab = location.hash === "#hardware" ? "hardware" : "overview";
+LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours-hw", v); charts(); });
+function showTab(t) {
+  tab = t;
+  document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x.dataset.t === t));
+  document.querySelectorAll("section[data-s]").forEach(s => s.hidden = s.dataset.s !== t);
+  history.replaceState(null, "", t === "overview" ? location.pathname : "#" + t);
+  charts();
 }
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => showTab(b.dataset.t));
+const pct = v => Math.round(v) + "%";
 async function charts() {
-  const m = n => LG.api(`/api/metrics?name=${n}&hours=${hours}`);
-  const [mem, load, st, rx, tx, gw] = await Promise.all([m("memory_used_pct"), m("load1"), m("pf_states"), m("if_rx_bps"), m("if_tx_bps"), m("gateway_delay_ms")]);
-  line("c-mem", mem); line("c-load", load); line("c-states", st); line("c-gw", gw);
+  const m = await LG.api(`/api/metrics/multi?hours=${hours}&names=cpu_used_pct,load1,memory_used_pct,swap_used_pct,zfs_arc_pct,temperature,disk_used_pct,pf_states,if_rx_bps,if_tx_bps,if_received_errors,if_send_errors,if_dropped_packets,gateway_delay_ms,gateway_loss_pct`);
+  const o = { hours };
+  LG.lineChart("c-cpu", m.cpu_used_pct || {}, { ...o, fmt: pct, min: 0, fill: true, rename: () => "CPU" });
+  LG.lineChart("c-load", m.load1 || {}, { ...o, rename: () => "load" });
+  LG.lineChart("c-mem", { memory: (m.memory_used_pct || {})[""] || [], swap: (m.swap_used_pct || {})[""] || [], "ZFS ARC": (m.zfs_arc_pct || {})[""] || [] }, { ...o, fmt: pct, min: 0, max: 100 });
+  LG.lineChart("c-temp", m.temperature || {}, { ...o, rename: l => l.replace("dev.cpu.", "cpu").replace(".temperature", "") });
+  LG.lineChart("c-disk", m.disk_used_pct || {}, { ...o, fmt: pct, min: 0, max: 100 });
+  LG.lineChart("c-states", m.pf_states || {}, { ...o, rename: () => "states", fill: true });
   const ifs = {};
-  for (const [k, v] of Object.entries(rx)) ifs[k + " rx"] = v;
-  for (const [k, v] of Object.entries(tx)) ifs[k + " tx"] = v;
-  line("c-if", ifs, { fmt: v => LG.bps(Math.abs(v)), neg: l => l.endsWith(" tx") });
+  for (const [k, v] of Object.entries(m.if_rx_bps || {})) ifs[k + " rx"] = v;
+  for (const [k, v] of Object.entries(m.if_tx_bps || {})) ifs[k + " tx"] = v;
+  LG.lineChart("c-if", ifs, { ...o, fmt: v => LG.bps(v), neg: l => l.endsWith(" tx") });
+  const errs = {};
+  for (const n of ["if_received_errors", "if_send_errors", "if_dropped_packets"]) for (const [k, v] of Object.entries(m[n] || {})) errs[`${k} ${n.replace("if_", "").replace("_", " ")}`] = v;
+  LG.lineChart("c-iferr", errs, o);
+  LG.lineChart("c-gw", m.gateway_delay_ms || {}, o);
+  LG.lineChart("c-loss", m.gateway_loss_pct || {}, { ...o, fmt: v => v.toFixed(1) + "%", min: 0 });
 }
-async function load() {
+async function now() {
+  const d = await LG.api("/api/hardware");
+  const S = k => (d.snapshots[k] || {}).data || {};
+  const L = n => d.latest.filter(x => x.name === n);
+  const one = n => (L(n)[0] || {}).value;
+  const sys = S("system"), mem = (sys.resources || {}).memory || {}, st = sys.pf_states || {}, tm = sys.time || {}, info = sys.information || {};
+  const temps = L("temperature");
+  document.getElementById("gauges").innerHTML =
+    LG.gauge(one("cpu_used_pct"), "CPU") + LG.gauge(one("memory_used_pct"), "Memory", `${LG.bytes(mem.used)} / ${LG.bytes(mem.total)}`) +
+    LG.gauge(one("swap_used_pct"), "Swap") + LG.gauge(one("pf_states_pct"), "State table", `${LG.num(st.current)} / ${LG.num(st.limit)}`) +
+    L("disk_used_pct").map(x => LG.gauge(x.value, "Disk " + x.labels)).join("") +
+    (temps.length ? `<div class="gauge"><div class="gv">${Math.max(...temps.map(t => t.value)).toFixed(0)}°C</div><div class="l">Hottest sensor</div></div>` : "");
+  document.getElementById("hw").innerHTML = `<div class="kv">
+    <div>Host</div><div>${LG.esc(info.name || "–")}</div>
+    <div>CPU</div><div>${LG.esc(sys.cpu_type || "–")}</div>
+    <div>Memory</div><div>${LG.bytes(mem.total)}</div>
+    <div>Software</div><div>${(info.versions || []).map(LG.esc).join("<br>") || "–"}</div>
+    <div>Uptime</div><div>${LG.esc(tm.uptime || "–")}</div>
+    <div>Booted</div><div>${LG.esc(tm.boottime || "–")}</div>
+    <div>Load</div><div>${LG.esc(tm.loadavg || "–")}</div>
+    <div>Last config change</div><div>${LG.esc(tm.config || "–")}</div></div>`;
+  const act = S("activity"), hdr = (act.headers || []).join("\n");
+  const procs = (act.details || []).slice(0, 25);
+  document.getElementById("procs").innerHTML = (hdr ? `<pre class="small">${LG.esc(hdr)}</pre>` : "") + (procs.length ? "" : `<div class="empty">No process data (needs the Diagnostics: Activity privilege).</div>`);
+  if (procs.length) {
+    const div = document.createElement("div"); document.getElementById("procs").appendChild(div);
+    const cols = Object.keys(procs[0]).filter(k => !["THR", "NICE", "PRI"].includes(k));
+    LG.table(div, cols.map(k => ({ k, l: k })), procs);
+  }
+  LG.table("#disks", [{k: "mountpoint", l: "Mount"}, {k: "type", l: "Type"}, {k: "used", l: "Used"}, {k: "blocks", l: "Size"},
+    {k: "used_pct", l: "%", f: v => `${LG.esc(v)}%<div class="bar ${v > 90 ? "bad" : v > 75 ? "warn" : ""}"><i style="width:${Number(v) || 0}%"></i></div>`}], (sys.disk || {}).devices || []);
+  document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+}
+async function overview() {
   const d = await LG.api("/api/system");
   const S = k => (d.snapshots[k] || {}).data;
   const s = S("system") || {};
@@ -78,7 +138,8 @@ async function load() {
   const devs = await LG.api("/api/devices");
   LG.table("#devs", [{k: "mac", l: "MAC", f: v => `<span class="mono">${LG.esc(v)}</span>`}, {k: "ip", l: "IP", f: LG.ip}, {k: "hostname", l: "Hostname"}, {k: "first_seen", l: "First seen", f: LG.time}, {k: "last_seen", l: "Last", f: LG.ago}], devs);
 }
-load(); charts();
-setInterval(() => { load(); charts(); }, 60000);
+async function refresh() { await Promise.all([overview(), now()]); }
+showTab(tab); refresh();
+setInterval(() => { refresh(); charts(); }, 60000);
 </script>
 {% endblock %}

@@ -57,6 +57,10 @@ FIELDS: list[Field] = [
     Field("crowdsec_pull", "opnsense", "Pull CrowdSec alerts & decisions", "bool"),
     Field("qfeeds_pull", "opnsense", "Pull Q-Feeds events", "bool"),
     Field("ids_pull", "opnsense", "Pull Suricata IDS alerts", "bool"),
+    Field("nginx_pull", "opnsense", "Pull nginx access / error logs", "bool",
+          "nginx plugin: its access logs are never sent by OPNsense remote syslog, so they are read via the API."),
+    Field("vpn_pull", "opnsense", "Pull VPN status (WireGuard, OpenVPN, IPsec)", "bool",
+          "Peers, handshakes, sessions and traffic. WireGuard does not log connections, so this is the only source."),
     # AI
     Field("ai_base_url", "ai", "API base URL", "str",
           "Any OpenAI-compatible endpoint. Claude: https://api.anthropic.com/v1/ · OpenAI: https://api.openai.com/v1/ · "
@@ -92,7 +96,7 @@ SECRET_KEYS = {f.key for f in FIELDS if f.kind == "secret"}
 # which groups restart which component
 RESTART_GROUPS = {"opnsense": ("opnsense_url", "opnsense_api_key", "opnsense_api_secret", "opnsense_verify_ssl",
                                "opnsense_ca_pem", "poll_interval", "firewall_log_pull", "unbound_query_pull",
-                               "crowdsec_pull", "qfeeds_pull", "ids_pull")}
+                               "crowdsec_pull", "qfeeds_pull", "ids_pull", "nginx_pull", "vpn_pull")}
 
 
 @dataclass

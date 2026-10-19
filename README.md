@@ -178,7 +178,8 @@ These steps were checked against the current OPNsense documentation and source (
 
 1. **Remote syslog** – **System › Settings › Logging**, tab **Remote** (on older versions *System › Settings › Logging / targets*), click **+** (add a *Destination*):
    * Enabled ✓, Transport `UDP(4)` (or `TCP(4)`)
-   * Applications: leave **empty** (= everything, recommended)
+   * Applications: leave **empty** (= everything, recommended). Only then are the general system logs (kernel,
+     opnsense …), sshd logins and API-key failures sent, because none of them has an entry in the list.
    * Levels: select everything from *info* up
    * Hostname: IP of your Docker host, Port: `514`
    * **rfc5424** ✓
@@ -188,9 +189,14 @@ These steps were checked against the current OPNsense documentation and source (
 3. **Unbound DNS** – **Reporting › Settings**: enable the Unbound DNS statistics (off by default; Looking Glass then pulls
    per-client queries via the API, OPNsense keeps 7 days). For complete query logs over syslog also enable
    **Services › Unbound DNS › Advanced › Log Queries** (and *Log Replies*) – note this slows Unbound down somewhat.
-4. **nginx plugin** – **Services › Nginx › Configuration**, tab **Other › SYSLOG Targets**: add a target
-   (Host = Docker host, Port = 514). Then edit each **HTTP(S) › HTTP Server**, select that target under
-   *SYSLOG targets* and use Access Log Format `main` or `main_ext`. Apply.
+4. **nginx plugin** – nothing to do. OPNsense remote syslog never forwards nginx *access* logs; they exist only as files.
+   Looking Glass therefore reads access, error and stream logs through the nginx log API every minute (*Settings ›
+   OPNsense › Pull nginx access / error logs*; the API user needs the nginx pages). For real-time delivery instead:
+   **Services › Nginx › Configuration**, tab **Other › SYSLOG Targets**, add a target (Host = Docker host,
+   Port = 514, Severity *info*), then select it in each **HTTP(S) › HTTP Server** under *SYSLOG targets*.
+   nginx then sends straight to Looking Glass over UDP.
+   **VPN** – WireGuard writes no connection logs, so WireGuard peers (status, last handshake, traffic), OpenVPN sessions
+   and IPsec tunnels are read from the API (*Pull VPN status*). A WireGuard peer going online or offline becomes an event.
 5. **Suricata** – **Services › Intrusion Detection › Administration**: tick **Enable syslog alerts** (fast-log format)
    and/or **Enable eve syslog output** (JSON). Alerts are also pulled from the API.
 6. **Zenarmor** – choose one (both are mirrors; Zenarmor's own reports stay intact):
@@ -366,22 +372,30 @@ metrics, no alerts.
 ## Using it
 
 * **Overview** – KPIs and the most important tables of every source in one page.
-* **Alerts** – detections ranked by severity; acknowledge / close; **Ask AI** investigates one alert.
-* **Security dashboards** (one per function, each with KPIs, charts over time, breakdowns, top-N tables and a live log):
+* **Alerts** – detections ranked by severity, naming the device behind an IP (from the device list) and the evidence
+  (e.g. the non-existent domains looked up); **Events** opens exactly the events behind an alert; acknowledge / close;
+  **Ask AI** investigates one alert.
+* **Security dashboards** (one per function, each with KPIs, charts over time, breakdowns, top-N tables and a live log).
+  **Everything is clickable**: a tile, a bar, a pie slice, a moment in a time chart or a table row opens *Event search*
+  with exactly those events (same filters and time span):
   *Firewall* (actions, interfaces, protocols, ports, countries, rules, allowed inbound, internal hosts being blocked),
   *DNS* (queries vs. blocked, types, rcodes, blocklists, clients, NXDOMAIN, tunneling candidates),
   *Web server* (status classes, attack patterns over time, vhosts, paths, 4xx probing, user agents, clients),
   *Threats* (IDS, CrowdSec, Q-Feeds, alerts by rule/severity, top attackers across all sources, active bans),
-  *Zenarmor* (actions, categories, apps, hosts, blocked destinations, threats),
-  *Authentication & VPN* (failed/successful logins, usernames tried, config changes) and *System logs*.
-* **OPNsense** – gateways, interfaces, services, firmware. **Hardware** – CPU, load, memory/swap/ARC, temperatures,
-  disks, states, interface throughput/errors, gateway latency/loss, top processes.
+  *Zenarmor* (record types, applications and app categories, web categories, DNS/TLS/HTTP, hosts and devices, blocked
+  destinations, threats, top talkers),
+  *Authentication & VPN* (failed/successful logins, usernames tried, config changes, live WireGuard peers, OpenVPN
+  sessions and IPsec tunnels) and *System logs* (OPNsense and Unraid, per host and program).
+* **OPNsense** – tab *Overview*: gateways, interfaces, services, firmware, devices; tab *Hardware & performance*: CPU,
+  load, memory/swap/ARC, temperatures, disks, states, interface throughput/errors, gateway latency/loss, top processes.
 * **Devices** – everything connected to OPNsense (ARP + DHCP leases from dnsmasq / Kea / ISC + Zenarmor device
   fingerprints): online state, name,
   IP, MAC, vendor, interface, lease, first/last seen, events/blocks/DNS queries/alerts per device; mark devices as
   trusted, rename them, add notes.
 * **Unraid** – see above.
-* **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range.
+* **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range; filters that come
+  from a dashboard click (program, host, domain, user, port, protocol, interface, country, time span, any data field)
+  show as removable chips. Click an event for all its fields.
 * **Reports** – 24h / 7d / 30d reports, optionally with an AI-written analysis; print to PDF or download JSON.
   Enable *Daily AI report* under *Settings › AI analyst* to get one automatically every morning.
 * **AI Analyst** – chat with the model (any OpenAI-compatible endpoint; with Claude it uses Anthropic's
