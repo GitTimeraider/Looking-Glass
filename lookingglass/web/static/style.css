@@ -230,3 +230,30 @@ details.card > summary { cursor: pointer; }
 .why { margin: 3px 0 2px; padding-left: 7px; border-left: 3px solid var(--border); color: var(--text); }
 .why.sev-critical { border-color: var(--crit); } .why.sev-high { border-color: var(--bad); }
 .why.sev-medium { border-color: var(--warn); } .why.sev-low { border-color: var(--accent); }
+.count-badge { display: inline-block; min-width: 1.6em; padding: 1px 9px; margin-left: 6px; border-radius: 999px; background: var(--panel2);
+  border: 1px solid var(--border); color: var(--text); font-size: 15px; font-weight: 600; vertical-align: middle; text-align: center; }
+.count-badge:empty { display: none; }
+.seg button .n { opacity: .75; font-size: 11px; margin-left: 3px; }
+/* overview widgets */
+.widgets { grid-auto-flow: row dense; }
+.widget.bare { background: none; border: none; padding: 0; }
+.widget.tall .chart-box { height: 440px; } .widget.tall .chart-box.sm { height: 360px; }
+.widget.tall .table-wrap { max-height: 820px; }
+.widgets.editing .widget { outline: 1px dashed var(--border); cursor: grab; }
+.widgets.editing .widget.dragging { opacity: .4; }
+.widgets.editing .widget.drop-before { box-shadow: -4px 0 0 var(--accent); }
+.widgets.editing .widget.drop-after { box-shadow: 4px 0 0 var(--accent); }
+.widgets.editing .widget > :not(h3) { pointer-events: none; opacity: .55; }
+.w-grip { color: var(--muted); margin-right: 6px; cursor: grab; }
+.w-tools { display: inline-flex; gap: 4px; margin-left: 8px; text-transform: none; letter-spacing: 0; }
+.w-tools button { padding: 2px 7px; font-size: 11px; background: var(--panel2); border: 1px solid var(--border); color: var(--text); }
+.w-tools button[data-act="remove"]:hover { color: var(--bad); }
+.w-tools button:disabled { opacity: .35; }
+.layout-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; padding: 10px 12px;
+  border: 1px solid var(--accent); border-radius: 8px; background: var(--panel); }
+.layout-bar .sp { flex: 1; }
+.small-btn { padding: 5px 10px; font-size: 12px; }
+@media (max-width: 700px) { .w-tools button[data-act="width"] { display: none; } }
+.widgets.editing .widget h3 { flex-wrap: wrap; row-gap: 6px; }
+.w-tools button { white-space: nowrap; }
+.widgets.editing .widget:not(.span2):not(.span3) .w-tools { width: 100%; margin-left: 0; justify-content: flex-end; }

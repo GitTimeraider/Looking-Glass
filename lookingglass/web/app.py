@@ -227,6 +227,50 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             f"ORDER BY array_position(ARRAY['critical','high','medium','low','info'], severity), last_seen DESC LIMIT $2", *args)
         return db.records(rows)
 
+    # ------------------------------------------------------------ layouts ---
+    # per user page layouts (Overview widgets): [{"id": "timeline", "w": 1-3, "h": 1-2}, ...]
+    def _layout_key(request: Request, page: str) -> str:
+        if page not in ("overview",):
+            raise HTTPException(404)
+        return f"layout:{page}:{request.session.get('user') or '?'}"
+
+    @app.get("/api/layout/{page}")
+    async def get_layout(page: str, request: Request):
+        return {"layout": await db.kv_get(_layout_key(request, page))}
+
+    @app.put("/api/layout/{page}")
+    async def put_layout(page: str, request: Request, payload: dict = Body(...)):
+        key = _layout_key(request, page)
+        items = payload.get("layout")
+        if not isinstance(items, list) or len(items) > 80:
+            raise HTTPException(400, "layout must be a list")
+        clean, seen = [], set()
+        for it in items:
+            wid = str((it or {}).get("id") or "")
+            if not re.fullmatch(r"[a-z0-9_-]{1,40}", wid) or wid in seen:
+                continue
+            seen.add(wid)
+            try:
+                w, h = int(it.get("w") or 1), int(it.get("h") or 1)
+            except (TypeError, ValueError):
+                w, h = 1, 1
+            clean.append({"id": wid, "w": min(3, max(1, w)), "h": min(2, max(1, h))})
+        await db.kv_set(key, clean)
+        return {"ok": True, "layout": clean}
+
+    @app.delete("/api/layout/{page}")
+    async def reset_layout(page: str, request: Request):
+        await db.pool().execute("DELETE FROM kv WHERE key = $1", _layout_key(request, page))
+        return {"ok": True}
+
+    @app.get("/api/alerts/counts")
+    async def alert_counts(hours: float = Query(24 * 30, gt=0)):
+        """Number of alerts per status in the same window as /api/alerts (not limited by its row limit)."""
+        rows = await db.pool().fetch("SELECT status, count(*) n FROM alerts WHERE last_seen > now() - make_interval(secs => $1) "
+                                     "GROUP BY 1", hours * 3600)
+        counts = {s: 0 for s in ("open", "acknowledged", "closed")} | {r["status"]: r["n"] for r in rows}
+        return {**counts, "all": sum(counts.values())}
+
     @app.post("/api/alerts/status")
     async def set_alert_status(payload: dict = Body(...)):
         ids = [int(i) for i in payload.get("ids", [])]

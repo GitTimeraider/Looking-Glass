@@ -467,6 +467,10 @@ How UniFi and OPNsense data are combined:
 * **Alerts** – detections ranked by severity, naming the device behind an IP (from the device list) and the evidence
   (e.g. the non-existent domains looked up); **Events** opens exactly the events behind an alert; acknowledge / close;
   **Ask AI** investigates one alert.
+* **Overview** – key figures, events over time and per source, open alerts and the top-N tables of every source.
+  **Customize** (top right) lets you drag widgets around (or use ◀ ▶), make them ⅓ / ⅔ / full width and normal or
+  tall, remove them and add others (e.g. *Firewall system*); *Done* saves the layout for your account, *Reset to
+  default* brings back the standard one. Widgets of sources you switched off (e.g. Suricata) hide themselves.
 * **Menu**: *General* (overview, alerts, event search over all sources), *OPNsense security* (the OPNsense security
   dashboards; other security products get their own group), *Infrastructure* (OPNsense and Unraid hardware & status,
   devices), *Tools* (system logs, reports, AI analyst) and *Admin*.

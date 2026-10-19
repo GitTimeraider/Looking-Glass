@@ -3,48 +3,153 @@
 <header class="top">
   <h1>Security dashboard</h1>
   <span class="muted small" id="updated"></span>
+  <button type="button" class="secondary small-btn" id="customize" title="Add, remove, move and resize widgets">Customize</button>
   <div class="seg" id="range">
     <button data-v="1">1h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button>
   </div>
 </header>
 
-<div class="grid kpis" id="kpis"></div>
-
-<div class="grid g3" style="margin-top:14px">
-  <div class="card" style="grid-column: span 2"><h3>Events over time</h3><div class="chart-box"><canvas id="c-timeline"></canvas></div></div>
-  <div class="card"><h3>Events by source<span id="sort-sources"></span></h3><div class="chart-box"><canvas id="c-sources"></canvas></div></div>
+<div class="layout-bar" id="layout-bar" hidden>
+  <b>Customize the overview</b>
+  <span class="muted small">Drag widgets to move them (or use ◀ ▶), change width / height, remove with ✕.</span>
+  <span class="sp"></span>
+  <select id="add-widget"><option value="">+ Add widget…</option></select>
+  <button type="button" class="secondary" id="layout-reset">Reset to default</button>
+  <button type="button" class="secondary" id="layout-cancel">Cancel</button>
+  <button type="button" id="layout-save">Done</button>
 </div>
-
-<div class="grid g2" style="margin-top:14px">
-  <div class="card"><h3>Open alerts<span class="sp"></span><a href="/alerts" class="small">all alerts →</a></h3><div id="t-alerts"></div></div>
-  <div class="card"><h3>Firewall system</h3><div id="sys"></div></div>
-</div>
-
-<div class="grid g3" style="margin-top:14px">
-  <div class="card"><h3>Top blocked sources</h3><div id="t-blocked-src"></div></div>
-  <div class="card"><h3>Top blocked ports</h3><div id="t-blocked-ports"></div></div>
-  <div class="card"><h3>Blocked by country</h3><div id="t-countries"></div></div>
-  <div class="card"><h3>Allowed inbound from internet</h3><div id="t-pass-in"></div></div>
-  <div class="card"><h3>Auth failures</h3><div id="t-auth"></div></div>
-  <div class="card"><h3>Successful logins</h3><div id="t-auth-ok"></div></div>
-  <div class="card" data-src="unbound"><h3>DNS top domains</h3><div id="t-dns"></div></div>
-  <div class="card" data-src="unbound"><h3>DNS blocked</h3><div id="t-dns-blocked"></div></div>
-  <div class="card" data-src="unbound"><h3>DNS clients</h3><div id="t-dns-clients"></div></div>
-  <div class="card" data-src="nginx"><h3>Web (nginx) responses<span id="sort-web"></span></h3><div class="chart-box sm"><canvas id="c-web"></canvas></div></div>
-  <div class="card" data-src="nginx"><h3>Web attack patterns</h3><div id="t-web-tags"></div></div>
-  <div class="card" data-src="nginx"><h3>Web top clients</h3><div id="t-web-clients"></div></div>
-  <div class="card" data-src="suricata"><h3>IDS (Suricata) signatures</h3><div id="t-ids"></div></div>
-  <div class="card" data-src="crowdsec"><h3>CrowdSec scenarios</h3><div id="t-cs"></div></div>
-  <div class="card" data-src="qfeeds"><h3>Q-Feeds threat-intel hits</h3><div id="t-qf"></div></div>
-  <div class="card" data-src="zenarmor"><h3>Zenarmor</h3><div id="t-zen"></div></div>
-  <div class="card"><h3>Internal top talkers</h3><div id="t-talkers"></div></div>
-  <div class="card"><h3>New devices</h3><div id="t-devices"></div></div>
-</div>
+<div class="grid g3 widgets" id="widgets"></div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 let hours = Number(localStorage.getItem("lg-hours") || 24);
+
+/* ---------------- widgets: what the overview can show (default order / size = the default layout) ---------------- */
+// body: "kpis", "chart" (canvas c-<el>), "table" (div t-<el>) or "html" (div <el>); src: optional source (hidden when off)
+const WIDGETS = [
+  { id: "kpis", title: "Key figures", w: 3, body: "kpis", el: "kpis" },
+  { id: "timeline", title: "Events over time", w: 2, body: "chart", el: "timeline" },
+  { id: "sources", title: "Events by source", w: 1, body: "chart", el: "sources", sort: "sources" },
+  { id: "alerts", title: "Open alerts", w: 3, body: "table", el: "alerts", link: ["/alerts", "all alerts →"] },
+  { id: "sys", title: "Firewall system", w: 1, body: "html", el: "sys", optional: true },
+  { id: "blocked-src", title: "Top blocked sources", w: 1, body: "table", el: "blocked-src" },
+  { id: "blocked-ports", title: "Top blocked ports", w: 1, body: "table", el: "blocked-ports" },
+  { id: "countries", title: "Blocked by country", w: 1, body: "table", el: "countries" },
+  { id: "pass-in", title: "Allowed inbound from internet", w: 1, body: "table", el: "pass-in" },
+  { id: "auth", title: "Auth failures", w: 1, body: "table", el: "auth" },
+  { id: "auth-ok", title: "Successful logins", w: 1, body: "table", el: "auth-ok" },
+  { id: "dns", title: "DNS top domains", w: 1, body: "table", el: "dns", src: "unbound" },
+  { id: "dns-blocked", title: "DNS blocked", w: 1, body: "table", el: "dns-blocked", src: "unbound" },
+  { id: "dns-clients", title: "DNS clients", w: 1, body: "table", el: "dns-clients", src: "unbound" },
+  { id: "web", title: "Web (nginx) responses", w: 1, body: "chart", el: "web", src: "nginx", sort: "web", small: true },
+  { id: "web-tags", title: "Web attack patterns", w: 1, body: "table", el: "web-tags", src: "nginx" },
+  { id: "web-clients", title: "Web top clients", w: 1, body: "table", el: "web-clients", src: "nginx" },
+  { id: "ids", title: "IDS (Suricata) signatures", w: 1, body: "table", el: "ids", src: "suricata" },
+  { id: "cs", title: "CrowdSec scenarios", w: 1, body: "table", el: "cs", src: "crowdsec" },
+  { id: "qf", title: "Q-Feeds threat-intel hits", w: 1, body: "table", el: "qf", src: "qfeeds" },
+  { id: "zen", title: "Zenarmor", w: 1, body: "table", el: "zen", src: "zenarmor" },
+  { id: "talkers", title: "Internal top talkers", w: 1, body: "table", el: "talkers" },
+  { id: "devices", title: "New devices", w: 1, body: "table", el: "devices" },
+];
+const BY_ID = Object.fromEntries(WIDGETS.map(w => [w.id, w]));
+const DEFAULT_LAYOUT = WIDGETS.filter(w => !w.optional).map(w => ({ id: w.id, w: w.w, h: 1 }));
+let layout = DEFAULT_LAYOUT, saved = null, editing = false, srcOn = {};
+
+function cleanLayout(l) {
+  const seen = new Set();
+  return (Array.isArray(l) ? l : []).filter(x => x && BY_ID[x.id] && !seen.has(x.id) && seen.add(x.id))
+    .map(x => ({ id: x.id, w: Math.min(3, Math.max(1, Number(x.w) || 1)), h: Number(x.h) === 2 ? 2 : 1 }));
+}
+function body(def) {
+  if (def.body === "kpis") return `<div class="grid kpis" id="kpis"></div>`;
+  if (def.body === "chart") return `<div class="chart-box${def.small ? " sm" : ""}"><canvas id="c-${def.el}"></canvas></div>`;
+  return `<div id="${def.body === "table" ? "t-" : ""}${def.el}"></div>`;
+}
+function build() {
+  const grid = document.getElementById("widgets");
+  grid.classList.toggle("editing", editing);
+  grid.innerHTML = layout.map((it, i) => {
+    const def = BY_ID[it.id];
+    const tools = editing ? `<span class="w-tools">
+        <button type="button" data-act="left" title="Move left / up" ${i === 0 ? "disabled" : ""}>◀</button>
+        <button type="button" data-act="right" title="Move right / down" ${i === layout.length - 1 ? "disabled" : ""}>▶</button>
+        <button type="button" data-act="width" title="Width: ⅓, ⅔ or the whole row">↔ ${it.w}/3</button>
+        <button type="button" data-act="height" title="Height: normal or tall">↕ ${it.h === 2 ? "tall" : "normal"}</button>
+        <button type="button" data-act="remove" title="Remove this widget">✕</button></span>` : "";
+    const head = def.body === "kpis" && !editing ? "" :
+      `<h3>${editing ? `<span class="w-grip" title="Drag to move">⠿</span>` : ""}${LG.esc(def.title)}${def.sort ? `<span data-sort-slot="${def.sort}"></span>` : ""}` +
+      `<span class="sp"></span>${def.link && !editing ? `<a href="${def.link[0]}" class="small">${def.link[1]}</a>` : ""}${tools}</h3>`;
+    const cls = ["card", "widget", it.w === 3 ? "span3" : it.w === 2 ? "span2" : "", it.h === 2 ? "tall" : "", def.body === "kpis" && !editing ? "bare" : ""].join(" ");
+    return `<div class="${cls}" data-wid="${it.id}" ${def.src ? `data-src="${def.src}"` : ""} ${editing ? 'draggable="true"' : ""}>${head}${body(def)}</div>`;
+  }).join("");
+  grid.querySelectorAll("[data-sort-slot]").forEach(slot => slot.replaceWith({ sources: sortSources, web: sortWeb }[slot.dataset.sortSlot].el));
+  applySources();
+  if (editing) wireEditing(grid);
+  // the add-widget list: everything not on the page
+  document.getElementById("add-widget").innerHTML = `<option value="">+ Add widget…</option>` +
+    WIDGETS.filter(w => !layout.some(x => x.id === w.id)).map(w => `<option value="${w.id}">${LG.esc(w.title)}</option>`).join("");
+  if (last) render(last);
+}
+function applySources() {
+  // widgets of optional sources that are switched off (Settings › OPNsense) and sent nothing are hidden (not in edit mode)
+  document.querySelectorAll("#widgets [data-src]").forEach(c => c.hidden = !editing && srcOn[c.dataset.src] === false);
+}
+function wireEditing(grid) {
+  grid.querySelectorAll("[data-act]").forEach(b => b.onclick = e => {
+    const id = b.closest("[data-wid]").dataset.wid, i = layout.findIndex(x => x.id === id), it = layout[i];
+    const act = b.dataset.act;
+    if (act === "left" && i > 0) [layout[i - 1], layout[i]] = [layout[i], layout[i - 1]];
+    if (act === "right" && i < layout.length - 1) [layout[i + 1], layout[i]] = [layout[i], layout[i + 1]];
+    if (act === "width") it.w = it.w % 3 + 1;
+    if (act === "height") it.h = it.h === 2 ? 1 : 2;
+    if (act === "remove") layout.splice(i, 1);
+    build();
+  });
+  let dragged = null;
+  grid.querySelectorAll("[data-wid]").forEach(card => {
+    card.ondragstart = e => { dragged = card.dataset.wid; card.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; };
+    card.ondragend = () => { card.classList.remove("dragging"); grid.querySelectorAll(".drop-before,.drop-after").forEach(c => c.classList.remove("drop-before", "drop-after")); };
+    card.ondragover = e => {
+      if (!dragged || dragged === card.dataset.wid) return;
+      e.preventDefault();
+      const r = card.getBoundingClientRect(), after = e.clientX > r.left + r.width / 2;
+      card.classList.toggle("drop-after", after); card.classList.toggle("drop-before", !after);
+    };
+    card.ondragleave = () => card.classList.remove("drop-before", "drop-after");
+    card.ondrop = e => {
+      e.preventDefault();
+      const after = card.classList.contains("drop-after");
+      const from = layout.findIndex(x => x.id === dragged), item = layout.splice(from, 1)[0];
+      let to = layout.findIndex(x => x.id === card.dataset.wid) + (after ? 1 : 0);
+      layout.splice(to, 0, item);
+      dragged = null;
+      build();
+    };
+  });
+}
+function setEditing(on) {
+  editing = on;
+  document.getElementById("layout-bar").hidden = !on;
+  document.getElementById("customize").hidden = on;
+  build();
+}
+document.getElementById("customize").onclick = () => { saved = JSON.parse(JSON.stringify(layout)); setEditing(true); };
+document.getElementById("layout-cancel").onclick = () => { layout = saved || layout; setEditing(false); };
+document.getElementById("layout-reset").onclick = () => { layout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT)); build(); };
+document.getElementById("add-widget").onchange = e => {
+  const def = BY_ID[e.target.value];
+  if (def) layout.push({ id: def.id, w: def.w, h: 1 });
+  build();
+};
+document.getElementById("layout-save").onclick = async () => {
+  try {
+    const isDefault = JSON.stringify(layout) === JSON.stringify(DEFAULT_LAYOUT);
+    if (isDefault) await LG.api("/api/layout/overview", { method: "DELETE" });  // follow future default changes
+    else await LG.api("/api/layout/overview", { method: "PUT", body: { layout } });
+  } catch (err) { alert("Saving the layout failed: " + err.message); return; }
+  setEditing(false);
+};
 LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours", v); load(); });
 
 function kpi(label, value, cls = "") { return `<div class="card kpi ${cls}"><div class="v">${value}</div><div class="l">${LG.esc(label)}</div></div>`; }
@@ -52,6 +157,7 @@ const cnt = (v, r) => LG.num(v);
 const SEV_RANK = ["info", "low", "medium", "high", "critical"];
 // every table: click a header to sort; the rows arrive sorted by their count ("n"), which is marked
 function T(sel, cols, rows, empty, order) {
+  if (!document.querySelector(sel)) return;  // widget not on the page
   cols = cols.map(c => ({ ...c, l: c.l || (c.f === LG.flag ? "Country" : ""), desc: c.f === LG.ago || c.f === LG.time,
                           ...(c.f === LG.sev ? { s: r => SEV_RANK.indexOf(r.severity), desc: true } : {}) }));
   LG.table(sel, cols, rows, empty, undefined, { sortAll: true, order: order === undefined ? (cols.some(c => c.k === "n") ? { k: "n", dir: -1 } : null) : order });
@@ -60,8 +166,6 @@ function T(sel, cols, rows, empty, order) {
 let last = null;
 const sortSources = LG.sortToggle("overview:sources", () => last && drawSources(last.report));
 const sortWeb = LG.sortToggle("overview:web", () => last && drawWeb(last.report));
-document.getElementById("sort-sources").replaceWith(sortSources.el);
-document.getElementById("sort-web").replaceWith(sortWeb.el);
 function drawSources(r) {
   const tot = LG.sortRows(r.totals_by_source.map(x => ({ label: x.source, v: x.n })), sortSources.mode());
   LG.chart("c-sources", { type: "doughnut", data: { labels: tot.map(x => x.label),
@@ -75,16 +179,21 @@ function drawWeb(r) {
     options: { maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } } } });
 }
 
+const $ = id => document.getElementById(id);
 async function load() {
   let d;
   try { d = await LG.api(`/api/overview?hours=${hours}`); }
-  catch (e) { document.getElementById("kpis").innerHTML = `<div class="card">Failed to load: ${LG.esc(e.message)}</div>`; return; }
+  catch (e) { document.getElementById("updated").textContent = "Failed to load: " + e.message; return; }
+  last = d;
+  render(d);
+}
+function render(d) {
   const k = d.kpi, oa = k.open_alerts || {}, on = d.sources || {};
-  // cards of optional sources that are switched off (Settings › OPNsense) and sent nothing in this period
-  document.querySelectorAll("[data-src]").forEach(c => c.hidden = on[c.dataset.src] === false);
+  srcOn = on;
+  applySources();
   const crit = (oa.critical || 0) + (oa.high || 0);
   const openTotal = Object.values(oa).reduce((a, b) => a + b, 0);
-  document.getElementById("kpis").innerHTML =
+  if ($("kpis")) $("kpis").innerHTML =
     kpi("Events", LG.num(k.total)) +
     kpi("Blocked", LG.num(k.blocked), k.blocked ? "warn" : "") +
     kpi("Blocked IPs", LG.num(k.blocked_ips)) +
@@ -108,7 +217,6 @@ async function load() {
   const labels = buckets.map(b => { const t = new Date(b); return hours > 48 ? t.toLocaleDateString(undefined, {month: "short", day: "2-digit"}) + " " + t.getHours() + "h" : t.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); });
   LG.chart("c-timeline", { type: "bar", data: { labels, datasets: ds },
     options: { maintainAspectRatio: false, animation: false, scales: { x: { stacked: true, ticks: { maxTicksLimit: 12 } }, y: { stacked: true } }, plugins: { legend: { position: "bottom", labels: { boxWidth: 10 } } } } });
-  last = d;
   drawSources(d.report);
 
   const r = d.report;
@@ -139,7 +247,8 @@ async function load() {
   const memPct = mem.total ? Math.round(mem.used / mem.total * 100) : null;
   const statePct = st.limit ? Math.round(st.current / st.limit * 100) : null;
   const bar = p => p === null ? "" : `<div class="bar ${p > 90 ? "bad" : p > 75 ? "warn" : ""}"><i style="width:${p}%"></i></div>`;
-  document.getElementById("sys").innerHTML = s.resources ? `
+  if (!$("sys")) return;
+  $("sys").innerHTML = s.resources ? `
     <div class="kv">
       <div>Host</div><div>${LG.esc(info.name || "")}</div>
       <div>Version</div><div>${LG.esc((info.versions || []).join(" · "))}</div>
@@ -150,7 +259,12 @@ async function load() {
       <div>Gateways</div><div>${gws.map(g => `<span class="dot ${/online|none/i.test(g.status_translated || g.status) ? "ok" : "bad"}"></span>${LG.esc(g.name)} ${LG.esc(g.delay || "")}`).join("<br>") || "–"}</div>
     </div>` : `<div class="empty">No OPNsense API data yet. Enter the OPNsense URL and API key under <a href="/settings#opnsense">Settings › OPNsense</a>.</div>`;
 }
-load();
-setInterval(load, 60000);
+(async () => {
+  try { layout = cleanLayout((await LG.api("/api/layout/overview")).layout) ; } catch (e) { layout = []; }
+  if (!layout.length) layout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
+  build();
+  load();
+})();
+setInterval(() => { if (!editing) load(); }, 60000);
 </script>
 {% endblock %}
