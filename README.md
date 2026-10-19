@@ -40,6 +40,24 @@ outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), 
 offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, gateway down, resources
 (disk/memory/states) high, stopped services, firmware updates available and "logs stopped arriving" (possible tampering).
 
+**Logins on all systems**: OPNsense (web GUI, SSH, API, VPN), **Unraid** (web GUI and SSH, from its syslog) and the
+**UniFi controller** (admin logins with their address) all feed the same login rules: brute force, password spraying,
+login after failures, logins from the internet and logins from a new country. Alert titles say which system was hit
+("Brute force against Tower (webGUI)"). The UniFi Network application does not report *failed* admin logins.
+
+**Correlation rules** (inspired by RITA / Zeek beacon analysis, Sigma rules and MITRE ATT&CK):
+
+| Rule | What it finds |
+|---|---|
+| Password spraying | one address trying 5+ usernames in an hour (T1110.003) |
+| Distributed brute force | one username attacked from 10+ addresses (botnet); critical if one of them then logs in |
+| Login from a new country / impossible travel | a user logging in from a country never seen in 90 days, or two countries within 2 h (needs GeoIP) |
+| Beaconing | a device contacting a domain / address nobody else uses at a near-constant rhythm for hours - malware check-ins (T1071) |
+| Lateral movement | one device reaching SSH / SMB / RDP / WinRM / VNC / Docker API on 5+ internal hosts in 15 min (T1021) |
+| DNS bypass | devices using DNS servers on the internet directly, past your resolver and blocklists |
+| Unusual upload | 1 GB+ sent to the internet in an hour and 5× more than the device's 7-day average (Zenarmor; T1048) |
+| Attack chain | ties alerts about one address together: outside *recon → attack → access*, or inside *threat sign → command & control → spreading* (plus "new device"); high or critical |
+
 *DGA domains* are random-looking names such as `kq3v9x7w2m8p4z1r.com`, which malware generates by the thousands
 (Domain Generation Algorithm) to find its control server. Some CDNs and latency probes use random names too: list
 those under *Settings › Data & detection › DNS: domains to ignore* (subdomains included) and the DNS checks skip them.

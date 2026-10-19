@@ -345,6 +345,10 @@ AUTH_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"uri \S+ authentication failed for api key (?P<user>\S+)", re.I), "login_failed", "auth"),
     (re.compile(r"Web GUI authentication error for '?(?P<user>[^' ]*)'? from (?P<ip>[0-9a-fA-F:.]+)", re.I), "login_failed", "auth"),
     (re.compile(r"Successful login for user '?(?P<user>[^' ]*)'? from:? (?P<ip>[0-9a-fA-F:.]+)", re.I), "login_success", "auth"),
+    # Unraid web GUI (emhttp .login.php): "Successful login user root from 192.168.1.5",
+    # "Unsuccessful login user root from 192.168.1.5. Ignoring login attempts for 900 seconds."
+    (re.compile(r"^Successful login user (?P<user>\S+) from (?P<ip>\d+\.\d+\.\d+\.\d+|[0-9a-fA-F:]+)"), "login_success", "auth"),
+    (re.compile(r"^Unsuccessful login user (?P<user>\S*) from (?P<ip>\d+\.\d+\.\d+\.\d+|[0-9a-fA-F:]+)"), "login_failed", "auth"),
     (re.compile(r"Failed (?:password|publickey|keyboard-interactive/pam|none) for (?:invalid user )?(?P<user>\S+) from (?P<ip>[0-9a-fA-F:.]+)"), "login_failed", "auth"),
     (re.compile(r"Invalid user (?P<user>\S*) from (?P<ip>[0-9a-fA-F:.]+)"), "login_failed", "auth"),
     (re.compile(r"(?:error: )?maximum authentication attempts exceeded for (?:invalid user )?(?P<user>\S+) from (?P<ip>[0-9a-fA-F:.]+)", re.I), "login_failed", "auth"),

@@ -63,7 +63,7 @@ EVENT_KEYS = {
     "EVT_AP_ChannelChanged": ("channel_change", 6),
     "EVT_SW_PoeDisconnect": ("poe_disconnect", 4), "EVT_SW_PoeOverload": ("poe_overload", 3),
     "EVT_SW_Overheat": ("overheat", 3), "EVT_SW_StpPortBlocking": ("stp_blocking", 4),
-    "EVT_AD_Login": ("admin_login", 5), "EVT_IPS_IpsAlert": ("ips_alert", 2),
+    "EVT_AD_Login": ("login_success", 5), "EVT_IPS_IpsAlert": ("ips_alert", 2),
 }
 
 
@@ -198,8 +198,10 @@ def event_from_legacy(e: dict[str, Any], site: str) -> dict[str, Any]:
                                   "bytes", "admin", "version_from", "version_to") if e.get(k) not in (None, "")}
     if mac:
         data["mac"] = mac
+    # admin logins carry the client address ("ip"): the login rules (brute force, external login) use it
+    src = ip_or_none(e.get("ip")) if action in ("login_success", "login_failed") else None
     return event(_ts(e.get("time") or e.get("datetime")), "unifi", host="unifi", program="unifi", severity=sev,
-                 action=action, message=str(e.get("msg") or key)[:2000], username=e.get("admin") or None,
+                 action=action, src_ip=src, message=str(e.get("msg") or key)[:2000], username=e.get("admin") or None,
                  domain=e.get("ssid") or None, data=data, uid=f"unifi:{site}:{e.get('_id') or e.get('time')}:{key}")
 
 
@@ -207,7 +209,8 @@ SYSLOG_ACTIONS = (("connected", "client_connect"), ("disconnected", "client_disc
                   ("offline", "device_offline"), ("lost contact", "device_offline"), ("adopted", "device_online"),
                   ("online", "device_online"), ("restart", "device_restart"), ("rogue", "rogue_ap"),
                   ("blocked", "client_blocked"), ("threat", "ips_alert"), ("honeypot", "ips_alert"),
-                  ("login", "admin_login"), ("poe", "poe_disconnect"))
+                  ("login fail", "login_failed"), ("failed login", "login_failed"), ("login_fail", "login_failed"),
+                  ("login", "login_success"), ("poe", "poe_disconnect"))
 
 
 def event_from_system_log(e: dict[str, Any], site: str) -> dict[str, Any]:

@@ -342,7 +342,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
              "cols": [["ts", "Time", "time"], ["action", "Event"], ["message", "Message"]],
              "sql": f"SELECT ts, action, left(message, 200) message FROM events WHERE source = 'unifi' AND action IN ('device_offline', "
                     f"'device_online', 'device_restart', 'device_isolated', 'device_upgraded', 'poe_disconnect', 'poe_overload', 'overheat', "
-                    f"'stp_blocking', 'rogue_ap', 'rogue_dhcp', 'ips_alert', 'admin_login') AND {W} ORDER BY ts DESC LIMIT 50"},
+                    f"'stp_blocking', 'rogue_ap', 'rogue_dhcp', 'ips_alert', 'admin_login', 'login_success', 'login_failed') AND {W} ORDER BY ts DESC LIMIT 50"},
             {"id": "air", "title": "Foreign APs using your Wi-Fi names", "type": "table", "drill": {"url": "/unifi#air"},
              "cols": [["essid", "Wi-Fi name"], ["bssid", "BSSID"], ["signal", "Signal", "num"], ["heard_by", "Heard by"]],
              "sql": "SELECT r->>'essid' essid, r->>'bssid' bssid, (r->>'signal')::numeric signal, r->>'heard_by' heard_by "

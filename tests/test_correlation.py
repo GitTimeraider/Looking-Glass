@@ -1,0 +1,105 @@
+import asyncio
+import os
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from lookingglass import db
+from lookingglass.config import Settings
+from lookingglass.detections import DetectionEngine, login_target
+from lookingglass.parsers import parse_line
+from lookingglass.parsers.common import event
+
+DSN = os.environ.get("TEST_DATABASE_URL")
+NOW = datetime.now(timezone.utc)
+
+
+def test_unraid_and_unifi_logins_are_parsed():
+    ok = parse_line("<14>Oct 19 14:05:09 Tower webGUI: Successful login user root from 192.168.1.5", sender="x",
+                    local_tz=timezone.utc)
+    bad = parse_line("<14>Oct 19 14:05:09 Tower webGUI: Unsuccessful login user admin from 203.0.113.9. Ignoring login "
+                     "attempts for 900 seconds.", sender="x", local_tz=timezone.utc)
+    assert (ok["action"], ok["username"], ok["src_ip"], ok["host"]) == ("login_success", "root", "192.168.1.5", "Tower")
+    assert (bad["action"], bad["src_ip"]) == ("login_failed", "203.0.113.9")
+    from lookingglass.unifi import event_from_legacy
+    e = event_from_legacy({"key": "EVT_AD_Login", "admin": "jan", "ip": "203.0.113.7", "time": 1760000000000,
+                           "msg": "Admin[jan] log in from 203.0.113.7"}, "default")
+    assert (e["action"], e["username"], e["src_ip"]) == ("login_success", "jan", "203.0.113.7")
+    assert login_target("unifi", "unifi") == "UniFi controller" and login_target("auth", "Tower", ["webGUI"]) == "Tower (webGUI)"
+
+
+def ev(source, minutes=1, **kw):
+    return event(NOW - timedelta(minutes=minutes), source, severity=5, **kw)
+
+
+async def alerts(pool, rule):
+    return [dict(r) for r in await pool.fetch("SELECT title, severity, host(src_ip) ip, data FROM alerts WHERE rule = $1", rule)]
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_correlation_rules():
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events, alerts, devices")
+            await pool.execute("DELETE FROM kv WHERE key LIKE 'wm:%'")
+            evs = []
+            # password spray: one address, 6 usernames, against Unraid
+            evs += [ev("auth", i, host="Tower", program="webGUI", action="login_failed", src_ip="203.0.113.20",
+                       username=f"user{i}") for i in range(6)]
+            # distributed brute force on 'admin' from 12 addresses, one of them then logs in
+            evs += [ev("auth", 5, host="opn", action="login_failed", src_ip=f"198.51.100.{i}", username="admin") for i in range(12)]
+            evs.append(ev("auth", 1, host="opn", action="login_success", src_ip="198.51.100.3", username="admin"))
+            # lateral movement: 192.168.1.50 hits SMB / SSH on 6 internal hosts
+            evs += [ev("firewall", 2, action="pass", src_ip="192.168.1.50", dst_ip=f"192.168.1.{100 + i}", dst_port=445)
+                    for i in range(6)]
+            # DNS bypass
+            evs.append(ev("firewall", 1, action="pass", src_ip="192.168.1.60", dst_ip="8.8.8.8", dst_port=53))
+            # beaconing: every 5 minutes for 3 hours to a domain nobody else uses
+            evs += [event(NOW - timedelta(minutes=5 * i), "unbound", severity=6, src_ip="192.168.1.50", domain="cdn-x7.badhost.example",
+                          action="pass") for i in range(36)]
+            await db.copy_events(evs)
+            # login from a new country: history NL, now two countries within an hour
+            await db.copy_events([event(NOW - timedelta(days=3), "vpn", severity=5, action="login_success", src_ip="203.0.113.80",
+                                        username="jan", src_country="NL")])
+            await db.kv_set("wm:login_geo", await pool.fetchval("SELECT max(id) FROM events"))
+            await db.copy_events([ev("vpn", 50, action="login_success", src_ip="203.0.113.81", username="jan", src_country="NL"),
+                                  ev("vpn", 1, action="login_success", src_ip="198.51.100.200", username="jan", src_country="BR")])
+
+            eng = DetectionEngine(Settings())
+            for rule in (eng.password_spray, eng.distributed_brute_force, eng.lateral_movement, eng.dns_bypass,
+                         eng.beaconing, eng.login_location):
+                await rule()
+
+            spray = await alerts(pool, "password_spray")
+            assert spray and spray[0]["ip"] == "203.0.113.20" and "6 usernames" in spray[0]["title"]
+            dist = await alerts(pool, "distributed_brute_force")
+            assert dist and dist[0]["severity"] == "critical" and dist[0]["ip"] == "198.51.100.3"
+            lat = await alerts(pool, "lateral_movement")
+            assert lat and lat[0]["severity"] == "high" and "SMB" in lat[0]["title"]  # medium + allowed
+            assert (await alerts(pool, "dns_bypass"))[0]["ip"] == "192.168.1.60"
+            beacon = await alerts(pool, "beaconing")
+            assert beacon and "every 5 min" in beacon[0]["title"]
+            geo = await alerts(pool, "login_new_location")
+            assert geo and geo[0]["severity"] == "high" and "Impossible travel" in geo[0]["title"]
+
+            # chain: 192.168.1.50 beacons (C2) and moves laterally (spreading) -> possibly compromised device
+            await eng.attack_chains()
+            chain = await alerts(pool, "attack_chain")
+            assert [c["ip"] for c in chain] == ["192.168.1.50"]
+            assert chain[0]["severity"] == "high" and chain[0]["data"]["stages"] == ["Command & control", "Spreading / theft"]
+            # outside -> in: scan, brute force, then a login from the same address = critical chain
+            await pool.execute("INSERT INTO alerts (rule, severity, title, fingerprint, src_ip) VALUES "
+                               "('port_scan', 'low', 's', 'c1', '203.0.113.99'), ('brute_force', 'medium', 'b', 'c2', '203.0.113.99'), "
+                               "('success_after_failures', 'critical', 'l', 'c3', '203.0.113.99'), "
+                               "('port_scan', 'low', 's', 'c4', '203.0.113.98'), ('brute_force', 'medium', 'b', 'c5', '203.0.113.98')")
+            await eng.attack_chains()
+            ext = {c["ip"]: c for c in await alerts(pool, "attack_chain")}
+            assert ext["203.0.113.99"]["severity"] == "critical" and ext["203.0.113.99"]["data"]["stages"] == ["Recon", "Attack", "Access"]
+            assert "203.0.113.98" not in ext  # never got in: noise
+            await pool.execute("TRUNCATE events, alerts, devices")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
