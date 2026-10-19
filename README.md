@@ -1,3 +1,9 @@
+<p align="center"><img src="https://github.com/GitTimeraider/Assets/blob/main/Looking-Glass/img/looking-glass.png?raw=true" alt="Looking-Glass" width="420"></p>
+
+#### Disclaimer: 
+While guided and checked, AI is responsible for half of the coding. Development is also 100% for own personal use, no promises.
+__________________________________
+
 # Looking Glass
 
 Self-hosted security monitoring for **OPNsense** (and your **Unraid** server). Looking Glass collects and stores the
