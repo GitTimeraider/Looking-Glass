@@ -227,3 +227,6 @@ details.card > summary { cursor: pointer; }
 }
 @media (prefers-reduced-motion: reduce) { nav.side { transition: none; } }
 @media print { .mbar, .scrim { display: none !important; } }
+.why { margin: 3px 0 2px; padding-left: 7px; border-left: 3px solid var(--border); color: var(--text); }
+.why.sev-critical { border-color: var(--crit); } .why.sev-high { border-color: var(--bad); }
+.why.sev-medium { border-color: var(--warn); } .why.sev-low { border-color: var(--accent); }

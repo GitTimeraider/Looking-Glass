@@ -25,7 +25,7 @@ import httpx
 
 from . import db
 from .config import Settings
-from .detections import raise_alert, track_devices
+from .detections import Rating, raise_alert, track_devices
 from .ingest import EventWriter
 from .parsers.common import event, ip_or_none, real_name
 
@@ -481,7 +481,9 @@ class UnifiPoller:
             prev = self.prev_state.get(d["mac"])
             self.prev_state[d["mac"]] = d["state"]
             if d["state"] in ("offline", "heartbeat missed", "isolated", "connection interrupted") and prev != d["state"]:
-                await raise_alert("unifi_device_offline", "medium", f"UniFi {d['kind']} {d['name']} is {d['state']}",
+                rating = Rating("high", "a switch is down - everything behind it is offline") if d["kind"] == "switch" else \
+                    Rating("medium", f"the clients on this {d['kind']} lose their connection (or roam to another AP)")
+                await raise_alert("unifi_device_offline", rating, f"UniFi {d['kind']} {d['name']} is {d['state']}",
                                   f"unifi_dev:{d['mac']}", description=f"{d['model']} {d['mac']} ({d.get('ip') or 'no IP'}) "
                                   f"reports state '{d['state']}'. Clients connected through it lose their connection.",
                                   data={"device": d["name"], "model": d["model"], "mac": d["mac"]},
@@ -503,7 +505,15 @@ class UnifiPoller:
                         "heard_by": next((d["name"] for d in devices if d["mac"] == (r.get("ap_mac") or "").lower()), r.get("ap_mac")),
                         "rogue": bool(r.get("is_rogue")), "evil_twin": twin, "last_seen": r.get("last_seen")})
             if twin:
-                await raise_alert("unifi_evil_twin", "high", f"Foreign access point broadcasts your Wi-Fi name '{essid}'",
+                signal = _num(r.get("signal") or r.get("rssi"))
+                open_net = str(r.get("security") or "").lower() in ("open", "none", "")
+                rating = Rating("medium", "a foreign access point uses one of your Wi-Fi names - often a neighbour with the "
+                                          "same name, sometimes an 'evil twin'")
+                if open_net:
+                    rating.up("it is an OPEN network - the classic trick to catch devices that auto-connect")
+                elif signal is not None and signal >= -70:
+                    rating.up(f"strong signal ({int(signal)} dBm): it is close by, likely on or next to your premises")
+                await raise_alert("unifi_evil_twin", rating, f"Foreign access point broadcasts your Wi-Fi name '{essid}'",
                                   f"unifi_twin:{bssid}",
                                   description=f"BSSID {bssid} ({r.get('oui') or 'unknown vendor'}, channel {r.get('channel')}, "
                                               f"signal {r.get('signal') or r.get('rssi')}) uses the SSID of one of your networks but "
@@ -548,7 +558,9 @@ class UnifiPoller:
             e["message"] = readable(e["message"], names)
             self.writer.put(e)
             if e["action"] == "rogue_dhcp":
-                await raise_alert("unifi_rogue_dhcp", "high", "Rogue DHCP server detected on your network",
+                await raise_alert("unifi_rogue_dhcp", Rating("high", "a second DHCP server can hand devices a wrong gateway / "
+                                                                     "DNS (man-in-the-middle) or break the network", sticky=True),
+                                  "Rogue DHCP server detected on your network",
                                   f"unifi_rdhcp:{e['data'].get('sw') or ''}", description=e["message"] +
                                   " - another device hands out IP addresses next to OPNsense. Devices that take its "
                                   "lease can get a wrong gateway / DNS (man-in-the-middle).", events={"source": "unifi", "action": "rogue_dhcp"})

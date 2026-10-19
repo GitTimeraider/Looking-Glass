@@ -34,6 +34,43 @@ outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), 
 offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, gateway down, resources
 (disk/memory/states) high, stopped services, firmware updates available and "logs stopped arriving" (possible tampering).
 
+### How severity is decided
+
+Every alert shows **"Why <severity>"**: the base reason and every step up (↑) or down (↓). The same four questions
+decide it for every rule:
+
+1. **Did anything get through?** Blocked traffic from the internet is background noise that every public IP gets.
+   Allowed connections, successful logins and attacks that got a 2xx/3xx answer are what matter.
+2. **Where does it come from?** The same behaviour from *inside* your network (a scan, password guessing, contact with a
+   malicious address) is worse than from the internet: it means a device of yours misbehaves.
+3. **Do other sources confirm it?** When the same IP also has IDS alerts, threat-intel (Q-Feeds) hits, Zenarmor threat
+   events or other open alerts in the last 24 hours, the alert goes up one or two steps. Alerts built from the same
+   events (e.g. a brute force and the login after it) don't count as confirmation for each other.
+4. **How reliable is the signal?** Size is not severity: a scan of 400 ports is still a scan.
+
+| Situation | Severity |
+|---|---|
+| Port scan / host sweep from the internet (any size) | low - reaching an open port you host is only a note; **high** if the scanner logged in |
+| Port scan / host sweep from inside | medium, up to high / critical when other sources confirm |
+| Password guessing from the internet / from inside | medium / high |
+| Login succeeded after failures: from the internet / from inside (5+ failures) / from inside (few failures, typos) | critical / high / medium |
+| Admin (GUI / SSH / API) login from the internet / VPN login from the internet / any login from inside | high / low / info |
+| Web attack: RCE / SQLi, path traversal / sensitive file, scanner signatures | medium, low, info - one step up if a request got a successful response or comes from inside |
+| Web scanning (many 4xx) from the internet / from inside | low / medium |
+| IDS | Suricata's priority (1 = critical … 4 = low), one step down when IPS mode dropped it, up when confirmed |
+| CrowdSec decision for an internet IP / for an internal IP | low (it is handled) / high |
+| Internal device contacted a threat-intel address / internet address of a threat list probes you | high, critical when confirmed / info |
+| Zenarmor malware / C2 / phishing: blocked / NOT blocked; other categories: blocked / not blocked | high / critical; low / medium |
+| DNS tunneling, DGA names, NXDOMAIN storm | high, medium, low - each up when confirmed |
+| Malicious domain looked up (blocked): 1-2 domains / 3+ | medium / high, up when confirmed |
+| Suspicious outbound port (Tor, IRC, RDP, SMB, mining…) blocked / allowed | low / medium, up when confirmed |
+| Gateway down / degraded, security service stopped / other service stopped, logs stopped | high / low, medium / low, medium |
+| UniFi: switch offline / AP offline, foreign AP with your Wi-Fi name (open or strong signal: up), rogue DHCP | high / medium, medium-high, high |
+| New device | low |
+
+Severities of rules that look at a time window (scans, brute force, DNS) are re-evaluated on every run, so they can
+go down again when the confirming evidence is older than 24 hours; rules that react to new events only ever go up.
+
 ---
 
 ## Installation

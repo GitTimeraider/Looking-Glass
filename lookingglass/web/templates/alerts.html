@@ -29,6 +29,12 @@ function eventsUrl(a) {
   const end = new Date(new Date(a.last_seen).getTime() + 5 * 60000).toISOString();
   return LG.drillUrl({ ...f, start, end });
 }
+// why the alert has its severity (detections.Rating); the same text is kept out of the description
+function why(a) {
+  const w = (a.data || {}).severity_why;
+  return w && w.length ? `<div class="small why sev-${LG.esc(a.severity)}"><b>Why ${LG.esc(a.severity)}:</b> ${w.map(LG.esc).join(" · ")}</div>` : "";
+}
+const desc = a => (a.description || "").replace(/(^|\n\n)Severity (info|low|medium|high|critical): [^\n]*/, "").trim();
 function device(a) {
   const d = (a.data || {}).device;
   if (!d) return "";
@@ -43,7 +49,7 @@ function render() {
   el.innerHTML = `<div class="table-wrap tall"><table><thead><tr><th></th><th>Sev</th><th>Alert</th><th>Rule</th><th>Source</th><th class="num">Count</th><th>First</th><th>Last</th><th>Status</th><th></th></tr></thead><tbody>` +
     rows.map(a => `<tr id="a${a.id}">
       <td><input type="checkbox" value="${a.id}"></td><td>${LG.sev(a.severity)}</td>
-      <td><b>${LG.esc(a.title)}</b><div class="small muted">${LG.esc(a.description || "")}</div></td>
+      <td><b>${LG.esc(a.title)}</b>${why(a)}<div class="small muted">${LG.esc(desc(a))}</div></td>
       <td class="small">${LG.esc(a.rule)}</td><td>${a.src_ip ? LG.ip(a.src_ip) : `<span class="muted">–</span>`}${device(a)}</td><td class="num">${LG.num(a.count)}</td>
       <td class="small">${LG.time(a.created_at)}</td><td class="small">${LG.ago(a.last_seen)}</td><td class="small">${LG.esc(a.status)}</td>
       <td style="white-space:nowrap">${eventsUrl(a) ? `<a class="btn secondary small" href="${eventsUrl(a)}">Events</a> ` : ""}{% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do.`)}">Ask AI</a>{% endif %}</td>
