@@ -50,7 +50,7 @@ FIELDS: list[Field] = [
           "Off accepts OPNsense's self-signed certificate. On requires a trusted certificate or the CA below."),
     Field("opnsense_ca_pem", "opnsense", "Custom CA certificate (PEM)", "text",
           "Optional: paste the CA that signed the OPNsense GUI certificate (System › Trust › Authorities › download)."),
-    Field("poll_interval", "opnsense", "Poll interval (seconds)", "int", "How often system state and metrics are pulled.", min=15, max=3600),
+    Field("poll_interval", "opnsense", "Poll interval (seconds)", "int", "How often system state and metrics are pulled from OPNsense and Unraid (logs, leases, firmware etc. have their own fixed intervals).", min=15, max=3600),
     Field("firewall_log_pull", "opnsense", "Pull firewall log via API", "choice",
           "auto = only when no filterlog arrives via syslog.", choices=("auto", "always", "never")),
     Field("unbound_query_pull", "opnsense", "Pull Unbound DNS queries", "bool", "Needs Reporting › Settings › Unbound DNS statistics."),

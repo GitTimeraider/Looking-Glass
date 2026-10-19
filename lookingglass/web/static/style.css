@@ -50,6 +50,9 @@ tr:hover td { background: var(--panel2); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .table-wrap { overflow: auto; max-height: 420px; }
 .table-wrap.tall { max-height: none; }
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; } th.sortable:hover { color: var(--text); }
+th.sortable .arrow { font-size: 10px; margin-left: 4px; }
+#containers .table-wrap { max-height: none; } #containers td { padding-top: 5px; padding-bottom: 5px; }
 td.msg { font-family: var(--mono); font-size: 12px; word-break: break-word; }
 tr.detail td { background: var(--bg); }
 .empty { color: var(--muted); padding: 10px 0; font-style: italic; }
@@ -90,8 +93,16 @@ button:disabled { opacity: .5; cursor: wait; }
 .chat { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 14px; height: calc(100vh - 110px); }
 @media (max-width: 900px) { .chat { grid-template-columns: minmax(0, 1fr); height: auto; } }
 .chat .list { overflow: auto; }
-.chat .list a { display: block; padding: 6px 8px; border-radius: 6px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.chat .list a.active, .chat .list a:hover { background: var(--panel2); text-decoration: none; }
+.chat-tools { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+.chat-tools > button:first-child { flex: 1; } .chat-tools label { flex: 1; display: flex; gap: 6px; align-items: center; }
+.chat-item { display: flex; align-items: center; gap: 6px; padding: 0 4px 0 8px; border-radius: 6px; }
+.chat-item a { flex: 1; min-width: 0; display: block; padding: 6px 0; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-item a:hover { text-decoration: none; }
+.chat-item.active, .chat-item:hover { background: var(--panel2); }
+.chat-item .del { visibility: hidden; color: var(--muted); padding: 2px 6px; background: none; border: none; }
+.chat-item:hover .del, .chat-item.active .del { visibility: visible; }
+.chat-item .del:hover { color: var(--bad); }
+@media (hover: none) { .chat-item .del { visibility: visible; } }
 .chat .conv { display: flex; flex-direction: column; min-height: 0; }
 .msgs { flex: 1; overflow: auto; padding-right: 6px; min-height: 300px; }
 .msg { margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border); overflow-wrap: anywhere; }

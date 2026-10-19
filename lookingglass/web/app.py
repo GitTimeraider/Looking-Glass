@@ -366,6 +366,16 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         await db.pool().execute("DELETE FROM ai_chats WHERE id = $1", chat_id)
         return {"ok": True}
 
+    @app.post("/api/ai/chats/delete")
+    async def delete_chats(payload: dict = Body(...)):
+        try:
+            ids = [int(i) for i in payload.get("ids") or []]
+        except (TypeError, ValueError):
+            raise HTTPException(400, "ids must be a list of chat ids")
+        deleted = await db.pool().fetchval(
+            "WITH d AS (DELETE FROM ai_chats WHERE id = ANY($1::bigint[]) RETURNING 1) SELECT count(*) FROM d", ids)
+        return {"ok": True, "deleted": deleted}
+
     @app.post("/api/ai/message")
     async def ai_message(payload: dict = Body(...)):
         text = str(payload.get("text", "")).strip()

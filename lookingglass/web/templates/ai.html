@@ -9,7 +9,14 @@
 <div class="card">The AI analyst is not configured yet. Enter the API key (and optionally base URL / model) under <a href="/settings#ai">Settings › AI analyst</a>.</div>
 {% else %}
 <div class="chat">
-  <div class="card list"><button style="width:100%;margin-bottom:8px" id="new">+ New chat</button><div id="chats"></div></div>
+  <div class="card list">
+    <div class="chat-tools"><button id="new">+ New chat</button><button class="secondary" id="select" title="Select chats to delete">Select</button></div>
+    <div class="chat-tools" id="sel-tools" hidden>
+      <label class="small"><input type="checkbox" id="sel-all"> all</label>
+      <button class="danger" id="del-sel" disabled>Delete</button>
+    </div>
+    <div id="chats"></div>
+  </div>
   <div class="card conv">
     <div class="presets" id="presets"></div>
     <div class="msgs" id="msgs"></div>
@@ -52,11 +59,53 @@ function renderMessages(msgs) {
   }).join("");
   msgsEl.scrollTop = msgsEl.scrollHeight;
 }
+let selecting = false, chatList = [];
+const picked = new Set();
 async function loadChats() {
-  const chats = await LG.api("/api/ai/chats");
-  document.getElementById("chats").innerHTML = chats.map(c => `<a href="#" data-id="${c.id}" class="${c.id === chatId ? "active" : ""}" title="${LG.esc(c.title)}">${LG.esc(c.title)}</a>`).join("") || `<div class="empty small">No chats yet</div>`;
-  document.querySelectorAll("#chats a").forEach(a => a.onclick = async e => { e.preventDefault(); await openChat(Number(a.dataset.id)); });
+  chatList = await LG.api("/api/ai/chats");
+  for (const id of [...picked]) if (!chatList.some(c => c.id === id)) picked.delete(id);
+  renderChats();
 }
+function renderChats() {
+  document.getElementById("chats").innerHTML = chatList.map(c => `<div class="chat-item ${c.id === chatId ? "active" : ""}">` +
+    (selecting ? `<input type="checkbox" data-pick="${c.id}" ${picked.has(c.id) ? "checked" : ""}>` : "") +
+    `<a href="#" data-id="${c.id}" title="${LG.esc(c.title)}">${LG.esc(c.title)}</a>` +
+    `<button class="del" data-del="${c.id}" title="Delete this chat">✕</button></div>`).join("") || `<div class="empty small">No chats yet</div>`;
+  document.querySelectorAll("#chats a").forEach(a => a.onclick = async e => {
+    e.preventDefault();
+    if (selecting) { togglePick(Number(a.dataset.id)); return; }
+    await openChat(Number(a.dataset.id));
+  });
+  document.querySelectorAll("[data-pick]").forEach(c => c.onchange = () => togglePick(Number(c.dataset.pick)));
+  document.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    const c = chatList.find(x => x.id === Number(b.dataset.del));
+    if (confirm(`Delete the chat "${c ? c.title : ""}"?`)) await deleteChats([Number(b.dataset.del)]);
+  });
+  const all = document.getElementById("sel-all");
+  all.checked = chatList.length > 0 && picked.size === chatList.length;
+  all.indeterminate = picked.size > 0 && picked.size < chatList.length;
+  const del = document.getElementById("del-sel");
+  del.disabled = !picked.size; del.textContent = picked.size ? `Delete ${picked.size}` : "Delete";
+}
+function togglePick(id) { picked.has(id) ? picked.delete(id) : picked.add(id); renderChats(); }
+async function deleteChats(ids) {
+  await LG.api("/api/ai/chats/delete", { method: "POST", body: { ids } });
+  ids.forEach(id => picked.delete(id));
+  if (ids.includes(chatId)) { chatId = null; convo = []; renderMessages([]); }
+  await loadChats();
+}
+document.getElementById("select").onclick = () => {
+  selecting = !selecting; picked.clear();
+  document.getElementById("select").textContent = selecting ? "Done" : "Select";
+  document.getElementById("sel-tools").hidden = !selecting;
+  renderChats();
+};
+document.getElementById("sel-all").onchange = e => {
+  picked.clear(); if (e.target.checked) chatList.forEach(c => picked.add(c.id)); renderChats();
+};
+document.getElementById("del-sel").onclick = async () => {
+  if (picked.size && confirm(`Delete ${picked.size} chat${picked.size > 1 ? "s" : ""}? This cannot be undone.`)) await deleteChats([...picked]);
+};
 async function openChat(id) {
   const c = await LG.api(`/api/ai/chats/${id}`);
   chatId = id; convo = c.messages; renderMessages(convo); loadChats();

@@ -22,7 +22,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 | SSH / web GUI / OpenVPN / IPsec | syslog | failed and successful logins, config changes |
 | DHCP leases (Kea, dnsmasq, ISC) + ARP | API + syslog | **device list**: name, IP, MAC, vendor, interface, lease, online state, per-device activity; **new/rogue device** alerts |
 | System / hardware | API | CPU %, load, memory, swap, ZFS ARC, disks, temperatures, states, interface throughput/errors, gateways, services, top processes, firmware updates |
-| **Unraid** | Unraid API (GraphQL) + optional Docker socket proxy | CPU/cores, memory, temperatures, network, array/parity, disks (temp, errors, SMART), shares, **Docker containers** (state, updates, CPU/mem) and **their logs**, Unraid syslog, **notifications**, VMs, UPS |
+| **Unraid** | Unraid API (GraphQL) + optional Docker socket proxy | CPU/cores, memory, temperatures, network, array/parity, disks (temp, errors, SMART), shares, **Docker containers** (state, CPU/mem) and **their logs**, Unraid syslog, **notifications**, VMs, UPS |
 
 ## Built-in detections
 
@@ -74,7 +74,7 @@ Other ready-made compose files are in [`examples/`](examples):
 | [`examples/docker-compose.all-in-one.yml`](examples/docker-compose.all-in-one.yml) | Portainer / Dockge stacks: no files next to the stack |
 | [`examples/docker-compose.secrets.yml`](examples/docker-compose.secrets.yml) | unattended install without the wizard (database + first login from Docker secret files) |
 | [`examples/docker-compose.build.yml`](examples/docker-compose.build.yml) | build the image from source |
-| [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml) | run **on Unraid** for per-container CPU/memory graphs |
+| [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml) | run **on Unraid** for per-container CPU/memory on Unraid API older than 4.29 |
 | [`examples/unraid/looking-glass.xml`](examples/unraid/looking-glass.xml) | run Looking Glass itself **on Unraid** as a Docker template |
 
 ### 3. Optional: `.env` (shell on your Docker host, in `~/looking-glass`)
@@ -331,7 +331,8 @@ Things to know:
    copy the key. (Or in the Unraid terminal: `unraid-api apikey --create --name lookingglass --roles VIEWER --json`.)
 2. **Looking Glass web UI**: *Settings › Unraid servers* › fill in name, URL (e.g. `http://192.168.1.10`) and the API key ›
    *Test connection* › *Add server*. Add as many servers as you like.
-3. Optional, for per-container CPU / memory graphs: on Unraid start
+3. CPU / memory per container comes from the Unraid API (version 4.29 or newer; the version is shown on the
+   Unraid page). Only on an older API: on Unraid start
    [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml)
    (a read-only Docker API) and enter `http://<unraid-ip>:2375` as *Docker API* for that server.
 

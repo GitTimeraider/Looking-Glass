@@ -66,3 +66,10 @@ def test_zfs_problems():
     assert st.zfs_problem("zed", "eid=80 class=scrub_finish pool='ssd'") is None
     assert st.zfs_problem("kernel", "WARNING: Pool 'ssd' has encountered an uncorrectable I/O failure and has been suspended. ZFS") == "ZFS error"
     assert st.zfs_problem("kernel", "eth0: link up") is None
+
+
+def test_docker_stats_strings():
+    from lookingglass import unraid
+    assert unraid._size("512MiB") == 512 * 1024 ** 2 and unraid._size("1.5GB") == 1_500_000_000 and unraid._size("0B") == 0
+    assert unraid._size("--") is None and unraid._io_pair("1.2MB / 300kB") == (1_200_000, 300_000)
+    assert unraid._short_id("4f1c...:abc123") == "abc123" and unraid._short_id("abc123") == "abc123"

@@ -16,7 +16,9 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+import asyncio
+
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 app = FastAPI()
 KEY = "test-key"
@@ -91,12 +93,12 @@ def answer(q: str, variables: dict) -> dict:
                                      disk(33, "ssd2", "CACHE", 37, rotational=False, fs="zfs", size=2_000_000_000, fs_size=False)],
                           "boot": {**disk(40, "flash", "FLASH", None, rotational=False, fs="vfat", size=32_000_000), "device": "sda"}}}
     if "docker" in q:
-        def c(cid, name, image, state, auto=True, upd=False):
-            return {"id": cid, "names": ["/" + name], "image": image, "state": state, "status": "Up 3 days" if state == "RUNNING" else "Exited (1) 2 hours ago",
-                    "autoStart": auto, "isUpdateAvailable": upd, "webUiUrl": f"http://tower:8080/{name}" if state == "RUNNING" else None,
+        def c(cid, name, image, state, auto=True):
+            return {"id": "srv1:" + cid, "names": ["/" + name], "image": image, "state": state, "status": "Up 3 days" if state == "RUNNING" else "Exited (1) 2 hours ago",
+                    "autoStart": auto, "webUiUrl": f"http://tower:8080/{name}" if state == "RUNNING" else None,
                     "iconUrl": None, "created": int(time.time()) - 86400 * 30,
                     "ports": [{"ip": "0.0.0.0", "privatePort": 80, "publicPort": 8080, "type": "TCP"}] if name == "nginx-proxy" else []}
-        return {"docker": {"containers": [c("c1", "plex", "plexinc/pms-docker", "RUNNING", upd=True), c("c2", "nginx-proxy", "jc21/nginx-proxy-manager", "RUNNING"),
+        return {"docker": {"containers": [c("c1", "plex", "plexinc/pms-docker", "RUNNING"), c("c2", "nginx-proxy", "jc21/nginx-proxy-manager", "RUNNING"),
                                           c("c3", "homeassistant", "ghcr.io/home-assistant/home-assistant", "RUNNING"), c("c4", "nextcloud", "nextcloud", "EXITED")]}}
     if "notifications" in q:
         return {"notifications": {"overview": {"unread": {"info": 1, "warning": 1, "alert": 1, "total": 3}, "archive": {"total": 40}},
@@ -136,6 +138,45 @@ async def graphql(request: Request):
         return {"errors": [{"message": "Cannot query field"}]}
 
 
+STREAM = {"active": 0, "sessions": 0}
+
+
+@app.websocket("/graphql")
+async def graphql_ws(ws: WebSocket):
+    """graphql-ws: dockerContainerStats like the real API (one 'docker stats' line per running container per tick)."""
+    await ws.accept(subprotocol="graphql-transport-ws")
+    init = await ws.receive_json()
+    if init.get("type") != "connection_init" or (init.get("payload") or {}).get("x-api-key") != KEY:
+        await ws.close(4403)
+        return
+    await ws.send_json({"type": "connection_ack"})
+    sub = await ws.receive_json()
+    if "dockerContainerStats" not in sub["payload"]["query"]:
+        await ws.send_json({"id": sub["id"], "type": "error", "payload": [{"message": "Cannot query field \"x\" on type \"Subscription\"."}]})
+        return
+    STREAM["active"] += 1
+    STREAM["sessions"] += 1
+    usage = {"c1": (35.5, "1.5GiB / 31.27GiB", 4.8), "c2": (0.4, "120MiB / 31.27GiB", 0.37), "c3": (2.25, "512MiB / 31.27GiB", 1.6)}
+    try:
+        tick = 0
+        while True:
+            for cid, (cpu, mem, mp) in usage.items():
+                await ws.send_json({"id": sub["id"], "type": "next", "payload": {"data": {"dockerContainerStats": {
+                    "id": f"srv1:{cid}", "cpuPercent": 0.0 if tick == 0 else cpu, "memUsage": mem, "memPercent": mp,
+                    "netIO": "1.2MB / 300kB", "blockIO": "45MB / 2.1GB"}}}})
+            tick += 1
+            try:
+                msg = await asyncio.wait_for(ws.receive_json(), 0.5)
+                if msg.get("type") == "complete":
+                    break
+            except asyncio.TimeoutError:
+                pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        STREAM["active"] -= 1
+
+
 @app.post("/mock/spindown")
 async def spindown():
     STATE["spinning"] = False
@@ -144,7 +185,7 @@ async def spindown():
 
 @app.get("/mock/stats")
 async def mock_stats():
-    return STATE
+    return {**STATE, "docker_stats_stream": STREAM}
 
 
 @app.get("/version")

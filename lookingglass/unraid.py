@@ -6,20 +6,25 @@ its own query so that fields missing on older API versions only disable that sec
 
 Disks are never woken: see unraid_storage.py for which queries touch disks and when they are allowed.
 
-Optionally a read-only Docker API endpoint (docker-socket-proxy) adds per-container CPU / memory / network
-statistics and a log fallback.
+Per-container CPU / memory comes from the API's ``dockerContainerStats`` subscription (API 4.29+): the API runs
+``docker stats`` only while a client is subscribed, so each poll subscribes for a few seconds and leaves again.
+Optionally a read-only Docker API endpoint (docker-socket-proxy) is used instead, and as a log fallback.
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
+import re
+import ssl
 import struct
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import httpx
+import websockets
 
 from . import crypto, db
 from . import unraid_storage as storage
@@ -71,7 +76,7 @@ QUERIES: dict[str, str] = {
     "array_old": """{ array { state capacity { kilobytes { free used total } } parities { %s } disks { %s } caches { %s } } }"""
                  % ((DISK_FIELDS_OLD,) * 3),
     "docker": """{ docker { containers {
-        id names image state status autoStart isUpdateAvailable webUiUrl iconUrl created
+        id names image state status autoStart webUiUrl iconUrl created
         ports { ip privatePort publicPort type }
     } } }""",
     "docker_basic": """{ docker { containers { id names image state status autoStart created } } }""",
@@ -82,6 +87,7 @@ QUERIES: dict[str, str] = {
     "vms": """{ vms { domains { id name state } } }""",
     "ups": """{ upsDevices { id name model status battery { chargeLevel estimatedRuntime health } power { loadPercentage currentPower inputVoltage outputVoltage } } }""",
     "shares": """{ shares { name free used size comment cache } }""",
+    "docker_stats": "subscription { dockerContainerStats { id cpuPercent memUsage memPercent netIO blockIO } }",
     # wakes EVERY spun-down disk (smartctl -a without -n standby inside the API) - only sent when all disks spin
     "disks": """{ disks { id device name vendor size type interfaceType smartStatus temperature isSpinning serialNum firmwareRevision } }""",
 }
@@ -117,6 +123,54 @@ class UnraidClient:
         if body.get("errors") and not body.get("data"):
             raise GraphQLError("; ".join(e.get("message", "?") for e in body["errors"])[:500])
         return body.get("data") or {}
+
+    async def subscribe(self, q: str, until: Callable[[list[dict[str, Any]]], bool], timeout: float) -> list[dict[str, Any]]:
+        """Run a GraphQL subscription (graphql-ws protocol on /graphql) and return its results until ``until`` says
+        enough or ``timeout`` seconds passed; then unsubscribe."""
+        url = re.sub(r"^http", "ws", self.server["url"].rstrip("/")) + "/graphql"
+        ctx = None
+        if url.startswith("wss:"):
+            ctx = ssl.create_default_context()
+            if not self.server["verify_ssl"]:
+                ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+        out: list[dict[str, Any]] = []
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        async with websockets.connect(url, subprotocols=["graphql-transport-ws"], ssl=ctx, open_timeout=10,
+                                      close_timeout=3, max_size=2 ** 22) as ws:
+            await ws.send(json.dumps({"type": "connection_init",
+                                      "payload": {"x-api-key": crypto.decrypt(self.server["api_key"])}}))
+            ack = json.loads(await asyncio.wait_for(ws.recv(), 10))
+            if ack.get("type") != "connection_ack":
+                raise GraphQLError(f"subscription refused: {str(ack)[:200]}")
+            await ws.send(json.dumps({"id": "1", "type": "subscribe", "payload": {"query": q}}))
+            try:
+                while not until(out):
+                    left = deadline - loop.time()
+                    if left <= 0:
+                        break
+                    try:
+                        msg = json.loads(await asyncio.wait_for(ws.recv(), left))
+                    except asyncio.TimeoutError:
+                        break
+                    kind = msg.get("type")
+                    if kind == "ping":
+                        await ws.send(json.dumps({"type": "pong"}))
+                    elif kind == "next":
+                        payload = msg.get("payload") or {}
+                        if payload.get("errors") and not payload.get("data"):
+                            raise GraphQLError("; ".join(e.get("message", "?") for e in payload["errors"])[:500])
+                        out.append(payload.get("data") or {})
+                    elif kind == "error":
+                        raise GraphQLError("; ".join(e.get("message", "?") for e in msg.get("payload") or [])[:500])
+                    elif kind == "complete":
+                        break
+            finally:
+                try:
+                    await ws.send(json.dumps({"id": "1", "type": "complete"}))
+                except websockets.ConnectionClosed:
+                    pass
+        return out
 
     async def close(self) -> None:
         await self.http.aclose()
@@ -180,7 +234,8 @@ class UnraidServerPoller:
                 if d:
                     await self.snap("info", d.get("info"))
                     self.api_version = (((d.get("info") or {}).get("versions") or {}).get("core") or {}).get("api")
-            await self.poll_metrics()
+            if self.due("metrics", p):
+                await self.poll_metrics()
             if self.due("array", min(p, 60)):
                 await self.poll_array()
             await self.poll_temps()
@@ -198,8 +253,8 @@ class UnraidServerPoller:
             if self.server.get("collect_logs") and self.due("logs", 120):
                 await self.poll_container_logs()
                 await self.poll_syslog()
-            if self.client.docker and self.due("docker_stats", p):
-                await self.poll_docker_stats()
+            if self.due("docker_stats", max(p, 60)):
+                await (self.poll_docker_stats() if self.client.docker else self.poll_docker_stats_api())
             self.failures = 0
             self.status.update(ok=True, error=None, last=time.time())
         except (httpx.HTTPError, OSError, GraphQLError) as exc:
@@ -535,6 +590,59 @@ class UnraidServerPoller:
                           "pids": (s.get("pids_stats") or {}).get("current")})
 
         await asyncio.gather(*(one(c) for c in containers))
+        await self.store_docker_stats(stats)
+
+    async def poll_docker_stats_api(self) -> None:
+        """CPU / memory per running container from the Unraid API (subscription, API 4.29+).
+
+        ``docker stats`` emits one line per container about every two seconds; the first line of a container can
+        show 0 % CPU (no previous sample yet), so we wait for the second one, at most 15 seconds."""
+        if self.status["sections"].get("docker_stats", {}).get("unsupported") and not self.due("docker_stats_retry", 3600):
+            return
+        containers = await db.get_snapshot(f"unraid:{self.sid}:docker") or []
+        running = {_short_id(c.get("id")): c for c in containers if c.get("state") == "RUNNING" and c.get("id")}
+        if not running:
+            await self.store_docker_stats([])
+            return
+        seen: dict[str, list[dict[str, Any]]] = {}
+        done = 0
+
+        def enough(results: list[dict[str, Any]]) -> bool:
+            nonlocal done
+            for r in results[done:]:
+                st = r.get("dockerContainerStats") or {}
+                seen.setdefault(_short_id(st.get("id")), []).append(st)
+            done = len(results)
+            return all(len(seen.get(cid, [])) >= 2 for cid in running)
+
+        try:
+            await self.client.subscribe(QUERIES["docker_stats"], enough, timeout=15)
+        except GraphQLError as exc:
+            unsupported = "dockerContainerStats" in str(exc) or "Cannot query field" in str(exc)
+            self.status["sections"]["docker_stats"] = {
+                "ok": False, "unsupported": unsupported,
+                "error": "needs Unraid API 4.29 or newer" if unsupported else str(exc)}
+            return
+        except (OSError, asyncio.TimeoutError, websockets.WebSocketException) as exc:
+            self.status["sections"]["docker_stats"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return
+        stats = []
+        for cid, c in running.items():
+            samples = seen.get(cid)
+            if not samples:
+                continue
+            st = samples[-1]
+            net_rx, net_tx = _io_pair(st.get("netIO"))
+            blk_r, blk_w = _io_pair(st.get("blockIO"))
+            stats.append({"name": (c.get("names") or ["?"])[0].lstrip("/"), "image": c.get("image"), "state": c.get("state"),
+                          "status": c.get("status"), "cpu_pct": round(_num(st.get("cpuPercent")) or 0.0, 2),
+                          "mem_bytes": _size(str(st.get("memUsage") or "").split("/")[0]) or 0,
+                          "mem_limit": _size((str(st.get("memUsage") or "").split("/") + [""])[1]),
+                          "mem_pct": round(_num(st.get("memPercent")) or 0.0, 2),
+                          "rx_bytes": net_rx, "tx_bytes": net_tx, "block_read": blk_r, "block_write": blk_w})
+        await self.store_docker_stats(stats)
+
+    async def store_docker_stats(self, stats: list[dict[str, Any]]) -> None:
         stats.sort(key=lambda x: -x["cpu_pct"])
         await self.snap("docker_stats", stats)
         rows = []
@@ -543,6 +651,25 @@ class UnraidServerPoller:
             rows.append(("container_mem_bytes", f"{self.sid}:{st['name']}", float(st["mem_bytes"])))
         await db.add_metrics(rows)
         self.status["sections"]["docker_stats"] = {"ok": True}
+
+
+def _short_id(value: Any) -> str:
+    """'<server id>:<container id>' (PrefixedID) -> container id."""
+    return str(value or "").rsplit(":", 1)[-1]
+
+
+_UNITS = {"b": 1, "kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12, "kib": 1024, "mib": 1024 ** 2, "gib": 1024 ** 3, "tib": 1024 ** 4}
+
+
+def _size(text: Any) -> int | None:
+    """Sizes as docker stats prints them: '512MiB', '1.2GB', '0B'."""
+    m = re.match(r"\s*([\d.]+)\s*([kmgt]?i?b)\s*$", str(text or ""), re.I)
+    return int(float(m[1]) * _UNITS[m[2].lower()]) if m and m[2].lower() in _UNITS else None
+
+
+def _io_pair(text: Any) -> tuple[int | None, int | None]:
+    a, _, b = str(text or "").partition("/")
+    return _size(a), _size(b)
 
 
 def _parse_ts(value: Any) -> datetime:

@@ -55,16 +55,34 @@ const LG = {
   },
   /** Render a table. cols: [{k, l, f?: (v,row)=>html, num?: bool}] */
   /** onRow(row): makes rows clickable (e.g. open the matching events) */
+  // column option s: sort value (function(row) or true = the raw value); clicking such a header sorts, again reverses
   table(el, cols, rows, empty = "No data", onRow) {
     if (typeof el === "string") el = document.querySelector(el);
     if (!rows || !rows.length) { el.innerHTML = `<div class="empty">${LG.esc(empty)}</div>`; return; }
-    const head = cols.map(c => `<th class="${c.num ? "num" : ""}">${LG.esc(c.l)}</th>`).join("");
+    const all = rows, st = el._sort, sc = st && cols[st.i];
+    if (sc && sc.s) {
+      const val = r => { const v = sc.s === true ? r[sc.k] : sc.s(r); return typeof v === "string" ? v.toLowerCase() : v; };
+      rows = [...rows].sort((a, b) => {
+        const x = val(a), y = val(b);
+        if (x == null || x === "") return y == null || y === "" ? 0 : 1;  // empty values last, both directions
+        if (y == null || y === "") return -1;
+        return (x < y ? -1 : x > y ? 1 : 0) * st.dir;
+      });
+    }
+    const head = cols.map((c, i) => c.s
+      ? `<th class="${c.num ? "num " : ""}sortable" data-sort="${i}" title="Sort">${LG.esc(c.l)}<span class="arrow">${st && st.i === i ? (st.dir > 0 ? "▲" : "▼") : ""}</span></th>`
+      : `<th class="${c.num ? "num" : ""}">${LG.esc(c.l)}</th>`).join("");
     const body = rows.map((r, i) => `<tr${onRow ? ` class="clickable" data-row="${i}" title="Show matching events"` : ""}>` + cols.map(c => {
       const v = r[c.k];
       const html = c.f ? c.f(v, r) : (c.num ? LG.num(v) : LG.esc(Array.isArray(v) ? v.join(", ") : v));
       return `<td class="${c.num ? "num" : ""}">${html}</td>`;
     }).join("") + "</tr>").join("");
     el.innerHTML = `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    el.querySelectorAll("th[data-sort]").forEach(th => th.onclick = () => {
+      const i = Number(th.dataset.sort), c = cols[i];
+      el._sort = { i, dir: st && st.i === i ? -st.dir : (c.num ? -1 : 1) };  // numbers: biggest first
+      LG.table(el, cols, all, empty, onRow);
+    });
     if (onRow) el.querySelectorAll("tr[data-row]").forEach(tr => tr.onclick = e => {
       if (e.target.closest("a")) return;
       onRow(rows[Number(tr.dataset.row)]);
