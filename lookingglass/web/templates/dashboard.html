@@ -203,7 +203,7 @@ function render(d) {
     (on.unbound ? kpi("DNS queries", LG.num(k.dns)) : "") +
     (on.crowdsec ? kpi("CrowdSec bans", k.crowdsec_decisions ?? "–") : "") +
     kpi("Devices (24h)", LG.num(k.devices));
-  document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  document.getElementById("updated").textContent = "updated " + LG.clock();
 
   // timeline (stacked by source)
   const tl = d.timeline, buckets = [...new Set(tl.series.map(r => r.bucket))].sort();
@@ -214,7 +214,7 @@ function render(d) {
     tl.series.filter(r => r.source === s).forEach(r => data[idx[r.bucket]] = r.n);
     return { label: s, data, backgroundColor: LG.sourceColors[s] || "#64748b", stack: "s" };
   });
-  const labels = buckets.map(b => { const t = new Date(b); return hours > 48 ? t.toLocaleDateString(undefined, {month: "short", day: "2-digit"}) + " " + t.getHours() + "h" : t.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); });
+  const labels = buckets.map(b => LG.timeLabel(b, hours));
   LG.chart("c-timeline", { type: "bar", data: { labels, datasets: ds },
     options: { maintainAspectRatio: false, animation: false, scales: { x: { stacked: true, ticks: { maxTicksLimit: 12 } }, y: { stacked: true } }, plugins: { legend: { position: "bottom", labels: { boxWidth: 10 } } } } });
   drawSources(d.report);

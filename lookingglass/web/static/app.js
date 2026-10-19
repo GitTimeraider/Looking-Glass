@@ -20,11 +20,18 @@ const LG = {
     return String(v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   },
   num(v) { return v === null || v === undefined ? "–" : Number(v).toLocaleString(); },
-  time(iso) {
-    if (!iso) return "";
-    const d = new Date(iso);
-    return d.toLocaleString(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  /** 24 / 12 hour clock from Settings › Display (browser = the browser's language decides) */
+  hc() {
+    const f = window.LG_TIME_FORMAT;
+    return f === "24h" ? { hourCycle: "h23" } : f === "12h" ? { hour12: true } : {};
   },
+  time(iso) {
+    if (iso === null || iso === undefined || iso === "") return "";
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", ...LG.hc() });
+  },
+  /** current clock time, e.g. for "updated 14:05:09" */
+  clock(d) { return (d || new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", ...LG.hc() }); },
   ago(iso) {
     if (!iso) return "never";
     const s = (Date.now() - (typeof iso === "number" ? iso * 1000 : new Date(iso).getTime())) / 1000;
@@ -194,8 +201,12 @@ const LG = {
   color(i) { return LG.palette[i % LG.palette.length]; },
   timeLabel(t, hours) {
     const d = new Date(t);
-    return hours > 48 ? d.toLocaleDateString(undefined, { month: "short", day: "2-digit" }) + " " + String(d.getHours()).padStart(2, "0") + "h"
-                      : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (hours > 48) {
+      const h = window.LG_TIME_FORMAT === "12h" ? d.toLocaleTimeString([], { hour: "numeric", hour12: true })
+              : String(d.getHours()).padStart(2, "0") + "h";
+      return d.toLocaleDateString(undefined, { month: "short", day: "2-digit" }) + " " + h;
+    }
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", ...LG.hc() });
   },
   /** rows [{t, series, v}] -> stacked bar (or line) chart */
   seriesChart(id, rows, opts = {}) {
@@ -226,7 +237,7 @@ const LG = {
       scales: { x: { type: "linear", ticks: { callback: v => LG.timeLabel(v, opts.hours || 24), maxTicksLimit: 7, maxRotation: 0 } },
                 y: { min: opts.min, max: opts.max, ticks: { callback: v => fmt(Math.abs(v)) } } },
       plugins: { legend: { display: datasets.length > 1, position: "bottom", labels: { boxWidth: 10 } },
-                 tooltip: { callbacks: { title: i => new Date(i[0].parsed.x).toLocaleString(), label: c => `${c.dataset.label}: ${fmt(Math.abs(c.parsed.y))}` } } } } });
+                 tooltip: { callbacks: { title: i => LG.time(i[0].parsed.x), label: c => `${c.dataset.label}: ${fmt(Math.abs(c.parsed.y))}` } } } } });
   },
   pieChart(id, rows, onClick) {
     return LG.chart(id, { type: "doughnut", data: { labels: rows.map(r => r.label ?? "?"),

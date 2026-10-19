@@ -51,6 +51,7 @@ PAGES = {
 
 
 def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, Any] | None = None) -> FastAPI:
+    templates.env.globals["time_format"] = lambda: settings.time_format  # live setting, read per page
     app = FastAPI(title="Looking Glass", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")

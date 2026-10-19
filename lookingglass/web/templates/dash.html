@@ -117,7 +117,7 @@ async function load() {
     const d = await LG.api(`/api/dash/${NAME}?hours=${hours}`);
     if (!built) build(d);
     render(d);
-    document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+    document.getElementById("updated").textContent = "updated " + LG.clock();
   } catch (e) { document.getElementById("panels").innerHTML = `<div class="card">Failed to load: ${LG.esc(e.message)}</div>`; built = false; }
 }
 load();

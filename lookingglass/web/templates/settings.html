@@ -6,9 +6,9 @@
   Changes apply immediately - no restart needed.</p>
 <div class="tabs" id="tabs">
   <button data-t="opnsense" class="on">OPNsense</button><button data-t="unifi">UniFi</button><button data-t="ai">AI analyst</button><button data-t="zenarmor">Zenarmor</button>
-  <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button><button data-t="filters">Alert filters</button><button data-t="email">Email &amp; notifications</button>
+  <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button><button data-t="filters">Alert filters</button><button data-t="email">Email &amp; notifications</button><button data-t="display">Display</button>
 </div>
-{% for g in ["opnsense", "unifi", "ai", "zenarmor", "ingest", "data", "email"] %}
+{% for g in ["opnsense", "unifi", "ai", "zenarmor", "ingest", "data", "email", "display"] %}
 <section data-s="{{ g }}" {% if g != "opnsense" %}hidden{% endif %}>
   <div class="card">
     {% if g == "email" %}<h3>Mail server (SMTP)</h3>

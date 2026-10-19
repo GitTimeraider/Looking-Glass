@@ -224,6 +224,7 @@ Next logins ask for password + TOTP code or passkey.
   (OpenAI, OpenRouter, LiteLLM, Ollama at `http://host:11434/v1/` …) works by changing base URL, model and key.
   *Test connection* → *Save*.
 * **Ingestion & network** tab – set *Syslog allowed senders* to your OPNsense IP and your *Time zone*.
+* **Display** tab – *Time format*: 24-hour (default, 14:05), 12-hour (2:05 PM) or your browser's default.
 * **Zenarmor** / **Unraid servers** / **Data & detection** tabs – optional (see the sections below).
 
 Everything applies immediately. API keys, secrets and passwords are encrypted (Fernet/AES) with a key that is

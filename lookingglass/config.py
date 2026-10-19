@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     # ================ application (web UI -> Settings, database) ============
     # Defaults below; see app_config.FIELDS for labels and help texts.
     timezone: str = "UTC"
+    time_format: str = "24h"
     dns_ignore_domains: str = ""
     syslog_allowed_senders: str = ""
     internal_networks: str = ""
