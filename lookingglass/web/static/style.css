@@ -183,3 +183,9 @@ tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--pane
 details.card > summary { cursor: pointer; }
 .badge.info { background: #1e3a5f; color: var(--accent2); }
 #checks .table-wrap { max-height: none; overflow: visible; }
+
+/* settings: delete collected data */
+.danger-zone { border-color: #7f1d1d; }
+.purge-row { display: grid !important; grid-template-columns: auto 1fr auto; gap: 8px; padding: 4px 0; white-space: normal !important; }
+.purge-confirm { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.purge-confirm input { flex: 1 1 180px; }
