@@ -31,8 +31,8 @@ from .auth_routes import register as register_auth
 log = logging.getLogger(__name__)
 HERE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(HERE / "templates"))
-# (key, menu label, menu group): "general" dashboards cover every source, the others sit under their product
-DASH_NAV = [(k, v["title"].split(" (")[0], v.get("group", "general")) for k, v in DASHBOARDS.items()]
+# (key, menu label, menu group): security dashboards sit under their product ("opnsense"), "tools" covers every source
+DASH_NAV = [(k, v["title"].split(" (")[0], v.get("group", "tools")) for k, v in DASHBOARDS.items()]
 templates.env.globals["dashboards"] = DASH_NAV
 
 PAGES = {

@@ -285,7 +285,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             log_panel("source = 'vpn'"),
         ]},
     "syslog": {
-        "title": "System logs", "source": "system,dhcp,unraid", "group": "general", "panels": [
+        "title": "System logs", "source": "system,dhcp,unraid", "group": "tools", "panels": [
             {"id": "kpi", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) AS \"Messages\", count(*) FILTER (WHERE severity <= 3) AS \"Errors+\", count(*) FILTER (WHERE severity = 4) AS \"Warnings\", "
                 f"count(DISTINCT program) AS \"Programs\", count(DISTINCT host) AS \"Hosts\" FROM events WHERE source IN ('system', 'dhcp', 'unraid') AND {W}",

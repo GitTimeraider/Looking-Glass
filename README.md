@@ -380,8 +380,9 @@ metrics, no alerts.
 * **Alerts** – detections ranked by severity, naming the device behind an IP (from the device list) and the evidence
   (e.g. the non-existent domains looked up); **Events** opens exactly the events behind an alert; acknowledge / close;
   **Ask AI** investigates one alert.
-* **Menu**: *General* (overview, alerts, event search, system logs, reports, AI analyst – over all sources), then one
-  group per product: *OPNsense* (system & hardware, its security dashboards, devices) and *Unraid*.
+* **Menu**: *General* (overview, alerts, event search over all sources), *OPNsense security* (the OPNsense security
+  dashboards; other security products get their own group), *Infrastructure* (OPNsense and Unraid hardware & status,
+  devices), *Tools* (system logs, reports, AI analyst) and *Admin*.
 * **Dashboards** (one per function, each with KPIs, charts over time, breakdowns, top-N tables and a live log).
   **Everything is clickable**: a tile, a bar, a pie slice, a moment in a time chart or a table row opens *Event search*
   with exactly those events (same filters and time span):
@@ -394,7 +395,7 @@ metrics, no alerts.
   *Authentication* (failed/successful logins, IPs with failed logins, usernames tried, config changes),
   *VPN* (live WireGuard peers, OpenVPN sessions and IPsec tunnels, connects/disconnects, VPN logins) and
   *System logs* (OPNsense and Unraid, per host and program).
-* **OPNsense › System & hardware** – tab *Overview* (hardware & performance): CPU, load, memory/swap/ARC, temperatures, disk usage, states,
+* **Infrastructure › OPNsense** – tab *Overview* (hardware & performance): CPU, load, memory/swap/ARC, temperatures, disk usage, states,
   interface throughput/errors, gateway latency/loss, services, ARP/DHCP devices, top processes; tab *System & network*:
   system, firmware, disks & temperature, gateways, interfaces.
 * **Devices** – everything connected to OPNsense (ARP + DHCP leases from dnsmasq / Kea / ISC + Zenarmor device
