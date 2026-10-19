@@ -97,7 +97,9 @@ def data() -> dict:
 
 SEARCH = {
     "core/service/search": [{"name": "unbound", "description": "Unbound DNS", "running": 1}, {"name": "suricata", "description": "Intrusion Detection", "running": 1}],
-    "crowdsec/alerts/search": [{"id": 7, "created_at": "2026-10-18T22:00:00Z", "scenario": "crowdsecurity/http-probing", "source": {"ip": "45.9.9.9", "cn": "NL"}, "events_count": 12, "decisions": "ban"}],
+    # OPNsense format (AlertsController::searchAction): value "Ip:<ip>", reason = scenario, decisions "ban:1", created
+    "crowdsec/alerts/search": [{"id": 7, "value": "Ip:45.9.9.9", "reason": "crowdsecurity/http-probing", "country": "NL",
+                                "as": "AS1234", "decisions": "ban:1", "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 600))}],
     # OPNsense format: scope_value / action / source (origin)
     "crowdsec/decisions/search": [{"id": 99, "source": "crowdsec", "scope_value": "45.9.9.9", "reason": "crowdsecurity/http-probing",
                                    "action": "ban", "country": "NL", "as": "AS1234", "events_count": 12, "expiration": "3h", "alert_id": 7}],

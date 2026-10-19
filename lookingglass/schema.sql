@@ -164,3 +164,8 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value      JSONB,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- CrowdSec alerts pulled before the scenario was stored (OPNsense calls it "reason"): it starts the message
+UPDATE events SET data = coalesce(data, '{}'::jsonb) || jsonb_build_object('scenario', split_part(message, ' from ', 1))
+ WHERE source = 'crowdsec' AND action = 'alert' AND data->>'scenario' IS NULL AND data->>'reason' IS NULL
+   AND message LIKE '% from %' AND split_part(message, ' from ', 1) NOT IN ('', 'None');

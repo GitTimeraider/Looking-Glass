@@ -132,7 +132,9 @@ def crowdsec_alert_from_api(row: dict[str, Any]) -> dict[str, Any] | None:
     return event(ts, "crowdsec", program="crowdsec", severity=4, action="alert", src_ip=ip,
                  message=f'{scenario} from {ip} ({row.get("events_count", "?")} events) decisions: {row.get("decisions", "")}',
                  src_country=(src.get("cn") if isinstance(src, dict) else None) or row.get("country"),
-                 data={k: row.get(k) for k in ("id", "scenario", "events_count", "decisions", "as", "country", "message", "machine_id") if row.get(k) not in (None, "")},
+                 # OPNsense calls the scenario "reason" (cscli: "scenario")
+                 data={k: v for k, v in {**{k: row.get(k) for k in ("id", "events_count", "decisions", "as", "country", "message",
+                                                                    "machine_id")}, "scenario": scenario}.items() if v not in (None, "")},
                  uid=f'cs-alert:{row.get("id")}:{ts.isoformat()}')
 
 
