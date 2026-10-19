@@ -38,11 +38,13 @@ LATERAL_PORTS = {22: "SSH", 23: "telnet", 135: "RPC", 139: "NetBIOS", 445: "SMB"
 EXTERNAL_CHAIN = [("Recon", {"port_scan", "host_sweep", "web_scanner", "threat_intel_inbound"}),
                   ("Attack", {"web_attack", "ids", "crowdsec", "brute_force", "password_spray", "distributed_brute_force"}),
                   ("Access", {"success_after_failures", "admin_login", "login_new_location"})]
-INTERNAL_CHAIN = [("Threat sign", {"threat_intel_outbound", "zenarmor_threat", "dns_malicious_blocked", "dns_dga", "ids"}),
+INTERNAL_CHAIN = [("Threat sign", {"threat_intel_outbound", "zenarmor_threat", "dns_malicious_blocked", "dns_dga", "ids",
+                                   "threat_feed", "malicious_tls", "young_domain", "crypto_mining", "new_behavior",
+                                   "ml_anomaly"}),
                   ("Command & control", {"beaconing", "suspicious_outbound_port", "dns_tunnel", "dns_bypass",
-                                         "internal_blocked_outbound"}),
+                                         "internal_blocked_outbound", "tor"}),
                   ("Spreading / theft", {"port_scan", "host_sweep", "lateral_movement", "password_spray", "brute_force",
-                                         "large_upload"})]
+                                         "large_upload", "canary", "arp_spoofing", "volume_spike"})]
 
 # a name from a better source replaces one from a worse source, never the other way round
 NAME_RANK = {"manual": 100, "unifi-alias": 70, "dnsmasq-static": 60, "unifi": 45, "dhcp": 50, "dns": 30, "zenarmor": 25, "arp": 20}
@@ -134,7 +136,7 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
         others = await pool.fetch(
             "SELECT DISTINCT rule FROM alerts WHERE (src_ip = $1::inet OR dst_ip = $1::inet) AND status <> 'closed' "
             "AND NOT (rule = ANY($2::text[])) AND last_seen > now() - make_interval(hours => $3) "
-            "AND rule NOT IN ('new_device', 'admin_login', 'config_change', 'port_scan', 'host_sweep', 'attack_chain')",
+            "AND rule NOT IN ('new_device', 'admin_login', 'config_change', 'port_scan', 'host_sweep', 'attack_chain', 'risk_score')",
             ip, sorted(next((f for f in RULE_FAMILIES if rule in f), {rule})), hours)
     except Exception:  # noqa: BLE001 - invalid IP text etc.
         return {}
@@ -357,6 +359,10 @@ class DetectionEngine:
         self.settings = settings
         self._last_events_at = time.time()
         self._ran: dict[str, float] = {}
+        from .behavior import Behavior  # local imports: those modules use the helpers of this one
+        from .intel import Intel
+        self.behavior = Behavior(settings, self.internal)
+        self.intel = Intel(settings)
 
     async def run(self) -> None:
         await asyncio.sleep(20)
@@ -368,7 +374,9 @@ class DetectionEngine:
                          self.internal_blocked_outbound, self.suspicious_outbound_ports, self.config_changes,
                          self.password_spray, self.distributed_brute_force, self.login_location, self.dns_bypass,
                          self.beaconing, self.lateral_movement, self.large_upload,
-                         self.system_health, self.log_silence, self.attack_chains):
+                         self.threat_intel, self.canary, self.arp_spoofing, self.young_domains,
+                         self.behavior_profiles, self.behavior_hourly, self.behavior_cleanup,
+                         self.system_health, self.log_silence, self.attack_chains, self.risk_scores):
                 try:
                     await rule()
                 except Exception:  # noqa: BLE001
@@ -804,6 +812,37 @@ class DetectionEngine:
         self._ran[name] = now
         return True
 
+    # behaviour & ML, threat intel and traps live in behavior.py / intel.py
+    async def behavior_profiles(self) -> None:
+        if self._due("profiles", 120):
+            await self.behavior.update_profiles()
+
+    async def behavior_hourly(self) -> None:
+        if self._due("hourly", 300):
+            await self.behavior.hourly()
+
+    async def behavior_cleanup(self) -> None:
+        if self._due("behavior_cleanup", 86400):
+            await self.behavior.cleanup()
+
+    async def risk_scores(self) -> None:
+        await self.behavior.risk()
+        if self._due("feedback", 600):
+            await self.behavior.feedback()
+
+    async def threat_intel(self) -> None:
+        await self.intel.match(self.internal, self._watermark, self._commit)
+
+    async def canary(self) -> None:
+        await self.intel.canary(self.internal, self._watermark, self._commit)
+
+    async def arp_spoofing(self) -> None:
+        await self.intel.arp(self.internal)
+
+    async def young_domains(self) -> None:
+        if self._due("rdap", 60):
+            await self.intel.rdap(self.internal)
+
     async def password_spray(self) -> None:
         """One address trying MANY different usernames: a list-based attack, not a forgotten password."""
         rows = await db.pool().fetch(
@@ -952,6 +991,12 @@ class DetectionEngine:
                 rating = corroborate(Rating("low", f"contacted at a near-constant rhythm (every {every}, ±{round(r['sd'])} s) "
                                                    "and no other device uses it - typical for malware check-ins, also for "
                                                    "some IoT clouds and update checkers"), await evidence(src, "beaconing"))
+                if kind == "dns":
+                    seen = await db.pool().fetchval("SELECT first_seen FROM seen_domains WHERE domain = $1",
+                                                    registered_domain(r["dst"]))
+                    if seen and (time.time() - seen.timestamp()) < 3 * 86400 and await db.kv_get("nod:since") and \
+                            time.time() - await db.kv_get("nod:since") > 3 * 86400:
+                        rating.up("and the domain was first seen on your network less than 3 days ago")
                 what = r["dst"] if kind == "dns" else f"address {r['dst']}"
                 await raise_alert(
                     "beaconing", rating, f"Possible beaconing: {src} → {what} every {every}", f"beacon:{src}:{r['dst']}",

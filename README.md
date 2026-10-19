@@ -98,6 +98,48 @@ those under *Settings › Data & detection › DNS: domains to ignore* (subdomai
    mailed once per rule; muted alerts are never mailed. **Preview** shows what a rule would have matched, **send test**
    mails the newest matching alert, untick *On* to pause a rule. Delivery errors show in the rule list.
 
+### Behaviour & machine learning
+
+*Settings › Behaviour & ML* - every check has its own switch, and **Never analyse these devices** (IPs, CIDRs, MACs)
+excludes devices from all of them.
+
+| Check | What it does | Tune it with |
+|---|---|---|
+| **Device profiles** | learns per device (MAC) which countries, ports, domains, TLS programs (JA3/JA4) and hours are normal; alerts on the first use of something new | learning period, quiet period for new devices, one switch per kind |
+| **Predictable devices only** | "new …" alerts only for devices that rarely pick up anything new (cameras, TVs, plugs) - PCs and phones are skipped automatically | *max. new things per day* (0 = all devices) |
+| **Similar devices** | devices of the same vendor form a group: what the others do too is normal, what none of them do weighs heavier | on / off |
+| **Odd hours** | activity at an hour the device has never been active | on / off |
+| **Traffic spike** | connections, DNS lookups or upload of one hour N× the device's median | factor (0 = off) |
+| **Machine learning** | an Isolation Forest (one per pair of 8 features, pure Python, nothing leaves the server) scores each device-hour against the device's own history; alerts name the features that were off ("connections 9,000, normally ~100") | sensitivity low / medium / high |
+| **Hour of the week** | network totals (blocks, failed logins, DNS, NXDOMAIN, per log source) against the same hour in previous weeks | sensitivity, metrics to ignore |
+| **Risk score** | every alert adds points (info 1 … critical 40, once per rule) that fade with a half-life; one alert when a device's total is high; shown on the Devices page | threshold, half-life, addresses to skip |
+| **Learning from false positives** | **Close as false positive** on the Alerts page; the same rule + address 3× in 30 days becomes a suggestion (mute / lower to info), or in *auto* mode a "Learned: …" severity rule (visible and removable under Alert filters) | suggest / auto / off, how many |
+
+**Devices › Learned** shows what was learned for a device and lets you forget it (per kind or everything). The
+**Delete collected data** option in Settings can also clear all learned behaviour.
+
+### Threat intel & traps
+
+*Settings › Threat intel & traps*:
+
+| Check | What it does | Set up / tune |
+|---|---|---|
+| **abuse.ch feeds** | URLhaus (malware sites), ThreatFox (malware / C2 domains and IPs), Feodo Tracker (botnet C2), SSLBL (malware JA3) - daily, matched against DNS lookups, connections and TLS fingerprints | a free **abuse.ch Auth-Key**: [auth.abuse.ch](https://auth.abuse.ch) › log in › Optional › Generate Auth-Key, paste it, Save, **Update feeds now**; one switch per feed; *Never flag these domains / IPs* |
+| **Tor** | devices connecting to Tor relays; optionally Tor exits reaching your services | outbound / both / off; *Devices allowed to use Tor* |
+| **Crypto mining** | lookups of / connections to mining pools (built-in list) | extra pool domains, on / off |
+| **Newly seen domains** | remembers the first lookup of every domain; beaconing to a brand-new domain weighs heavier; optionally asks the registry (RDAP) for the registration date and alerts on domains younger than N days | on / off, RDAP on / off (sends those domain names to the registry), age, lookups per hour |
+| **Canary addresses** | IPs / ports nothing should ever use - any contact is someone exploring the network | see below; sources to ignore; inside only / also internet |
+| **Exposure watch** | alerts when a port forward or firewall rule is added / changed (medium when it opens something to the internet) | on / off; OPNsense 25.7+ shows details (API privileges *Firewall: Rules* and *Firewall: NAT*), older versions compare rule names |
+| **ARP spoofing** | a device claiming the firewall's address, an IP flipping between devices, one device holding many IPs | IPs / MACs to ignore (CARP, repeaters, VM hosts), flips per hour |
+| **Malware TLS** | JA3 fingerprints of known malware (SSLBL) | needs TLS records: OPNsense › Services › Intrusion Detection › Administration › *Enable eve syslog output* with TLS logging |
+
+**Canary setup** (traffic inside one subnet never passes the firewall, so use the firewall itself or another VLAN):
+1. OPNsense › Firewall › Rules › LAN › **+**: Action *Block*, Protocol *TCP*, Destination *This Firewall* (or *LAN address*),
+   Destination port e.g. *23* (telnet) - repeat for *445* and *3389* - tick **Log packets that are handled by this rule**,
+   place it **above** the allow rules, Save, Apply.
+2. Looking Glass › Settings › Threat intel & traps › **Canary addresses**: `192.168.1.1:23, 192.168.1.1:445,
+   192.168.1.1:3389` (your firewall's LAN address), Save.
+
 ### How severity is decided
 
 Every alert shows **"Why <severity>"**: the base reason and every step up (↑) or down (↓). The same four questions

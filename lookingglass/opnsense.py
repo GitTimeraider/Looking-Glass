@@ -119,6 +119,7 @@ class Poller:
         self._static_names: dict[str, str] = {}  # MAC or IP -> host name from dnsmasq "Hosts" entries
         self._dns_ip_names: dict[str, str] = {}  # IP -> host name Unbound reports for a client
         self._prev_if: dict[str, tuple[float, float, float]] = {}
+        self._arp_prev: dict[str, str] = {}  # IP -> MAC of the last ARP table (ARP spoofing detection)
         p = max(15, settings.poll_interval)
         self.jobs: list[tuple[str, int, Callable[[], Awaitable[None]]]] = [
             ("system", p, self.poll_system),
@@ -128,6 +129,7 @@ class Poller:
             ("firmware", 6 * 3600, self.poll_firmware),
             ("rule_labels", 600, self.poll_rule_labels),
             ("arp", 120, self.poll_arp),
+            ("exposure", 900, self.poll_exposure),
             ("leases", 300, self.poll_leases),
             ("activity", p, self.poll_activity),
             ("firewall_log", 15, self.poll_firewall_log),
@@ -309,6 +311,18 @@ class Poller:
         rows = await self.api.get("diagnostics/interface/getArp")
         rows = rows if isinstance(rows, list) else (rows or {}).get("rows", [])
         await db.set_snapshot("arp", rows)
+        current = {r["ip"]: (r.get("mac") or "").lower() for r in rows
+                   if r.get("ip") and r.get("mac") and not r.get("expired") and not r.get("permanent")
+                   and "incomplete" not in str(r.get("mac"))}
+        if self._arp_prev and self.settings.arp_watch:
+            now = datetime.now(timezone.utc)
+            for ip, mac in current.items():
+                old = self._arp_prev.get(ip)
+                if old and old != mac:  # the IP answered from another device than 2 minutes ago
+                    self.writer.put(event(now, "arp", host="arp-table", program="arp", severity=4, action="arp_move",
+                                          src_ip=ip, message=f"arp: {ip} moved from {old} to {mac} (ARP table)",
+                                          data={"from": old, "to": mac}))
+        self._arp_prev = current
         devices = []
         for r in rows:
             mac = (r.get("mac") or "").lower()
@@ -319,6 +333,51 @@ class Poller:
                                         "interface": r.get("intf_description") or r.get("intf"), "online": True}))
         from .detections import track_devices  # local import to avoid a cycle
         await track_devices(devices, origin="arp", mark_online=True)
+
+    async def poll_exposure(self) -> None:
+        """Port forwards and firewall rules: alert when something new is opened to the internet (or changed)."""
+        if not self.settings.exposure_watch:
+            return
+        from .intel import describe_rule, exposure_changes, opens_inbound
+        cur: dict[str, str] = {}
+        reachable = False
+        for kind, path in (("nat", "firewall/d_nat/search_rule"), ("filter", "firewall/filter/search_rule")):
+            try:
+                rows = await self.api.search(path, rows=5000)
+            except ApiError as exc:
+                if exc.status in (400, 403, 404):
+                    continue  # older OPNsense (rules not in the API yet) or no privilege
+                raise
+            reachable = True
+            for r in rows:
+                cur[f"{kind}:{r.get('uuid') or describe_rule(r)}"] = describe_rule(r)
+        labels = await db.get_snapshot("rule_labels") or {}
+        for rid, descr in labels.items() if isinstance(labels, dict) else []:
+            if descr:
+                cur.setdefault(f"label:{descr}", f"rule ‘{descr}’")
+        if not cur:
+            return
+        prev = await db.kv_get("exposure:rules")
+        await db.kv_set("exposure:rules", cur)
+        await db.kv_set("exposure:status", {"api": reachable, "rules": len(cur), "checked": time.time()})
+        if prev is None:
+            return  # first run: this is the baseline
+        added, changed, removed = exposure_changes(prev, cur)
+        if not (added or changed or removed):
+            return
+        from .detections import Rating, raise_alert
+        opening = [x for x in added + changed if opens_inbound(x.split("  →  ")[-1])]
+        lines = [f"+ {x}" for x in added] + [f"~ {x}" for x in changed] + [f"- {x}" for x in removed]
+        await raise_alert(
+            "exposure_change",
+            Rating("medium", "something new is reachable from the internet") if opening
+            else Rating("low", "firewall rules / port forwards changed"),
+            f"{'New port forward / inbound rule' if opening else 'Firewall rules changed'}: "
+            f"{(opening or added or changed or removed)[0][:120]}",
+            f"exposure:{hashlib.sha1(json.dumps(lines).encode()).hexdigest()[:16]}",
+            data={"added": added, "changed": changed, "removed": removed},
+            description="Changes since the last check (+ added, ~ changed, - removed):\n" + "\n".join(lines[:40])
+                        + "\n\nWas this you? Then nothing to do. Otherwise check System › Log Files › Audit in OPNsense.")
 
     async def poll_leases(self) -> None:
         """DHCP leases from whichever DHCP server is in use: Kea, dnsmasq or ISC dhcpd (plugin)."""

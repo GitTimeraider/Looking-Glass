@@ -15,6 +15,12 @@
   <div class="card"><h3>Most active devices (24h events)</h3><div class="chart-box sm"><canvas id="c-active"></canvas></div></div>
 </div>
 <div class="card"><div id="list"></div></div>
+<dialog id="prof" class="dlg">
+  <div class="dlg-head"><h3 id="prof-title">Learned behaviour</h3><button class="secondary" id="prof-close">Close</button></div>
+  <div id="prof-body"></div>
+</dialog>
+<p class="small muted">Risk: points from this device's alerts that fade over time (Settings › Behaviour &amp; ML). Learned: what
+  Looking Glass knows as normal for the device - click it to see or forget it.</p>
 <p class="small muted">Sources: OPNsense ARP table (online state), DHCP leases (Kea, dnsmasq or ISC DHCP via the API) and DHCP log
   messages. Mark known devices as trusted; new MACs raise a "new device" alert.</p>
 {% endblock %}
@@ -53,10 +59,13 @@ function render() {
     {k: "sources", l: "Seen via", f: v => (v || []).map(s => `<span class="pill">${LG.esc(s)}</span>`).join("")},
     {k: "events", l: "Events 24h", num: true}, {k: "blocked", l: "Blocked", num: true}, {k: "dns", l: "DNS", num: true},
     {k: "alerts", l: "Alerts", f: v => v ? `<a href="/alerts" class="badge high">${v}</a>` : ""},
+    {k: "risk", l: "Risk", num: true, f: v => v ? `<span class="badge ${Number(v) >= 60 ? "high" : Number(v) >= 20 ? "medium" : "low"}" title="Risk score">${Math.round(v)}</span>` : ""},
+    {k: "learned", l: "Learned", f: (v, r) => `<a href="#" data-prof="${LG.esc(r.mac)}" title="What is normal for this device">${v ? `${LG.num(v)} items` : "–"}</a>`},
     {k: "first_seen", l: "First seen", f: LG.time}, {k: "last_seen", l: "Last seen", f: LG.ago},
     {k: "trusted", l: "Trusted", f: (v, r) => `<input type="checkbox" data-trust="${LG.esc(r.mac)}" ${v ? "checked" : ""}>`},
     {k: "mac", l: "", f: v => `<a href="#" data-edit="${LG.esc(v)}">edit</a>`},
   ], rows, "No devices yet - they appear from the ARP table / DHCP leases once the OPNsense API is connected.");
+  document.querySelectorAll("[data-prof]").forEach(a => a.onclick = e => { e.preventDefault(); profile(a.dataset.prof); });
   document.querySelectorAll("[data-trust]").forEach(c => c.onchange = () => LG.api(`/api/devices/${c.dataset.trust}`, { method: "POST", body: { trusted: c.checked } }));
   document.querySelectorAll("[data-edit]").forEach(a => a.onclick = async e => {
     e.preventDefault(); const d = devs.find(x => x.mac === a.dataset.edit);
@@ -66,6 +75,27 @@ function render() {
     await LG.api(`/api/devices/${d.mac}`, { method: "POST", body: { hostname: name, notes } }); load();
   });
 }
+const KIND = { country: "Countries", port: "Ports / protocols", domain: "Domains", tls: "TLS programs (JA3/JA4)", hour: "Active hours" };
+async function profile(mac) {
+  const p = await LG.api(`/api/devices/${mac}/profile`), d = devs.find(x => x.mac === mac) || {};
+  document.getElementById("prof-title").textContent = `Learned behaviour: ${d.hostname || d.ip || mac}`;
+  const kinds = Object.keys(KIND).filter(k => (p.profile[k] || []).length);
+  document.getElementById("prof-body").innerHTML =
+    `<p class="small muted">${p.since ? `Learning since ${LG.time(p.since)}.` : "Nothing learned yet."} New things are compared with this list; "forget" makes the device learn from scratch (it is judged again after the quiet period).</p>` +
+    (p.risk ? `<p>Risk score <b>${Math.round(p.risk.score)}</b>: ${(p.risk.parts || []).map(x => `${LG.esc(x.rule)} (${LG.esc(x.severity)}, ${x.points})`).join(", ")}</p>` : "") +
+    kinds.map(k => `<h4>${KIND[k]} <a href="#" class="small" data-forget="${k}">forget</a></h4><div class="prof-items">` +
+      p.profile[k].slice(0, k === "domain" ? 150 : 60).map(x => `<span class="pill" title="${LG.num(x.hits)}× · first ${LG.time(x.first_seen)} · last ${LG.time(x.last_seen)}">${LG.esc(k === "hour" ? String(x.value).padStart(2, "0") + ":00" : x.value)}</span>`).join("") +
+      (p.profile[k].length > 150 ? ` <span class="muted small">+${p.profile[k].length - 150} more</span>` : "") + `</div>`).join("") +
+    (kinds.length ? `<p><button class="danger" data-forget="">Forget everything learned</button></p>` : "");
+  document.querySelectorAll("#prof-body [data-forget]").forEach(b => b.onclick = async e => {
+    e.preventDefault();
+    if (!confirm(b.dataset.forget ? `Forget the learned ${KIND[b.dataset.forget].toLowerCase()}?` : "Forget everything learned about this device?")) return;
+    await LG.api(`/api/devices/${mac}/profile${b.dataset.forget ? "?kind=" + b.dataset.forget : ""}`, { method: "DELETE" });
+    profile(mac); load();
+  });
+  document.getElementById("prof").showModal();
+}
+document.getElementById("prof-close").onclick = () => document.getElementById("prof").close();
 document.getElementById("filter").oninput = render;
 load(); setInterval(load, 120000);
 </script>
