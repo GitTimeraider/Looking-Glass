@@ -152,12 +152,12 @@ class Poller:
         st = self.status.setdefault(name, {"ok": None, "last": None, "error": None, "unsupported": False})
         try:
             await fn()
-            st.update(ok=True, last=time.time(), error=None, unsupported=False)
+            st.update(ok=True, last=time.time(), error=None, unsupported=False, forbidden=False)
             self._next[name] = time.monotonic() + interval
         except ApiError as exc:
             # 404/400 usually means the plugin is not installed or the endpoint does not exist on this version
             unsupported = exc.status in (400, 404, 403)
-            st.update(ok=False, last=time.time(), error=str(exc), unsupported=unsupported)
+            st.update(ok=False, last=time.time(), error=str(exc), unsupported=unsupported, forbidden=exc.status in (401, 403))
             self._next[name] = time.monotonic() + (3600 if unsupported else interval)
             log.log(logging.DEBUG if unsupported else logging.WARNING, "poll %s failed: %s", name, exc)
         except (httpx.HTTPError, OSError) as exc:
@@ -444,7 +444,7 @@ class Poller:
     async def poll_vpn(self) -> None:
         """WireGuard / OpenVPN / IPsec live status. WireGuard does not log handshakes, so peer state changes
         are turned into events here."""
-        out: dict[str, Any] = {}
+        out: dict[str, Any] = {"errors": {}}
         try:
             wg = await self.api.get("wireguard/service/show")
             rows = wg.get("rows", []) if isinstance(wg, dict) else wg or []
@@ -476,16 +476,19 @@ class Poller:
         except ApiError as exc:
             if exc.status not in (400, 403, 404):
                 raise
+            out["errors"]["wireguard"] = exc.status
         try:
             out["openvpn"] = await self.api.search("openvpn/service/search_sessions", rows=500)
         except ApiError as exc:
             if exc.status not in (400, 403, 404):
                 raise
+            out["errors"]["openvpn"] = exc.status
         try:
             out["ipsec"] = await self.api.search("ipsec/sessions/search_phase1", rows=500)
         except ApiError as exc:
             if exc.status not in (400, 403, 404):
                 raise
+            out["errors"]["ipsec"] = exc.status
         await db.set_snapshot("vpn", out)
 
     async def poll_unbound_totals(self) -> None:

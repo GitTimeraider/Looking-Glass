@@ -21,7 +21,7 @@ from ..config import Settings
 from ..ingest import STATS
 from ..dashboards import DASHBOARDS, run_dashboard
 from ..reports import build_report, timeline
-from .. import unraid_storage
+from .. import setup_checks, unraid_storage
 from ..unraid import test_connection as unraid_test
 from .auth_routes import PUBLIC_PATHS, SETUP_PATHS, current_user
 from .auth_routes import register as register_auth
@@ -260,6 +260,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 "syslog": {"udp": settings.syslog_udp_port, "tcp": settings.syslog_tcp_port, "enabled": settings.syslog_enabled},
                 "db_size": await db.pool().fetchval("SELECT pg_size_pretty(pg_database_size(current_database()))"),
                 "events_total": await db.pool().fetchval("SELECT reltuples::bigint FROM pg_class WHERE relname = 'events'")}
+
+    @app.get("/api/setup/checks")
+    async def setup_status():
+        return await setup_checks.run(settings)
 
     # ----------------------------------------------------------- reports ---
     @app.get("/api/reports")

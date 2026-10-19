@@ -145,7 +145,7 @@ def create_es_app(settings: Settings, writer: EventWriter) -> Starlette:
                     if peer and doc.get("ip_src_saddr") == peer and str(doc.get("ip_dst_port")) == str(settings.zenarmor_es_port):
                         stats["self"] += 1
                     else:
-                        ev = zenarmor_record(family, doc, now, host=peer, program="zenarmor")
+                        ev = zenarmor_record(family, doc, now, host=peer, program="zenarmor-es")
                         writer.put(ev)
                         stats["docs"] += 1
                         STATS.by_source["zenarmor"] = STATS.by_source.get("zenarmor", 0) + 1
