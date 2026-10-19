@@ -1,0 +1,52 @@
+# Dependabot: checks every Monday for new versions and opens one pull request per update.
+# CI (tests + Docker build) runs on each of them; merge when green.
+version: 2
+updates:
+  # Python packages (requirements.txt, requirements-dev.txt)
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Amsterdam
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: deps
+
+  # Base image in the Dockerfile (python:*-slim)
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Amsterdam
+    commit-message:
+      prefix: deps
+
+  # Images in docker-compose.yml (PostgreSQL)
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Amsterdam
+    commit-message:
+      prefix: deps
+    ignore:
+      # a new PostgreSQL major version needs a dump / restore of the database (see README) - never automatic
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
+
+  # GitHub Actions used by the workflows
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Amsterdam
+    commit-message:
+      prefix: ci

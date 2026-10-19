@@ -34,7 +34,7 @@ events(id bigint, ts timestamptz, received_at timestamptz, source text, host tex
   action examples: firewall: pass/block; nginx: http_200, http_404, waf_block, rate_limited; unbound: query, reply,
                    block, nxdomain; crowdsec: alert, ban; suricata: alert, drop, blocked; auth: login_failed, login_success,
                    config_change; dhcp: lease; unifi: client_connect, client_disconnect, client_roam, client_blocked,
-                   device_offline, device_online, device_restart, rogue_ap, rogue_dhcp, poe_disconnect, admin_login, ips_alert
+                   device_offline, device_online, device_restart, rogue_ap, rogue_dhcp, poe_disconnect, login_success / login_failed (controller admin logins), ips_alert
   data keys: firewall {label (rule description), rid, reason, tcpflags}; nginx {method, path, status, user_agent, tags[]};
              unbound {qtype, rcode, blocklist, category}; suricata {sid, signature, classification, priority};
              crowdsec {scenario, decisions}; zenarmor {app_name, app_category, security_tags, ...};

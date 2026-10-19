@@ -30,6 +30,20 @@ SUSPICIOUS_OUT_PORTS = {
 }
 
 
+# remote admin / file sharing: what ransomware and worms use to spread inside a network (MITRE T1021)
+LATERAL_PORTS = {22: "SSH", 23: "telnet", 135: "RPC", 139: "NetBIOS", 445: "SMB", 3389: "RDP", 5900: "VNC",
+                 5985: "WinRM", 5986: "WinRM", 2375: "Docker API", 2376: "Docker API"}
+
+# attack stages for attack_chains (rule names per stage, in order)
+EXTERNAL_CHAIN = [("Recon", {"port_scan", "host_sweep", "web_scanner", "threat_intel_inbound"}),
+                  ("Attack", {"web_attack", "ids", "crowdsec", "brute_force", "password_spray", "distributed_brute_force"}),
+                  ("Access", {"success_after_failures", "admin_login", "login_new_location"})]
+INTERNAL_CHAIN = [("Threat sign", {"threat_intel_outbound", "zenarmor_threat", "dns_malicious_blocked", "dns_dga", "ids"}),
+                  ("Command & control", {"beaconing", "suspicious_outbound_port", "dns_tunnel", "dns_bypass",
+                                         "internal_blocked_outbound"}),
+                  ("Spreading / theft", {"port_scan", "host_sweep", "lateral_movement", "password_spray", "brute_force",
+                                         "large_upload"})]
+
 # a name from a better source replaces one from a worse source, never the other way round
 NAME_RANK = {"manual": 100, "unifi-alias": 70, "dnsmasq-static": 60, "unifi": 45, "dhcp": 50, "dns": 30, "zenarmor": 25, "arp": 20}
 
@@ -97,7 +111,8 @@ class Rating:
 
 
 # alerts built from the same events must not confirm each other
-RULE_FAMILIES = [{"brute_force", "success_after_failures", "admin_login"},
+RULE_FAMILIES = [{"brute_force", "success_after_failures", "admin_login", "password_spray", "distributed_brute_force",
+                  "login_new_location"},
                  {"port_scan", "host_sweep", "internal_blocked_outbound"}]
 
 
@@ -119,7 +134,7 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
         others = await pool.fetch(
             "SELECT DISTINCT rule FROM alerts WHERE (src_ip = $1::inet OR dst_ip = $1::inet) AND status <> 'closed' "
             "AND NOT (rule = ANY($2::text[])) AND last_seen > now() - make_interval(hours => $3) "
-            "AND rule NOT IN ('new_device', 'admin_login', 'config_change', 'port_scan', 'host_sweep')",
+            "AND rule NOT IN ('new_device', 'admin_login', 'config_change', 'port_scan', 'host_sweep', 'attack_chain')",
             ip, sorted(next((f for f in RULE_FAMILIES if rule in f), {rule})), hours)
     except Exception:  # noqa: BLE001 - invalid IP text etc.
         return {}
@@ -210,6 +225,17 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data, status)
     log.info("ALERT [%s] %s", severity, title)
+
+
+def login_target(source: str, host: str | None, programs: Any = None) -> str:
+    """Which system a login went to, for titles: "Tower (webGUI)", "UniFi controller", "OPNsense (sshd)"."""
+    prog = next((p for p in programs or [] if p), None)
+    if source == "unifi":
+        return "UniFi controller"
+    if source == "vpn":
+        return f"VPN ({prog})" if prog else "VPN"
+    name = host or "OPNsense"
+    return f"{name} ({prog})" if prog and prog != name else name
 
 
 def entropy(s: str) -> float:
@@ -330,6 +356,7 @@ class DetectionEngine:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._last_events_at = time.time()
+        self._ran: dict[str, float] = {}
 
     async def run(self) -> None:
         await asyncio.sleep(20)
@@ -339,7 +366,9 @@ class DetectionEngine:
                          self.external_admin_login, self.web_attacks, self.web_scanner, self.ids_alerts,
                          self.crowdsec_alerts, self.qfeeds_hits, self.zenarmor_threats, self.dns_anomalies,
                          self.internal_blocked_outbound, self.suspicious_outbound_ports, self.config_changes,
-                         self.system_health, self.log_silence):
+                         self.password_spray, self.distributed_brute_force, self.login_location, self.dns_bypass,
+                         self.beaconing, self.lateral_movement, self.large_upload,
+                         self.system_health, self.log_silence, self.attack_chains):
                 try:
                     await rule()
                 except Exception:  # noqa: BLE001
@@ -458,9 +487,11 @@ class DetectionEngine:
     # -------------------------------------------------------- auth rules ---
     async def brute_force(self) -> None:
         rows = await db.pool().fetch(
-            "SELECT src_ip, source, count(*) AS hits, array_agg(DISTINCT username) FILTER (WHERE username IS NOT NULL) AS users "
+            "SELECT src_ip, source, coalesce(host, '') AS host, count(*) AS hits, "
+            "array_agg(DISTINCT username) FILTER (WHERE username IS NOT NULL) AS users, "
+            "array_agg(DISTINCT program) FILTER (WHERE program IS NOT NULL) AS programs "
             "FROM events WHERE action = 'login_failed' AND ts > now() - interval '15 minutes' AND src_ip IS NOT NULL "
-            "GROUP BY src_ip, source HAVING count(*) >= 5")
+            "GROUP BY src_ip, source, coalesce(host, '') HAVING count(*) >= 5")
         for r in rows:
             ip = str(r["src_ip"])
             if self.internal(ip):
@@ -469,17 +500,18 @@ class DetectionEngine:
                 # failed attempts from the internet: annoying but harmless - unless one succeeds (separate critical alert)
                 rating = Rating("medium", "failed password guessing from the internet - nothing got in, but the service is "
                                           "reachable from outside")
+            target = login_target(r["source"], r["host"], r["programs"])
             await raise_alert(
-                "brute_force", rating, f"Brute force against {r['source'].upper()} from {ip} ({r['hits']} failures)",
-                f"brute_force:{r['source']}:{ip}", src_ip=ip, events={"source": r["source"], "ip": ip, "action": "login_failed"}, count=r["hits"], mode="max",
+                "brute_force", rating, f"Brute force against {target} from {ip} ({r['hits']} failures)",
+                f"brute_force:{r['source']}:{r['host']}:{ip}", src_ip=ip, events={"source": r["source"], "ip": ip, "action": "login_failed"}, count=r["hits"], mode="max",
                 description=f"{r['hits']} failed logins from {ip} in 15 minutes. Usernames tried: {list(r['users'] or [])[:20]}.")
 
     async def success_after_failures(self) -> None:
         rows = await db.pool().fetch(
-            "SELECT s.src_ip, s.username, s.source, max(s.ts) AS ts, (SELECT count(*) FROM events f WHERE f.action = 'login_failed' "
-            "AND f.src_ip = s.src_ip AND f.ts BETWEEN s.ts - interval '1 hour' AND s.ts) AS failures "
+            "SELECT s.src_ip, s.username, s.source, s.host, s.program, max(s.ts) AS ts, (SELECT count(*) FROM events f "
+            "WHERE f.action = 'login_failed' AND f.src_ip = s.src_ip AND f.ts BETWEEN s.ts - interval '1 hour' AND s.ts) AS failures "
             "FROM events s WHERE s.action = 'login_success' AND s.ts > now() - interval '10 minutes' AND s.src_ip IS NOT NULL "
-            "GROUP BY s.src_ip, s.username, s.source, s.ts")
+            "GROUP BY s.src_ip, s.username, s.source, s.host, s.program, s.ts")
         for r in rows:
             if r["failures"] >= 3:
                 ip = str(r["src_ip"])
@@ -493,7 +525,8 @@ class DetectionEngine:
                 rating.sticky = True
                 await raise_alert(
                     "success_after_failures", rating,
-                    f"Successful {r['source']} login for '{r['username']}' from {ip} after {r['failures']} failures",
+                    f"Successful login to {login_target(r['source'], r['host'], [r['program']])} for '{r['username']}' "
+                    f"from {ip} after {r['failures']} failures",
                     f"succ_after_fail:{ip}:{r['username']}", src_ip=ip, events={"ip": ip, "action": "login_failed,login_success"}, mode="max",
                     description="A login succeeded right after a series of failures - possible password guessing success. "
                                 "Verify this login was legitimate.")
@@ -501,8 +534,8 @@ class DetectionEngine:
     async def external_admin_login(self) -> None:
         last, current = await self._watermark("ext_login")
         rows = await db.pool().fetch(
-            "SELECT src_ip, username, source, program, count(*) AS n FROM events WHERE id > $1 AND id <= $2 "
-            "AND action = 'login_success' AND src_ip IS NOT NULL GROUP BY 1, 2, 3, 4", last, current)
+            "SELECT src_ip, username, source, program, host, count(*) AS n FROM events WHERE id > $1 AND id <= $2 "
+            "AND action = 'login_success' AND src_ip IS NOT NULL GROUP BY 1, 2, 3, 4, 5", last, current)
         for r in rows:
             ip = str(r["src_ip"])
             internal = self.internal(ip)
@@ -512,15 +545,16 @@ class DetectionEngine:
             elif vpn:
                 rating = Rating("low", "VPN users log in from the internet by design")
             else:
-                rating = Rating("high", "the firewall's admin interface (web GUI / SSH / API) accepted a login from the "
-                                        "INTERNET - it should normally only be reachable from inside or through the VPN")
+                rating = Rating("high", "an admin interface (web GUI / SSH / API) accepted a login from the INTERNET - it "
+                                        "should normally only be reachable from inside or through the VPN")
             rating.sticky = True
+            target = login_target(r["source"], r["host"], [r["program"]])
             await raise_alert(
                 "admin_login", rating,
-                f"{'Login' if internal or vpn else 'Login from EXTERNAL address'}: '{r['username']}' via {r['program'] or r['source']} from {ip}",
-                f"login:{ip}:{r['username']}", src_ip=ip, events={"ip": ip, "action": "login_success"}, count=r["n"],
-                description=("VPN login." if vpn else "Administrative login to the firewall.") +
-                            ("" if internal else " The source is a public IP address."))
+                f"{'Login' if internal or vpn else 'Login from EXTERNAL address'} to {target}: '{r['username']}' from {ip}",
+                f"login:{r['host'] or r['source']}:{ip}:{r['username']}", src_ip=ip, events={"ip": ip, "action": "login_success"},
+                count=r["n"], description=("VPN login." if vpn else f"Administrative login to {target}.") +
+                                          ("" if internal else " The source is a public IP address."))
         await self._commit("ext_login", current)
 
     async def config_changes(self) -> None:
@@ -758,6 +792,260 @@ class DetectionEngine:
                                           + ("" if ip else f" {no_client}"))
 
     # ------------------------------------------------------ system rules ---
+    # ------------------------------------------------- correlation rules ---
+    # Ideas from network threat hunting (RITA / Zeek beacon scoring, Sigma password-spray rules, MITRE ATT&CK
+    # T1110.003 password spraying, T1071.004 DNS C2, T1021 remote services, T1048 exfiltration, T1572 DNS bypass).
+    def _due(self, name: str, seconds: int) -> bool:
+        """Expensive rules run less often than the detection interval."""
+        now = time.monotonic()
+        last = self._ran.get(name)
+        if last is not None and now - last < seconds:
+            return False
+        self._ran[name] = now
+        return True
+
+    async def password_spray(self) -> None:
+        """One address trying MANY different usernames: a list-based attack, not a forgotten password."""
+        rows = await db.pool().fetch(
+            "SELECT src_ip, count(DISTINCT username) AS users, count(*) AS hits, "
+            "(array_agg(DISTINCT username))[1:15] AS names, array_agg(DISTINCT coalesce(host, source)) AS targets "
+            "FROM events WHERE action = 'login_failed' AND ts > now() - interval '1 hour' AND src_ip IS NOT NULL "
+            "AND username IS NOT NULL AND username <> '' GROUP BY src_ip HAVING count(DISTINCT username) >= 5")
+        for r in rows:
+            ip = str(r["src_ip"])
+            if self.internal(ip):
+                rating = corroborate(Rating("high", "a device INSIDE the network tries many accounts - malware or an "
+                                                    "intruder looking for a weak password"), await evidence(ip, "password_spray"), 1)
+            else:
+                rating = Rating("medium", "many usernames from one internet address - an automated attack with a "
+                                          "username list; nothing got in unless a login alert follows")
+            await raise_alert(
+                "password_spray", rating, f"Password spraying from {ip}: {r['users']} usernames tried",
+                f"spray:{ip}", src_ip=ip, events={"ip": ip, "action": "login_failed"}, count=r["hits"], mode="max",
+                description=f"{r['hits']} failed logins for {r['users']} different usernames in 1 hour against "
+                            f"{', '.join(sorted(r['targets'] or []))}. Usernames: {', '.join(r['names'] or [])}.")
+
+    async def distributed_brute_force(self) -> None:
+        """One username attacked from MANY addresses (botnet): every single address stays under the brute force limit."""
+        rows = await db.pool().fetch(
+            "SELECT username, count(DISTINCT src_ip) AS ips, count(*) AS hits, (array_agg(DISTINCT host(src_ip)))[1:10] AS sample, "
+            "array_agg(DISTINCT src_ip) AS all_ips FROM events WHERE action = 'login_failed' AND ts > now() - interval '1 hour' "
+            "AND src_ip IS NOT NULL AND username IS NOT NULL AND username <> '' GROUP BY username HAVING count(DISTINCT src_ip) >= 10")
+        for r in rows:
+            ok = await db.pool().fetchrow(
+                "SELECT host(src_ip) ip, coalesce(host, source) target FROM events WHERE action = 'login_success' "
+                "AND username = $1 AND src_ip = ANY($2::inet[]) AND ts > now() - interval '1 hour' LIMIT 1",
+                r["username"], r["all_ips"])
+            if ok:
+                rating = Rating("critical", f"one of the attacking addresses ({ok['ip']}) then LOGGED IN as this user "
+                                            f"on {ok['target']}", sticky=True)
+            else:
+                rating = Rating("medium", "a coordinated attack on one account from many addresses (botnet) - no "
+                                          "successful login from them")
+            await raise_alert(
+                "distributed_brute_force", rating,
+                f"Distributed brute force on user '{r['username']}' from {r['ips']} addresses",
+                f"dist_bf:{r['username']}", src_ip=ok["ip"] if ok else None,
+                events={"action": "login_failed", "user": r["username"]}, count=r["hits"], mode="max",
+                description=f"{r['hits']} failed logins for '{r['username']}' from {r['ips']} different addresses in 1 hour "
+                            f"(e.g. {', '.join(r['sample'] or [])}). Use a long unique password / key, MFA, and don't "
+                            "expose the login to the internet.")
+
+    async def login_location(self) -> None:
+        """A successful login from a country never seen for that user, or from two countries too fast to travel."""
+        last, current = await self._watermark("login_geo")
+        rows = await db.pool().fetch(
+            "SELECT id, ts, src_ip, username, source, host, program, src_country FROM events WHERE id > $1 AND id <= $2 "
+            "AND action = 'login_success' AND src_ip IS NOT NULL AND username IS NOT NULL AND src_country IS NOT NULL",
+            last, current)
+        for r in rows:
+            ip = str(r["src_ip"])
+            if self.internal(ip):
+                continue
+            prev = await db.pool().fetch(
+                "SELECT src_country, max(ts) AS last FROM events WHERE action = 'login_success' AND username = $1 "
+                "AND src_country IS NOT NULL AND id < $2 AND ts > now() - interval '90 days' GROUP BY 1",
+                r["username"], r["id"])
+            if not prev:
+                continue  # first login we know of: nothing to compare with
+            countries = {p["src_country"]: p["last"] for p in prev}
+            if r["src_country"] in countries:
+                continue
+            target = login_target(r["source"], r["host"], [r["program"]])
+            recent = [(c, t) for c, t in countries.items() if t and (r["ts"] - t).total_seconds() < 2 * 3600]
+            if recent:
+                c, t = max(recent, key=lambda x: x[1])
+                rating = Rating("high", f"logged in from {c} {int((r['ts'] - t).total_seconds() // 60)} min earlier - "
+                                        "too fast to travel (stolen password, or a VPN / proxy)", sticky=True)
+                title = f"Impossible travel: '{r['username']}' logged in from {c} and {r['src_country']}"
+            else:
+                rating = Rating("medium", f"this user only logged in from {', '.join(sorted(countries))} before",
+                                sticky=True)
+                title = f"Login to {target} for '{r['username']}' from a new country: {r['src_country']}"
+            await raise_alert(
+                "login_new_location", corroborate(rating, await evidence(ip, "login_new_location"), 1), title,
+                f"geo:{r['username']}:{r['src_country']}", src_ip=ip, events={"ip": ip, "action": "login_success"},
+                description=f"Successful login to {target} as '{r['username']}' from {ip} ({r['src_country']}). "
+                            "If that wasn't you: change the password, end the sessions and check what was done.")
+        await self._commit("login_geo", current)
+
+    async def dns_bypass(self) -> None:
+        """Devices that talk to DNS servers on the internet directly, past your own resolver and its blocklists."""
+        last, current = await self._watermark("dns_bypass")
+        rows = await db.pool().fetch(
+            "SELECT src_ip, dst_port, count(*) AS hits, (array_agg(DISTINCT host(dst_ip)))[1:8] AS dsts FROM events "
+            "WHERE id > $1 AND id <= $2 AND source IN ('firewall', 'zenarmor') AND dst_port IN (53, 853) "
+            "AND action IN ('pass', 'allow', 'conn') AND src_ip IS NOT NULL AND dst_ip IS NOT NULL "
+            "GROUP BY src_ip, dst_port", last, current)
+        for r in rows:
+            src = str(r["src_ip"])
+            dsts = [d for d in r["dsts"] or [] if not self.internal(d)]
+            if not self.internal(src) or not dsts:
+                continue
+            kind = "DNS-over-TLS (853)" if r["dst_port"] == 853 else "plain DNS (53)"
+            rating = corroborate(Rating("low", "bypasses your DNS server and its blocklists - common for Chromecast / "
+                                               "some IoT with hard-coded DNS, but also used by malware to avoid "
+                                               "filtering", sticky=True), await evidence(src, "dns_bypass"))
+            await raise_alert(
+                "dns_bypass", rating, f"{src} uses external DNS servers directly ({kind})", f"dns_bypass:{src}:{r['dst_port']}",
+                src_ip=src, events={"ip": src, "port": r["dst_port"]}, count=r["hits"],
+                description=f"{src} sent {kind} queries to {', '.join(dsts)} instead of your own resolver. To force all "
+                            "devices through it: OPNsense › Firewall › NAT › Port Forward: redirect LAN TCP/UDP 53 to "
+                            "127.0.0.1 (Unbound), and a LAN rule blocking TCP 853 to the internet.")
+        await self._commit("dns_bypass", current)
+
+    async def beaconing(self) -> None:
+        """Malware 'phones home' at a fixed rhythm. Regular intervals to a rarely used domain / address over hours are
+        a classic command-and-control sign (RITA-style beacon scoring)."""
+        if not self._due("beaconing", 900):
+            return
+        ignore = ignore_list(self.settings.dns_ignore_domains)
+        queries = {
+            "dns": ("SELECT src_ip, domain AS dst, ts FROM events WHERE source = 'unbound' AND ts > now() - interval '6 hours' "
+                    "AND src_ip IS NOT NULL AND domain IS NOT NULL",
+                    "SELECT domain AS dst FROM events WHERE source = 'unbound' AND ts > now() - interval '7 days' "
+                    "AND domain = ANY($1::text[]) GROUP BY domain HAVING count(DISTINCT src_ip) > 2"),
+            "conn": ("SELECT src_ip, host(dst_ip) AS dst, ts FROM events WHERE source IN ('zenarmor', 'firewall') "
+                     "AND action IN ('pass', 'allow', 'conn') AND ts > now() - interval '6 hours' AND src_ip IS NOT NULL "
+                     "AND dst_ip IS NOT NULL",
+                     "SELECT host(dst_ip) AS dst FROM events WHERE source IN ('zenarmor', 'firewall') "
+                     "AND ts > now() - interval '7 days' AND host(dst_ip) = ANY($1::text[]) GROUP BY dst_ip "
+                     "HAVING count(DISTINCT src_ip) > 2"),
+        }
+        for kind, (base, popular) in queries.items():
+            rows = await db.pool().fetch(
+                f"WITH t AS (SELECT DISTINCT src_ip, dst, date_trunc('second', ts) AS ts FROM ({base} LIMIT 2000000) x), "
+                "d AS (SELECT src_ip, dst, extract(epoch FROM ts - lag(ts) OVER (PARTITION BY src_ip, dst ORDER BY ts)) AS gap FROM t) "
+                "SELECT src_ip, dst, count(*) + 1 AS n, avg(gap) AS mean, stddev_pop(gap) AS sd FROM d WHERE gap IS NOT NULL "
+                "GROUP BY src_ip, dst HAVING count(*) >= 30 AND avg(gap) BETWEEN 60 AND 3600 "
+                "AND stddev_pop(gap) < 0.1 * avg(gap) LIMIT 200")
+            rows = [r for r in rows if self.internal(str(r["src_ip"]))
+                    and (kind == "conn" and not self.internal(r["dst"]) or kind == "dns" and not ignored_domain(r["dst"], ignore))]
+            if not rows:
+                continue
+            common = {p["dst"] for p in await db.pool().fetch(popular, list({r["dst"] for r in rows}))}
+            for r in rows:
+                if r["dst"] in common:
+                    continue  # several devices talk to it: a normal service (updates, time, cloud)
+                src = str(r["src_ip"])
+                every = f"{round(r['mean'] / 60)} min" if r["mean"] >= 90 else f"{round(r['mean'])} s"
+                rating = corroborate(Rating("low", f"contacted at a near-constant rhythm (every {every}, ±{round(r['sd'])} s) "
+                                                   "and no other device uses it - typical for malware check-ins, also for "
+                                                   "some IoT clouds and update checkers"), await evidence(src, "beaconing"))
+                what = r["dst"] if kind == "dns" else f"address {r['dst']}"
+                await raise_alert(
+                    "beaconing", rating, f"Possible beaconing: {src} → {what} every {every}", f"beacon:{src}:{r['dst']}",
+                    src_ip=src, dst_ip=r["dst"] if kind == "conn" else None, count=r["n"], mode="max",
+                    events={"ip": src, "q": r["dst"]} if kind == "dns" else {"ip": src},
+                    description=f"{src} contacted {what} {r['n']} times in 6 hours at very regular intervals (every {every}). "
+                                "Check which program on the device does this; if it is a known service, add it to "
+                                "Settings › Data & detection › DNS: domains to ignore or mute it.")
+
+    async def lateral_movement(self) -> None:
+        """One device reaching admin / file-sharing services on many other internal devices: how ransomware and worms
+        spread (and what management or backup tools do on purpose)."""
+        rows = await db.pool().fetch(
+            "SELECT src_ip, array_agg(DISTINCT host(dst_ip)) AS dsts, count(*) AS hits, array_agg(DISTINCT dst_port) AS ports, "
+            "count(*) FILTER (WHERE action IN ('pass', 'allow', 'conn')) AS passed FROM events "
+            "WHERE source IN ('firewall', 'zenarmor') AND ts > now() - interval '15 minutes' AND dst_port = ANY($1::int[]) "
+            "AND src_ip IS NOT NULL AND dst_ip IS NOT NULL AND src_ip <> dst_ip GROUP BY src_ip HAVING count(DISTINCT dst_ip) >= 5",
+            list(LATERAL_PORTS))
+        for r in rows:
+            src = str(r["src_ip"])
+            if not self.internal(src):
+                continue
+            internal_dsts = sum(1 for d in r["dsts"] if self.internal(d))
+            if internal_dsts < 5:
+                continue
+            services = ", ".join(sorted({LATERAL_PORTS[p] for p in r["ports"] if p in LATERAL_PORTS}))
+            rating = Rating("medium", "one device opening admin / file-sharing services on many internal devices - "
+                                      "how ransomware and worms spread; also normal for backup or management tools")
+            if r["passed"]:
+                rating.up("some connections were ALLOWED")
+            corroborate(rating, await evidence(src, "lateral_movement"), 1)
+            await raise_alert(
+                "lateral_movement", rating, f"Possible lateral movement: {src} → {internal_dsts} internal hosts ({services})",
+                f"lateral:{src}", src_ip=src, events={"ip": src}, count=r["hits"], mode="max",
+                description=f"{src} contacted {services} on {internal_dsts} internal hosts within 15 minutes "
+                            f"({r['passed']} allowed). Is this a backup / management tool? Otherwise isolate the device.")
+
+    async def large_upload(self) -> None:
+        """Much more data sent to the internet than the device normally sends: possible exfiltration."""
+        if not self._due("large_upload", 900):
+            return
+        up = ("greatest(coalesce((data->>'src_nbytes')::numeric, 0), coalesce((data->>'src_pbytes')::numeric, 0))")
+        rows = await db.pool().fetch(
+            f"SELECT src_ip, sum({up}) FILTER (WHERE ts > now() - interval '1 hour') AS last_hour, "
+            f"sum({up}) FILTER (WHERE ts <= now() - interval '1 hour') / 167.0 AS per_hour, "
+            f"(array_agg(DISTINCT host(dst_ip)) FILTER (WHERE ts > now() - interval '1 hour'))[1:5] AS dsts "
+            "FROM events WHERE source = 'zenarmor' AND data->>'family' = 'conn' AND ts > now() - interval '7 days' "
+            "AND src_ip IS NOT NULL GROUP BY src_ip")
+        for r in rows:
+            src, hour, base = str(r["src_ip"]), float(r["last_hour"] or 0), float(r["per_hour"] or 0)
+            if not self.internal(src) or hour < 1024 ** 3 or hour < 5 * max(base, 50 * 1024 ** 2):
+                continue
+            rating = corroborate(Rating("low", f"{hour / 1024 ** 3:.1f} GB sent in the last hour, normally "
+                                               f"{base / 1024 ** 2:.0f} MB per hour - a cloud backup or upload, or data "
+                                               "being stolen"), await evidence(src, "large_upload"))
+            await raise_alert(
+                "large_upload", rating, f"Unusual upload: {src} sent {hour / 1024 ** 3:.1f} GB in 1 hour",
+                f"upload:{src}", src_ip=src, events={"source": "zenarmor", "ip": src}, mode="max",
+                description=f"{src} uploaded {hour / 1024 ** 3:.1f} GB in the last hour (7-day average {base / 1024 ** 2:.0f} "
+                            f"MB per hour), to e.g. {', '.join(r['dsts'] or [])}.")
+
+    async def attack_chains(self) -> None:
+        """Connect the dots: separate alerts about one address that together tell a story (MITRE ATT&CK stages).
+        Outside → in: reconnaissance, then an attack, then access. Inside: a threat sign, then command & control or
+        spreading - a compromised device."""
+        rows = await db.pool().fetch(
+            "SELECT host(coalesce(src_ip, dst_ip)) AS ip, array_agg(DISTINCT rule) AS rules, min(created_at) AS first, "
+            "array_agg(id ORDER BY id) AS ids FROM alerts WHERE status <> 'closed' AND last_seen > now() - interval '24 hours' "
+            "AND coalesce(src_ip, dst_ip) IS NOT NULL AND rule <> 'attack_chain' GROUP BY 1")
+        for r in rows:
+            ip, rules = r["ip"], set(r["rules"])
+            internal = self.internal(ip)
+            chain = INTERNAL_CHAIN if internal else EXTERNAL_CHAIN
+            stages = [name for name, members in chain if rules & members]
+            if not internal and "Access" not in stages:
+                continue  # scans and attacks from the internet that got nowhere: background noise
+            if internal and stages and await db.pool().fetchval(
+                    "SELECT 1 FROM devices WHERE ip = $1::inet AND first_seen > now() - interval '48 hours' LIMIT 1", ip):
+                stages.insert(0, "New device")  # an unknown device that immediately misbehaves
+            if len(stages) < 2:
+                continue
+            sev = "critical" if len(stages) >= 3 else "high"
+            story = " → ".join(f"{s} ({', '.join(sorted(rules & dict(chain).get(s, set())) or ['first seen < 48 h'])})"
+                               for s in stages)
+            why = ("an outside address went from probing to getting in" if not internal else
+                   "several independent signs of a compromised device")
+            await raise_alert(
+                "attack_chain", Rating(sev, why, sticky=True),
+                f"{'Attack chain from' if not internal else 'Possibly compromised device'} {ip}: {' → '.join(stages)}",
+                f"chain:{ip}", src_ip=ip, events={"ip": ip}, data={"alerts": r["ids"], "stages": stages},
+                description=f"Related open alerts in the last 24 hours: {story}. Look at them together (Alerts page, filter "
+                            f"on {ip}); " + ("block the address and check the accessed account / service." if not internal
+                                             else "isolate the device (UniFi › Block, or an OPNsense rule) and check it."))
+
     async def system_health(self) -> None:
         gws = await db.get_snapshot("gateways") or []
         for gw in gws:
