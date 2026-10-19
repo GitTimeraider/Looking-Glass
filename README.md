@@ -391,8 +391,9 @@ metrics, no alerts.
   destinations, threats, top talkers),
   *Authentication & VPN* (failed/successful logins, usernames tried, config changes, live WireGuard peers, OpenVPN
   sessions and IPsec tunnels) and *System logs* (OPNsense and Unraid, per host and program).
-* **OPNsense** – tab *Overview*: gateways, interfaces, services, firmware, devices; tab *Hardware & performance*: CPU,
-  load, memory/swap/ARC, temperatures, disks, states, interface throughput/errors, gateway latency/loss, top processes.
+* **OPNsense** – tab *Overview* (hardware & performance): CPU, load, memory/swap/ARC, temperatures, disk usage, states,
+  interface throughput/errors, gateway latency/loss, services, ARP/DHCP devices, top processes; tab *System & network*:
+  system, firmware, disks & temperature, gateways, interfaces.
 * **Devices** – everything connected to OPNsense (ARP + DHCP leases from dnsmasq / Kea / ISC + Zenarmor device
   fingerprints): online state, name,
   IP, MAC, vendor, interface, lease, first/last seen, events/blocks/DNS queries/alerts per device; mark devices as

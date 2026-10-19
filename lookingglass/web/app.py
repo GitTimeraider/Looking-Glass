@@ -101,7 +101,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
 
     @app.get("/hardware")
     async def hardware_moved():  # merged into the OPNsense page
-        return RedirectResponse("/system#hardware")
+        return RedirectResponse("/system")
 
     @app.get("/reports/{report_id}", response_class=HTMLResponse)
     async def report_page(request: Request, report_id: int):

@@ -6,22 +6,9 @@
   <div class="seg" id="range"><button data-v="1">1h</button><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button></div>
 </header>
 <div class="tabs" id="tabs">
-  <button data-t="overview" class="on">Overview</button><button data-t="hardware">Hardware &amp; performance</button>
+  <button data-t="overview" class="on">Overview</button><button data-t="system">System &amp; network</button>
 </div>
 <section data-s="overview">
-  <div class="grid g3">
-    <div class="card"><h3>System</h3><div id="sys"></div></div>
-    <div class="card"><h3>Firmware</h3><div id="fw"></div></div>
-    <div class="card"><h3>Disks &amp; temperature</h3><div id="disk"></div></div>
-  </div>
-  <div class="grid g2" style="margin-top:14px">
-    <div class="card"><h3>Gateways</h3><div id="gws"></div></div>
-    <div class="card"><h3>Interfaces</h3><div id="ifs"></div></div>
-    <div class="card"><h3>Services</h3><div id="svcs"></div></div>
-    <div class="card"><h3>Devices (ARP / DHCP)<span class="sp"></span><a class="small" href="/devices">all devices →</a></h3><div id="devs"></div></div>
-  </div>
-</section>
-<section data-s="hardware" hidden>
 <div class="grid g3">
   <div class="card span2"><h3>Utilisation now</h3><div class="gauges" id="gauges"></div></div>
   <div class="card"><h3>Hardware</h3><div id="hw"></div></div>
@@ -35,14 +22,26 @@
   <div class="card"><h3>Interface errors &amp; drops</h3><div class="chart-box sm"><canvas id="c-iferr"></canvas></div></div>
   <div class="card"><h3>Gateway latency (ms)</h3><div class="chart-box sm"><canvas id="c-gw"></canvas></div></div>
   <div class="card"><h3>Gateway packet loss %</h3><div class="chart-box sm"><canvas id="c-loss"></canvas></div></div>
-  <div class="card span2"><h3>Top processes</h3><div id="procs"></div></div>
-  <div class="card"><h3>Disks</h3><div id="disks"></div></div>
+  <div class="card"><h3>Services</h3><div id="svcs"></div></div>
+  <div class="card span2"><h3>Devices (ARP / DHCP)<span class="sp"></span><a class="small" href="/devices">all devices →</a></h3><div id="devs"></div></div>
+  <div class="card span3"><h3>Top processes</h3><div id="procs"></div></div>
 </div>
+</section>
+<section data-s="system" hidden>
+  <div class="grid g3">
+    <div class="card"><h3>System</h3><div id="sys"></div></div>
+    <div class="card"><h3>Firmware</h3><div id="fw"></div></div>
+    <div class="card"><h3>Disks &amp; temperature</h3><div id="disks"></div><div id="temps" style="margin-top:8px"></div></div>
+  </div>
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card"><h3>Gateways</h3><div id="gws"></div></div>
+    <div class="card"><h3>Interfaces</h3><div id="ifs"></div></div>
+  </div>
 </section>
 {% endblock %}
 {% block scripts %}
 <script>
-let hours = Number(localStorage.getItem("lg-hours-hw") || 24), tab = location.hash === "#hardware" ? "hardware" : "overview";
+let hours = Number(localStorage.getItem("lg-hours-hw") || 24), tab = location.hash === "#system" ? "system" : "overview";
 LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours-hw", v); charts(); });
 function showTab(t) {
   tab = t;
@@ -112,7 +111,7 @@ async function overview() {
   const info = s.information || {}, tm = s.time || {}, mem = (s.resources || {}).memory || {}, st = s.pf_states || {};
   document.getElementById("sys").innerHTML = d.opnsense ? `<div class="kv">
     <div>Host</div><div>${LG.esc(info.name)}</div><div>Versions</div><div>${LG.esc((info.versions || []).join(" · "))}</div>
-    <div>CPU</div><div>${LG.esc((info.cpu_type || ""))}</div><div>Uptime</div><div>${LG.esc(tm.uptime)}</div>
+    <div>CPU</div><div>${LG.esc(s.cpu_type || info.cpu_type || "–")}</div><div>Uptime</div><div>${LG.esc(tm.uptime)}</div>
     <div>Time</div><div>${LG.esc(tm.datetime)}</div><div>Load</div><div>${LG.esc(tm.loadavg)}</div>
     <div>Memory</div><div>${LG.bytes(mem.used)} / ${LG.bytes(mem.total)}</div>
     <div>States</div><div>${LG.num(st.current)} / ${LG.num(st.limit)}</div></div>` : `<div class="empty">OPNsense API not configured.</div>`;
@@ -122,9 +121,8 @@ async function overview() {
     <div>Status</div><div>${LG.esc(fw.status_msg || fw.status)}</div>
     <div>Updates</div><div>${LG.esc(fw.updates ?? (fw.all_packages ? Object.keys(fw.all_packages).length : "–"))}</div>
     <div>Last check</div><div>${LG.esc(fw.last_check || "")}</div></div>` : `<div class="kv"><div>Status</div><div>${LG.esc(fw.status_msg || fw.status || "unknown")}</div></div>`;
-  const disks = (s.disk || {}).devices || [], temps = Array.isArray(s.temperature) ? s.temperature : [];
-  document.getElementById("disk").innerHTML = disks.map(x => `<div class="small">${LG.esc(x.mountpoint)} (${LG.esc(x.type)}) ${LG.esc(x.used)} / ${LG.esc(x.blocks)} — ${LG.esc(x.used_pct)}%<div class="bar ${x.used_pct > 90 ? "bad" : x.used_pct > 75 ? "warn" : ""}"><i style="width:${Number(x.used_pct) || 0}%"></i></div></div>`).join("")
-    + temps.map(t => `<div class="small">${LG.esc(t.type_translated || t.device)}: ${LG.esc(t.temperature)} °C</div>`).join("") || `<div class="empty">–</div>`;
+  const temps = Array.isArray(s.temperature) ? s.temperature : [];
+  document.getElementById("temps").innerHTML = temps.map(t => `<div class="small">${LG.esc(t.type_translated || t.device)}: ${LG.esc(t.temperature)} °C</div>`).join("");
   LG.table("#gws", [{k: "name", l: "Name"}, {k: "address", l: "Address"}, {k: "status_translated", l: "Status", f: (v, r) => `<span class="dot ${/online|none/i.test(v || r.status) ? "ok" : "bad"}"></span>${LG.esc(v || r.status)}`},
     {k: "delay", l: "RTT"}, {k: "stddev", l: "RTTd"}, {k: "loss", l: "Loss"}], S("gateways") || []);
   const ifsnap = S("interfaces") || {};
