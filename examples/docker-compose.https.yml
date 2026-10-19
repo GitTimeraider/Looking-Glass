@@ -29,6 +29,9 @@ services:
     image: ghcr.io/gittimeraider/looking-glass:latest
     container_name: looking-glass
     restart: unless-stopped
+    user: "${PUID:-10001}:${PGID:-10001}"   # uid:gid to run as (PUID/PGID in .env); must own the data folder
+    cap_drop: [ALL]                   # needs no Linux capabilities
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       db:
         condition: service_healthy
@@ -43,12 +46,15 @@ services:
       - "514:5514/tcp"
       - "9200:9200"        # Zenarmor Elasticsearch-compatible stream receiver
     volumes:
-      - ./data:/data
+      - ./data:/data       # sudo chown -R 10001:10001 ./data (= PUID:PGID)
 
   db:
     image: postgres:18-alpine
     container_name: looking-glass-db
     restart: unless-stopped
+    user: postgres                    # start directly as the postgres user, so no capabilities are needed
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     environment:
       POSTGRES_USER: lookingglass
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

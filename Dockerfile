@@ -11,10 +11,14 @@ RUN pip install -r requirements.txt
 
 COPY lookingglass ./lookingglass
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN useradd --system --uid 10001 --home /data lookingglass \
-    && mkdir -p /data && chown lookingglass /data
-
-# starts as root only to fix /data ownership, then drops to PUID/PGID (default 10001) - see docker-entrypoint.sh
+# Runs as an unprivileged user and needs no Linux capabilities, so it works with
+#   --user <uid>:<gid> --cap-drop=ALL --security-opt=no-new-privileges:true
+# /data is world-writable with the sticky bit (like /tmp) so a fresh named volume works for any --user;
+# the encryption key inside it is created with mode 0600.
+RUN groupadd --system --gid 10001 lookingglass \
+    && useradd --system --uid 10001 --gid 10001 --home-dir /data --no-create-home --shell /usr/sbin/nologin lookingglass \
+    && mkdir -p /data && chown 10001:10001 /data && chmod 1777 /data
+USER 10001:10001
 VOLUME ["/data"]
 # 8080 = web UI, 5514 = syslog (udp + tcp), 9200 = Zenarmor Elasticsearch-compatible stream receiver
 EXPOSE 8080 5514/udp 5514/tcp 9200
