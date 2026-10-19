@@ -3,7 +3,10 @@
 #   1. Pick a name, e.g. looking-glass.home.lan, and point it (DNS record in OPNsense: Services > Unbound DNS > Overrides)
 #      to the Docker host.
 #   2. Put it in .env:   LOOKING_GLASS_HOST=looking-glass.home.lan   and   PUBLIC_URL=https://looking-glass.home.lan
-#   3. docker compose -f docker-compose.https.yml up -d
+#   3. mkdir -p data secrets && sudo chown 10001:10001 data
+#      openssl rand -hex 24 > secrets/db_password && chmod 700 secrets && chmod 644 secrets/db_password
+#   4. docker compose -f docker-compose.https.yml up -d
+#   5. open https://looking-glass.home.lan and follow the setup wizard (setup code: docker logs looking-glass)
 #
 # Certificates: with `tls internal` (see Caddyfile) Caddy creates its own CA. Install its root certificate on your
 # devices once, otherwise browsers show a warning and refuse passkeys:
@@ -35,9 +38,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    env_file: .env
+    env_file:              # optional: PUBLIC_URL, LOG_LEVEL ... (see .env.example)
+      - path: .env
+        required: false
     environment:
-      DATABASE_URL: postgresql://lookingglass:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/lookingglass
       COOKIE_SECURE: "true"
     expose:
       - "8080"             # only reachable through Caddy
@@ -55,9 +59,10 @@ services:
     user: postgres                    # start directly as the postgres user, so no capabilities are needed
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    secrets: [db_password]
     environment:
       POSTGRES_USER: lookingglass
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password   # read once, when the database is created
       POSTGRES_DB: lookingglass
     volumes:
       - pgdata:/var/lib/postgresql   # PostgreSQL 18+ layout (data lives in /var/lib/postgresql/18/docker)
@@ -70,3 +75,7 @@ services:
 volumes:
   pgdata:
   caddy_data:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password   # openssl rand -hex 24 > secrets/db_password (see the top of this file)

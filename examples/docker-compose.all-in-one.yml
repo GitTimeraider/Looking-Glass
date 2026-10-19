@@ -1,5 +1,8 @@
-# Everything in one file (no .env) - handy for Portainer stacks / Dockge.
-# Replace every CHANGE-ME value before deploying.
+# Everything in one file (no .env, no secret files) - handy for Portainer stacks / Dockge.
+# Replace CHANGE-ME before deploying. After the start open http://<docker-host>:8080: the setup wizard asks for the
+# setup code (container log), the database (host db, user/database lookingglass, the password below) and your login.
+# The password below is only used by PostgreSQL to create the database on the very first start; you can delete the
+# POSTGRES_PASSWORD line afterwards (redeploy) so it no longer appears in the stack.
 services:
   looking-glass:
     image: ghcr.io/gittimeraider/looking-glass:latest
@@ -11,11 +14,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://lookingglass:CHANGE-ME-db-password@db:5432/lookingglass
-      ADMIN_USER: admin                                # first account; password is printed in the log
-      # Everything else (OPNsense API, AI key, Zenarmor, Unraid, retention ...) is configured in the web UI
-      # under Settings and stored encrypted - do not put API keys in this file.
+    # No environment needed: database and login are entered in the setup wizard, OPNsense / AI / Zenarmor / Unraid
+    # under Settings - all stored encrypted. Do not put passwords or API keys in this file.
     ports:
       - "8080:8080"
       - "514:5514/udp"
@@ -33,7 +33,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       POSTGRES_USER: lookingglass
-      POSTGRES_PASSWORD: CHANGE-ME-db-password
+      POSTGRES_PASSWORD: CHANGE-ME-db-password   # only read on the first start
       POSTGRES_DB: lookingglass
     volumes:
       - pgdata:/var/lib/postgresql   # PostgreSQL 18+ layout (data lives in /var/lib/postgresql/18/docker)

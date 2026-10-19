@@ -1,7 +1,9 @@
-# Looking Glass + PostgreSQL (standard setup).
-#   1. cp .env.example .env   and fill it in
-#   2. mkdir -p data && sudo chown 10001:10001 data   (the container runs as PUID:PGID from .env, not as root)
-#   3. docker compose up -d
+# Looking Glass + PostgreSQL (standard setup). Shell on the Docker host, in the folder with this file:
+#   1. mkdir -p data secrets && sudo chown 10001:10001 data       (the container runs as 10001:10001, not root)
+#   2. openssl rand -hex 24 > secrets/db_password && chmod 700 secrets && chmod 644 secrets/db_password
+#   3. docker compose up -d && docker compose logs looking-glass  (shows the one-time setup code)
+#   4. open http://<docker-host>:8080 - the setup wizard asks for the code, the database password
+#      (cat secrets/db_password) and your login. Nothing secret is kept in environment variables.
 # More variants are in ./examples (HTTPS for passkeys, external PostgreSQL, Unraid socket proxy, build from source).
 services:
   looking-glass:
@@ -14,17 +16,17 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql://lookingglass:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/lookingglass
+    env_file:              # optional: PUBLIC_URL, LOG_LEVEL ... (see .env.example)
+      - path: .env
+        required: false
     ports:
       - "8080:8080"        # web UI
       - "514:5514/udp"     # syslog from OPNsense (UDP)
       - "514:5514/tcp"     # syslog from OPNsense (TCP)
       - "9200:9200"        # Zenarmor "Stream Reporting Data to External Elasticsearch" (free edition)
     volumes:
-      - ./data:/data       # encryption key for stored credentials (back it up!) + optional GeoLite2-City.mmdb
-    logging:               # reset codes are printed to this log - keep a few MB of it
+      - ./data:/data       # encryption key, saved database connection (back it up!) + optional GeoLite2-City.mmdb
+    logging:               # setup and reset codes are printed to this log - keep a few MB of it
       driver: json-file
       options: { max-size: "20m", max-file: "3" }
 
@@ -35,9 +37,10 @@ services:
     user: postgres                    # start directly as the postgres user, so no capabilities are needed
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    secrets: [db_password]
     environment:
       POSTGRES_USER: lookingglass
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password   # read once, when the database is created
       POSTGRES_DB: lookingglass
     volumes:
       - pgdata:/var/lib/postgresql   # PostgreSQL 18+ layout (data lives in /var/lib/postgresql/18/docker)
@@ -49,3 +52,7 @@ services:
 
 volumes:
   pgdata:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password   # openssl rand -hex 24 > secrets/db_password (see the top of this file)

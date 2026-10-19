@@ -2,8 +2,9 @@
 
 Two kinds of settings live on the same object:
 
-* **Infrastructure** (``ENV_FIELDS``): how the container runs - database connection, listen ports, initial admin,
-  log level. These come from environment variables (or ``<NAME>_FILE`` for Docker secrets) and need a restart.
+* **Infrastructure**: how the container runs - listen ports, reverse proxy, log level. These come from environment
+  variables (or ``<NAME>_FILE`` for Docker secrets) and need a restart. The database connection and the first
+  account can be given here too, but normally the first-start wizard in the web UI asks for them.
 * **Application** (everything in ``app_config.FIELDS``): OPNsense / AI / Zenarmor credentials, retention, detection
   tuning ... These are edited in the web UI (Settings), stored in the database (secrets encrypted) and applied
   live. Environment values for them are only imported once on first start, then ignored.
@@ -24,12 +25,15 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", validate_assignment=False)
 
     # ===================== infrastructure (environment) =====================
-    database_url: str = "postgresql://lookingglass:lookingglass@db:5432/lookingglass"
+    # optional: without DATABASE_URL the first-start wizard in the web UI asks for the connection and stores it
+    # encrypted in <data_dir>/database.conf (see db_config.py)
+    database_url: str = ""
     data_dir: str = "/data"  # persistent volume: encryption key file, optional GeoIP database
     web_host: str = "0.0.0.0"
     web_port: int = 8080
+    # optional: creates the first account without the wizard (only used while no user exists)
     admin_user: str = "admin"
-    admin_password: str = ""  # initial password of the first user only; empty -> random one is logged at first start
+    admin_password: str = ""
     secret_key: str = ""  # session cookie signing key; generated and stored in the database if empty
     public_url: str = ""  # e.g. https://looking-glass.home.lan - used as WebAuthn origin (auto-detected if empty)
     webauthn_rp_id: str = ""  # passkey relying party id (defaults to the host name of public_url / the request)

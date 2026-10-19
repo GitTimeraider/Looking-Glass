@@ -29,14 +29,21 @@ async def _init_conn(conn: asyncpg.Connection) -> None:
                               encoder=lambda v: json.dumps(v, default=str).encode(), decoder=json.loads)
 
 
-async def connect(dsn: str) -> asyncpg.Pool:
+async def connect(dsn: str | None = None, *, retry: bool = True, **kwargs: Any) -> asyncpg.Pool:
+    """Open the pool (``dsn`` or asyncpg keyword arguments) and create the schema. ``retry=False`` raises instead."""
     global _pool
     delay = 1.0
     while True:
         try:
-            _pool = await asyncpg.create_pool(dsn, min_size=2, max_size=15, init=_init_conn, command_timeout=120)
+            _pool = await asyncpg.create_pool(dsn, min_size=2, max_size=15, init=_init_conn, command_timeout=120,
+                                              timeout=15, **kwargs)
             break
-        except (OSError, asyncpg.PostgresError) as exc:
+        except (OSError, asyncpg.PostgresError, asyncio.TimeoutError) as exc:
+            if not retry:
+                raise
+            if isinstance(exc, (asyncpg.InvalidPasswordError, asyncpg.InvalidAuthorizationSpecificationError)):
+                log.error("database login refused (%s). Wrong user/password? To enter the connection again run: "
+                          "docker exec looking-glass python -m lookingglass.cli setup-database  (then restart)", exc)
             log.warning("database not reachable yet (%s), retrying in %.0fs", exc, delay)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30)
@@ -59,8 +66,10 @@ def pool() -> asyncpg.Pool:
 
 
 async def close() -> None:
+    global _pool
     if _pool is not None:
         await _pool.close()
+        _pool = None
 
 
 def _row(ev: dict[str, Any]) -> tuple:

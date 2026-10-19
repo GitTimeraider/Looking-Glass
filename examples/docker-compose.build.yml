@@ -1,6 +1,9 @@
 # Build Looking Glass from source instead of pulling the image (e.g. to test changes):
-#   git clone https://github.com/GitTimeraider/Looking-Glass && cd Looking Glass
+#   git clone https://github.com/GitTimeraider/Looking-Glass && cd Looking-Glass
+#   mkdir -p data secrets && sudo chown 10001:10001 data
+#   openssl rand -hex 24 > secrets/db_password && chmod 700 secrets && chmod 644 secrets/db_password
 #   docker compose -f examples/docker-compose.build.yml --project-directory . up -d --build
+# Then open http://<docker-host>:8080 and follow the setup wizard (setup code: docker logs looking-glass).
 services:
   looking-glass:
     build: .
@@ -12,9 +15,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql://lookingglass:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/lookingglass
+    env_file:              # optional: PUBLIC_URL, LOG_LEVEL ... (see .env.example)
+      - path: .env
+        required: false
     ports:
       - "8080:8080"
       - "514:5514/udp"
@@ -30,9 +33,10 @@ services:
     user: postgres                    # start directly as the postgres user, so no capabilities are needed
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    secrets: [db_password]
     environment:
       POSTGRES_USER: lookingglass
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password   # read once, when the database is created
       POSTGRES_DB: lookingglass
     volumes:
       - pgdata:/var/lib/postgresql   # PostgreSQL 18+ layout (data lives in /var/lib/postgresql/18/docker)
@@ -44,3 +48,7 @@ services:
 
 volumes:
   pgdata:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password   # openssl rand -hex 24 > secrets/db_password (see the top of this file)

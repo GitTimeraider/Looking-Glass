@@ -38,7 +38,9 @@ outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), 
 
 You need a machine that runs Docker (Linux server, NAS, VM…) and that the OPNsense box can reach.
 Looking Glass uses its own PostgreSQL container (included in the compose file) — no separate SQL server needed.
-If you prefer an existing PostgreSQL 14+ server, drop the `db` service and point `DATABASE_URL` at it.
+If you prefer an existing PostgreSQL 14+ server, use `examples/docker-compose.external-postgres.yml`.
+No passwords or API keys go into environment variables: the database connection and your login are entered in a
+setup wizard on first start, the integrations later under *Settings* — all stored encrypted.
 
 ### 1. Create the API key in OPNsense (OPNsense web UI)
 
@@ -54,9 +56,13 @@ If you prefer an existing PostgreSQL 14+ server, drop the `db` service and point
 ```bash
 mkdir -p ~/looking-glass && cd ~/looking-glass
 curl -O https://raw.githubusercontent.com/GitTimeraider/Looking-Glass/master/docker-compose.yml
-curl -o .env https://raw.githubusercontent.com/GitTimeraider/Looking-Glass/master/.env.example
-mkdir -p data && sudo chown 10001:10001 data    # the container runs as this uid:gid, never as root
+mkdir -p data secrets && sudo chown 10001:10001 data    # the container runs as this uid:gid, never as root
+# password for the bundled PostgreSQL, read from a file instead of an environment variable:
+openssl rand -hex 24 > secrets/db_password && chmod 700 secrets && chmod 644 secrets/db_password
 ```
+
+(`chmod 644` on the file is needed because the non-root containers must be able to read it; the `secrets` folder
+itself stays closed to other users on the host.)
 
 Other ready-made compose files are in [`examples/`](examples):
 
@@ -65,38 +71,52 @@ Other ready-made compose files are in [`examples/`](examples):
 | [`docker-compose.yml`](docker-compose.yml) | standard: Looking Glass + its own PostgreSQL |
 | [`examples/docker-compose.https.yml`](examples/docker-compose.https.yml) + [`Caddyfile`](examples/Caddyfile) | you want HTTPS (required for **passkeys**) via a bundled Caddy reverse proxy |
 | [`examples/docker-compose.external-postgres.yml`](examples/docker-compose.external-postgres.yml) | you already run PostgreSQL 14+ |
-| [`examples/docker-compose.all-in-one.yml`](examples/docker-compose.all-in-one.yml) | Portainer / Dockge stacks: no `.env` file |
-| [`examples/docker-compose.secrets.yml`](examples/docker-compose.secrets.yml) | Docker secrets: no password in any environment variable |
+| [`examples/docker-compose.all-in-one.yml`](examples/docker-compose.all-in-one.yml) | Portainer / Dockge stacks: no files next to the stack |
+| [`examples/docker-compose.secrets.yml`](examples/docker-compose.secrets.yml) | unattended install without the wizard (database + first login from Docker secret files) |
 | [`examples/docker-compose.build.yml`](examples/docker-compose.build.yml) | build the image from source |
 | [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml) | run **on Unraid** for per-container CPU/memory graphs |
 | [`examples/unraid/looking-glass.xml`](examples/unraid/looking-glass.xml) | run Looking Glass itself **on Unraid** as a Docker template |
 
-### 3. Configure the container (edit `~/looking-glass/.env`, e.g. `nano .env`)
+### 3. Optional: `.env` (shell on your Docker host, in `~/looking-glass`)
 
-The environment only holds **infrastructure** settings. API keys and other credentials are **not** put here; you
-enter them in the web UI after the first login (step 5), where they are stored encrypted.
+Not needed for a standard install. Download it only to change one of these
+(`curl -o .env https://raw.githubusercontent.com/GitTimeraider/Looking-Glass/master/.env.example`, then `nano .env`):
 
-* `POSTGRES_PASSWORD` – choose a long random password (or use Docker secrets, see
-  [`examples/docker-compose.secrets.yml`](examples/docker-compose.secrets.yml) – then no password is in any
-  environment variable at all).
-* `ADMIN_USER` / `ADMIN_PASSWORD` – the first account (only used while the database is empty; leave the password
-  empty and a random one is printed in the container log).
 * `PUID` / `PGID` – the user and group the container runs as (the compose file passes them to `user:`; default
   10001). The `data` folder must belong to them: `sudo chown -R <PUID>:<PGID> data`. See
   [Running hardened](#running-hardened-non-root-no-capabilities).
 * `PUBLIC_URL` – only when you use HTTPS / a reverse proxy, e.g. `https://looking-glass.home.lan` (for passkeys).
 
-### 4. Start and log in
+### 4. Start, run the setup wizard and log in
 
 On the Docker host, in `~/looking-glass`:
 
 ```bash
 docker compose up -d
-docker compose logs -f looking-glass     # Ctrl+C to stop following
+docker compose logs looking-glass        # shows the one-time setup code
+cat secrets/db_password                  # the database password, for the wizard
 ```
 
-In your browser open `http://<docker-host>:8080`, log in with `ADMIN_USER` / `ADMIN_PASSWORD`. You are sent to
-**Account & MFA** and must set up a second factor before anything else is accessible:
+The log contains a block like:
+
+```
+FIRST-TIME SETUP: open the web UI (port 8080) and enter this setup code:
+    K7QM-2XHD-9WPA
+```
+
+In your browser open `http://<docker-host>:8080`. The setup wizard asks for:
+
+1. **Setup code** – from the log above. It makes sure only someone with access to the Docker host can set up a
+   fresh instance. After 10 wrong attempts a new code is printed.
+2. **Database** – for the bundled database keep the defaults (host `db`, port `5432`, database and user
+   `lookingglass`) and paste the password from `secrets/db_password`. *Test connection* tells you exactly what is
+   wrong (wrong password, unknown host, missing database, missing rights). *Save & continue* creates the tables.
+   The connection is stored encrypted in `data/database.conf`. Pointing it at a database that already holds Looking
+   Glass data reuses it.
+3. **Account** – your user name and password (at least 10 characters).
+
+You land on the login page. After logging in you are sent to **Account & MFA** and must set up a second factor
+before anything else is accessible:
 
 * **Authenticator app (TOTP)** – click *Set up authenticator app*, scan the QR code with Google/Microsoft
   Authenticator, Aegis, 1Password, Bitwarden…, type the 6-digit code, *Confirm*.
@@ -104,7 +124,12 @@ In your browser open `http://<docker-host>:8080`, log in with `ADMIN_USER` / `AD
   Passkeys only work when Looking Glass is opened over **HTTPS** (or `http://localhost`); use
   `examples/docker-compose.https.yml` or your own reverse proxy (Nginx Proxy Manager, Traefik, SWAG…).
 
-Then change the initial password on the same page. Next logins ask for password + TOTP code or passkey.
+Next logins ask for password + TOTP code or passkey.
+
+> **Changing the database later** (other server, new password): shell on the Docker host,
+> `docker exec looking-glass python -m lookingglass.cli setup-database`, then `docker restart looking-glass` and
+> open the web UI – the wizard asks for the connection again (new setup code in the log). Your data and accounts
+> stay in the database.
 
 ### 5. Enter your integrations (Looking Glass web UI › **Settings**)
 
@@ -124,6 +149,14 @@ together with your database**; without it the stored credentials can't be decryp
 > Upgrading from a version that used `OPNSENSE_*`, `AI_*`, `UNRAID_*` … environment variables? They are imported
 > into the encrypted store automatically on the first start (the log tells you which) – then delete them from your
 > compose/.env file.
+
+> Upgrading from a version with `DATABASE_URL` / `POSTGRES_PASSWORD` / `ADMIN_*` in `.env`? It keeps working
+> unchanged (`DATABASE_URL` from the environment takes precedence over the wizard). To get rid of them: download the
+> new `docker-compose.yml`, write your current `POSTGRES_PASSWORD` into `secrets/db_password` (commands in step 2,
+> e.g. `grep ^POSTGRES_PASSWORD= .env | cut -d= -f2- > secrets/db_password`), delete `POSTGRES_PASSWORD`,
+> `DATABASE_URL`, `ADMIN_USER` and `ADMIN_PASSWORD` from `.env`, run `docker compose up -d` and complete the wizard
+> (database step only - your accounts and data are kept). PostgreSQL only reads its password when it creates the
+> database, so the existing database keeps its password.
 
 > Port 514 on the host must be free. If something else uses it, change `"514:5514/udp"` in `docker-compose.yml`
 > to e.g. `"1514:5514/udp"` and use that port in OPNsense in the next step.
@@ -215,10 +248,10 @@ All bundled compose files already set these. A complete `docker run` example (sh
 mkdir -p /srv/looking-glass && sudo chown 99:100 /srv/looking-glass
 docker run -d --name looking-glass --restart unless-stopped \
   --user 99:100 --cap-drop=ALL --security-opt=no-new-privileges:true \
-  -e DATABASE_URL=postgresql://lookingglass:PASSWORD@192.168.1.10:5432/lookingglass \
   -v /srv/looking-glass:/data \
   -p 8080:8080 -p 514:5514/udp -p 514:5514/tcp -p 9200:9200 \
   ghcr.io/gittimeraider/looking-glass:latest
+docker logs looking-glass    # setup code; then open http://<docker-host>:8080 for the wizard
 ```
 
 Things to know:
@@ -301,15 +334,18 @@ secret / TLS verification / custom CA / poll interval / per-source pulls · AI b
 daily report · Zenarmor stream username / password / allowed senders · syslog allowed senders, extra internal
 networks, time zone · retention, detection interval, GeoIP path · Unraid servers (URL, API key, Docker API).
 
-**Environment variables (infrastructure only, need a container restart):**
+**In the setup wizard (first start, stored encrypted in `/data/database.conf`):** database host / port / name /
+user / password / SSL mode · first account.
+
+**Environment variables (all optional, need a container restart):**
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATABASE_URL` (or `DATABASE_URL_FILE`) | `postgresql://lookingglass:lookingglass@db:5432/lookingglass` | PostgreSQL connection |
+| `DATABASE_URL` (or `DATABASE_URL_FILE`) | – (setup wizard) | PostgreSQL connection; when set, the wizard's database step is skipped |
 | `DATABASE_PASSWORD_FILE` | – | read the DB password from a Docker secret file and insert it into `DATABASE_URL` |
-| `ADMIN_USER` / `ADMIN_PASSWORD` (or `ADMIN_PASSWORD_FILE`) | `admin` / random (printed in the log) | first account, created only when no user exists |
+| `ADMIN_USER` / `ADMIN_PASSWORD` (or `ADMIN_PASSWORD_FILE`) | – (setup wizard) | first account, created only when no user exists; skips the wizard's account step |
 | `PUID` / `PGID` | `10001` | compose files: the `user:` the container runs as (must own `./data`). `docker run`: use `--user` instead |
-| `DATA_DIR` | `/data` | data volume (encryption key, GeoIP database) |
+| `DATA_DIR` | `/data` | data volume (encryption key, saved database connection, GeoIP database) |
 | `LG_ENCRYPTION_KEY_FILE` | `/data/lookingglass.key` | alternative location of the encryption key (e.g. a Docker secret) |
 | `PUBLIC_URL` / `WEBAUTHN_RP_ID` | auto | public https URL / passkey relying-party id when behind a reverse proxy |
 | `COOKIE_SECURE` | `false` | mark the session cookie HTTPS-only |
@@ -323,7 +359,13 @@ networks, time zone · retention, detection interval, GeoIP path · Unraid serve
   Password changes and resets invalidate all other sessions.
 * Put Looking Glass on your LAN / management network; don't expose port 8080 to the internet (use a VPN or a reverse
   proxy with TLS if you need remote access).
-* The reset code only appears in the container log, so a reset requires access to the Docker host.
+* The setup code and the reset code only appear in the container log, so setting up a fresh instance or resetting
+  a login requires access to the Docker host. Until the wizard is finished, only the wizard is served.
+* No passwords or API keys need to be in environment variables (which anyone who can run `docker inspect` can read).
+  The database connection is stored encrypted in `/data/database.conf` (mode `0600`). The key is in the same
+  folder, because the app must be able to start on its own. So the encryption protects copies of that one file,
+  not someone who can read the whole data folder; that folder is readable only by the container user. The
+  bundled PostgreSQL reads its password from `secrets/db_password` only when the database is first created.
 * Integration credentials are stored encrypted in the database with a key kept only in the data volume, are
   never returned by the UI/API, and are not readable by the AI analyst's SQL tool. The environment holds no API keys.
 * Set *Settings › Ingestion & network › Syslog allowed senders* to your OPNsense IP so nobody else can inject log lines.
