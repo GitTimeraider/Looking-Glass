@@ -24,7 +24,7 @@ def data() -> dict:
     return {
         "diagnostics/system/systemResources": {"memory": {"total": "8000000000", "used": 2_000_000_000 + random.randint(0, 5) * 10**8, "arc": "900000000"}},
         "diagnostics/system/systemInformation": {"name": "fw.home.lan", "versions": ["OPNsense 26.7.4-amd64", "FreeBSD 14.3-RELEASE-p4", "OpenSSL 3.0.17"]},
-        "diagnostics/system/systemTime": {"uptime": "3 days, 04:12:09", "datetime": time.ctime(), "boottime": "Wed Oct 15 18:00:00 CEST 2026",
+        "diagnostics/system/systemTime": {"uptime": "3 days, 04:12:09", "datetime": time.strftime("%a %b %d %H:%M:%S CEST %Y", time.gmtime(time.time() + 7200)), "boottime": "Wed Oct 15 18:00:00 CEST 2026",
                                           "config": "Sat Oct 18 10:00:00 CEST 2026", "loadavg": f"{random.random():.2f}, 0.25, 0.20"},
         "diagnostics/system/systemDisk": {"devices": [{"device": "zroot/ROOT/default", "type": "zfs", "blocks": "100G", "used": "12G", "available": "88G", "used_pct": 12, "mountpoint": "/"}]},
         "diagnostics/system/systemTemperature": [{"device": f"dev.cpu.{i}.temperature", "temperature": f"{44 + random.random() * 6:.1f}", "type_translated": "CPU"} for i in range(4)],
@@ -53,7 +53,12 @@ def data() -> dict:
             {"mac": "aa:aa:aa:aa:aa:01", "ip": "192.168.1.50", "hostname": "nas", "intf": "igb1", "intf_description": "LAN", "manufacturer": "Synology Incorporated"},
             {"mac": "aa:aa:aa:aa:aa:02", "ip": "192.168.1.10", "hostname": "tower", "intf": "igb1", "intf_description": "LAN", "manufacturer": "ASRock Incorporation"},
             {"mac": "aa:aa:aa:aa:aa:33", "ip": "192.168.1.33", "hostname": "laptop", "intf": "igb1", "intf_description": "LAN", "manufacturer": "Dell Inc."}],
-        "diagnostics/firewall/log": [],
+        # like read_log.py: the RFC 5424 time stamp with its "+02:00" cut off, i.e. OPNsense (CEST) local time
+        "diagnostics/firewall/log": [{"__timestamp__": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + 7200)),
+                                      "__host__": "fw.home.lan", "__digest__": f"d{int(time.time()) // 15}", "rulenr": "82",
+                                      "rid": "fae559338f65e11c53669fc3642c93c2", "interface": "igb0", "reason": "match",
+                                      "action": "block", "dir": "in", "ipversion": "4", "protoname": "tcp", "src": "203.0.113.77",
+                                      "dst": "198.51.100.1", "srcport": "51515", "dstport": "3389", "label": "Default deny rule"}],
         # real format (core: scripts/unbound/stats.py): numeric codes, and client = hostname when Unbound knows one
         "unbound/overview/searchQueries": [{"uuid": "u-block", "time": now, "client": "192.168.1.20", "domain": "malware.example.", "type": "A",
                                             "action": 1, "rcode": 3, "source": 1, "blocklist": "malware", "resolve_time_ms": 0, "ttl": 0,

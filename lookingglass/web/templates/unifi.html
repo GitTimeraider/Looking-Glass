@@ -104,7 +104,7 @@ async function load() {
     {k: "evil_twin", l: "", f: v => v ? `<span class="badge high">evil twin?</span>` : ""},
     {k: "essid", l: "Wi-Fi name", f: v => v ? LG.esc(v) : `<span class="muted">(hidden)</span>`}, {k: "bssid", l: "BSSID", f: v => `<span class="mono small">${LG.esc(v)}</span>`},
     {k: "vendor", l: "Vendor"}, {k: "band", l: "Band"}, {k: "channel", l: "Channel", num: true}, {k: "security", l: "Security"},
-    {k: "signal", l: "Signal", num: true, f: sig}, {k: "heard_by", l: "Heard by"}, {k: "last_seen", l: "Last seen", desc: true, f: v => v ? LG.ago(v * 1000) : ""},
+    {k: "signal", l: "Signal", num: true, f: sig}, {k: "heard_by", l: "Heard by"}, {k: "last_seen", l: "Last seen", desc: true, f: v => v ? LG.ago(Number(v)) : ""},
   ], [...rogue].sort((a, b) => (b.evil_twin - a.evil_twin) || ((b.signal ?? -999) - (a.signal ?? -999))),
      "Nothing yet (needs the classic API; refreshed every 10 minutes)", undefined, { sortAll: true, order: null });
 }

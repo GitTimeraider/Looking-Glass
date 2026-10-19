@@ -4,8 +4,10 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import statistics
 import time
-from datetime import timezone
+from collections import deque
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -28,13 +30,16 @@ class Stats:
         self.by_source: dict[str, int] = {}
         self.last_by_source: dict[str, float] = {}
         self.senders: dict[str, float] = {}
+        self.clock_offsets: dict[str, int] = {}  # sender -> seconds its timestamps are ahead of real time (corrected)
+        self.future_clamped = 0                   # events that still claimed to be from the future
         self.extra: dict[str, Any] = {}
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "received": self.received, "parsed": self.parsed, "dropped": self.dropped,
             "written": self.written, "errors": self.errors, "by_source": self.by_source,
-            "last_by_source": self.last_by_source, "senders": self.senders, **self.extra,
+            "last_by_source": self.last_by_source, "senders": self.senders, "clock_offsets": self.clock_offsets,
+            "future_clamped": self.future_clamped, **self.extra,
         }
 
 
@@ -52,6 +57,11 @@ class EventWriter:
         self.listeners: list = []  # callables invoked with each written event (e.g. device tracker)
 
     def put(self, ev: dict[str, Any]) -> None:
+        ts = ev.get("ts")
+        if isinstance(ts, datetime) and ts > datetime.now(timezone.utc) + timedelta(minutes=2):
+            # nothing can happen in the future: a wrong time zone somewhere - keep the receive time instead
+            ev["ts"] = datetime.now(timezone.utc)
+            STATS.future_clamped += 1
         try:
             self.queue.put_nowait(ev)
         except asyncio.QueueFull:
@@ -97,10 +107,46 @@ class EventWriter:
                 log.exception("event listener failed")
 
 
+class ClockSkew:
+    """Learns how far a sender's timestamps are off. Syslog arrives in real time, so a steady difference of whole
+    time-zone steps (15 minutes) means the sender writes local time without a zone (BSD syslog format) and Looking
+    Glass assumes another zone - e.g. OPNsense on Europe/Amsterdam with the Looking Glass time zone left on UTC."""
+
+    WINDOW, EVERY, MIN_SKEW = 200, 50, 600
+
+    def __init__(self) -> None:
+        self.deltas: dict[str, deque] = {}
+        self.seen: dict[str, int] = {}
+
+    def correct(self, sender: str, ts: datetime, now: datetime) -> datetime:
+        raw = (ts - now).total_seconds()
+        d = self.deltas.setdefault(sender, deque(maxlen=self.WINDOW))
+        d.append(raw)
+        self.seen[sender] = self.seen.get(sender, 0) + 1
+        if self.seen[sender] % self.EVERY == 0 or len(d) == 20:
+            self._learn(sender, d)
+        offset = STATS.clock_offsets.get(sender, 0)
+        return ts - timedelta(seconds=offset) if offset else ts
+
+    @classmethod
+    def _learn(cls, sender: str, d: deque) -> None:
+        med = statistics.median(d)
+        step = round(med / 900) * 900
+        steady = sum(1 for x in d if abs(x - step) <= 300) >= 0.8 * len(d)
+        if abs(med) >= cls.MIN_SKEW and step and steady:
+            if STATS.clock_offsets.get(sender) != step:
+                log.warning("syslog from %s is %+.1f h off (local time without zone?) - correcting; set Settings › "
+                            "Ingestion › Time zone or enable RFC 5424 in OPNsense remote logging", sender, step / 3600)
+            STATS.clock_offsets[sender] = step
+        elif abs(med) < 300:
+            STATS.clock_offsets.pop(sender, None)
+
+
 class SyslogServer:
     def __init__(self, settings: Settings, writer: EventWriter) -> None:
         self.settings = settings
         self.writer = writer
+        self.skew = ClockSkew()
         self._tz_name: str | None = None
         self._tz: Any = timezone.utc
 
@@ -140,6 +186,8 @@ class SyslogServer:
         if ev is None:
             return
         STATS.parsed += 1
+        if isinstance(ev.get("ts"), datetime):
+            ev["ts"] = self.skew.correct(sender, ev["ts"], datetime.now(timezone.utc))
         src = ev["source"]
         STATS.by_source[src] = STATS.by_source.get(src, 0) + 1
         STATS.last_by_source[src] = time.time()
