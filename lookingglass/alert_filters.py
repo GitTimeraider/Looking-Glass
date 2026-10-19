@@ -48,11 +48,11 @@ RULES: dict[str, list[tuple[str, str]]] = {
 }
 RULE_NAMES = {r for group in RULES.values() for r, _ in group}
 
-_cache: dict[str, Any] = {"at": 0.0, "filters": []}
+_cache: dict[str, Any] = {"at": None, "filters": []}  # at: time.monotonic() of the last load, None = reload
 
 
 def invalidate() -> None:
-    _cache["at"] = 0.0
+    _cache["at"] = None
 
 
 def clean(payload: dict[str, Any]) -> dict[str, Any]:
@@ -131,7 +131,7 @@ def matches(f: dict[str, Any], rule: str, severity: str, title: str, description
 
 
 async def _filters() -> list[dict[str, Any]]:
-    if time.monotonic() - _cache["at"] > 60:
+    if _cache["at"] is None or time.monotonic() - _cache["at"] > 60:
         rows = await db.pool().fetch("SELECT * FROM alert_filters WHERE enabled ORDER BY id")
         filters = []
         for r in rows:
