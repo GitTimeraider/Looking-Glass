@@ -28,7 +28,7 @@ SUSPICIOUS_OUT_PORTS = {
 
 
 # a name from a better source replaces one from a worse source, never the other way round
-NAME_RANK = {"manual": 100, "dnsmasq-static": 60, "dhcp": 50, "dns": 30, "zenarmor": 25, "arp": 20}
+NAME_RANK = {"manual": 100, "unifi-alias": 70, "dnsmasq-static": 60, "unifi": 45, "dhcp": 50, "dns": 30, "zenarmor": 25, "arp": 20}
 
 
 def name_rank(source: str) -> int:
@@ -41,12 +41,13 @@ async def device_info(ip: str | None) -> dict[str, Any] | None:
         return None
     try:
         row = await db.pool().fetchrow(
-            "SELECT mac, hostname, vendor, notes FROM devices WHERE ip = $1::inet ORDER BY last_seen DESC LIMIT 1", ip)
+            "SELECT mac, hostname, vendor, notes, conn_type, conn_where, conn_signal FROM devices WHERE ip = $1::inet "
+            "ORDER BY last_seen DESC LIMIT 1", ip)
     except Exception:  # noqa: BLE001 - invalid ip text etc.
         return None
     if not row:
         return None
-    return {k: row[k] for k in ("mac", "hostname", "vendor", "notes") if row[k]}
+    return {k: row[k] for k in ("mac", "hostname", "vendor", "notes", "conn_type", "conn_where", "conn_signal") if row[k]}
 
 
 def who(ip: str | None, dev: dict[str, Any] | None = None) -> str:
@@ -75,6 +76,12 @@ async def raise_alert(rule: str, severity: str, title: str, fingerprint: str, de
         name = dev.get("hostname")
         if name and name not in title:  # "192.168.1.20" -> "laptop (192.168.1.20)"
             title = re.sub(rf"(?<![\d.:]){re.escape(src_ip)}(?![\d.:])", f"{name} ({src_ip})", title, count=1)
+        if dev.get("conn_where") and "Connected to:" not in description:
+            # UniFi knows where the device is: say so, and how to cut it off right there
+            signal = f", signal {dev['conn_signal']} dBm" if dev.get("conn_signal") else ""
+            description = (description + "\n\n" if description else "") + (
+                f"Connected to: {dev['conn_where']}{signal} (UniFi). To cut it off quickly: UniFi Network › Client Devices › "
+                f"{name or dev.get('mac')} › Block, or an OPNsense firewall rule for {src_ip}.")
     row = await pool.fetchrow(
         "SELECT id, severity FROM alerts WHERE fingerprint = $1 AND status <> 'closed' "
         "AND last_seen > now() - interval '24 hours' ORDER BY id DESC LIMIT 1", fingerprint)
@@ -123,8 +130,9 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
         source = (d.get("name_source") or origin) if d["hostname"] else None
         new = await pool.fetchval(
             "INSERT INTO devices (mac, ip, hostname, vendor, interface, sources, lease_type, lease_expires, online, "
-            "name_source, name_rank) "
-            "VALUES ($1, $2, $3, $4, $5, ARRAY[$6::text], $7, $8, $9, $10, $11) "
+            "name_source, name_rank, conn_type, conn_where, conn_signal, conn_seen) "
+            "VALUES ($1, $2, $3, $4, $5, ARRAY[$6::text], $7, $8, $9, $10, $11, $12, $13, $14, "
+            "CASE WHEN $12::text IS NOT NULL THEN now() END) "
             "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(EXCLUDED.ip, devices.ip), "
             "hostname = CASE WHEN EXCLUDED.hostname IS NOT NULL AND EXCLUDED.name_rank >= devices.name_rank "
             "THEN EXCLUDED.hostname ELSE devices.hostname END, "
@@ -136,10 +144,14 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
             "sources = (SELECT array_agg(DISTINCT s) FROM unnest(devices.sources || EXCLUDED.sources) s), "
             "lease_type = COALESCE(EXCLUDED.lease_type, devices.lease_type), "
             "lease_expires = COALESCE(EXCLUDED.lease_expires, devices.lease_expires), "
+            "conn_type = COALESCE(EXCLUDED.conn_type, devices.conn_type), "
+            "conn_where = COALESCE(EXCLUDED.conn_where, devices.conn_where), "
+            "conn_signal = CASE WHEN EXCLUDED.conn_type IS NOT NULL THEN EXCLUDED.conn_signal ELSE devices.conn_signal END, "
+            "conn_seen = COALESCE(EXCLUDED.conn_seen, devices.conn_seen), "
             "online = devices.online OR EXCLUDED.online, last_seen = now() "
             "RETURNING (xmax = 0)", d["mac"], d.get("ip"), d.get("hostname") or None, d.get("vendor") or None,
             d.get("interface") or None, origin, d.get("lease_type"), d.get("lease_expires"), bool(d.get("online")),
-            source, name_rank(source) if source else 0)
+            source, name_rank(source) if source else 0, d.get("conn_type"), d.get("conn_where"), d.get("conn_signal"))
         if new and not first_run:
             await raise_alert(
                 "new_device", "low", f"New device on network: {d['mac']} ({d.get('hostname') or d.get('ip') or '?'})",

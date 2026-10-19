@@ -52,7 +52,18 @@ QUERIES: dict[str, str] = {
                           "ORDER BY array_position(ARRAY['critical','high','medium','low','info'], severity)",
     "alerts": "SELECT id, severity, rule, title, host(src_ip) src, count, status, last_seen FROM alerts WHERE last_seen > now() - make_interval(secs => $1) "
               "ORDER BY array_position(ARRAY['critical','high','medium','low','info'], severity), last_seen DESC LIMIT 50",
-    "new_devices": "SELECT mac, host(ip) ip, hostname, first_seen FROM devices WHERE first_seen > now() - make_interval(secs => $1) ORDER BY first_seen DESC LIMIT 25",
+    "new_devices": "SELECT mac, host(ip) ip, hostname, conn_where, first_seen FROM devices WHERE first_seen > now() - make_interval(secs => $1) "
+                   "ORDER BY first_seen DESC LIMIT 25",
+    "unifi_events": "SELECT action, count(*) n, count(DISTINCT data->>'mac') clients FROM events WHERE source = 'unifi' "
+                    "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC",
+    # UniFi location + OPNsense findings: which device, where it is connected and what it did
+    "clients_with_security_events": "WITH ev AS (SELECT src_ip, count(*) FILTER (WHERE source = 'firewall' AND action = 'block') fw, "
+        "count(*) FILTER (WHERE source = 'unbound' AND action IN ('block', 'drop')) dns, "
+        "count(*) FILTER (WHERE source IN ('suricata', 'crowdsec', 'qfeeds') OR (source = 'zenarmor' AND action = 'block')) threats "
+        "FROM events WHERE ts > now() - make_interval(secs => $1) AND src_ip IS NOT NULL "
+        "AND source IN ('firewall', 'unbound', 'suricata', 'crowdsec', 'qfeeds', 'zenarmor') GROUP BY 1) "
+        "SELECT coalesce(d.hostname, d.mac) name, host(d.ip) ip, d.conn_where, ev.fw, ev.dns, ev.threats FROM devices d "
+        "JOIN ev ON ev.src_ip = d.ip WHERE d.conn_where IS NOT NULL ORDER BY 6 DESC, 4 + 5 DESC LIMIT 15",
 }
 
 

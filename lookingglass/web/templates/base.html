@@ -29,8 +29,11 @@
     <a href="/events" class="{{ 'active' if path == '/events' }}">Event search</a>
     <div class="grp">OPNsense security</div>
     {{ dash_links("opnsense") }}
+    <div class="grp">UniFi network</div>
+    {{ dash_links("unifi") }}
     <div class="grp">Infrastructure</div>
     <a href="/system" class="{{ 'active' if path == '/system' }}">OPNsense</a>
+    <a href="/unifi" class="{{ 'active' if path == '/unifi' }}">UniFi</a>
     <a href="/unraid" class="{{ 'active' if path == '/unraid' }}">Unraid</a>
     <a href="/devices" class="{{ 'active' if path == '/devices' }}">Devices</a>
     <div class="grp">Tools</div>

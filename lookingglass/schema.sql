@@ -133,6 +133,11 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS trusted BOOLEAN NOT NULL DEFAULT fa
 -- where the name came from (manual, dnsmasq-static, dhcp-*, dns, arp, zenarmor); a better source replaces a worse one
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS name_source TEXT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS name_rank SMALLINT NOT NULL DEFAULT 0;
+-- where the device is connected, from UniFi: "wifi" / "wired", "AP Living room · Home (5 GHz)" / "Switch Office port 5"
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_type TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_where TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_signal INTEGER;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_seen TIMESTAMPTZ;
 -- dnsmasq writes "*" and the ARP table "-" / "?" when a device has no name: these are no names
 UPDATE devices SET hostname = NULL, name_source = NULL, name_rank = 0
  WHERE hostname IS NOT NULL AND name_rank < 100 AND lower(btrim(hostname)) IN ('', '*', '-', '?', 'unknown', '<unknown>', '(unknown)');

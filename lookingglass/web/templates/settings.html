@@ -5,16 +5,16 @@
   the container's data volume and are never shown again after saving (leave a secret field empty to keep the current value).
   Changes apply immediately - no restart needed.</p>
 <div class="tabs" id="tabs">
-  <button data-t="opnsense" class="on">OPNsense</button><button data-t="ai">AI analyst</button><button data-t="zenarmor">Zenarmor</button>
+  <button data-t="opnsense" class="on">OPNsense</button><button data-t="unifi">UniFi</button><button data-t="ai">AI analyst</button><button data-t="zenarmor">Zenarmor</button>
   <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button>
 </div>
-{% for g in ["opnsense", "ai", "zenarmor", "ingest", "data"] %}
+{% for g in ["opnsense", "unifi", "ai", "zenarmor", "ingest", "data"] %}
 <section data-s="{{ g }}" {% if g != "opnsense" %}hidden{% endif %}>
   <div class="card">
     <form class="settings-form" data-group="{{ g }}"></form>
     <div class="filters" style="margin-top:12px">
       <button type="button" data-save="{{ g }}">Save</button>
-      {% if g in ("opnsense", "ai") %}<button type="button" class="secondary" data-test="{{ g }}">Test connection</button>{% endif %}
+      {% if g in ("opnsense", "unifi", "ai") %}<button type="button" class="secondary" data-test="{{ g }}">Test connection</button>{% endif %}
     </div>
     <div class="small" id="msg-{{ g }}"></div>
   </div>
@@ -133,7 +133,9 @@ document.querySelectorAll("[data-test]").forEach(b => b.onclick = async () => {
     const r = await LG.api(`/api/settings/test/${g}`, { method: "POST", body: { values: groupValues(g) } });
     if (!r.ok) return gmsg(g, "Failed: " + LG.esc(r.error));
     gmsg(g, g === "opnsense" ? `Connected to ${LG.esc(r.name)} – ${LG.esc((r.versions || [])[0] || "")}. Click Save to keep these settings.`
-                             : `The model answered: “${LG.esc(r.reply)}”. Click Save to keep these settings.`, true);
+      : g === "unifi" ? `Connected to UniFi Network ${LG.esc(r.version || "")} (${LG.esc(r.mode)}): site “${LG.esc(r.site)}”, ${r.devices} devices, ${r.clients} clients.` +
+                        (r.sites && r.sites.length > 1 ? ` Other sites: ${LG.esc(r.sites.join(", "))}.` : "") + (r.note ? ` ⚠ ${LG.esc(r.note)}` : "") + " Click Save to keep these settings."
+      : `The model answered: “${LG.esc(r.reply)}”. Click Save to keep these settings.`, true);
   } catch (e) { gmsg(g, LG.esc(e.message)); }
 });
 loadSettings();

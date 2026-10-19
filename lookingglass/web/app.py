@@ -31,7 +31,7 @@ from .auth_routes import register as register_auth
 log = logging.getLogger(__name__)
 HERE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(HERE / "templates"))
-# (key, menu label, menu group): security dashboards sit under their product ("opnsense"), "tools" covers every source
+# (key, menu label, menu group): dashboards sit under their product ("opnsense", "unifi"), "tools" covers every source
 DASH_NAV = [(k, v["title"].split(" (")[0], v.get("group", "tools")) for k, v in DASHBOARDS.items()]
 templates.env.globals["dashboards"] = DASH_NAV
 
@@ -42,6 +42,7 @@ PAGES = {
     "/system": ("system.html", "OPNsense"),
     "/devices": ("devices.html", "Devices"),
     "/unraid": ("unraid.html", "Unraid"),
+    "/unifi": ("unifi.html", "UniFi"),
     "/reports": ("reports.html", "Reports"),
     "/ai": ("ai.html", "AI Analyst"),
     "/setup": ("setup.html", "Setup"),
@@ -421,6 +422,19 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             raise HTTPException(404)
         return await run_dashboard(name, hours)
 
+    @app.get("/api/unifi")
+    async def unifi_data():
+        rows = await db.pool().fetch("SELECT key, ts, data FROM snapshots WHERE key LIKE 'unifi:%'")
+        snaps = {r["key"].split(":", 1)[1]: r["data"] for r in rows}
+        ts = {r["key"].split(":", 1)[1]: r["ts"].isoformat() for r in rows}
+        clients = snaps.get("clients") or []
+        if clients:  # UniFi often has no name for a client - the device list may (DHCP, dnsmasq Hosts, your own name)
+            names = {r["mac"]: r["hostname"] for r in await db.pool().fetch(
+                "SELECT mac, hostname FROM devices WHERE mac = ANY($1::text[]) AND hostname IS NOT NULL", [c.get("mac") for c in clients])}
+            for c in clients:
+                c["known_as"] = names.get(c.get("mac"))
+        return {"configured": settings.unifi_enabled, "url": settings.unifi_url, "updated": ts.get("devices"), **snaps}
+
     @app.get("/api/metrics/multi")
     async def metrics_multi(names: str, hours: float = Query(24, gt=0), prefix: str | None = None):
         """Several metric series at once: {name: {labels: [[t, v], ...]}}; ``prefix`` filters labels (e.g. unraid server id)."""
@@ -453,7 +467,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def devices(hours: float = Query(24, gt=0)):
         rows = await db.pool().fetch(
             "SELECT d.mac, host(d.ip) ip, d.hostname, d.name_source, d.vendor, d.interface, d.sources, d.lease_type, d.lease_expires, "
-            "d.online, d.trusted, d.notes, d.first_seen, d.last_seen, "
+            "d.online, d.trusted, d.notes, d.first_seen, d.last_seen, d.conn_type, d.conn_where, d.conn_signal, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = d.ip AND e.ts > now() - make_interval(secs => $1)) events, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = d.ip AND e.action = 'block' AND e.ts > now() - make_interval(secs => $1)) blocked, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = d.ip AND e.source = 'unbound' AND e.ts > now() - make_interval(secs => $1)) dns, "
@@ -616,6 +630,15 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         finally:
             await client.close()
+
+    @app.post("/api/settings/test/unifi")
+    async def test_unifi(payload: dict = Body(...)):
+        from ..unifi import test_connection
+
+        cand = _candidate(payload.get("values"))
+        if not cand.unifi_enabled:
+            return {"ok": False, "error": "URL and an API key (or username + password) are required"}
+        return await test_connection(cand)
 
     @app.post("/api/settings/test/ai")
     async def test_ai(payload: dict = Body(...)):

@@ -37,10 +37,10 @@ async function load() {
 }
 const NAME_SRC = {manual: "Name set by you - never replaced automatically", "dnsmasq-static": "From a dnsmasq Hosts entry (static reservation)",
   "dhcp-dnsmasq": "Host name the device sent with its dnsmasq DHCP request", "dhcp-kea": "From the Kea DHCP lease", "dhcp-isc": "From the ISC DHCP lease",
-  dhcp: "From the DHCP log", dns: "Name Unbound DNS shows for this IP", arp: "From the ARP table (reverse DNS)", zenarmor: "From Zenarmor device detection"};
+  dhcp: "From the DHCP log", "unifi-alias": "Name given in UniFi", unifi: "Host name reported by UniFi", dns: "Name Unbound DNS shows for this IP", arp: "From the ARP table (reverse DNS)", zenarmor: "From Zenarmor device detection"};
 function render() {
   const f = document.getElementById("filter").value.toLowerCase(), week = Date.now() - 7 * 864e5;
-  const rows = devs.filter(d => (!f || [d.hostname, d.ip, d.mac, d.vendor, d.interface, d.notes].join(" ").toLowerCase().includes(f)) &&
+  const rows = devs.filter(d => (!f || [d.hostname, d.ip, d.mac, d.vendor, d.interface, d.notes, d.conn_where].join(" ").toLowerCase().includes(f)) &&
     (show === "all" || (show === "online" && d.online) || (show === "new" && new Date(d.first_seen) > week) || (show === "untrusted" && !d.trusted) || (show === "alerts" && d.alerts > 0)));
   document.getElementById("info").textContent = `${rows.length} shown`;
   LG.table("#list", [
@@ -48,6 +48,7 @@ function render() {
     {k: "hostname", l: "Name", f: (v, r) => `<b>${LG.esc(v || "–")}</b>${v && r.name_source ? ` <span class="small muted" title="${LG.esc(NAME_SRC[r.name_source] || r.name_source)}">${LG.esc(r.name_source === "manual" ? "✎" : r.name_source)}</span>` : ""}${r.notes ? `<div class="small muted">${LG.esc(r.notes)}</div>` : ""}`},
     {k: "ip", l: "IP", f: LG.ip}, {k: "mac", l: "MAC", f: v => `<span class="mono small">${LG.esc(v)}</span>`},
     {k: "vendor", l: "Vendor"}, {k: "interface", l: "Interface"},
+    {k: "conn_where", l: "Connected to", f: (v, r) => v ? `${LG.esc(v)}${r.conn_signal ? `<div class="small muted">${r.conn_signal} dBm</div>` : ""}` : ""},
     {k: "lease_type", l: "Lease", f: (v, r) => `${LG.esc(v || "")}${r.lease_expires ? `<div class="small muted">${LG.esc(r.lease_expires)}</div>` : ""}`},
     {k: "sources", l: "Seen via", f: v => (v || []).map(s => `<span class="pill">${LG.esc(s)}</span>`).join("")},
     {k: "events", l: "Events 24h", num: true}, {k: "blocked", l: "Blocked", num: true}, {k: "dns", l: "DNS", num: true},

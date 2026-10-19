@@ -29,33 +29,42 @@ events(id bigint, ts timestamptz, received_at timestamptz, source text, host tex
        message text, data jsonb, uid text)
   source values: firewall (pf filterlog), nginx (web server/reverse proxy), unbound (DNS), crowdsec, suricata (IDS/IPS),
                  zenarmor (L7 firewall/NGFW), qfeeds (threat intel blocks), auth (ssh / web GUI logins), vpn, dhcp, system,
-                 unraid (Unraid syslog + notifications, host = server name), docker (Unraid container logs, program = container)
+                 unraid (Unraid syslog + notifications, host = server name), docker (Unraid container logs, program = container),
+                 unifi (UniFi controller events: Wi-Fi / wired clients and APs / switches; src_ip = client IP when known)
   action examples: firewall: pass/block; nginx: http_200, http_404, waf_block, rate_limited; unbound: query, reply,
                    block, nxdomain; crowdsec: alert, ban; suricata: alert, drop, blocked; auth: login_failed, login_success,
-                   config_change; dhcp: lease
+                   config_change; dhcp: lease; unifi: client_connect, client_disconnect, client_roam, client_blocked,
+                   device_offline, device_online, device_restart, rogue_ap, rogue_dhcp, poe_disconnect, admin_login, ips_alert
   data keys: firewall {label (rule description), rid, reason, tcpflags}; nginx {method, path, status, user_agent, tags[]};
              unbound {qtype, rcode, blocklist, category}; suricata {sid, signature, classification, priority};
-             crowdsec {scenario, decisions}; zenarmor {app_name, app_category, security_tags, ...}
+             crowdsec {scenario, decisions}; zenarmor {app_name, app_category, security_tags, ...};
+             unifi {key (EVT_...), mac (client), ap, ap_from, ap_to, ssid, sw, port, subsystem}
 alerts(id, created_at, last_seen, rule, severity /*info|low|medium|high|critical*/, title, description, src_ip inet,
        dst_ip inet, count int, status /*open|acknowledged|closed*/, fingerprint, data jsonb)
 metrics(ts, name, labels, value)  names: memory_used_pct, load1, pf_states, pf_states_pct, disk_used_pct, temperature,
        gateway_delay_ms, gateway_loss_pct, if_rx_bps, if_tx_bps (labels = interface), if_received_errors, ...
-devices(mac, ip, hostname, vendor, interface, sources text[], lease_type, lease_expires, online, trusted, notes,
-        first_seen, last_seen)   -- network inventory from ARP + DHCP leases
+devices(mac, ip, hostname, name_source, vendor, interface, sources text[], lease_type, lease_expires, online, trusted, notes,
+        conn_type /*wifi|wired, from UniFi*/, conn_where /*'AP Living room · Home (5 GHz)' / 'Switch Office port 5'*/,
+        conn_signal /*dBm*/, conn_seen, first_seen, last_seen)   -- network inventory: ARP, DHCP leases, UniFi clients, Zenarmor
 snapshots(key, ts, data jsonb)  keys: system, activity (top processes), gateways, interfaces, services, firmware, arp,
        leases_kea / leases_dnsmasq / leases_isc, unbound_totals, crowdsec_decisions, qfeeds_stats, poller_status,
+       unifi:devices (APs / switches: state, model, firmware, upgradable, cpu, mem, clients, ports[], radios[]),
+       unifi:clients (connected now: mac, ip, alias, hostname, wired, ssid, ap, switch, port, signal, satisfaction, tx/rx_bytes),
+       unifi:health, unifi:rogue (neighbouring APs; evil_twin = foreign AP using one of your SSIDs), unifi:status,
        unraid:<server id>:<info|metrics|temps|storage (array + per-pool groups, spin state)|array|docker|docker_stats|notifications|vms|ups|shares|disks (SMART)>, unraid_status
 metrics also: cpu_used_pct, swap_used_pct, unraid_cpu_pct / unraid_mem_pct / unraid_temp / unraid_disk_temp /
-       unraid_array_used_pct / unraid_pool_used_pct / unraid_group_spinning (labels '<server id>[:<item>]'), container_cpu_pct / container_mem_bytes ('<server id>:<container>')
+       unraid_array_used_pct / unraid_pool_used_pct / unraid_group_spinning (labels '<server id>[:<item>]'), container_cpu_pct / container_mem_bytes ('<server id>:<container>'),
+       unifi_clients (labels wifi|wired), unifi_ssid_clients / unifi_ap_clients (labels = SSID / AP name), unifi_wifi_satisfaction,
+       unifi_device_cpu / unifi_device_mem / unifi_device_tx_bps / unifi_device_rx_bps (labels = device name)
 
 Tips: use host(src_ip) to print addresses, `src_ip << '10.0.0.0/8'::inet` for subnet tests, ts > now() - interval '24 hours'
 for time windows. Always aggregate (GROUP BY / count) rather than pulling raw rows when looking at large volumes.
 """
 
 SYSTEM_PROMPT = """You are Looking Glass's security analyst, a senior SOC / network security engineer investigating an
-OPNsense firewall, the network behind it and the user's Unraid server(s). You have tools that query the log database (firewall, nginx, Unbound DNS,
-CrowdSec, Suricata IDS, Zenarmor, Q-Feeds threat intel, authentication, VPN, DHCP and system logs) plus
-OPNsense system state.
+OPNsense firewall, the network behind it (UniFi access points / switches when configured) and the user's Unraid
+server(s). You have tools that query the log database (firewall, nginx, Unbound DNS, CrowdSec, Suricata IDS, Zenarmor,
+Q-Feeds threat intel, authentication, VPN, DHCP, UniFi and system logs) plus OPNsense and UniFi state.
 
 How to work:
 - Investigate with the tools before answering; base every claim on data you actually retrieved and cite the concrete
@@ -68,6 +77,10 @@ How to work:
   (anything ALLOWED, anything originating INSIDE the network, successful logins, repeated targeting).
 - Rate findings by severity (critical/high/medium/low/info), and give concrete remediation steps that reference the
   OPNsense UI (menu paths) where helpful.
+- Combine sources: OPNsense / Zenarmor / DNS tell WHAT a device does, UniFi tells WHERE it is (AP or switch port, SSID /
+  VLAN, signal) and since when. Use that to name the device, judge whether it belongs on that network (e.g. an IoT plug on
+  the main SSID, an unknown wired device on a free switch port) and to give exact containment steps (UniFi Network ›
+  Client Devices › Block, move it to an isolated SSID / VLAN, disable the switch port, or an OPNsense rule).
 - Be concise; use markdown headings, bullet lists and tables.
 
 Current time (UTC): {now}
@@ -84,7 +97,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "search_events",
         "description": "Search raw log events with simple filters. Prefer sql_query for aggregations.",
         "parameters": {"type": "object", "properties": {
-            "source": {"type": "string", "description": "firewall, nginx, unbound, crowdsec, suricata, zenarmor, qfeeds, auth, vpn, dhcp, system"},
+            "source": {"type": "string", "description": "firewall, nginx, unbound, crowdsec, suricata, zenarmor, qfeeds, auth, vpn, dhcp, system, unifi, unraid, docker"},
             "ip": {"type": "string", "description": "match src_ip or dst_ip"},
             "action": {"type": "string"},
             "text": {"type": "string", "description": "case-insensitive substring of message/domain"},
@@ -106,6 +119,12 @@ TOOLS: list[dict[str, Any]] = [
         "name": "system_status",
         "description": "Current OPNsense system state (resources, versions, gateways, services, firmware/updates), Unraid servers (hardware, array/disks, containers, notifications, UPS, VMs), log ingestion stats and which API endpoints work.",
         "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "unifi_status",
+        "description": "UniFi network now: access points / switches (state, firmware, load, ports), connected Wi-Fi and wired clients "
+                       "with AP / switch port, SSID, signal and traffic, health and neighbouring / evil-twin APs. Optional filter "
+                       "on a client name, IP or MAC.",
+        "parameters": {"type": "object", "properties": {"client": {"type": "string", "description": "optional name / IP / MAC filter"}}}}},
     {"type": "function", "function": {
         "name": "traffic_overview",
         "description": "Aggregated statistics (top blocked sources, ports, countries, DNS, web, auth failures, IDS signatures ...) for a period.",
@@ -219,9 +238,22 @@ async def tool_system_status() -> Any:
     return out
 
 
+async def tool_unifi_status(client: str | None = None) -> Any:
+    out = {k: await db.get_snapshot(f"unifi:{k}") for k in ("status", "health", "devices", "rogue")}
+    if not out["status"]:
+        return {"configured": False, "hint": "UniFi is not connected: Settings › UniFi in Looking Glass"}
+    clients = await db.get_snapshot("unifi:clients") or []
+    if client:
+        q = client.lower()
+        clients = [c for c in clients if q in " ".join(str(c.get(k) or "") for k in ("alias", "hostname", "ip", "mac")).lower()]
+    out["clients"] = clients[:300]
+    out["client_count"] = len(clients)
+    return out
+
+
 async def run_tool(name: str, args: dict[str, Any]) -> str:
     fn = {"sql_query": tool_sql_query, "search_events": tool_search_events, "ip_profile": tool_ip_profile,
-          "list_alerts": tool_list_alerts, "system_status": tool_system_status,
+          "list_alerts": tool_list_alerts, "system_status": tool_system_status, "unifi_status": tool_unifi_status,
           "traffic_overview": lambda hours=24: build_report(float(hours))}.get(name)
     if fn is None:
         return json.dumps({"error": f"unknown tool {name}"})

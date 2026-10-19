@@ -22,6 +22,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 | SSH / web GUI / OpenVPN / IPsec | syslog | failed and successful logins, config changes |
 | DHCP leases (Kea, dnsmasq, ISC) + ARP | API + syslog | **device list**: name, IP, MAC, vendor, interface, lease, online state, per-device activity; **new/rogue device** alerts |
 | System / hardware | API | CPU %, load, memory, swap, ZFS ARC, disks, temperatures, states, interface throughput/errors, gateways, services, top processes, firmware updates |
+| **UniFi** | UniFi Network API (API key or local account) | access points, switches (ports, PoE, errors), consoles: state, firmware/updates, load; **Wi-Fi / wired clients** with AP or switch port, SSID, signal, experience, traffic; health; client connects / roams, device offline, **rogue / evil-twin APs, rogue DHCP**; and *where* every device is connected, shown in alerts and the device list |
 | **Unraid** | Unraid API (GraphQL) + optional Docker socket proxy | CPU/cores, memory, temperatures, network, array/parity, disks (temp, errors, SMART), shares, **Docker containers** (state, CPU/mem) and **their logs**, Unraid syslog, **notifications**, VMs, UPS |
 
 ## Built-in detections
@@ -29,7 +30,8 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 Port scans, host sweeps, brute force (SSH / web GUI / VPN), **successful login after failures**, logins from public IPs,
 web attacks & scanners, IDS signatures, CrowdSec alerts, Q-Feeds hits (inbound probing / outbound C2), Zenarmor threats,
 DNS tunneling, DGA domains, NXDOMAIN storms, malicious-domain lookups, internal hosts blocked to many destinations,
-outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), new devices, gateway down, resources
+outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), new devices, UniFi access point / switch
+offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, gateway down, resources
 (disk/memory/states) high, stopped services, firmware updates available and "logs stopped arriving" (possible tampering).
 
 ---
@@ -374,6 +376,48 @@ metrics, no alerts.
 > shows ZFS pools with capacity and member devices, and alerts on ZFS errors from the Unraid syslog (enable *collect
 > container & system logs*) and on Unraid's own notifications.
 
+## Adding a UniFi controller
+
+Optional. Looking Glass only reads from the controller; it never changes anything there.
+
+**Which login?**
+
+| Controller | Use |
+|---|---|
+| UniFi OS console (UDM, UCG, UDR, Cloud Key Gen2+, UX) or UniFi OS Server | an **API key** (recommended) |
+| Self-hosted *UniFi Network Application* (e.g. Docker on Unraid, port 8443) | a **local username + password** (these installs have no API keys) |
+
+1. **UniFi web UI** (API key): *UniFi Network › Settings › Control Plane › Integrations › Create API key* (newer versions:
+   *Integrations* in the left menu). Copy the key - it is shown once. The key has the rights of the admin who created
+   it, so ideally create it while logged in as a **View Only** admin.
+   **UniFi web UI** (username / password): *UniFi OS › Admins & Users › Create* (or *Settings › Admins* on the
+   self-hosted app) a **local** admin (not a UI.com account), *Restrict to local access only*, role **View Only** for
+   Network, **without MFA**.
+2. **Looking Glass web UI**: *Settings › UniFi* › URL (`https://<console-ip>` or `https://<host>:8443` for the self-hosted
+   app), the API key **or** username + password, the site (usually `default`) › *Test connection* › *Save*.
+   You can enter both a key and an account: the key is used where it works and the account fills in the rest.
+
+What you get depends on what the controller accepts:
+
+* **Full** (account, or an API key on a UniFi OS console): devices with ports / radios, clients with SSID, signal,
+  experience and traffic, health, events (connects, roams, device offline, PoE, rogue DHCP) and neighbouring APs.
+* **Basic** (API key accepted only by the official integration API): devices, load and which AP / switch each client
+  uses - no SSID, signal, events or rogue APs. *Setup & status* tells you when this happens.
+
+Polled every 60 seconds (Settings › UniFi › Poll interval), events every 2 minutes, neighbouring APs every 10 minutes.
+Don't also send UniFi's *SIEM / Activity Logging (syslog)* to Looking Glass: the API already delivers those events.
+
+How UniFi and OPNsense data are combined:
+
+* **Device list**: UniFi clients join the list (by MAC) with *Connected to* (AP + SSID or switch port) and signal; a name
+  given in UniFi outranks DHCP host names.
+* **Alerts** about an internal device (threat intel, IDS, DNS, new device…) say where it is connected and how to cut it
+  off (*UniFi Network › Client Devices › … › Block*, or an OPNsense rule).
+* **UniFi network › Wi-Fi & clients** has *Clients with security events*: firewall blocks, DNS blocks and threat events
+  from OPNsense / Zenarmor per Wi-Fi or wired client, with its location. Reports have the same section.
+* The **AI analyst** can read UniFi state (tool `unifi_status`) and is told to use location / SSID / VLAN when judging a
+  device and to give UniFi containment steps.
+
 ## Using it
 
 * **Overview** – KPIs and the most important tables of every source in one page.
@@ -398,6 +442,12 @@ metrics, no alerts.
 * **Infrastructure › OPNsense** – tab *Overview* (hardware & performance): CPU, load, memory/swap/ARC, temperatures, disk usage, states,
   interface throughput/errors, gateway latency/loss, services, ARP/DHCP devices, top processes; tab *System & network*:
   system, firmware, disks & temperature, gateways, interfaces.
+* **Infrastructure › UniFi** – tabs *Overview* (APs / switches online, clients over time per SSID and AP, Wi-Fi
+  experience, device load and uplink throughput, health), *Devices* (firmware/updates, uptime, clients, radios, uplink;
+  click a switch for its ports with PoE, traffic and errors), *Clients* (filter and sort by name, AP / switch port,
+  SSID, signal, traffic) and *Neighbouring Wi-Fi* (foreign APs, evil-twin warnings).
+* **UniFi network › Wi-Fi & clients** – connects, roams, device offline and rogue events over time, clients per SSID /
+  AP, weakest signal, most roaming, top traffic, device events and clients with security events (see above).
 * **Devices** – everything connected to OPNsense (ARP + DHCP leases from dnsmasq / Kea / ISC + Zenarmor device
   fingerprints): online state, name,
   IP, MAC, vendor, interface, lease, first/last seen, events/blocks/DNS queries/alerts per device; mark devices as
@@ -425,7 +475,8 @@ metrics, no alerts.
 ## Configuration reference
 
 **In the web UI (Settings, stored in the database, secrets encrypted, applied live):** OPNsense URL / API key /
-secret / TLS verification / custom CA / poll interval / per-source pulls · AI base URL / API key / model / limits /
+secret / TLS verification / custom CA / poll interval / per-source pulls · UniFi URL / API key / username / password /
+site / TLS verification / poll interval / events · AI base URL / API key / model / limits /
 daily report · Zenarmor stream username / password / allowed senders · syslog allowed senders, extra internal
 networks, time zone · retention, detection interval, GeoIP path · Unraid servers (URL, API key, Docker API).
 
@@ -473,6 +524,9 @@ Integration details were checked against current upstream sources: the OPNsense
 [docs](https://github.com/opnsense/docs) repositories (API controllers, syslog model, nginx syslog targets, Q-Feeds,
 CrowdSec, DHCP leases), the [Unraid API](https://github.com/unraid/api) schema and [Unraid docs](https://github.com/unraid/docs),
 [opnsense2otel](https://github.com/rknightion/opnsense2otel) (Zenarmor wire formats),
+UniFi Network controller OpenAPI specs 9.0–11.0 ([beezly/unifi-apis](https://github.com/beezly/unifi-apis)),
+[aiounifi](https://github.com/Kane610/aiounifi), [unpoller](https://github.com/unpoller/unifi) and the
+[Art-of-WiFi UniFi API client](https://github.com/Art-of-WiFi/UniFi-API-client),
 [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) and Anthropic's
 [OpenAI SDK compatibility](https://platform.claude.com/docs/en/api/openai-sdk) docs.
 
@@ -485,6 +539,8 @@ DATABASE_URL=postgresql://... ADMIN_PASSWORD=x python -m lookingglass.main
 python tools/simulate.py --port 5514                  # send simulated OPNsense logs (scans, brute force, tunnels…)
 python tools/mock_opnsense.py --port 18443            # fake OPNsense API  (Settings › OPNsense: http://127.0.0.1:18443)
 python tools/mock_unraid.py --port 18500              # fake Unraid API    (Settings › Unraid: http://127.0.0.1:18500, key test-key)
+python tools/mock_unifi.py --port 18600               # fake UniFi console (Settings › UniFi: http://127.0.0.1:18600, key test-key;
+                                                      #   --selfhosted: admin / admin-pass, --version 11.0.89, --no-legacy-key)
 TEST_DATABASE_URL=postgresql://... python -m pytest   # also runs every dashboard query against PostgreSQL
 ```
 

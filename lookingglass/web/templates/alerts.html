@@ -32,7 +32,8 @@ function eventsUrl(a) {
 function device(a) {
   const d = (a.data || {}).device;
   if (!d) return "";
-  return `<div class="small muted">${LG.esc([d.hostname, d.vendor, d.mac].filter(Boolean).join(" · "))}</div>`;
+  return `<div class="small muted">${LG.esc([d.hostname, d.vendor, d.mac].filter(Boolean).join(" · "))}</div>` +
+    (d.conn_where ? `<div class="small muted" title="Where UniFi sees this device">📍 ${LG.esc(d.conn_where)}${d.conn_signal ? ` · ${d.conn_signal} dBm` : ""}</div>` : "");
 }
 function render() {
   const f = document.getElementById("filter").value.toLowerCase();

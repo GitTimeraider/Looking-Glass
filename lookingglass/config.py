@@ -66,6 +66,14 @@ class Settings(BaseSettings):
     ids_pull: bool = True
     nginx_pull: bool = True
     vpn_pull: bool = True
+    unifi_url: str = ""
+    unifi_api_key: str = ""
+    unifi_username: str = ""
+    unifi_password: str = ""
+    unifi_site: str = "default"
+    unifi_verify_ssl: bool = False
+    unifi_poll_interval: int = 60
+    unifi_events: bool = True
     ai_base_url: str = "https://api.anthropic.com/v1/"
     ai_api_key: str = ""
     ai_model: str = "claude-opus-5-5"
@@ -88,6 +96,10 @@ class Settings(BaseSettings):
     @property
     def opnsense_enabled(self) -> bool:
         return bool(self.opnsense_url and self.opnsense_api_key and self.opnsense_api_secret)
+
+    @property
+    def unifi_enabled(self) -> bool:
+        return bool(self.unifi_url and (self.unifi_api_key or (self.unifi_username and self.unifi_password)))
 
     @property
     def ai_enabled(self) -> bool:
