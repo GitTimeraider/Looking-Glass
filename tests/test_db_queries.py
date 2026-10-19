@@ -7,9 +7,9 @@ import os
 
 import pytest
 
-from monraider import db
-from monraider.dashboards import DASHBOARDS, run_dashboard
-from monraider.reports import build_report, timeline
+from lookingglass import db
+from lookingglass.dashboards import DASHBOARDS, run_dashboard
+from lookingglass.reports import build_report, timeline
 
 DSN = os.environ.get("TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")

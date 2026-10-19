@@ -1,12 +1,12 @@
-# MonRaider
+# Looking Glass
 
-Self-hosted security monitoring for **OPNsense** (and your **Unraid** server). MonRaider collects and stores the
+Self-hosted security monitoring for **OPNsense** (and your **Unraid** server). Looking Glass collects and stores the
 firewall's logs and system state, detects attacks and anomalies, shows dashboards and reports, keeps a device
 inventory of everything on your network, and includes an **AI analyst** that you can talk to (Claude or any other
 OpenAI-compatible model) to find problems, vulnerabilities, hacking attempts, intruders and strange traffic.
 The web UI is protected by a password **plus mandatory MFA** (authenticator app / TOTP or passkey).
 
-Image: `ghcr.io/gittimeraider/monraider:latest` (linux/amd64 + linux/arm64), built by GitHub Actions.
+Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64), built by GitHub Actions.
 
 ## What it collects
 
@@ -37,14 +37,14 @@ outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), 
 ## Installation
 
 You need a machine that runs Docker (Linux server, NAS, VM…) and that the OPNsense box can reach.
-MonRaider uses its own PostgreSQL container (included in the compose file) — no separate SQL server needed.
+Looking Glass uses its own PostgreSQL container (included in the compose file) — no separate SQL server needed.
 If you prefer an existing PostgreSQL 14+ server, drop the `db` service and point `DATABASE_URL` at it.
 
 ### 1. Create the API key in OPNsense (OPNsense web UI)
 
-1. Open **System › Access › Users**, click **+** and create a user, e.g. `monraider` (any random password).
+1. Open **System › Access › Users**, click **+** and create a user, e.g. `lookingglass` (any random password).
 2. Give it privileges. Simplest: tick **GUI - All pages**. Stricter: only the *Diagnostics*, *Reporting*, *Firmware*,
-   *Gateways*, *Unbound*, *CrowdSec*, *Q-Feeds* and *Intrusion Detection* pages (MonRaider's *Setup & Status* page
+   *Gateways*, *Unbound*, *CrowdSec*, *Q-Feeds* and *Intrusion Detection* pages (Looking Glass's *Setup & Status* page
    shows every API call that is refused, so you can add the missing privilege later).
 3. Save, open the user again, scroll to **API keys** and click **+**. Your browser downloads a text file with
    `key=...` and `secret=...`. Keep it for step 3.
@@ -52,24 +52,24 @@ If you prefer an existing PostgreSQL 14+ server, drop the `db` service and point
 ### 2. Get the files (shell on your Docker host)
 
 ```bash
-mkdir -p ~/monraider && cd ~/monraider
-curl -O https://raw.githubusercontent.com/GitTimeraider/MonRaider/master/docker-compose.yml
-curl -o .env https://raw.githubusercontent.com/GitTimeraider/MonRaider/master/.env.example
+mkdir -p ~/looking-glass && cd ~/looking-glass
+curl -O https://raw.githubusercontent.com/GitTimeraider/Looking-Glass/master/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/GitTimeraider/Looking-Glass/master/.env.example
 ```
 
 Other ready-made compose files are in [`examples/`](examples):
 
 | File | Use it when |
 |---|---|
-| [`docker-compose.yml`](docker-compose.yml) | standard: MonRaider + its own PostgreSQL |
+| [`docker-compose.yml`](docker-compose.yml) | standard: Looking Glass + its own PostgreSQL |
 | [`examples/docker-compose.https.yml`](examples/docker-compose.https.yml) + [`Caddyfile`](examples/Caddyfile) | you want HTTPS (required for **passkeys**) via a bundled Caddy reverse proxy |
 | [`examples/docker-compose.external-postgres.yml`](examples/docker-compose.external-postgres.yml) | you already run PostgreSQL 14+ |
 | [`examples/docker-compose.all-in-one.yml`](examples/docker-compose.all-in-one.yml) | Portainer / Dockge stacks: all settings inline, no `.env` |
 | [`examples/docker-compose.build.yml`](examples/docker-compose.build.yml) | build the image from source |
 | [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml) | run **on Unraid** for per-container CPU/memory graphs |
-| [`examples/unraid/monraider.xml`](examples/unraid/monraider.xml) | run MonRaider itself **on Unraid** as a Docker template |
+| [`examples/unraid/looking-glass.xml`](examples/unraid/looking-glass.xml) | run Looking Glass itself **on Unraid** as a Docker template |
 
-### 3. Configure (edit `~/monraider/.env` with any text editor, e.g. `nano .env`)
+### 3. Configure (edit `~/looking-glass/.env` with any text editor, e.g. `nano .env`)
 
 * `POSTGRES_PASSWORD` – choose a long random password.
 * `ADMIN_USER` / `ADMIN_PASSWORD` – the first account (only used when the database is still empty).
@@ -80,15 +80,15 @@ Other ready-made compose files are in [`examples/`](examples):
   OpenAI-compatible API. Any other OpenAI-compatible service works as well (OpenAI, OpenRouter, LiteLLM, a local
   Ollama at `http://host:11434/v1/` …) by changing the base URL, model and key.
 * `TIMEZONE` – your local zone (used for BSD-style syslog timestamps and the daily report).
-* `PUBLIC_URL` – only when you use HTTPS / a reverse proxy, e.g. `https://monraider.home.lan` (for passkeys).
+* `PUBLIC_URL` – only when you use HTTPS / a reverse proxy, e.g. `https://looking-glass.home.lan` (for passkeys).
 
 ### 4. Start and log in
 
-On the Docker host, in `~/monraider`:
+On the Docker host, in `~/looking-glass`:
 
 ```bash
 docker compose up -d
-docker compose logs -f monraider     # Ctrl+C to stop following
+docker compose logs -f lookingglass     # Ctrl+C to stop following
 ```
 
 In your browser open `http://<docker-host>:8080`, log in with `ADMIN_USER` / `ADMIN_PASSWORD`. You are sent to
@@ -97,7 +97,7 @@ In your browser open `http://<docker-host>:8080`, log in with `ADMIN_USER` / `AD
 * **Authenticator app (TOTP)** – click *Set up authenticator app*, scan the QR code with Google/Microsoft
   Authenticator, Aegis, 1Password, Bitwarden…, type the 6-digit code, *Confirm*.
 * **Passkey / security key** – type a name, click *Add passkey* and follow your browser / phone / YubiKey prompt.
-  Passkeys only work when MonRaider is opened over **HTTPS** (or `http://localhost`); use
+  Passkeys only work when Looking Glass is opened over **HTTPS** (or `http://localhost`); use
   `examples/docker-compose.https.yml` or your own reverse proxy (Nginx Proxy Manager, Traefik, SWAG…).
 
 Then change the initial password on the same page. Next logins ask for password + TOTP code or passkey.
@@ -109,10 +109,10 @@ Then change the initial password on the same page. Next logins ask for password 
 
 1. On the login page click **Forgot password / lost MFA device?** (or open `http://<docker-host>:8080/reset`) and
    click **Generate reset code**.
-2. Read the code from the container log – shell on the Docker host: `docker logs monraider --tail 20`
-   (Unraid: Docker tab › MonRaider icon › *Logs*; Portainer: *Containers › monraider › Logs*). It looks like
+2. Read the code from the container log – shell on the Docker host: `docker logs looking-glass --tail 20`
+   (Unraid: Docker tab › Looking Glass icon › *Logs*; Portainer: *Containers › looking-glass › Logs*). It looks like
    `Reset code: 7F3A-91BC (valid 15 minutes, single use)`.
-   Alternatively create a code from the shell: `docker exec monraider python -m monraider.cli reset-code`.
+   Alternatively create a code from the shell: `docker exec looking-glass python -m lookingglass.cli reset-code`.
 3. Enter the code and a new password on the reset page. Password **and** all MFA factors are reset; you set up
    MFA again at the next login. Codes are single use, expire after 15 minutes and are destroyed after 5 wrong attempts.
 
@@ -129,7 +129,7 @@ These steps were checked against the current OPNsense documentation and source (
    * Save, then **Apply**.
 2. **Firewall logging** – default block rules are logged already. Open your important pass rules / port forwards
    (**Firewall › Rules › WAN** etc.) and tick **Log packets that are handled by this rule** so allowed traffic is visible too.
-3. **Unbound DNS** – **Reporting › Settings**: enable the Unbound DNS statistics (off by default; MonRaider then pulls
+3. **Unbound DNS** – **Reporting › Settings**: enable the Unbound DNS statistics (off by default; Looking Glass then pulls
    per-client queries via the API, OPNsense keeps 7 days). For complete query logs over syslog also enable
    **Services › Unbound DNS › Advanced › Log Queries** (and *Log Replies*) – note this slows Unbound down somewhat.
 4. **nginx plugin** – **Services › Nginx › Configuration**, tab **Other › SYSLOG Targets**: add a target
@@ -140,30 +140,30 @@ These steps were checked against the current OPNsense documentation and source (
 6. **Zenarmor** – choose one (both are mirrors; Zenarmor's own reports stay intact):
    * **Any edition, incl. free Home (recommended)**: **Zenarmor › Settings › Streaming Data › Stream Reporting Data to
      External Elasticsearch**: URI `http://<docker-host>:9200`, Elasticsearch version `8.11.3`, username/password empty
-     (or the values of `ZENARMOR_ES_USER` / `ZENARMOR_ES_PASSWORD`), Apply. MonRaider answers as an Elasticsearch node.
+     (or the values of `ZENARMOR_ES_USER` / `ZENARMOR_ES_PASSWORD`), Apply. Looking Glass answers as an Elasticsearch node.
      ⚠️ Do **not** use the install wizard's *Remote Elasticsearch Database* option – that replaces Zenarmor's local
      storage and cannot be changed afterwards.
    * **Paid editions**: the same page, *Stream Reporting Data to External Syslog*: server = Docker host, port 514,
      select Connections, DNS, TLS, Web (HTTP) and Alerts.
-7. **Q-Feeds** – the plugin only creates firewall aliases. Its *Events* (which MonRaider reads) only appear when you
+7. **Q-Feeds** – the plugin only creates firewall aliases. Its *Events* (which Looking Glass reads) only appear when you
    add **block rules that use the Q-Feeds aliases with logging enabled**, e.g. on LAN: *block, destination = Q-Feeds
    alias, Log ✓* and on WAN: *block, source = Q-Feeds alias, Log ✓* (**Firewall › Rules**). The domain feeds are
    applied through Unbound's blocklist (*Register domain feeds* in **Security › Q-Feeds Connect**).
 8. **CrowdSec** needs nothing extra – alerts and decisions are read through the API.
 
-Check **Setup & Status** in MonRaider: every source should show a recent "last message" and every API job "ok"
+Check **Setup & Status** in Looking Glass: every source should show a recent "last message" and every API job "ok"
 (jobs for plugins you don't have show `n/a`).
 
 ### 6. Optional: GeoIP countries (shell on your Docker host)
 
-Create a free account at MaxMind, download **GeoLite2-City.mmdb** (or Country) and place it in `~/monraider/data/`,
-then `docker compose restart monraider`. Make sure the `data` folder is readable by UID 10001
-(`sudo chown -R 10001 ~/monraider/data`).
+Create a free account at MaxMind, download **GeoLite2-City.mmdb** (or Country) and place it in `~/looking-glass/data/`,
+then `docker compose restart lookingglass`. Make sure the `data` folder is readable by UID 10001
+(`sudo chown -R 10001 ~/looking-glass/data`).
 
 > **PostgreSQL 18:** the compose files use `postgres:18-alpine`, whose image mounts the volume at
 > `/var/lib/postgresql` (not `/var/lib/postgresql/data` as in 17 and older). Fresh installs need nothing extra.
 
-### Updating (shell on your Docker host, in `~/monraider`)
+### Updating (shell on your Docker host, in `~/looking-glass`)
 
 ```bash
 docker compose pull && docker compose up -d
@@ -174,9 +174,9 @@ docker compose pull && docker compose up -d
 ## Adding an Unraid server
 
 1. **Unraid web UI** (Unraid 7.2+ has the API built in; on 6.12–7.1 install the *Unraid Connect* plugin from
-   Community Apps first): *Settings › Management Access › API Keys › Create*, name `monraider`, role **Viewer**,
-   copy the key. (Or in the Unraid terminal: `unraid-api apikey --create --name monraider --roles VIEWER --json`.)
-2. **MonRaider web UI**: *Integrations* › fill in name, URL (e.g. `http://192.168.1.10`) and the API key ›
+   Community Apps first): *Settings › Management Access › API Keys › Create*, name `lookingglass`, role **Viewer**,
+   copy the key. (Or in the Unraid terminal: `unraid-api apikey --create --name lookingglass --roles VIEWER --json`.)
+2. **Looking Glass web UI**: *Integrations* › fill in name, URL (e.g. `http://192.168.1.10`) and the API key ›
    *Test connection* › *Add server*. Add as many servers as you like.
 3. Optional, for per-container CPU / memory graphs: on Unraid start
    [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml)
@@ -185,7 +185,7 @@ docker compose pull && docker compose up -d
 The **Unraid** page then shows Overview (CPU/cores, memory, temperatures, network, VMs, UPS), Array & disks
 (array/parity status, per-disk temperature, usage, errors, shares, SMART), Docker (containers, state, updates,
 CPU/memory), Logs (container logs and Unraid syslog, searchable) and Notifications. Disk errors/overheating, stopped
-auto-start containers, array problems, UPS on battery and Unraid *warning/alert* notifications become MonRaider alerts.
+auto-start containers, array problems, UPS on battery and Unraid *warning/alert* notifications become Looking Glass alerts.
 
 ## Using it
 
@@ -220,7 +220,7 @@ All settings are environment variables (see `.env.example`). The most important:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATABASE_URL` | `postgresql://monraider:monraider@db:5432/monraider` | PostgreSQL connection |
+| `DATABASE_URL` | `postgresql://lookingglass:lookingglass@db:5432/lookingglass` | PostgreSQL connection |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / random (printed in the log) | first account, created only when no user exists |
 | `PUBLIC_URL` / `WEBAUTHN_RP_ID` | auto | public https URL / passkey relying-party id when behind a reverse proxy |
 | `COOKIE_SECURE` | `false` | mark the session cookie HTTPS-only |
@@ -244,7 +244,7 @@ All settings are environment variables (see `.env.example`). The most important:
 
 * Login = password (scrypt-hashed) + mandatory TOTP or passkey; failed logins are rate limited per IP and logged.
   Password changes and resets invalidate all other sessions.
-* Put MonRaider on your LAN / management network; don't expose port 8080 to the internet (use a VPN or a reverse
+* Put Looking Glass on your LAN / management network; don't expose port 8080 to the internet (use a VPN or a reverse
   proxy with TLS if you need remote access).
 * The reset code only appears in the container log, so a reset requires access to the Docker host.
 * Use `SYSLOG_ALLOWED_SENDERS=<opnsense-ip>` so nobody else can inject log lines.
@@ -265,7 +265,7 @@ CrowdSec, DHCP leases), the [Unraid API](https://github.com/unraid/api) schema a
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest -q                                   # parser tests
-DATABASE_URL=postgresql://... ADMIN_PASSWORD=x python -m monraider.main
+DATABASE_URL=postgresql://... ADMIN_PASSWORD=x python -m lookingglass.main
 python tools/simulate.py --port 5514                  # send simulated OPNsense logs (scans, brute force, tunnels…)
 python tools/mock_opnsense.py --port 18443            # fake OPNsense API  (OPNSENSE_URL=http://127.0.0.1:18443)
 python tools/mock_unraid.py --port 18500              # fake Unraid API    (UNRAID_URL=http://127.0.0.1:18500, key test-key)

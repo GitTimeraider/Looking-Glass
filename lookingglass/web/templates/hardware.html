@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top">
+  <h1>OPNsense hardware</h1>
+  <span class="muted small" id="updated"></span>
+  <div class="seg" id="range"><button data-v="1">1h</button><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button></div>
+</header>
+<div class="grid g3">
+  <div class="card span2"><h3>Utilisation now</h3><div class="gauges" id="gauges"></div></div>
+  <div class="card"><h3>Hardware</h3><div id="hw"></div></div>
+  <div class="card"><h3>CPU usage %</h3><div class="chart-box sm"><canvas id="c-cpu"></canvas></div></div>
+  <div class="card"><h3>Load average (1m)</h3><div class="chart-box sm"><canvas id="c-load"></canvas></div></div>
+  <div class="card"><h3>Memory / swap / ZFS ARC %</h3><div class="chart-box sm"><canvas id="c-mem"></canvas></div></div>
+  <div class="card"><h3>Temperatures °C</h3><div class="chart-box sm"><canvas id="c-temp"></canvas></div></div>
+  <div class="card"><h3>Disk usage %</h3><div class="chart-box sm"><canvas id="c-disk"></canvas></div></div>
+  <div class="card"><h3>Firewall states</h3><div class="chart-box sm"><canvas id="c-states"></canvas></div></div>
+  <div class="card span3"><h3>Interface throughput (receive + / transmit −)</h3><div class="chart-box"><canvas id="c-if"></canvas></div></div>
+  <div class="card"><h3>Interface errors &amp; drops</h3><div class="chart-box sm"><canvas id="c-iferr"></canvas></div></div>
+  <div class="card"><h3>Gateway latency (ms)</h3><div class="chart-box sm"><canvas id="c-gw"></canvas></div></div>
+  <div class="card"><h3>Gateway packet loss %</h3><div class="chart-box sm"><canvas id="c-loss"></canvas></div></div>
+  <div class="card span2"><h3>Top processes</h3><div id="procs"></div></div>
+  <div class="card"><h3>Disks</h3><div id="disks"></div></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let hours = Number(localStorage.getItem("lg-hours-hw") || 24);
+LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours-hw", v); charts(); });
+const pct = v => Math.round(v) + "%";
+async function charts() {
+  const m = await LG.api(`/api/metrics/multi?hours=${hours}&names=cpu_used_pct,load1,memory_used_pct,swap_used_pct,zfs_arc_pct,temperature,disk_used_pct,pf_states,if_rx_bps,if_tx_bps,if_received_errors,if_send_errors,if_dropped_packets,gateway_delay_ms,gateway_loss_pct`);
+  const o = { hours };
+  LG.lineChart("c-cpu", m.cpu_used_pct || {}, { ...o, fmt: pct, min: 0, fill: true, rename: () => "CPU" });
+  LG.lineChart("c-load", m.load1 || {}, { ...o, rename: () => "load" });
+  LG.lineChart("c-mem", { memory: (m.memory_used_pct || {})[""] || [], swap: (m.swap_used_pct || {})[""] || [], "ZFS ARC": (m.zfs_arc_pct || {})[""] || [] }, { ...o, fmt: pct, min: 0, max: 100 });
+  LG.lineChart("c-temp", m.temperature || {}, { ...o, rename: l => l.replace("dev.cpu.", "cpu").replace(".temperature", "") });
+  LG.lineChart("c-disk", m.disk_used_pct || {}, { ...o, fmt: pct, min: 0, max: 100 });
+  LG.lineChart("c-states", m.pf_states || {}, { ...o, rename: () => "states", fill: true });
+  const ifs = {};
+  for (const [k, v] of Object.entries(m.if_rx_bps || {})) ifs[k + " rx"] = v;
+  for (const [k, v] of Object.entries(m.if_tx_bps || {})) ifs[k + " tx"] = v;
+  LG.lineChart("c-if", ifs, { ...o, fmt: v => LG.bps(v), neg: l => l.endsWith(" tx") });
+  const errs = {};
+  for (const n of ["if_received_errors", "if_send_errors", "if_dropped_packets"]) for (const [k, v] of Object.entries(m[n] || {})) errs[`${k} ${n.replace("if_", "").replace("_", " ")}`] = v;
+  LG.lineChart("c-iferr", errs, o);
+  LG.lineChart("c-gw", m.gateway_delay_ms || {}, o);
+  LG.lineChart("c-loss", m.gateway_loss_pct || {}, { ...o, fmt: v => v.toFixed(1) + "%", min: 0 });
+}
+async function now() {
+  const d = await LG.api("/api/hardware");
+  const S = k => (d.snapshots[k] || {}).data || {};
+  const L = n => d.latest.filter(x => x.name === n);
+  const one = n => (L(n)[0] || {}).value;
+  const sys = S("system"), mem = (sys.resources || {}).memory || {}, st = sys.pf_states || {}, tm = sys.time || {}, info = sys.information || {};
+  const temps = L("temperature");
+  document.getElementById("gauges").innerHTML =
+    LG.gauge(one("cpu_used_pct"), "CPU") + LG.gauge(one("memory_used_pct"), "Memory", `${LG.bytes(mem.used)} / ${LG.bytes(mem.total)}`) +
+    LG.gauge(one("swap_used_pct"), "Swap") + LG.gauge(one("pf_states_pct"), "State table", `${LG.num(st.current)} / ${LG.num(st.limit)}`) +
+    L("disk_used_pct").map(x => LG.gauge(x.value, "Disk " + x.labels)).join("") +
+    (temps.length ? `<div class="gauge"><div class="gv">${Math.max(...temps.map(t => t.value)).toFixed(0)}°C</div><div class="l">Hottest sensor</div></div>` : "");
+  document.getElementById("hw").innerHTML = `<div class="kv">
+    <div>Host</div><div>${LG.esc(info.name || "–")}</div>
+    <div>CPU</div><div>${LG.esc(sys.cpu_type || "–")}</div>
+    <div>Memory</div><div>${LG.bytes(mem.total)}</div>
+    <div>Software</div><div>${(info.versions || []).map(LG.esc).join("<br>") || "–"}</div>
+    <div>Uptime</div><div>${LG.esc(tm.uptime || "–")}</div>
+    <div>Booted</div><div>${LG.esc(tm.boottime || "–")}</div>
+    <div>Load</div><div>${LG.esc(tm.loadavg || "–")}</div>
+    <div>Last config change</div><div>${LG.esc(tm.config || "–")}</div></div>`;
+  const act = S("activity"), hdr = (act.headers || []).join("\n");
+  const procs = (act.details || []).slice(0, 25);
+  document.getElementById("procs").innerHTML = (hdr ? `<pre class="small">${LG.esc(hdr)}</pre>` : "") + (procs.length ? "" : `<div class="empty">No process data (needs the Diagnostics: Activity privilege).</div>`);
+  if (procs.length) {
+    const div = document.createElement("div"); document.getElementById("procs").appendChild(div);
+    const cols = Object.keys(procs[0]).filter(k => !["THR", "NICE", "PRI"].includes(k));
+    LG.table(div, cols.map(k => ({ k, l: k })), procs);
+  }
+  LG.table("#disks", [{k: "mountpoint", l: "Mount"}, {k: "type", l: "Type"}, {k: "used", l: "Used"}, {k: "blocks", l: "Size"},
+    {k: "used_pct", l: "%", f: v => `${LG.esc(v)}%<div class="bar ${v > 90 ? "bad" : v > 75 ? "warn" : ""}"><i style="width:${Number(v) || 0}%"></i></div>`}], (sys.disk || {}).devices || []);
+  document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+}
+now(); charts();
+setInterval(() => { now(); charts(); }, 60000);
+</script>
+{% endblock %}

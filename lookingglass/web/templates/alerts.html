@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top">
+  <h1>Alerts</h1>
+  <div class="seg" id="status"><button data-v="open">Open</button><button data-v="acknowledged">Acknowledged</button><button data-v="closed">Closed</button><button data-v="all">All</button></div>
+</header>
+<div class="filters">
+  <button class="secondary" id="sel-all">Select all</button>
+  <button id="ack">Acknowledge</button>
+  <button class="secondary" id="close">Close</button>
+  <button class="secondary" id="reopen">Re-open</button>
+  <input id="filter" placeholder="filter…" style="flex:1">
+</div>
+<div class="card"><div id="list"></div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+let status = "open", alerts = [];
+LG.seg(document.getElementById("status"), status, v => { status = v; load(); });
+async function load() {
+  alerts = await LG.api(`/api/alerts?status=${status}`);
+  render();
+}
+function render() {
+  const f = document.getElementById("filter").value.toLowerCase();
+  const rows = alerts.filter(a => !f || JSON.stringify(a).toLowerCase().includes(f));
+  const el = document.getElementById("list");
+  if (!rows.length) { el.innerHTML = `<div class="empty">No alerts.</div>`; return; }
+  el.innerHTML = `<div class="table-wrap tall"><table><thead><tr><th></th><th>Sev</th><th>Alert</th><th>Rule</th><th>Source</th><th class="num">Count</th><th>First</th><th>Last</th><th>Status</th><th></th></tr></thead><tbody>` +
+    rows.map(a => `<tr id="a${a.id}">
+      <td><input type="checkbox" value="${a.id}"></td><td>${LG.sev(a.severity)}</td>
+      <td><b>${LG.esc(a.title)}</b><div class="small muted">${LG.esc(a.description || "")}</div></td>
+      <td class="small">${LG.esc(a.rule)}</td><td>${LG.ip(a.src_ip)}</td><td class="num">${LG.num(a.count)}</td>
+      <td class="small">${LG.time(a.created_at)}</td><td class="small">${LG.ago(a.last_seen)}</td><td class="small">${LG.esc(a.status)}</td>
+      <td>{% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do.`)}">Ask AI</a>{% endif %}</td>
+    </tr>`).join("") + "</tbody></table></div>";
+  if (location.hash) { const t = document.querySelector(location.hash.replace("#", "#a")); if (t) { t.scrollIntoView(); t.style.outline = "2px solid var(--accent)"; } }
+}
+function selected() { return [...document.querySelectorAll("#list input:checked")].map(i => Number(i.value)); }
+async function setStatus(s) {
+  const ids = selected(); if (!ids.length) return;
+  await LG.api("/api/alerts/status", { method: "POST", body: { ids, status: s } }); load();
+}
+document.getElementById("ack").onclick = () => setStatus("acknowledged");
+document.getElementById("close").onclick = () => setStatus("closed");
+document.getElementById("reopen").onclick = () => setStatus("open");
+document.getElementById("sel-all").onclick = () => document.querySelectorAll("#list input[type=checkbox]").forEach(i => i.checked = !i.checked);
+document.getElementById("filter").oninput = render;
+load(); setInterval(load, 60000);
+</script>
+{% endblock %}

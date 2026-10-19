@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top">
+  <h1 id="title">{{ title }}</h1>
+  <span class="muted small" id="updated"></span>
+  <div class="seg" id="range">
+    <button data-v="1">1h</button><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button>
+  </div>
+</header>
+<div class="grid g3" id="panels"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const NAME = "{{ name }}";
+let hours = Number(localStorage.getItem("lg-hours-" + NAME) || 24);
+LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours-" + NAME, v); load(); });
+
+const FMT = {
+  ip: LG.ip, flag: LG.flag, ago: LG.ago, time: LG.time, sev: LG.sev, src: LG.src, bytes: LG.bytes,
+  num: LG.num,
+};
+let built = false;
+
+function build(d) {
+  const box = document.getElementById("panels");
+  box.innerHTML = d.panels.map(p => {
+    const span = p.span === 3 || p.type === "stat" || p.type === "log" ? "span3" : p.span === 2 ? "span2" : "";
+    const body = p.type === "stat" ? `<div class="grid kpis" id="p-${p.id}"></div>`
+      : ["timeseries", "bar", "hbar", "pie"].includes(p.type) ? `<div class="chart-box${p.type === "hbar" ? " tall" : ""}"><canvas id="c-${p.id}"></canvas></div>`
+      : `<div id="p-${p.id}"></div>`;
+    return p.type === "stat" ? `<div class="${span}">${body}</div>` : `<div class="card ${span}"><h3>${LG.esc(p.title || "")}<span class="sp"></span>${p.type === "log" ? `<a class="small" href="/events?source=${encodeURIComponent(d.source || "")}">search all →</a>` : ""}</h3>${body}</div>`;
+  }).join("");
+  built = true;
+}
+
+function render(d) {
+  for (const p of d.panels) {
+    if (p.error) { const el = document.getElementById("p-" + p.id) || document.getElementById("c-" + p.id)?.parentElement; if (el) el.innerHTML = `<div class="empty">query failed: ${LG.esc(p.error)}</div>`; continue; }
+    const rows = p.rows || [];
+    if (p.type === "stat") {
+      const r = rows[0] || {};
+      document.getElementById("p-" + p.id).innerHTML = Object.entries(r).map(([k, v]) => `<div class="card kpi"><div class="v">${LG.num(v)}</div><div class="l">${LG.esc(k)}</div></div>`).join("");
+    } else if (p.type === "timeseries") {
+      LG.seriesChart("c-" + p.id, rows, { hours });
+    } else if (p.type === "pie") {
+      LG.pieChart("c-" + p.id, rows);
+    } else if (p.type === "bar" || p.type === "hbar") {
+      LG.barChart("c-" + p.id, rows, p.type === "hbar");
+    } else if (p.type === "table") {
+      LG.table("#p-" + p.id, (p.cols || Object.keys(rows[0] || {}).map(k => [k, k])).map(([k, l, f]) => ({ k, l, num: f === "num", f: f && f !== "num" ? FMT[f] : undefined })), rows);
+    } else if (p.type === "log") {
+      LG.table("#p-" + p.id, [{k: "ts", l: "Time", f: LG.time}, {k: "source", l: "Src", f: LG.src}, {k: "action", l: "Action"},
+        {k: "src_ip", l: "From", f: (v, r) => `${LG.ip(v)}${r.src_port ? `<span class="muted">:${r.src_port}</span>` : ""} ${LG.flag(r.src_country)}`},
+        {k: "dst_ip", l: "To", f: (v, r) => `${LG.ip(v)}${r.dst_port ? `<span class="muted">:${r.dst_port}</span>` : ""}`},
+        {k: "message", l: "Message", f: (v, r) => `<span class="mono small msgtxt">${LG.esc(r.domain && !String(v).includes(r.domain) ? r.domain + " · " : "")}${LG.esc(v)}</span>`}], rows, "No events in this period");
+    }
+  }
+}
+
+async function load() {
+  try {
+    const d = await LG.api(`/api/dash/${NAME}?hours=${hours}`);
+    if (!built) build(d);
+    render(d);
+    document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) { document.getElementById("panels").innerHTML = `<div class="card">Failed to load: ${LG.esc(e.message)}</div>`; built = false; }
+}
+load();
+setInterval(load, 60000);
+</script>
+{% endblock %}

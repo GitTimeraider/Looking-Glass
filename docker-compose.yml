@@ -1,18 +1,18 @@
-# MonRaider + PostgreSQL (standard setup).
+# Looking Glass + PostgreSQL (standard setup).
 #   1. cp .env.example .env   and fill it in
 #   2. docker compose up -d
 # More variants are in ./examples (HTTPS for passkeys, external PostgreSQL, Unraid socket proxy, build from source).
 services:
-  monraider:
-    image: ghcr.io/gittimeraider/monraider:latest
-    container_name: monraider
+  looking-glass:
+    image: ghcr.io/gittimeraider/looking-glass:latest
+    container_name: looking-glass
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://monraider:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/monraider
+      DATABASE_URL: postgresql://lookingglass:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/lookingglass
     ports:
       - "8080:8080"        # web UI
       - "514:5514/udp"     # syslog from OPNsense (UDP)
@@ -26,16 +26,16 @@ services:
 
   db:
     image: postgres:18-alpine
-    container_name: monraider-db
+    container_name: looking-glass-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: monraider
+      POSTGRES_USER: lookingglass
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: monraider
+      POSTGRES_DB: lookingglass
     volumes:
       - pgdata:/var/lib/postgresql   # PostgreSQL 18+ layout (data lives in /var/lib/postgresql/18/docker)
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U monraider -d monraider"]
+      test: ["CMD-SHELL", "pg_isready -U lookingglass -d lookingglass"]
       interval: 10s
       timeout: 5s
       retries: 10

@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block head %}
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
+{% endblock %}
+{% block body %}
+<header class="top"><h1>AI security analyst</h1><span class="muted small">model: {{ ai_model }}</span></header>
+{% if not ai_enabled %}
+<div class="card">The AI analyst is not configured. Set <code>AI_API_KEY</code> (and optionally <code>AI_BASE_URL</code> / <code>AI_MODEL</code>) — see <a href="/setup">Setup</a>.</div>
+{% else %}
+<div class="chat">
+  <div class="card list"><button style="width:100%;margin-bottom:8px" id="new">+ New chat</button><div id="chats"></div></div>
+  <div class="card conv">
+    <div class="presets" id="presets"></div>
+    <div class="msgs" id="msgs"></div>
+    <div class="composer">
+      <textarea id="input" placeholder="Ask about threats, an IP, weird traffic, vulnerabilities… (Ctrl+Enter to send)"></textarea>
+      <button id="send">Send</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+{% if ai_enabled %}
+<script>
+const PRESETS = [
+  "Give me a full security review of the last 24 hours.",
+  "Are there signs of an intruder or compromised device inside my network?",
+  "Which hacking attempts against my exposed services (nginx, VPN, SSH) happened this week, and did any succeed?",
+  "Look for weird or anomalous traffic: unusual ports, destinations, volumes, DNS tunneling or beaconing.",
+  "Review my firewall exposure: what is allowed inbound from the internet and is that risky?",
+  "Is OPNsense healthy and up to date? Any vulnerabilities or misconfigurations?",
+];
+let chatId = null, convo = [];
+const msgsEl = document.getElementById("msgs");
+document.getElementById("presets").innerHTML = PRESETS.map(p => `<button class="secondary">${LG.esc(p)}</button>`).join("");
+document.querySelectorAll("#presets button").forEach(b => b.onclick = () => send(b.textContent));
+
+function renderMessages(msgs) {
+  msgsEl.innerHTML = msgs.map(m => {
+    if (m.role === "user") return `<div class="msg user">${LG.esc(m.content)}</div>`;
+    if (m.role === "tool") return "";
+    let html = "";
+    if (m.content) html += `<div class="msg assistant">${LG.md(m.content)}</div>`;
+    for (const c of m.tool_calls || []) {
+      let args = c.function.arguments; try { args = JSON.stringify(JSON.parse(args), null, 1); } catch (e) {}
+      const res = msgs.find(x => x.role === "tool" && x.tool_call_id === c.id);
+      html += `<details class="msg tool"><summary>🔧 ${LG.esc(c.function.name)} ${LG.esc(args.length > 120 ? args.slice(0, 120) + "…" : args)}</summary><pre>${LG.esc(args)}</pre>${res ? `<pre>${LG.esc(res.content.slice(0, 5000))}</pre>` : ""}</details>`;
+    }
+    return html;
+  }).join("");
+  msgsEl.scrollTop = msgsEl.scrollHeight;
+}
+async function loadChats() {
+  const chats = await LG.api("/api/ai/chats");
+  document.getElementById("chats").innerHTML = chats.map(c => `<a href="#" data-id="${c.id}" class="${c.id === chatId ? "active" : ""}" title="${LG.esc(c.title)}">${LG.esc(c.title)}</a>`).join("") || `<div class="empty small">No chats yet</div>`;
+  document.querySelectorAll("#chats a").forEach(a => a.onclick = async e => { e.preventDefault(); await openChat(Number(a.dataset.id)); });
+}
+async function openChat(id) {
+  const c = await LG.api(`/api/ai/chats/${id}`);
+  chatId = id; convo = c.messages; renderMessages(convo); loadChats();
+}
+async function send(text) {
+  text = (text || document.getElementById("input").value).trim();
+  if (!text) return;
+  document.getElementById("input").value = "";
+  const btn = document.getElementById("send"); btn.disabled = true;
+  convo = convo.concat([{ role: "user", content: text }]);
+  renderMessages(convo);
+  msgsEl.insertAdjacentHTML("beforeend", `<div class="msg assistant" id="thinking"><span class="spinner"></span> investigating… (the analyst queries the log database, this can take a minute)</div>`);
+  msgsEl.scrollTop = msgsEl.scrollHeight;
+  try {
+    const r = await LG.api("/api/ai/message", { method: "POST", body: { chat_id: chatId, text } });
+    chatId = r.chat_id;
+    convo = convo.slice(0, -1).concat(r.messages);
+    renderMessages(convo); loadChats();
+  } catch (e) {
+    document.getElementById("thinking").innerHTML = `⚠️ ${LG.esc(e.message)}`;
+    convo = convo.slice(0, -1);
+  } finally { btn.disabled = false; }
+}
+document.getElementById("send").onclick = () => send();
+document.getElementById("input").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); };
+document.getElementById("new").onclick = () => { chatId = null; convo = []; renderMessages([]); loadChats(); };
+loadChats();
+const q = LG.qs().q; if (q) { window.history.replaceState(null, "", "/ai"); send(q); }
+</script>
+{% endif %}
+{% endblock %}
