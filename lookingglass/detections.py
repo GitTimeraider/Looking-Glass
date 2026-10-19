@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import math
 import time
@@ -12,7 +11,7 @@ from typing import Any
 from . import db
 from .config import Settings
 from .ingest import STATS
-from .parsers.common import is_internal_ip
+from .parsers.common import is_internal_ip, parse_networks
 
 log = logging.getLogger(__name__)
 
@@ -129,8 +128,6 @@ async def dhcp_listener(events: list[dict[str, Any]]) -> None:
 class DetectionEngine:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.extra_internal = [ipaddress.ip_network(n.strip(), strict=False)
-                               for n in settings.internal_networks.split(",") if n.strip()]
         self._last_events_at = time.time()
 
     async def run(self) -> None:
@@ -147,7 +144,7 @@ class DetectionEngine:
                 except Exception:  # noqa: BLE001
                     log.exception("detection rule %s failed", rule.__name__)
             elapsed = time.monotonic() - started
-            await asyncio.sleep(max(5, self.settings.detection_interval - elapsed))
+            await asyncio.sleep(max(5, self.settings.detection_interval - elapsed))  # live setting
 
     # -------------------------------------------------------- helpers ---
     async def _watermark(self, rule: str) -> tuple[int, int]:
@@ -164,7 +161,7 @@ class DetectionEngine:
         await db.kv_set(f"wm:{rule}", current)
 
     def internal(self, ip: Any) -> bool:
-        return is_internal_ip(ip, self.extra_internal)
+        return is_internal_ip(ip, parse_networks(self.settings.internal_networks))
 
     # ----------------------------------------------------- network rules ---
     async def port_scan(self) -> None:

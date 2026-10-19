@@ -117,7 +117,7 @@ _FORBIDDEN = re.compile(r"\b(insert|update|delete|drop|alter|create|truncate|gra
 
 
 # secrets the model must never read (credentials, MFA material, session key)
-_SECRET = re.compile(r"\b(users|webauthn_credentials|kv|unraid_servers|api_key|password_hash|totp_secret|secret_key|"
+_SECRET = re.compile(r"\b(users|webauthn_credentials|kv|app_settings|unraid_servers|api_key|password_hash|totp_secret|secret_key|"
                      r"pg_shadow|pg_authid|pg_user|current_setting|pg_settings|pg_stat_activity)\b", re.I)
 
 

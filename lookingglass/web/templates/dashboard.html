@@ -125,7 +125,7 @@ async function load() {
       <div>Memory</div><div>${memPct ?? "?"}% of ${LG.bytes(mem.total)}${bar(memPct)}</div>
       <div>States</div><div>${LG.num(st.current)} / ${LG.num(st.limit)}${bar(statePct)}</div>
       <div>Gateways</div><div>${gws.map(g => `<span class="dot ${/online|none/i.test(g.status_translated || g.status) ? "ok" : "bad"}"></span>${LG.esc(g.name)} ${LG.esc(g.delay || "")}`).join("<br>") || "–"}</div>
-    </div>` : `<div class="empty">No OPNsense API data yet. Configure OPNSENSE_URL / API key (see <a href="/setup">Setup</a>).</div>`;
+    </div>` : `<div class="empty">No OPNsense API data yet. Enter the OPNsense URL and API key under <a href="/settings#opnsense">Settings › OPNsense</a>.</div>`;
 }
 load();
 setInterval(load, 60000);

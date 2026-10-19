@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 import logging
 import time
 from datetime import datetime, timezone
@@ -30,8 +31,8 @@ class ApiError(Exception):
 class OPNsenseClient:
     def __init__(self, settings: Settings) -> None:
         verify: Any = settings.opnsense_verify_ssl
-        if settings.opnsense_ca_file:
-            verify = settings.opnsense_ca_file
+        if settings.opnsense_ca_pem:
+            verify = ssl.create_default_context(cadata=settings.opnsense_ca_pem)
         self.client = httpx.AsyncClient(
             base_url=settings.opnsense_url.rstrip("/"),
             auth=(settings.opnsense_api_key, settings.opnsense_api_secret),
@@ -117,6 +118,7 @@ class Poller:
             self.jobs.append(("ids", 60, self.poll_ids))
         self._next: dict[str, float] = {}
         self._running: set[str] = set()
+        self._tasks: set[asyncio.Task] = set()
 
     async def run(self) -> None:
         log.info("OPNsense poller started for %s", self.settings.opnsense_url)
@@ -126,8 +128,16 @@ class Poller:
                 if name in self._running or self._next.get(name, 0) > now:
                     continue
                 self._running.add(name)
-                asyncio.create_task(self._run_job(name, interval, fn))
+                task = asyncio.create_task(self._run_job(name, interval, fn))
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
             await asyncio.sleep(1)
+
+    async def stop(self) -> None:
+        for t in list(self._tasks):
+            t.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+        await self.api.close()
 
     async def _run_job(self, name: str, interval: int, fn: Callable[[], Awaitable[None]]) -> None:
         st = self.status.setdefault(name, {"ok": None, "last": None, "error": None, "unsupported": False})

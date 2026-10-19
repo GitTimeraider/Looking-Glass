@@ -24,6 +24,7 @@ from starlette.routing import Route
 
 from .config import Settings
 from .ingest import STATS, EventWriter
+from .parsers.common import parse_networks
 from .parsers.security import zen_family_from_index, zenarmor_record
 
 log = logging.getLogger(__name__)
@@ -39,11 +40,10 @@ def es_json(data: Any, status: int = 200) -> JSONResponse:
 
 def create_es_app(settings: Settings, writer: EventWriter) -> Starlette:
     indexes: set[str] = set()
-    allowed = [ipaddress.ip_network(n.strip(), strict=False)
-               for n in (settings.zenarmor_es_allowed or settings.syslog_allowed_senders).split(",") if n.strip()]
     stats = {"docs": 0, "bulk": 0, "self": 0, "last": None, "peer": None}
 
     def peer_ok(request: Request) -> bool:
+        allowed = parse_networks(settings.zenarmor_es_allowed or settings.syslog_allowed_senders)
         if not allowed:
             return True
         try:

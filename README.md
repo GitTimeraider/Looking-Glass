@@ -64,22 +64,23 @@ Other ready-made compose files are in [`examples/`](examples):
 | [`docker-compose.yml`](docker-compose.yml) | standard: Looking Glass + its own PostgreSQL |
 | [`examples/docker-compose.https.yml`](examples/docker-compose.https.yml) + [`Caddyfile`](examples/Caddyfile) | you want HTTPS (required for **passkeys**) via a bundled Caddy reverse proxy |
 | [`examples/docker-compose.external-postgres.yml`](examples/docker-compose.external-postgres.yml) | you already run PostgreSQL 14+ |
-| [`examples/docker-compose.all-in-one.yml`](examples/docker-compose.all-in-one.yml) | Portainer / Dockge stacks: all settings inline, no `.env` |
+| [`examples/docker-compose.all-in-one.yml`](examples/docker-compose.all-in-one.yml) | Portainer / Dockge stacks: no `.env` file |
+| [`examples/docker-compose.secrets.yml`](examples/docker-compose.secrets.yml) | Docker secrets: no password in any environment variable |
 | [`examples/docker-compose.build.yml`](examples/docker-compose.build.yml) | build the image from source |
 | [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml) | run **on Unraid** for per-container CPU/memory graphs |
 | [`examples/unraid/looking-glass.xml`](examples/unraid/looking-glass.xml) | run Looking Glass itself **on Unraid** as a Docker template |
 
-### 3. Configure (edit `~/looking-glass/.env` with any text editor, e.g. `nano .env`)
+### 3. Configure the container (edit `~/looking-glass/.env`, e.g. `nano .env`)
 
-* `POSTGRES_PASSWORD` – choose a long random password.
-* `ADMIN_USER` / `ADMIN_PASSWORD` – the first account (only used when the database is still empty).
-* `OPNSENSE_URL` – e.g. `https://192.168.1.1` (add `:port` if the web GUI runs on a different port).
-* `OPNSENSE_API_KEY` / `OPNSENSE_API_SECRET` – the values from the file of step 1.
-* `AI_API_KEY` – your Anthropic API key (from <https://console.anthropic.com> › *API keys*). The defaults
-  `AI_BASE_URL=https://api.anthropic.com/v1/` and `AI_MODEL=claude-opus-5-5` use Claude through Anthropic's
-  OpenAI-compatible API. Any other OpenAI-compatible service works as well (OpenAI, OpenRouter, LiteLLM, a local
-  Ollama at `http://host:11434/v1/` …) by changing the base URL, model and key.
-* `TIMEZONE` – your local zone (used for BSD-style syslog timestamps and the daily report).
+The environment only holds **infrastructure** settings. API keys and other credentials are **not** put here; you
+enter them in the web UI after the first login (step 5), where they are stored encrypted.
+
+* `POSTGRES_PASSWORD` – choose a long random password (or use Docker secrets, see
+  [`examples/docker-compose.secrets.yml`](examples/docker-compose.secrets.yml) – then no password is in any
+  environment variable at all).
+* `ADMIN_USER` / `ADMIN_PASSWORD` – the first account (only used while the database is empty; leave the password
+  empty and a random one is printed in the container log).
+* `PUID` / `PGID` – owner of the files in the data volume (default 10001; on Unraid use 99 / 100).
 * `PUBLIC_URL` – only when you use HTTPS / a reverse proxy, e.g. `https://looking-glass.home.lan` (for passkeys).
 
 ### 4. Start and log in
@@ -88,7 +89,7 @@ On the Docker host, in `~/looking-glass`:
 
 ```bash
 docker compose up -d
-docker compose logs -f lookingglass     # Ctrl+C to stop following
+docker compose logs -f looking-glass     # Ctrl+C to stop following
 ```
 
 In your browser open `http://<docker-host>:8080`, log in with `ADMIN_USER` / `ADMIN_PASSWORD`. You are sent to
@@ -101,6 +102,25 @@ In your browser open `http://<docker-host>:8080`, log in with `ADMIN_USER` / `AD
   `examples/docker-compose.https.yml` or your own reverse proxy (Nginx Proxy Manager, Traefik, SWAG…).
 
 Then change the initial password on the same page. Next logins ask for password + TOTP code or passkey.
+
+### 5. Enter your integrations (Looking Glass web UI › **Settings**)
+
+* **OPNsense** tab – URL (e.g. `https://192.168.1.1`), the API key and secret from step 1 → *Test connection* → *Save*.
+* **AI analyst** tab – your Anthropic API key (<https://console.anthropic.com> › *API keys*). Base URL
+  `https://api.anthropic.com/v1/` and model `claude-opus-5-5` are pre-filled; any other OpenAI-compatible service
+  (OpenAI, OpenRouter, LiteLLM, Ollama at `http://host:11434/v1/` …) works by changing base URL, model and key.
+  *Test connection* → *Save*.
+* **Ingestion & network** tab – set *Syslog allowed senders* to your OPNsense IP and your *Time zone*.
+* **Zenarmor** / **Unraid servers** / **Data & detection** tabs – optional (see the sections below).
+
+Everything applies immediately. API keys, secrets and passwords are encrypted (Fernet/AES) with a key that is
+generated on first start in the data volume (`/data/lookingglass.key`, readable only by the app user). They are
+never shown again in the UI or API - a field only says *set* / *not set*. **Back up `./data/lookingglass.key`
+together with your database**; without it the stored credentials can't be decrypted (you would just re-enter them).
+
+> Upgrading from a version that used `OPNSENSE_*`, `AI_*`, `UNRAID_*` … environment variables? They are imported
+> into the encrypted store automatically on the first start (the log tells you which) – then delete them from your
+> compose/.env file.
 
 > Port 514 on the host must be free. If something else uses it, change `"514:5514/udp"` in `docker-compose.yml`
 > to e.g. `"1514:5514/udp"` and use that port in OPNsense in the next step.
@@ -116,7 +136,7 @@ Then change the initial password on the same page. Next logins ask for password 
 3. Enter the code and a new password on the reset page. Password **and** all MFA factors are reset; you set up
    MFA again at the next login. Codes are single use, expire after 15 minutes and are destroyed after 5 wrong attempts.
 
-### 5. Send logs from OPNsense (OPNsense web UI)
+### 6. Send logs from OPNsense (OPNsense web UI)
 
 These steps were checked against the current OPNsense documentation and source (26.x).
 
@@ -140,7 +160,7 @@ These steps were checked against the current OPNsense documentation and source (
 6. **Zenarmor** – choose one (both are mirrors; Zenarmor's own reports stay intact):
    * **Any edition, incl. free Home (recommended)**: **Zenarmor › Settings › Streaming Data › Stream Reporting Data to
      External Elasticsearch**: URI `http://<docker-host>:9200`, Elasticsearch version `8.11.3`, username/password empty
-     (or the values of `ZENARMOR_ES_USER` / `ZENARMOR_ES_PASSWORD`), Apply. Looking Glass answers as an Elasticsearch node.
+     (or the username/password you set under Looking Glass *Settings › Zenarmor*), Apply. Looking Glass answers as an Elasticsearch node.
      ⚠️ Do **not** use the install wizard's *Remote Elasticsearch Database* option – that replaces Zenarmor's local
      storage and cannot be changed afterwards.
    * **Paid editions**: the same page, *Stream Reporting Data to External Syslog*: server = Docker host, port 514,
@@ -154,7 +174,7 @@ These steps were checked against the current OPNsense documentation and source (
 Check **Setup & Status** in Looking Glass: every source should show a recent "last message" and every API job "ok"
 (jobs for plugins you don't have show `n/a`).
 
-### 6. Optional: GeoIP countries (shell on your Docker host)
+### 7. Optional: GeoIP countries (shell on your Docker host)
 
 Create a free account at MaxMind, download **GeoLite2-City.mmdb** (or Country) and place it in `~/looking-glass/data/`,
 then `docker compose restart lookingglass`. Make sure the `data` folder is readable by UID 10001
@@ -176,7 +196,7 @@ docker compose pull && docker compose up -d
 1. **Unraid web UI** (Unraid 7.2+ has the API built in; on 6.12–7.1 install the *Unraid Connect* plugin from
    Community Apps first): *Settings › Management Access › API Keys › Create*, name `lookingglass`, role **Viewer**,
    copy the key. (Or in the Unraid terminal: `unraid-api apikey --create --name lookingglass --roles VIEWER --json`.)
-2. **Looking Glass web UI**: *Integrations* › fill in name, URL (e.g. `http://192.168.1.10`) and the API key ›
+2. **Looking Glass web UI**: *Settings › Unraid servers* › fill in name, URL (e.g. `http://192.168.1.10`) and the API key ›
    *Test connection* › *Add server*. Add as many servers as you like.
 3. Optional, for per-container CPU / memory graphs: on Unraid start
    [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml)
@@ -207,7 +227,7 @@ auto-start containers, array problems, UPS on battery and Unraid *warning/alert*
 * **Unraid** – see above.
 * **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range.
 * **Reports** – 24h / 7d / 30d reports, optionally with an AI-written analysis; print to PDF or download JSON.
-  Set `AI_DAILY_REPORT=true` to get one automatically every morning.
+  Enable *Daily AI report* under *Settings › AI analyst* to get one automatically every morning.
 * **AI Analyst** – chat with the model (any OpenAI-compatible endpoint; with Claude it uses Anthropic's
   [OpenAI SDK compatibility layer](https://platform.claude.com/docs/en/api/openai-sdk)). It can run read-only SQL against the log database, search events, profile an
   IP, read alerts, OPNsense + Unraid status and traffic statistics, and answers with evidence and remediation steps.
@@ -216,29 +236,26 @@ auto-start containers, array problems, UPS on battery and Unraid *warning/alert*
 
 ## Configuration reference
 
-All settings are environment variables (see `.env.example`). The most important:
+**In the web UI (Settings, stored in the database, secrets encrypted, applied live):** OPNsense URL / API key /
+secret / TLS verification / custom CA / poll interval / per-source pulls · AI base URL / API key / model / limits /
+daily report · Zenarmor stream username / password / allowed senders · syslog allowed senders, extra internal
+networks, time zone · retention, detection interval, GeoIP path · Unraid servers (URL, API key, Docker API).
+
+**Environment variables (infrastructure only, need a container restart):**
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATABASE_URL` | `postgresql://lookingglass:lookingglass@db:5432/lookingglass` | PostgreSQL connection |
-| `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / random (printed in the log) | first account, created only when no user exists |
+| `DATABASE_URL` (or `DATABASE_URL_FILE`) | `postgresql://lookingglass:lookingglass@db:5432/lookingglass` | PostgreSQL connection |
+| `DATABASE_PASSWORD_FILE` | – | read the DB password from a Docker secret file and insert it into `DATABASE_URL` |
+| `ADMIN_USER` / `ADMIN_PASSWORD` (or `ADMIN_PASSWORD_FILE`) | `admin` / random (printed in the log) | first account, created only when no user exists |
+| `PUID` / `PGID` | `10001` | owner of the files in `/data` |
+| `DATA_DIR` | `/data` | data volume (encryption key, GeoIP database) |
+| `LG_ENCRYPTION_KEY_FILE` | `/data/lookingglass.key` | alternative location of the encryption key (e.g. a Docker secret) |
 | `PUBLIC_URL` / `WEBAUTHN_RP_ID` | auto | public https URL / passkey relying-party id when behind a reverse proxy |
 | `COOKIE_SECURE` | `false` | mark the session cookie HTTPS-only |
-| `SECRET_KEY` | generated, stored in DB | cookie signing key |
-| `UNRAID_NAME` / `UNRAID_URL` / `UNRAID_API_KEY` / `UNRAID_DOCKER_URL` | – | optional first Unraid server (more via *Integrations*) |
-| `SYSLOG_UDP_PORT` / `SYSLOG_TCP_PORT` | `5514` | container syslog ports |
-| `SYSLOG_ALLOWED_SENDERS` | *(all)* | comma-separated IPs/CIDRs allowed to send syslog |
-| `OPNSENSE_URL`, `OPNSENSE_API_KEY`, `OPNSENSE_API_SECRET` | – | API access |
-| `OPNSENSE_VERIFY_SSL` / `OPNSENSE_CA_FILE` | `false` / – | TLS verification of the OPNsense GUI certificate |
-| `POLL_INTERVAL` | `60` | seconds between system polls |
-| `FIREWALL_LOG_PULL` | `auto` | `auto`/`always`/`never` pull of the firewall log through the API |
-| `UNBOUND_QUERY_PULL`, `CROWDSEC_PULL`, `QFEEDS_PULL`, `IDS_PULL` | `true` | per-source API pulls |
-| `AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY` | Anthropic / `claude-opus-5-5` / – | AI endpoint |
-| `AI_DAILY_REPORT`, `AI_DAILY_REPORT_HOUR` | `false`, `7` | automatic daily AI report |
-| `ZENARMOR_ES_PORT` / `ZENARMOR_ES_USER` / `ZENARMOR_ES_PASSWORD` / `ZENARMOR_ES_ALLOWED` | `9200` / – | Zenarmor Elasticsearch-compatible receiver (`0` disables) |
-| `RETENTION_DAYS` / `METRICS_RETENTION_DAYS` | `30` / `90` | data retention |
-| `INTERNAL_NETWORKS` | – | extra CIDRs treated as internal |
-| `GEOIP_DB` | `/data/GeoLite2-City.mmdb` | MaxMind database path |
+| `SECRET_KEY` (or `SECRET_KEY_FILE`) | generated, stored in DB | cookie signing key |
+| `WEB_PORT` / `SYSLOG_UDP_PORT` / `SYSLOG_TCP_PORT` / `ZENARMOR_ES_PORT` | `8080` / `5514` / `5514` / `9200` | container listen ports (`ZENARMOR_ES_PORT=0` disables the receiver) |
+| `LOG_LEVEL` | `INFO` | logging verbosity |
 
 ## Security notes
 
@@ -247,7 +264,9 @@ All settings are environment variables (see `.env.example`). The most important:
 * Put Looking Glass on your LAN / management network; don't expose port 8080 to the internet (use a VPN or a reverse
   proxy with TLS if you need remote access).
 * The reset code only appears in the container log, so a reset requires access to the Docker host.
-* Use `SYSLOG_ALLOWED_SENDERS=<opnsense-ip>` so nobody else can inject log lines.
+* Integration credentials are stored encrypted in the database with a key kept only in the data volume, are
+  never returned by the UI/API, and are not readable by the AI analyst's SQL tool. The environment holds no API keys.
+* Set *Settings › Ingestion & network › Syslog allowed senders* to your OPNsense IP so nobody else can inject log lines.
 * The AI's SQL tool runs inside read-only transactions with a statement timeout and only accepts `SELECT`.
 
 ## Sources used
@@ -267,8 +286,8 @@ pip install -r requirements-dev.txt
 python -m pytest -q                                   # parser tests
 DATABASE_URL=postgresql://... ADMIN_PASSWORD=x python -m lookingglass.main
 python tools/simulate.py --port 5514                  # send simulated OPNsense logs (scans, brute force, tunnels…)
-python tools/mock_opnsense.py --port 18443            # fake OPNsense API  (OPNSENSE_URL=http://127.0.0.1:18443)
-python tools/mock_unraid.py --port 18500              # fake Unraid API    (UNRAID_URL=http://127.0.0.1:18500, key test-key)
+python tools/mock_opnsense.py --port 18443            # fake OPNsense API  (Settings › OPNsense: http://127.0.0.1:18443)
+python tools/mock_unraid.py --port 18500              # fake Unraid API    (Settings › Unraid: http://127.0.0.1:18500, key test-key)
 TEST_DATABASE_URL=postgresql://... python -m pytest   # also runs every dashboard query against PostgreSQL
 ```
 

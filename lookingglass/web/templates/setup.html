@@ -16,8 +16,8 @@
       give it the privileges it needs (simplest: <i>GUI - All pages</i>; stricter: only the Diagnostics, Reporting, Firmware,
       Gateways, Unbound, CrowdSec, Q-Feeds and Intrusion Detection pages — any endpoint that returns 403 shows up in the
       polling table above). In the user's <i>API keys</i> section click <b>+</b>; a file with <code>key=</code> and
-      <code>secret=</code> downloads. Put those in <code>OPNSENSE_API_KEY</code> / <code>OPNSENSE_API_SECRET</code> and set
-      <code>OPNSENSE_URL</code> (e.g. <code>https://192.168.1.1</code>).</li>
+      <code>secret=</code> downloads. Enter the URL (e.g. <code>https://192.168.1.1</code>), key and secret under
+      <a href="/settings#opnsense">Settings › OPNsense</a> and click <i>Test connection</i>, then <i>Save</i>.</li>
     <li><b>Remote syslog</b> — <i>System › Settings › Logging</i>, tab <i>Remote</i> (called <i>Logging / targets</i> on older versions), click <b>+</b>:
       Enabled ✓, Transport <code>UDP(4)</code> (or <code>TCP(4)</code>), Applications: leave empty to send everything (recommended) or pick
       <code>filter (filterlog)</code>, <code>unbound</code>, <code>nginx</code>, <code>crowdsec</code>, <code>suricata</code>, <code>sshd</code>,
@@ -45,9 +45,9 @@
       <i>Security › Q-Feeds Connect › Events</i> via the API. Domain feeds go into Unbound's blocklist.</li>
     <li><b>GeoIP</b> (optional) — create a free MaxMind account, download <code>GeoLite2-City.mmdb</code> (or Country) into the mounted
       <code>/data</code> volume, restart. Countries then appear in dashboards and reports.</li>
-    <li><b>AI analyst</b> — set <code>AI_API_KEY</code>. Defaults use Anthropic's OpenAI-compatible endpoint
-      (<code>AI_BASE_URL=https://api.anthropic.com/v1/</code>, <code>AI_MODEL=claude-opus-5-5</code>). Any other OpenAI-compatible
-      endpoint (OpenAI, OpenRouter, LiteLLM, Ollama…) works by changing those two variables.</li>
+    <li><b>AI analyst</b> — under <a href="/settings#ai">Settings › AI analyst</a> enter your API key. Defaults use Anthropic's
+      OpenAI-compatible endpoint (<code>https://api.anthropic.com/v1/</code>, model <code>claude-opus-5-5</code>); any other
+      OpenAI-compatible endpoint (OpenAI, OpenRouter, LiteLLM, Ollama…) works by changing base URL and model.</li>
   </ol>
 </div>
 {% endblock %}
@@ -67,7 +67,7 @@
   const p = s.poller || {};
   LG.table("#poller", [{k: "job", l: "Job"}, {k: "ok", l: "State", f: (v, r) => r.unsupported ? `<span class="badge warn">n/a</span>` : v ? `<span class="badge ok">ok</span>` : v === false ? `<span class="badge bad">error</span>` : "…"},
     {k: "last", l: "Last", f: LG.ago}, {k: "error", l: "Detail", f: v => `<span class="small muted">${LG.esc(v || "")}</span>`}],
-    Object.entries(p).map(([job, v]) => ({ job, ...v })), s.opnsense ? "Waiting for first poll…" : "API polling disabled (OPNSENSE_URL / key / secret not set)");
+    Object.entries(p).map(([job, v]) => ({ job, ...v })), s.opnsense ? "Waiting for first poll…" : "API polling disabled - set URL, key and secret under Settings › OPNsense");
   document.getElementById("conf").innerHTML = `<div class="kv">
     <div>OPNsense API</div><div>${s.opnsense ? "configured" : "not configured"}</div>
     <div>Syslog</div><div>${s.syslog.enabled ? `UDP ${s.syslog.udp} / TCP ${s.syslog.tcp} (container ports)` : "disabled"}</div>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from functools import lru_cache
 from datetime import datetime
 from typing import Any
 
@@ -14,7 +15,20 @@ INTERNAL_NETS = [ipaddress.ip_network(n) for n in (
     "224.0.0.0/4", "255.255.255.255/32", "0.0.0.0/32", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8", "::/128")]
 
 
-def is_internal_ip(value: Any, extra: list | None = None) -> bool:
+@lru_cache(maxsize=64)
+def parse_networks(csv: str) -> tuple:
+    """'192.168.1.1, 10.0.0.0/8' -> tuple of ip_network (invalid parts are skipped)."""
+    out = []
+    for part in (csv or "").split(","):
+        try:
+            if part.strip():
+                out.append(ipaddress.ip_network(part.strip(), strict=False))
+        except ValueError:
+            pass
+    return tuple(out)
+
+
+def is_internal_ip(value: Any, extra: list | tuple | None = None) -> bool:
     try:
         addr = ipaddress.ip_address(str(value).split("/")[0])
     except ValueError:

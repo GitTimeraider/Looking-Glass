@@ -147,3 +147,10 @@ td a, td .mono, td .pill, td .badge { white-space: nowrap; overflow-wrap: normal
 td.msg, td .msgtxt, .logview { overflow-wrap: anywhere; }
 td .msgtxt { white-space: normal; }
 td { max-width: 520px; }
+.settings-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px 24px; }
+.settings-form .setting { display: grid; gap: 4px; align-content: start; }
+.settings-form textarea { font-family: var(--mono); font-size: 12px; }
+input[type=checkbox] { width: auto; min-width: 0; padding: 0; flex: none; }
+label.chk { white-space: nowrap; flex: none; }
+.settings-form .secret-row { display: flex; gap: 8px; align-items: center; }
+.settings-form .secret-row input[type=password] { flex: 1; min-width: 0; }
