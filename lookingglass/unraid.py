@@ -4,6 +4,8 @@ Uses the official Unraid API (GraphQL at ``<url>/graphql``, header ``x-api-key``
 and available for older 6.12/7.x releases through the Unraid Connect plugin. Every section is fetched with
 its own query so that fields missing on older API versions only disable that section.
 
+Disks are never woken: see unraid_storage.py for which queries touch disks and when they are allowed.
+
 Optionally a read-only Docker API endpoint (docker-socket-proxy) adds per-container CPU / memory / network
 statistics and a log fallback.
 """
@@ -20,6 +22,7 @@ from typing import Any
 import httpx
 
 from . import crypto, db
+from . import unraid_storage as storage
 from .config import Settings
 from .detections import raise_alert
 from .ingest import EventWriter
@@ -29,7 +32,11 @@ from .parsers.syslog import parse_iso
 
 log = logging.getLogger(__name__)
 
-DISK_FIELDS = "id idx name device size status rotational temp numReads numWrites numErrors fsSize fsFree fsUsed type warning critical fsType isSpinning color"
+# all of these come from emhttp's disks.ini - reading them never touches a disk (numReads/numWrites/color are
+# not filled by the API, so they are not requested)
+DISK_FIELDS = "id idx name device size status rotational temp numErrors fsSize fsFree fsUsed type warning critical fsType isSpinning transport comment"
+DISK_FIELDS_BASIC = "id idx name device size status rotational temp numErrors fsSize fsFree fsUsed type warning critical fsType isSpinning"
+DISK_FIELDS_OLD = "id idx name device size status rotational temp numErrors fsSize fsFree fsUsed type warning critical fsType"
 
 QUERIES: dict[str, str] = {
     "info": """{ info {
@@ -43,16 +50,26 @@ QUERIES: dict[str, str] = {
     "metrics": """{ metrics {
         cpu { percentTotal cpus { percentTotal } }
         memory { total used available percentTotal swapTotal swapUsed percentSwapTotal }
-        temperature { sensors { name type current { value status } warning critical } }
         network { name operstate rxSec txSec receiveErrors transmitErrors }
     } }""",
+    # separate: on API <= 4.37.5 this runs smartctl on every disk (wakes them) - only sent when that is harmless
+    "temps": """{ metrics { temperature { sensors { name type current { value status } warning critical } } } }""",
     "metrics_basic": """{ metrics { cpu { percentTotal cpus { percentTotal } } memory { total used available percentTotal swapTotal swapUsed percentSwapTotal } } }""",
     "array": """{ array {
         state
         capacity { kilobytes { free used total } disks { free used total } }
         parityCheckStatus { status progress errors running paused speed date duration }
         parities { %s } disks { %s } caches { %s } boot { %s }
-    } }""" % (DISK_FIELDS, DISK_FIELDS, DISK_FIELDS, DISK_FIELDS),
+    } }""" % ((DISK_FIELDS,) * 4),
+    "array_basic": """{ array {
+        state
+        capacity { kilobytes { free used total } disks { free used total } }
+        parityCheckStatus { status progress errors running paused speed date duration }
+        parities { %s } disks { %s } caches { %s } boot { %s }
+    } }""" % ((DISK_FIELDS_BASIC,) * 4),
+    # very old API without isSpinning: spin state unknown -> disk-touching queries are never sent
+    "array_old": """{ array { state capacity { kilobytes { free used total } } parities { %s } disks { %s } caches { %s } } }"""
+                 % ((DISK_FIELDS_OLD,) * 3),
     "docker": """{ docker { containers {
         id names image state status autoStart isUpdateAvailable webUiUrl iconUrl created
         ports { ip privatePort publicPort type }
@@ -65,6 +82,7 @@ QUERIES: dict[str, str] = {
     "vms": """{ vms { domains { id name state } } }""",
     "ups": """{ upsDevices { id name model status battery { chargeLevel estimatedRuntime health } power { loadPercentage currentPower inputVoltage outputVoltage } } }""",
     "shares": """{ shares { name free used size comment cache } }""",
+    # wakes EVERY spun-down disk (smartctl -a without -n standby inside the API) - only sent when all disks spin
     "disks": """{ disks { id device name vendor size type interfaceType smartStatus temperature isSpinning serialNum firmwareRevision } }""",
 }
 
@@ -120,6 +138,17 @@ class UnraidServerPoller:
         self.log_cursors: dict[str, str] = {}
         self.syslog_line = 0
         self.last_run: dict[str, float] = {}
+        self.awake_history: list[bool] = []  # "every sleep-capable disk spins" for the last array readings
+        self.api_version: str | None = None
+        self.smart_done: dict[str, float] = {}
+
+    @property
+    def prefs(self) -> dict[str, Any]:
+        return storage.clean_prefs(self.server.get("storage"))
+
+    def disks_awake(self) -> bool:
+        """Safe to run a disk-touching query: all disks were spinning in the last two array readings."""
+        return len(self.awake_history) >= 2 and all(self.awake_history[-2:])
 
     def due(self, key: str, interval: int) -> bool:
         if time.time() - self.last_run.get(key, 0) >= interval:
@@ -150,15 +179,18 @@ class UnraidServerPoller:
                 d = await self.section("info", "info")
                 if d:
                     await self.snap("info", d.get("info"))
+                    self.api_version = (((d.get("info") or {}).get("versions") or {}).get("core") or {}).get("api")
             await self.poll_metrics()
-            if self.due("array", p):
+            if self.due("array", min(p, 60)):
                 await self.poll_array()
+            await self.poll_temps()
+            await self.poll_smart()
             if self.due("docker", p):
                 await self.poll_docker()
             if self.due("notifications", 120):
                 await self.poll_notifications()
             if self.due("misc", 300):
-                for key in ("vms", "ups", "shares", "disks"):
+                for key in ("vms", "ups", "shares"):
                     d = await self.section(key, key)
                     if d is not None:
                         await self.snap(key, d.get({"ups": "upsDevices"}.get(key, key)))
@@ -197,41 +229,106 @@ class UnraidServerPoller:
             rows.append(("unraid_mem_pct", sid, round(_num(mem["percentTotal"]), 2)))
         if _num(mem.get("percentSwapTotal")) is not None:
             rows.append(("unraid_swap_pct", sid, round(_num(mem["percentSwapTotal"]), 2)))
-        for s in ((m.get("temperature") or {}).get("sensors") or []):
-            v = _num((s.get("current") or {}).get("value"))
-            if v is not None:
-                rows.append(("unraid_temp", f"{sid}:{s.get('name')}", v))
-                crit = _num(s.get("critical"))
-                if crit and v >= crit:
-                    await raise_alert("unraid_temp", "high", f"{self.name}: sensor {s.get('name')} at {v:.0f}°C",
-                                      f"unraid_temp:{self.sid}:{s.get('name')}", description="Temperature above critical threshold.")
         for n in m.get("network") or []:
             if n.get("name") and _num(n.get("rxSec")) is not None:
                 rows.append(("unraid_net_rx_bps", f"{sid}:{n['name']}", round(_num(n["rxSec"]) * 8, 1)))
                 rows.append(("unraid_net_tx_bps", f"{sid}:{n['name']}", round(_num(n.get("txSec")) * 8, 1)))
         await db.add_metrics(rows)
 
+    async def poll_temps(self) -> None:
+        """Temperature sensors. API > 4.37.5: harmless, every poll. Older: only while every disk spins anyway."""
+        mode = self.prefs["sensor_temps"]
+        safe = storage.temps_never_wake(self.api_version)
+        self.status["disk_policy"] = {"sensor_temps": mode, "api": self.api_version, "temps_never_wake": safe,
+                                      "all_disks_spinning": self.disks_awake()}
+        if mode == "off" or not (safe or self.disks_awake()):
+            return
+        if not self.due("temps", max(20, self.settings.poll_interval) if safe else 600):
+            return
+        d = await self.section("temps", "temps")
+        if not d:
+            return
+        sensors = ((d.get("metrics") or {}).get("temperature") or {}).get("sensors") or []
+        await self.snap("temps", {"sensors": sensors})
+        sid, rows = str(self.sid), []
+        for s in sensors:
+            v = _num((s.get("current") or {}).get("value"))
+            if v is None:
+                continue
+            rows.append(("unraid_temp", f"{sid}:{s.get('name')}", v))
+            crit = _num(s.get("critical"))
+            if crit and v >= crit:
+                await raise_alert("unraid_temp", "high", f"{self.name}: sensor {s.get('name')} at {v:.0f}°C",
+                                  f"unraid_temp:{self.sid}:{s.get('name')}", description="Temperature above critical threshold.")
+        await db.add_metrics(rows)
+
+    async def poll_smart(self) -> None:
+        """Physical disk SMART data, per array/pool on its own interval and only while every disk already spins."""
+        prefs = self.prefs
+        now = time.time()
+        storage_snap = await db.get_snapshot(f"unraid:{self.sid}:storage") or {}
+        due = [g["name"] for g in storage_snap.get("groups") or [] if not g.get("excluded") and g.get("smart_minutes")
+               and now - self.smart_done.get(g["name"], 0) >= g["smart_minutes"] * 60]
+        if not due or not self.disks_awake():
+            return
+        d = await self.section("disks", "disks")
+        if d is None:
+            return
+        dev_group = {}
+        for g in storage_snap.get("groups") or []:
+            for m in g.get("members") or []:
+                if m.get("device"):
+                    dev_group[str(m["device"]).rsplit("/", 1)[-1]] = g["name"]
+        old = {x.get("device"): x for x in ((await db.get_snapshot(f"unraid:{self.sid}:disks")) or []) if isinstance(x, dict)}
+        for disk in d.get("disks") or []:
+            dev = str(disk.get("device") or "").rsplit("/", 1)[-1]
+            grp = dev_group.get(dev)
+            if grp is None or storage.group_prefs(prefs, grp)["exclude"] or grp not in due:
+                continue
+            old[disk.get("device")] = {**disk, "group": grp, "checked": now}
+            if disk.get("smartStatus") not in (None, "OK"):
+                await raise_alert("unraid_smart", "high", f"{self.name}: SMART status of {disk.get('name')} ({dev}) is {disk.get('smartStatus')}",
+                                  f"unraid_smart:{self.sid}:{dev}", description="Check the disk's SMART report in the Unraid web UI.")
+        for name in due:
+            self.smart_done[name] = now
+        await self.snap("disks", [v for v in old.values() if not storage.group_prefs(prefs, v.get("group") or "")["exclude"]])
+
     async def poll_array(self) -> None:
-        d = await self.section("array", "array")
+        """Array + pools from emhttp state (never touches a disk)."""
+        d = await self.section("array", "array", "array_basic", "array_old")
         if not d:
             return
         arr = d.get("array") or {}
-        await self.snap("array", arr)
+        self.awake_history = (self.awake_history + [storage.all_awake(arr)])[-3:]
+        prefs = self.prefs
+        groups = storage.build_groups(arr, prefs)
+        excluded = {g["name"] for g in groups if g["excluded"]}
+        await self.snap("storage", {"state": arr.get("state"), "parityCheckStatus": arr.get("parityCheckStatus"),
+                                    "boot": arr.get("boot"), "groups": groups, "all_awake": self.disks_awake()})
+        # filtered raw view for the AI analyst
+        await self.snap("array", {**arr, "parities": arr.get("parities") if "array" not in excluded else [],
+                                  "disks": arr.get("disks") if "array" not in excluded else [],
+                                  "caches": [c for g in groups if g["kind"] == "pool" and not g["excluded"] for c in g["members"]]})
         sid = str(self.sid)
         rows: list[tuple[str, str, float]] = []
-        kb = ((arr.get("capacity") or {}).get("kilobytes") or {})
-        total, used = _num(kb.get("total")), _num(kb.get("used"))
-        if total:
-            rows.append(("unraid_array_used_pct", sid, round((used or 0) / total * 100, 2)))
         if arr.get("state") and arr["state"] != "STARTED":
             await raise_alert("unraid_array", "high", f"{self.name}: array state {arr['state']}", f"unraid_array:{self.sid}",
                               description="The Unraid array is not started.")
         pc = arr.get("parityCheckStatus") or {}
-        if (pc.get("errors") or 0) > 0:
+        if "array" not in excluded and (pc.get("errors") or 0) > 0:
             await raise_alert("unraid_parity", "medium", f"{self.name}: parity check found {pc['errors']} errors",
                               f"unraid_parity:{self.sid}", description=str(pc))
-        for group in ("parities", "disks", "caches"):
-            for disk in arr.get(group) or []:
+        for g in groups:
+            if g["excluded"]:
+                continue
+            gl = f"{sid}:{g['name']}"
+            if g.get("used_pct") is not None:
+                rows.append(("unraid_pool_used_pct", gl, g["used_pct"]))
+                if g["name"] == "array":
+                    rows.append(("unraid_array_used_pct", sid, g["used_pct"]))
+            if g["disks"] - g["ssd"]:
+                rows.append(("unraid_group_spinning", gl, float(g["spinning"])))
+            for disk in g["members"]:
                 name = disk.get("name") or disk.get("device") or "?"
                 temp = _num(disk.get("temp"))
                 if temp is not None:
@@ -241,9 +338,8 @@ class UnraidServerPoller:
                         await raise_alert("unraid_disk_temp", "high" if temp >= crit else "medium",
                                           f"{self.name}: disk {name} at {temp:.0f}°C", f"unraid_dtemp:{self.sid}:{name}",
                                           description=f"Disk temperature above {'critical' if temp >= crit else 'warning'} threshold.")
-                if disk.get("fsSize"):
-                    rows.append(("unraid_disk_used_pct", f"{sid}:{name}",
-                                 round((_num(disk.get("fsUsed")) or 0) / _num(disk["fsSize"]) * 100, 2)))
+                if disk.get("used_pct") is not None:
+                    rows.append(("unraid_disk_used_pct", f"{sid}:{name}", disk["used_pct"]))
                 status = disk.get("status")
                 if status and status not in ("DISK_OK", "DISK_NP"):
                     await raise_alert("unraid_disk", "high", f"{self.name}: disk {name} status {status}",
@@ -403,6 +499,9 @@ class UnraidServerPoller:
             ev["host"] = self.name
             ev["uid"] = "usys:" + hashlib.sha1(f"{self.sid}|{start + offset}|{line}".encode()).hexdigest()
             self.writer.put(ev)
+            if problem := storage.zfs_problem(ev.get("program"), ev.get("message") or ""):
+                await raise_alert("unraid_zfs", "high", f"{self.name}: {problem}", f"unraid_zfs:{self.sid}:{problem}",
+                                  description=(ev.get("message") or "")[:1000])
         self.syslog_line = start + len(content.splitlines()) - 1
         self.status["sections"]["syslog"] = {"ok": True}
 
@@ -503,6 +602,7 @@ class UnraidManager:
                     if sid not in self.pollers:
                         self.pollers[sid] = UnraidServerPoller(srv, self.settings, self.writer)
                         self.signatures[sid] = _sig(srv)
+                    self.pollers[sid].server = srv  # storage preferences apply without a restart
                 await asyncio.gather(*(p.poll() for p in self.pollers.values()), return_exceptions=True)
                 await db.set_snapshot("unraid_status", {str(sid): {"name": p.name, **p.status} for sid, p in self.pollers.items()})
             except Exception:  # noqa: BLE001

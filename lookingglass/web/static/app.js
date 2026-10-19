@@ -142,7 +142,7 @@ const LG = {
   lineChart(id, series, opts = {}) {
     const datasets = Object.entries(series || {}).map(([label, pts], i) => ({
       label: (opts.rename ? opts.rename(label) : label) || id, borderColor: LG.color(i), backgroundColor: LG.color(i) + "22", fill: !!opts.fill,
-      data: pts.map(p => ({ x: new Date(p[0]).getTime(), y: opts.neg && opts.neg(label) ? -p[1] : p[1] })), pointRadius: 0, borderWidth: 1.5, tension: .2 }));
+      data: pts.map(p => ({ x: new Date(p[0]).getTime(), y: opts.neg && opts.neg(label) ? -p[1] : p[1] })), pointRadius: 0, borderWidth: 1.5, tension: opts.step ? 0 : .2, stepped: opts.step ? "before" : false }));
     const fmt = opts.fmt || (v => Math.round(v * 100) / 100);
     return LG.chart(id, { type: "line", data: { datasets }, options: { maintainAspectRatio: false, animation: false, parsing: false,
       interaction: { mode: "nearest", intersect: false },

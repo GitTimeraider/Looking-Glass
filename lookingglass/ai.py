@@ -44,9 +44,9 @@ devices(mac, ip, hostname, vendor, interface, sources text[], lease_type, lease_
         first_seen, last_seen)   -- network inventory from ARP + DHCP leases
 snapshots(key, ts, data jsonb)  keys: system, activity (top processes), gateways, interfaces, services, firmware, arp,
        leases_kea / leases_dnsmasq / leases_isc, unbound_totals, crowdsec_decisions, qfeeds_stats, poller_status,
-       unraid:<server id>:<info|metrics|array|docker|docker_stats|notifications|vms|ups|shares|disks>, unraid_status
+       unraid:<server id>:<info|metrics|temps|storage (array + per-pool groups, spin state)|array|docker|docker_stats|notifications|vms|ups|shares|disks (SMART)>, unraid_status
 metrics also: cpu_used_pct, swap_used_pct, unraid_cpu_pct / unraid_mem_pct / unraid_temp / unraid_disk_temp /
-       unraid_array_used_pct (labels '<server id>[:<item>]'), container_cpu_pct / container_mem_bytes ('<server id>:<container>')
+       unraid_array_used_pct / unraid_pool_used_pct / unraid_group_spinning (labels '<server id>[:<item>]'), container_cpu_pct / container_mem_bytes ('<server id>:<container>')
 
 Tips: use host(src_ip) to print addresses, `src_ip << '10.0.0.0/8'::inet` for subnet tests, ts > now() - interval '24 hours'
 for time windows. Always aggregate (GROUP BY / count) rather than pulling raw rows when looking at large volumes.
@@ -213,7 +213,7 @@ async def tool_system_status() -> Any:
     out["unraid"] = {}
     for srv in servers:
         snap = {}
-        for key in ("info", "metrics", "array", "docker", "notifications", "ups", "vms"):
+        for key in ("info", "metrics", "storage", "docker", "notifications", "ups", "vms"):
             snap[key] = await db.get_snapshot(f"unraid:{srv['id']}:{key}")
         out["unraid"][srv["name"]] = snap
     return out
