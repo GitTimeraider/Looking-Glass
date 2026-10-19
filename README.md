@@ -58,6 +58,23 @@ offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, ga
 * **Preview** shows what a filter would have caught in the last 30 days; **close matching** closes existing ones.
 * **Unmute**: alerts matched by a filter show "🔇 Muted by …" with an **Unmute** button on the Alerts page; in the
   filter list, untick *On* to pause a filter or use *unmute (delete)*. Each filter counts its hits.
+* **Undo / adjust anything**: every muted or re-rated alert links (✎) to the rule that did it, so you can edit, pause or
+  delete it; a re-rated alert also has **Restore <old severity>** for just that alert. The Alerts page shows
+  **Mute & severity rules (N active)**, a direct link to the full list.
+
+### Email notifications
+
+*Settings › Email & notifications*:
+
+1. **Mail server (SMTP)**: server, port, encryption (`starttls` on 587, `ssl` on 465, `none` only for a relay inside
+   your network), username / password (stored encrypted; Gmail and Microsoft 365 with MFA need an **app password**),
+   sender address and the address you open Looking Glass on (for the links in the mails). **Send test mail** checks it
+   before you save.
+2. **Notification rules** ("mail me when…"): the same conditions as alert filters plus a **minimum severity**
+   (e.g. *high and above*), one or more recipients, **how often** (right away, or at most every 5 min … daily digest:
+   alerts in between are bundled into one mail) and *also mail when the severity of an alert goes up*. Each alert is
+   mailed once per rule; muted alerts are never mailed. **Preview** shows what a rule would have matched, **send test**
+   mails the newest matching alert, untick *On* to pause a rule. Delivery errors show in the rule list.
 
 ### How severity is decided
 

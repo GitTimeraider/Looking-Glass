@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import uvicorn
 
-from . import __version__, app_config, auth, crypto, db, db_config
+from . import __version__, app_config, auth, crypto, db, db_config, notify
 from .ai import Analyst
 from .config import get_settings
 from .detections import DetectionEngine, dhcp_listener, zenarmor_device_listener
@@ -192,6 +192,7 @@ async def amain() -> None:
     tasks.append(asyncio.create_task(UnraidManager(settings, writer).run(), name="unraid"))
     tasks.append(asyncio.create_task(unifi_supervisor(settings, writer), name="unifi"))
     tasks.append(asyncio.create_task(daily_ai_report(settings, analyst), name="daily_report"))
+    tasks.append(asyncio.create_task(notify.notifier(settings), name="notifier"))
 
     app = create_app(settings, analyst)
     server = uvicorn.Server(uvicorn.Config(app, host=settings.web_host, port=settings.web_port, log_level="warning",

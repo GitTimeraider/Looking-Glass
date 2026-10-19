@@ -108,6 +108,8 @@ def matches(f: dict[str, Any], rule: str, severity: str, title: str, description
     results: list[bool] = []  # one per filled-in condition
     if f.get("max_severity"):
         results.append(SEVERITIES.index(severity) <= SEVERITIES.index(f["max_severity"]))
+    if f.get("min_severity"):  # notification rules: this severity and above
+        results.append(SEVERITIES.index(severity) >= SEVERITIES.index(f["min_severity"]))
     if f.get("rules"):
         results.append(rule in f["rules"])
     if f.get("contains"):
