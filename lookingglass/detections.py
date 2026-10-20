@@ -212,8 +212,21 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
         status = "closed"  # "create as closed": kept for reference, never shown as open
         data["filter"] = {"id": flt["id"], "name": flt.get("name")}
     row = await pool.fetchrow(
-        "SELECT id, severity FROM alerts WHERE fingerprint = $1 AND status <> 'closed' "
+        "SELECT id, severity, status, data ? 'filter' AS by_filter FROM alerts WHERE fingerprint = $1 "
         "AND last_seen > now() - interval '24 hours' ORDER BY id DESC LIMIT 1", fingerprint)
+    if row and row["status"] == "closed" and status != "closed":
+        # You closed it: it stays closed while it keeps happening (it only collects the new sightings), unless it gets
+        # WORSE than when you closed it. After 24 quiet hours it can come back as a new alert. A mute filter that closed
+        # it and has since been removed / paused: back to open.
+        worse = SEVERITIES.index(severity) > SEVERITIES.index(row["severity"])
+        if not (worse or row["by_filter"]):
+            count_sql = "count + $2" if mode == "add" else "GREATEST(count, $2)"
+            await pool.execute(f"UPDATE alerts SET last_seen = now(), count = {count_sql} WHERE id = $1", row["id"], count)
+            return
+        if worse:
+            description += (f"\n\nRe-opened: the severity rose from {row['severity']} to {severity} after it was closed.")
+        await pool.execute("UPDATE alerts SET status = 'open', close_reason = NULL, data = data - 'filter' WHERE id = $1", row["id"])
+        log.info("ALERT re-opened [%s] %s", severity, title)
     if row:
         sev = max(row["severity"], severity, key=SEVERITIES.index) if keep_max else severity
         count_sql = "count + $2" if mode == "add" else "GREATEST(count, $2)"
@@ -1122,12 +1135,14 @@ class DetectionEngine:
             stages = [name for name, members in chain if rules & members]
             if not internal and "Access" not in stages:
                 continue  # scans and attacks from the internet that got nowhere: background noise
-            if internal and stages and await db.pool().fetchval(
-                    "SELECT 1 FROM devices WHERE ip = $1::inet AND first_seen > now() - interval '48 hours' LIMIT 1", ip):
-                stages.insert(0, "New device")  # an unknown device that immediately misbehaves
             if len(stages) < 2:
-                continue
+                continue  # one kind of signal is what the alert of that rule already says
             sev = "critical" if len(stages) >= 3 else "high"
+            if internal and await db.pool().fetchval(
+                    "SELECT 1 FROM devices WHERE ip = $1::inet AND first_seen > now() - interval '48 hours' AND NOT trusted "
+                    "LIMIT 1", ip):
+                stages.insert(0, "New device")  # an unknown (untrusted) device that misbehaves right away: worse
+                sev = "critical"
             story = " → ".join(f"{s} ({', '.join(sorted(rules & dict(chain).get(s, set())) or ['first seen < 48 h'])})"
                                for s in stages)
             why = ("an outside address went from probing to getting in" if not internal else
