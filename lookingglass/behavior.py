@@ -27,8 +27,8 @@ from zoneinfo import ZoneInfo
 
 from . import alert_filters, db
 from .config import Settings, local_time
-from .detections import (LATERAL_PORTS, SUSPICIOUS_OUT_PORTS, SEVERITIES, Rating, corroborate, evidence, raise_alert,
-                         registered_domain)
+from .detections import (ALLOWED_ROW, LATERAL_PORTS, SUSPICIOUS_OUT_PORTS, SEVERITIES, Rating, corroborate, evidence,
+                         raise_alert, registered_domain)
 from .mlforest import SubspaceForest
 from .parsers.common import INTERNAL_NETS, parse_networks
 
@@ -44,7 +44,6 @@ MIN_INCREASE = {"connections": 200, "destinations": 30, "ports": 10, "countries"
                 "blocked": 50, "upload_mb": 100}
 ML_LEVELS = {"low": (0.9995, 4.0), "medium": (0.998, 3.5), "high": (0.995, 3.0)}  # training percentile, deviation
 RISK_POINTS = {"info": 1, "low": 3, "medium": 8, "high": 20, "critical": 40}
-PASS = ("pass", "allow", "conn")
 
 
 class Matcher:
@@ -139,9 +138,9 @@ class Behavior:
 
         conns = await pool.fetch(
             "SELECT host(src_ip) ip, dst_country, coalesce(proto, 'ip') proto, dst_port, count(*) n, min(ts) f, max(ts) l "
-            "FROM events WHERE id > $1 AND id <= $2 AND source IN ('firewall', 'zenarmor') AND action = ANY($4::text[]) "
-            "AND src_ip IS NOT NULL AND dst_ip IS NOT NULL AND NOT (dst_ip <<= ANY($3::inet[])) GROUP BY 1, 2, 3, 4",
-            last, upto, nets, list(PASS))
+            "FROM events WHERE id > $1 AND id <= $2 AND source IN ('firewall', 'zenarmor') "
+            f"AND {ALLOWED_ROW} AND src_ip IS NOT NULL AND dst_ip IS NOT NULL AND NOT (dst_ip <<= ANY($3::inet[])) "
+            "GROUP BY 1, 2, 3, 4", last, upto, nets)
         for r in conns:
             add(r["ip"], "country", r["dst_country"], r["n"], r["f"], r["l"])
             if r["dst_port"]:

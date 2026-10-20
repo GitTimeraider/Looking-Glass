@@ -28,7 +28,8 @@ import httpx
 from . import db
 from .behavior import Matcher
 from .config import Settings
-from .detections import Rating, corroborate, dga_like, evidence, ignore_list, ignored_domain, raise_alert, registered_domain
+from .detections import (ALLOWED_AGG, FW_BLOCKED_AGG, FW_RULE_AGG, Rating, corroborate, dga_like, evidence, ignore_list,
+                         ignored_domain, raise_alert, registered_domain, verdict)
 
 log = logging.getLogger(__name__)
 
@@ -243,12 +244,13 @@ class Intel:
 
         if ips:
             conns = await pool.fetch(
-                "SELECT host(src_ip) src, host(dst_ip) dst, max(dst_port) port, count(*) n, "
-                "bool_or(action IN ('pass', 'allow', 'conn')) passed FROM events WHERE id > $1 AND id <= $2 "
+                f"SELECT host(src_ip) src, host(dst_ip) dst, max(dst_port) port, count(*) n, {ALLOWED_AGG} passed, "
+                f"{FW_BLOCKED_AGG} fw_blocked, {FW_RULE_AGG} fw_rule FROM events WHERE id > $1 AND id <= $2 "
                 "AND source IN ('firewall', 'zenarmor', 'suricata') AND src_ip IS NOT NULL AND dst_ip IS NOT NULL "
                 "GROUP BY 1, 2", last, current)
             for r in conns:
                 src, dst = r["src"], r["dst"]
+                how = verdict(r["passed"], r["fw_blocked"], r["fw_rule"])
                 if internal(src) and not internal(dst) and dst in ips and not allow_ip.match(dst, src):
                     bad = {f: i for f, i in ips[dst].items() if not f.startswith("tor")}
                     feed, info = first(bad or ips[dst])
@@ -256,24 +258,28 @@ class Intel:
                         if self.s.intel_tor == "off" or tor_ok.match(src):
                             continue
                         rating = Rating("medium" if r["passed"] else "low", "a device connects to the Tor network - "
-                                        "hides where traffic goes (privacy tools, but also malware and data theft)",
+                                        "hides where traffic goes (privacy tools, but also malware and data theft)"
+                                        + ("; the connection was ALLOWED" if r["passed"] else f"; the connection was {how}"),
                                         sticky=True)
                         await raise_alert("tor", corroborate(rating, await evidence(src, "tor"), 1),
-                                          f"{src} connects to the Tor network ({dst})", f"tor:{src}", src_ip=src, dst_ip=dst,
+                                          f"{src} {'connects' if r['passed'] else 'tries to connect'} to the Tor network ({dst})"
+                                          + ("" if r["passed"] else " - blocked"), f"tor:{src}", src_ip=src, dst_ip=dst,
                                           events={"ip": src}, count=r["n"],
-                                          description=f"{src} contacted Tor relay {dst} ({'allowed' if r['passed'] else 'blocked'}). "
+                                          description=f"{src} contacted Tor relay {dst}: {how}. "
                                                       "Allowed on purpose? Settings › Threat intel & traps › Devices allowed "
                                                       "to use Tor.")
                         continue
                     rating = Rating("critical" if r["passed"] else "medium",
                                     f"{FEEDS[feed]['label']}: {info or 'malicious'}"
-                                    + (" - and the connection was ALLOWED" if r["passed"] else " - blocked"), sticky=True)
+                                    + (" - and the connection was ALLOWED" if r["passed"] else f" - {how}"), sticky=True)
                     await raise_alert(
                         "threat_feed", corroborate(rating, await evidence(src, "threat_feed"), 1),
-                        f"{src} → known malicious address {dst}:{r['port'] or '?'}", f"feed:{src}:{dst}", src_ip=src,
+                        f"{src} → known malicious address {dst}:{r['port'] or '?'}" + ("" if r["passed"] else " (blocked)"),
+                        f"feed:{src}:{dst}", src_ip=src,
                         dst_ip=dst, events={"ip": src}, count=r["n"], data={"feed": feed, "indicator": dst, "info": info},
-                        description=f"{dst} is listed by {FEEDS[feed]['label']} ({info or 'malicious'}). A device talking to a "
-                                    "command & control server is very likely infected: isolate it and check it.")
+                        description=f"{dst} is listed by {FEEDS[feed]['label']} ({info or 'malicious'}); the connection was "
+                                    f"{how}. A device talking to a command & control server is very likely infected: "
+                                    "isolate it and check it.")
                 elif (self.s.intel_tor == "both" and r["passed"] and not internal(src) and internal(dst)
                       and "tor_exit" in ips.get(src, {}) and not allow_ip.match(src)):
                     await raise_alert("tor", Rating("low", "a Tor exit node reached one of your services (anonymous "
@@ -363,7 +369,7 @@ class Intel:
             return
         rows = await db.pool().fetch(
             "SELECT host(src_ip) src, host(dst_ip) dst, dst_port port, coalesce(proto, '') proto, count(*) n, "
-            "bool_or(action IN ('pass', 'allow', 'conn')) passed FROM events WHERE id > $1 AND id <= $2 "
+            f"{ALLOWED_AGG} passed FROM events WHERE id > $1 AND id <= $2 "
             "AND source IN ('firewall', 'zenarmor', 'suricata') AND src_ip IS NOT NULL AND dst_ip <<= ANY($3::inet[]) "
             "GROUP BY 1, 2, 3, 4", last, current, sorted({str(n) for n, _ in targets}))
         skip = Matcher(self.s.canary_exclude)

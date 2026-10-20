@@ -344,3 +344,56 @@ def test_exposure_watch_alerts_on_new_port_forward():
         assert len(await rules(pool, "exposure_change")) == 1
         await pool.execute("DELETE FROM kv WHERE key LIKE 'exposure:%'")
     run(body)
+
+
+@needs_db
+def test_firewall_block_wins_over_zenarmor_connection_record():
+    """Zenarmor logs connection attempts it sees before the firewall rules act: blocked by OPNsense = not allowed."""
+    async def body(pool):
+        await pool.executemany("INSERT INTO intel_indicators (kind, value, feed, info) VALUES ($1, $2, $3, $4)", [
+            ("ip", "37.48.81.43", "tor_relay", "Tor relay"), ("ip", "198.51.100.77", "tor_relay", "Tor relay")])
+        await db.kv_set("intel:version", 2)
+        t = NOW - timedelta(minutes=1)
+        await db.copy_events([
+            # PBCam: Zenarmor saw the attempt (no answer), the firewall's LAN -> WAN rule blocked it
+            event(t, "zenarmor", severity=6, action="conn", src_ip="192.168.2.7", dst_ip="37.48.81.43", dst_port=9001,
+                  data={"family": "conn", "src_nbytes": 120, "dst_nbytes": 0}),
+            event(t, "firewall", severity=6, action="block", src_ip="192.168.2.7", dst_ip="37.48.81.43", dst_port=9001,
+                  data={"label": "Block LAN to WAN"}),
+            # another device: Zenarmor saw a real two-way connection, no firewall block
+            event(t, "zenarmor", severity=6, action="conn", src_ip="192.168.2.8", dst_ip="198.51.100.77", dst_port=9001,
+                  data={"family": "conn", "src_nbytes": 900, "dst_nbytes": 15000}),
+            # suspicious port, only a Zenarmor attempt + firewall block
+            event(t, "zenarmor", severity=6, action="conn", src_ip="192.168.2.9", dst_ip="203.0.113.70", dst_port=3389,
+                  data={"family": "conn", "dst_npackets": 0}),
+            event(t, "firewall", severity=6, action="block", src_ip="192.168.2.9", dst_ip="203.0.113.70", dst_port=3389,
+                  data={"label": "Block LAN to WAN"})])
+        eng = DetectionEngine(Settings())
+        await eng.threat_intel()
+        await eng.suspicious_outbound_ports()
+        tor = {a["ip"]: a for a in await rules(pool, "tor")}
+        cam = tor["192.168.2.7"]
+        assert cam["severity"] == "low" and "tries to connect" in cam["title"] and cam["title"].endswith("- blocked")
+        assert "blocked by the OPNsense firewall (rule “Block LAN to WAN”, 1×)" in cam["description"]
+        assert tor["192.168.2.8"]["severity"] == "medium" and "ALLOWED" in tor["192.168.2.8"]["description"]
+        ports = {a["ip"]: a for a in await rules(pool, "suspicious_outbound_port")}
+        # the blocked Tor attempt still counts in combination: its port alert is raised by the Tor alert (corroboration)
+        assert "blocked by the OPNsense firewall" in ports["192.168.2.7"]["description"]
+        assert "also seen by other sources" in ports["192.168.2.7"]["description"]
+        rdp = ports["192.168.2.9"]
+        assert rdp["severity"] == "low" and rdp["title"].endswith("blocked") and "Block LAN to WAN" in rdp["description"]
+    run(body)
+
+
+@needs_db
+def test_blocked_beaconing_still_counts():
+    async def body(pool):
+        await db.copy_events([event(NOW - timedelta(minutes=5 * i), "firewall", severity=6, action="block",
+                                    src_ip="192.168.2.7", dst_ip="203.0.113.99", dst_port=443, data={"label": "Block LAN to WAN"})
+                              for i in range(36)])
+        await DetectionEngine(Settings()).beaconing()
+        b = await rules(pool, "beaconing")
+        assert b and "every 5 min" in b[0]["title"]
+        assert "blocked by the OPNsense firewall (rule “Block LAN to WAN”" in b[0]["description"]
+        assert "keeps trying" in b[0]["description"]
+    run(body)
