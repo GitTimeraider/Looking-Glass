@@ -79,6 +79,8 @@ document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
 const pct = v => Math.round(v) + "%";
 const D = k => (snap[k] || {}).data;
 const kbytes = v => LG.bytes(Number(v) * 1024);
+// "used" from the API includes cache / buffers; really in use (what the % is based on) = total - available
+const memUsed = m => m.available !== undefined && m.available !== null ? Number(m.total) - Number(m.available) : m.used;
 async function init() {
   servers = await LG.api("/api/unraid/servers");
   if (!servers.length) { document.getElementById("empty").hidden = false; return; }
@@ -107,7 +109,7 @@ function overview(d) {
   const mem = m.memory || {};
   const temps = (((D("temps") || {}).sensors) || []).filter(t => t.current && t.current.value !== null);
   document.getElementById("gauges").innerHTML = LG.gauge((m.cpu || {}).percentTotal, "CPU") +
-    LG.gauge(mem.percentTotal, "Memory", `${LG.bytes(mem.used)} / ${LG.bytes(mem.total)}`) + LG.gauge(mem.percentSwapTotal, "Swap") +
+    LG.gauge(mem.percentTotal, "Memory", `${LG.bytes(memUsed(mem))} / ${LG.bytes(mem.total)}`) + LG.gauge(mem.percentSwapTotal, "Swap") +
     LG.gauge(kb.total ? kb.used / kb.total * 100 : null, "Array", kb.total ? `${kbytes(kb.used)} / ${kbytes(kb.total)}` : "") +
     (temps.length ? `<div class="gauge"><div class="gv">${Math.max(...temps.map(t => t.current.value)).toFixed(0)}°C</div><div class="l">Hottest sensor</div></div>` : "") +
     ((cpu.packages || {}).totalPower ? `<div class="gauge"><div class="gv">${cpu.packages.totalPower.toFixed(0)} W</div><div class="l">CPU power</div></div>` : "");

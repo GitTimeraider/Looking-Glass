@@ -43,3 +43,34 @@ def test_nut_target_and_status():
     assert nut.parse_target("ups@192.168.1.10:3494", None) == ("ups", "192.168.1.10", 3494)
     assert nut.parse_target("", "tower.lan") == (None, "tower.lan", 3493)
     assert nut.status_text("OB LB") == "On Battery, Low Battery"
+
+
+def test_poller_uses_nut_when_the_api_ups_query_fails(monkeypatch):
+    # without Unraid's own UPS service the API's upsDevices query errors; NUT must still be asked
+    from lookingglass import crypto, unraid
+    from lookingglass.config import Settings
+    monkeypatch.setattr(crypto, "decrypt", lambda v: v)
+    p = unraid.UnraidServerPoller({"id": 7, "name": "Tower", "url": "http://tower.lan", "api_key": "k", "verify_ssl": False,
+                                   "nut": "ups@tower.lan"}, Settings(), writer=None)
+    snaps = {}
+
+    async def query(q, variables=None):
+        if "upsDevices" in q:
+            raise unraid.GraphQLError("apcupsd is not running")
+        return {"vms": {"domains": []}, "shares": []}
+
+    async def read_ups(host, port, ups):
+        return [nut.device("ups", "", {"ups.status": "OL", "device.model": "Back-UPS XS 950U "})]
+
+    async def snap(key, data):
+        snaps[key] = data
+
+    async def nothing():
+        return None
+    monkeypatch.setattr(p.client, "query", query)
+    monkeypatch.setattr(nut, "read_ups", read_ups)
+    monkeypatch.setattr(p, "snap", snap)
+    monkeypatch.setattr(p, "check_ups", nothing)
+    asyncio.run(p.poll_misc())
+    assert [u["name"] for u in snaps["ups"]] == ["ups"] and snaps["ups"][0]["model"] == "Back-UPS XS 950U"
+    assert p.status["sections"]["ups"]["ok"] and p.status["sections"]["nut"]["ok"]

@@ -283,13 +283,18 @@ class UnraidServerPoller:
             self.api_version = (((d.get("info") or {}).get("versions") or {}).get("core") or {}).get("api")
 
     async def poll_misc(self) -> None:
-        for key in ("vms", "ups", "shares"):
+        for key in ("vms", "shares"):
             d = await self.section(key, key)
             if d is not None:
-                data = d.get({"ups": "upsDevices"}.get(key, key))
-                if key == "ups":
-                    data = (data or []) + await self.nut_ups(bool(data))
-                await self.snap(key, data)
+                await self.snap(key, d.get(key))
+        # the API's UPS query fails when Unraid's own UPS service (apcupsd) is not set up - NUT is asked anyway
+        d = await self.section("ups", "ups")
+        api_ups = (d or {}).get("upsDevices") or []
+        found = api_ups + await self.nut_ups(bool(api_ups))
+        if d is None and found:  # covered by NUT: the API error is expected, not a problem
+            self.status["sections"]["ups"] = {"ok": True, "variant": "NUT only"}
+        if d is not None or found:
+            await self.snap("ups", found)
         await self.check_ups()
 
     async def nut_ups(self, api_has_ups: bool) -> list[dict[str, Any]]:
