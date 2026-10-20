@@ -275,7 +275,7 @@ details.card > summary { cursor: pointer; }
 .rule-groups details { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
 .rule-groups summary { cursor: pointer; font-size: 13px; }
 .rule-groups label.chk { display: flex; gap: 6px; align-items: center; padding: 3px 0; font-size: 13px; }
-@media (max-width: 700px) { .filter-form { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .filter-form { grid-template-columns: minmax(0, 1fr); } }
 .inline-pair { display: flex; gap: 6px; } .inline-pair input { flex: 1; min-width: 0; }
 .muted-by { margin: 3px 0; color: var(--muted); }
 .rule-groups { align-items: start; }
@@ -302,7 +302,7 @@ details.card > summary { cursor: pointer; }
 .dev-list { padding-top: 6px; padding-bottom: 6px; }
 .dev-list td { padding-top: 5px; padding-bottom: 5px; }
 .dev-list th { z-index: 1; }
-.dev-list td { white-space: nowrap; }
+.dev-list td { white-space: normal; }
 .dev-list td .cell-clip { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 
 /* list settings: one entry per line */
@@ -314,3 +314,37 @@ details.card > summary { cursor: pointer; }
 #f input[type=datetime-local] { color-scheme: dark; }
 #f .range input[type=date] { color-scheme: dark; }
 #f .range input.hm { width: 86px; }
+
+/* ---------- no horizontal scrolling anywhere ---------- */
+/* text in tables wraps (long domains / paths / IPv6 too); only short badges stay on one line */
+th { white-space: normal; overflow-wrap: normal; }
+td a, td .mono, td .pill { white-space: normal; overflow-wrap: anywhere; }
+td { overflow-wrap: anywhere; }
+/* IPv4 addresses and MAC addresses are short: never split them over two lines */
+td .whole { white-space: nowrap; overflow-wrap: normal; }
+.table-wrap { overflow-x: hidden; }
+/* a table that still does not fit (see LG.fit): one card-like block per row, "label: value" lines */
+.table-wrap.stacked thead { display: none; }
+.table-wrap.stacked table, .table-wrap.stacked tbody, .table-wrap.stacked tr, .table-wrap.stacked td { display: block; width: 100%; }
+.table-wrap.stacked tr { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.table-wrap.stacked td { position: relative; border: 0; padding: 2px 4px 2px min(36%, 150px); max-width: none; min-height: 1.6em; text-align: left; }
+.table-wrap.stacked td::before { content: attr(data-label); position: absolute; left: 4px; top: 4px; width: calc(min(36%, 150px) - 12px);
+  color: var(--muted); font-size: 11px; line-height: 1.25; text-transform: uppercase; letter-spacing: .3px; overflow-wrap: anywhere; }
+.table-wrap.stacked td[data-label=""] { padding-left: 4px; min-height: 0; }
+.table-wrap.stacked td[data-label=""]::before { content: none; }
+.table-wrap.stacked td .actions { justify-content: flex-start; }
+/* forms and grids: never wider than the screen */
+.settings-form { grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); }
+input, select, textarea { max-width: 100%; }
+@media (max-width: 900px) {
+  .tabs { flex-wrap: wrap !important; overflow-x: visible !important; }
+}
+.rule-groups { grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); }
+.inline-pair { flex-wrap: wrap; }
+nav.side .foot { overflow-wrap: anywhere; }
+.radio-row { flex-wrap: wrap; }
+.radio-row label.chk, .filter-form label.chk { white-space: normal; flex: 0 1 auto; min-width: 0; }
+.table-wrap { scrollbar-gutter: stable; }  /* width does not change when the vertical scrollbar appears */
+.table-wrap.compact table { font-size: 12px; }
+.table-wrap.compact th, .table-wrap.compact td { padding: 5px 4px; }
+.table-wrap.compact th { font-size: 10.5px; letter-spacing: 0; }

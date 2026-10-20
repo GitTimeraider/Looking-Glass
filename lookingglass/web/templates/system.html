@@ -134,7 +134,7 @@ async function overview() {
   LG.table("#ifs", [{k: "name", l: "Interface"}, {k: "rx", l: "RX", f: LG.bytes}, {k: "tx", l: "TX", f: LG.bytes}, {k: "ierr", l: "In err", num: true}, {k: "oerr", l: "Out err", num: true}, {k: "drop", l: "Drops", num: true}], ifrows);
   LG.table("#svcs", [{k: "name", l: "Service"}, {k: "description", l: "Description"}, {k: "running", l: "State", f: v => `<span class="dot ${String(v) === "1" ? "ok" : "bad"}"></span>${String(v) === "1" ? "running" : "stopped"}`}], S("services") || []);
   const devs = await LG.api("/api/devices");
-  LG.table("#devs", [{k: "mac", l: "MAC", f: v => `<span class="mono">${LG.esc(v)}</span>`}, {k: "ip", l: "IP", f: LG.ip}, {k: "hostname", l: "Hostname"}, {k: "first_seen", l: "First seen", f: LG.time}, {k: "last_seen", l: "Last", f: LG.ago}], devs);
+  LG.table("#devs", [{k: "mac", l: "MAC", f: LG.mac}, {k: "ip", l: "IP", f: LG.ip}, {k: "hostname", l: "Hostname"}, {k: "first_seen", l: "First seen", f: LG.time}, {k: "last_seen", l: "Last", f: LG.ago}], devs);
 }
 async function refresh() { await Promise.all([overview(), now()]); }
 showTab(tab); refresh();

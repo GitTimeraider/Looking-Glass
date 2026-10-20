@@ -239,7 +239,7 @@ function render(d) {
   T("#t-qf", [{k: "src", l: "Source", f: LG.ip}, {k: "dst", l: "Destination", f: LG.ip}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}], r.qfeeds_hits);
   T("#t-zen", [{k: "app", l: "App / category"}, {k: "action", l: "Action"}, {k: "n", l: "Events", num: true}], r.zenarmor_top);
   T("#t-talkers", [{k: "ip", l: "Host", f: LG.ip}, {k: "peers", l: "Peers", num: true}, {k: "n", l: "Events", num: true}], r.top_talkers_internal);
-  T("#t-devices", [{k: "mac", l: "MAC"}, {k: "ip", l: "IP", f: LG.ip}, {k: "hostname", l: "Name"}, {k: "first_seen", l: "First seen", f: LG.ago}], r.new_devices, "No new devices", { k: "first_seen", dir: -1 });
+  T("#t-devices", [{k: "mac", l: "MAC", f: LG.mac}, {k: "ip", l: "IP", f: LG.ip}, {k: "hostname", l: "Name"}, {k: "first_seen", l: "First seen", f: LG.ago}], r.new_devices, "No new devices", { k: "first_seen", dir: -1 });
 
   // system card
   const s = d.system || {}, gws = d.gateways || [];
