@@ -104,6 +104,7 @@ class Settings(BaseSettings):
     zenarmor_es_user: str = ""
     zenarmor_es_password: str = ""
     zenarmor_es_allowed: str = ""
+    zenarmor_blocked_alerts: str = "threats"
     opnsense_url: str = ""
     opnsense_api_key: str = ""
     opnsense_api_secret: str = ""

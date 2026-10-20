@@ -714,6 +714,9 @@ class DetectionEngine:
             threat = r["threat"] or "threat alert"
             src = str(r["src_ip"]) if r["src_ip"] else None
             bad = any(w in threat.lower() for w in ("malware", "botnet", "phishing", "command", "c2", "ransom", "crypto"))
+            mode = self.settings.zenarmor_blocked_alerts  # Settings › Zenarmor
+            if r["blocked"] and (mode == "never" or (mode == "threats" and not bad)):
+                continue  # blocked by policy (or all blocks, if chosen): Zenarmor did its job, nothing to look into
             if bad:
                 rating = Rating("high", f"'{threat[:40]}' traffic from this device (blocked)", sticky=True) if r["blocked"] else \
                     Rating("critical", f"'{threat[:40]}' traffic from this device was NOT blocked", sticky=True)

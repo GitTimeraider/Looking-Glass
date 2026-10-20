@@ -103,3 +103,33 @@ def test_correlation_rules():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_zenarmor_blocked_alert_setting():
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events, alerts")
+
+            async def run(mode):
+                await pool.execute("TRUNCATE alerts")
+                await pool.execute("DELETE FROM kv WHERE key = 'wm:zenarmor'")
+                await db.kv_set("wm:zenarmor", 0)
+                await DetectionEngine(Settings(zenarmor_blocked_alerts=mode)).zenarmor_threats()
+                return sorted((r["title"].split(" (")[-1].rstrip(")"), r["severity"]) for r in
+                              await pool.fetch("SELECT title, severity FROM alerts WHERE rule = 'zenarmor_threat'"))
+
+            evs = [ev("zenarmor", 1, action="block", src_ip="192.168.1.5", domain="db.example", data={"security": "Database"}),
+                   ev("zenarmor", 1, action="block", src_ip="192.168.1.6", domain="c2.example", data={"security": "Malware"}),
+                   ev("zenarmor", 1, action="conn", src_ip="192.168.1.7", domain="p.example", data={"security": "Phishing"})]
+            await db.copy_events(evs)
+            assert await run("all") == [("Database", "low"), ("Malware", "high"), ("Phishing", "critical")]
+            assert await run("threats") == [("Malware", "high"), ("Phishing", "critical")]   # the default
+            assert await run("never") == [("Phishing", "critical")]                           # not blocked: always
+            await pool.execute("TRUNCATE events, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
