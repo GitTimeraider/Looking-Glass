@@ -156,6 +156,8 @@ CREATE TABLE IF NOT EXISTS unraid_servers (
 );
 -- per array/pool preferences: {"sensor_temps": "auto"|"off", "groups": {"<name>": {"exclude": bool, "smart_minutes": int}}}
 ALTER TABLE unraid_servers ADD COLUMN IF NOT EXISTS storage JSONB NOT NULL DEFAULT '{}';
+-- UPS through NUT (upsd): '' = try the Unraid host when the API knows no UPS, 'off', or '[ups@]host[:port]'
+ALTER TABLE unraid_servers ADD COLUMN IF NOT EXISTS nut TEXT NOT NULL DEFAULT '';
 
 -- ------------------------------------------------------- app settings ---
 -- settings edited in the web UI; secrets are Fernet-encrypted ("fernet:..."), key file lives in the data volume

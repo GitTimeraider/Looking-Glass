@@ -18,8 +18,8 @@
       <div class="card"><h3>System</h3><div id="sys"></div></div>
       <div class="card"><h3>CPU %</h3><div class="chart-box sm"><canvas id="c-cpu"></canvas></div></div>
       <div class="card"><h3>Memory / swap %</h3><div class="chart-box sm"><canvas id="c-mem"></canvas></div></div>
-      <div class="card"><h3>Temperatures °C</h3><div class="chart-box sm"><canvas id="c-temp"></canvas></div></div>
-      <div class="card span2"><h3>Network (receive + / transmit −)</h3><div class="chart-box sm"><canvas id="c-net"></canvas></div></div>
+      <div class="card"><h3>Temperatures °C</h3><div class="chart-box sm"><canvas id="c-temp"></canvas></div><div class="small muted" id="n-temp"></div></div>
+      <div class="card span2"><h3>Network (receive + / transmit −)</h3><div class="chart-box sm"><canvas id="c-net"></canvas></div><div class="small muted" id="n-net"></div></div>
       <div class="card"><h3>Per-core load now</h3><div class="chart-box sm"><canvas id="c-cores"></canvas></div></div>
       <div class="card"><h3>VMs</h3><div id="vms"></div></div>
       <div class="card"><h3>UPS</h3><div id="ups"></div></div>
@@ -29,11 +29,9 @@
   <section data-s="storage" hidden>
     <div class="grid kpis" id="pool-kpis"></div>
     <div class="small muted" id="spin-note" style="margin:8px 0 12px"></div>
-    <div class="grid g2">
+    <div class="grid g2" id="spin-charts">
       <div class="card"><h3>Spinning disks per array / pool</h3><div class="chart-box sm"><canvas id="c-spin"></canvas></div></div>
-      <div class="card"><h3>Array / pool usage %</h3><div class="chart-box sm"><canvas id="c-pused"></canvas></div></div>
       <div class="card"><h3>Disk temperatures °C <span class="muted small">(only while spinning)</span></h3><div class="chart-box sm"><canvas id="c-dtemp"></canvas></div></div>
-      <div class="card"><h3>Disk usage %</h3><div class="chart-box sm"><canvas id="c-dused"></canvas></div></div>
     </div>
     <div id="groups" class="grid" style="margin-top:14px"></div>
     <div class="grid g2" style="margin-top:14px">
@@ -43,10 +41,9 @@
   </section>
   <section data-s="docker" hidden>
     <div class="grid kpis" id="dk-kpis"></div>
-    <div class="grid g3" style="margin-top:14px">
-      <div class="card"><h3>Containers running</h3><div class="chart-box sm"><canvas id="c-ctr"></canvas></div></div>
-      <div class="card"><h3>Container CPU % (top 8)</h3><div class="chart-box sm"><canvas id="c-ccpu"></canvas></div></div>
-      <div class="card"><h3>Container memory (top 8)</h3><div class="chart-box sm"><canvas id="c-cmem"></canvas></div></div>
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card"><h3>Container CPU % (top 8)</h3><div class="chart-box sm"><canvas id="c-ccpu"></canvas></div><div class="small muted n-ctr"></div></div>
+      <div class="card"><h3>Container memory (top 8)</h3><div class="chart-box sm"><canvas id="c-cmem"></canvas></div><div class="small muted n-ctr"></div></div>
       <div class="card span3"><h3>Containers <span class="muted small">click a column header to sort</span></h3><div class="small muted" id="dk-note"></div><div id="containers"></div></div>
     </div>
   </section>
@@ -92,8 +89,18 @@ async function init() {
   sel.onchange = () => { sid = Number(sel.value); localStorage.setItem("lg-unraid", sid); load(); };
   load();
 }
+let renderErrors = [], lastStatus = {};
+const safe = (name, fn) => { try { fn(); } catch (e) { console.error(name, e); renderErrors.push(`${name}: ${e.message}`); } };
 async function load() {
-  const d = await LG.api(`/api/unraid/${sid}`); snap = d.snapshots;
+  const d = await LG.api(`/api/unraid/${sid}`); snap = d.snapshots; renderErrors = []; lastStatus = d.status || {};
+  safe("overview", () => overview(d));
+  safe("storage", () => storageView(d));
+  safe("docker", () => dockerView(d));
+  safe("notifications", () => notificationsView());
+  document.getElementById("updated").textContent = "updated " + LG.clock() + (renderErrors.length ? ` · display error: ${renderErrors.join("; ")}` : "");
+  charts();
+}
+function overview(d) {
   const info = D("info") || {}, m = D("metrics") || {}, os = info.os || {}, cpu = info.cpu || {};
   const stor = D("storage") || {}, groups = (stor.groups || []).filter(g => !g.excluded);
   const arrG = groups.find(g => g.kind === "array") || {}, kb = { used: arrG.used, total: arrG.size, free: arrG.free };
@@ -117,12 +124,17 @@ async function load() {
   LG.chart("c-cores", { type: "bar", data: { labels: ((m.cpu || {}).cpus || []).map((_, i) => "" + i), datasets: [{ data: ((m.cpu || {}).cpus || []).map(c => c.percentTotal), backgroundColor: "#3b82f6" }] },
     options: { maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { y: { min: 0, max: 100 } } } });
   LG.table("#vms", [{k: "name", l: "VM"}, {k: "state", l: "State", f: v => `<span class="state-${v === "RUNNING" ? "running" : "exited"}">${LG.esc(v)}</span>`}], (D("vms") || {}).domains || [], "No VMs (or VM manager disabled)");
-  LG.table("#ups", [{k: "name", l: "UPS"}, {k: "status", l: "Status"}, {k: "battery", l: "Charge", f: v => v ? `${v.chargeLevel}% · ${Math.round(v.estimatedRuntime / 60)} min` : ""},
-    {k: "power", l: "Load", f: v => v ? `${v.loadPercentage}%${v.currentPower ? " · " + Math.round(v.currentPower) + " W" : ""}` : ""}], D("ups") || [], "No UPS configured");
+  LG.table("#ups", [{k: "name", l: "UPS", f: (v, r) => `${LG.esc(v)}${r.model ? `<div class="small muted">${LG.esc(r.model)}${r.source ? " · via " + LG.esc(r.source) : ""}</div>` : ""}`}, {k: "status", l: "Status"}, {k: "battery", l: "Charge", f: v => v ? `${v.chargeLevel}% · ${v.estimatedRuntime ? Math.round(v.estimatedRuntime / 60) : "?"} min` : ""},
+    {k: "power", l: "Load", f: v => v ? `${v.loadPercentage}%${v.currentPower ? " · " + Math.round(v.currentPower) + " W" : ""}` : ""}], D("ups") || [], "No UPS found. Using the NUT plugin? See Settings › Unraid servers › edit › NUT.");
   const st = d.status || {};
   document.getElementById("conn").innerHTML = `<div class="kv"><div>API</div><div><span class="dot ${st.ok ? "ok" : st.ok === false ? "bad" : ""}"></span>${st.ok ? "ok" : LG.esc(st.error || "waiting…")}</div>
     <div>Last poll</div><div>${st.last ? LG.ago(st.last) : "–"}</div>` +
     Object.entries(st.sections || {}).map(([k, v]) => `<div>${LG.esc(k)}</div><div><span class="dot ${v.ok ? "ok" : "warn"}"></span>${v.ok ? "ok" : LG.esc((v.error || "").slice(0, 120))}</div>`).join("") + "</div>";
+}
+function storageView(d) {
+  const stor = D("storage") || {}, groups = (stor.groups || []).filter(g => !g.excluded), st = d.status || {};
+  // hide the spin / disk temperature charts while every hard disk sleeps (nothing to show)
+  document.getElementById("spin-charts").hidden = !groups.some(g => g.spinning > 0);
   // storage: array + one card per pool (from Unraid's state files - never wakes a disk)
   const pc = stor.parityCheckStatus || {}, pol = st.disk_policy || {};
   const usedBar = (u, t) => t ? `${kbytes(u)} of ${kbytes(t)} (${Math.round(u / t * 100)}%)<div class="bar ${u / t > .9 ? "bad" : u / t > .8 ? "warn" : ""}"><i style="width:${u / t * 100}%"></i></div>` : "–";
@@ -171,16 +183,17 @@ async function load() {
     {k: "smartStatus", l: "SMART", f: v => `<span class="dot ${v === "OK" ? "ok" : "warn"}"></span>${LG.esc(v)}`}, {k: "temperature", l: "Temp", f: v => v ? v + "°C" : "–"},
     {k: "checked", l: "Checked", f: v => v ? LG.ago(v) : ""}], D("disks") || [],
     "SMART check is off. Turn it on per array/pool under Settings › Unraid servers › arrays & pools – it only runs while all disks spin, so it never wakes one.");
-  // docker
+}
+function dockerView(d) {
+  const st = d.status || {}, k = (l, v, c = "") => `<div class="card kpi ${c}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
   const stats = D("docker_stats") || [], sByName = Object.fromEntries(stats.map(s => [s.name, s]));
   const ctrs = (D("docker") || []).map(c => { const name = (c.names || [])[0]?.replace(/^\//, "") || ""; return { ...c, name, st: sByName[name] }; });
-  const k = (l, v, c = "") => `<div class="card kpi ${c}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
   document.getElementById("dk-kpis").innerHTML = k("Containers", ctrs.length) + k("Running", ctrs.filter(c => c.state === "RUNNING").length, "ok") +
     k("Stopped", ctrs.filter(c => c.state !== "RUNNING").length, ctrs.some(c => c.state === "EXITED" && c.autoStart) ? "bad" : "") +
     (stats.length ? k("Total CPU %", stats.reduce((a, s) => a + s.cpu_pct, 0).toFixed(1)) + k("Total memory", LG.bytes(stats.reduce((a, s) => a + s.mem_bytes, 0))) : "");
-  const dsec = (st.sections || {}).docker_stats;
-  document.getElementById("dk-note").innerHTML = dsec && !dsec.ok
-    ? `CPU / memory per container unavailable: ${LG.esc(dsec.error || "")}. It needs Unraid API 4.29 or newer (Unraid 7.2+ or the Unraid Connect plugin), or a Docker API endpoint under Settings › Unraid servers.` : "";
+  const dsec = (st.sections || {}).docker_stats, dapi = (st.sections || {}).docker_api;
+  document.getElementById("dk-note").innerHTML = [dapi && !dapi.ok ? `${LG.esc(dapi.error)} – using the Unraid API instead.` : "",
+    dsec && !dsec.ok ? `CPU / memory per container unavailable: ${LG.esc(dsec.error || "")}. It needs Unraid API 4.29 or newer (Unraid 7.2+ or the Unraid Connect plugin), or a working Docker API endpoint under Settings › Unraid servers.` : ""].filter(Boolean).join("<br>");
   LG.table("#containers", [
     {k: "name", l: "Container", s: true, f: (v, r) => `${r.iconUrl ? `<img src="${LG.esc(r.iconUrl)}" width="16" height="16" style="vertical-align:middle;margin-right:6px" onerror="this.remove()">` : ""}<b>${LG.esc(v)}</b>`},
     {k: "image", l: "Image", s: true, f: v => `<span class="small mono">${LG.esc(v)}</span>`},
@@ -193,13 +206,13 @@ async function load() {
     {k: "webUiUrl", l: "", f: v => v ? `<a href="${LG.esc(v)}" target="_blank" rel="noopener">web UI</a>` : ""}], ctrs, "No container data");
   document.querySelectorAll("[data-logs]").forEach(a => a.onclick = e => { e.preventDefault(); document.getElementById("lg-kind").value = "docker"; ctrSel(a.dataset.logs); document.querySelector('#tabs [data-t="logs"]').click(); });
   ctrSel();
-  // notifications
+}
+function notificationsView() {
+  const k = (l, v, c = "") => `<div class="card kpi ${c}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
   const nt = D("notifications") || {}, ov = (nt.overview || {}).unread || {};
   document.getElementById("nt-kpis").innerHTML = k("Unread", ov.total ?? "–") + k("Alerts", ov.alert ?? "–", ov.alert ? "bad" : "") + k("Warnings", ov.warning ?? "–", ov.warning ? "warn" : "") + k("Info", ov.info ?? "–") + k("Archived", ((nt.overview || {}).archive || {}).total ?? "–");
   LG.table("#notifs", [{k: "importance", l: "Level", f: v => LG.sev({ ALERT: "high", WARNING: "medium", INFO: "info" }[v] || "info")}, {k: "timestamp", l: "Time", f: v => LG.time(isNaN(v) ? v : Number(v))},
     {k: "subject", l: "Subject", f: (v, r) => `<b>${LG.esc(r.title)}</b> – ${LG.esc(v)}<div class="small muted">${LG.esc(r.description)}</div>`}], nt.list || [], "No unread notifications");
-  document.getElementById("updated").textContent = "updated " + LG.clock();
-  charts();
 }
 function ctrSel(selected) {
   const sel = document.getElementById("lg-ctr"), cur = selected ?? sel.value;
@@ -208,26 +221,30 @@ function ctrSel(selected) {
 }
 async function charts() {
   if (!servers.length) return;
-  const m = await LG.api(`/api/metrics/multi?hours=${hours}&prefix=${sid}&names=unraid_cpu_pct,unraid_mem_pct,unraid_swap_pct,unraid_temp,unraid_net_rx_bps,unraid_net_tx_bps,unraid_disk_temp,unraid_disk_used_pct,unraid_pool_used_pct,unraid_group_spinning,unraid_containers_running,container_cpu_pct,container_mem_bytes`);
+  const m = await LG.api(`/api/metrics/multi?hours=${hours}&prefix=${sid}&names=unraid_cpu_pct,unraid_mem_pct,unraid_swap_pct,unraid_temp,unraid_net_rx_bps,unraid_net_tx_bps,unraid_disk_temp,unraid_group_spinning,container_cpu_pct,container_mem_bytes`);
+  const sec = lastStatus.sections || {}, empty = s => !Object.keys(s || {}).length;
   const o = { hours }, strip = l => l.replace(/^\d+:?/, "");
   if (tab === "overview") {
     LG.lineChart("c-cpu", m.unraid_cpu_pct || {}, { ...o, fmt: pct, min: 0, max: 100, fill: true, rename: () => "CPU" });
     LG.lineChart("c-mem", { memory: Object.values(m.unraid_mem_pct || {})[0] || [], swap: Object.values(m.unraid_swap_pct || {})[0] || [] }, { ...o, fmt: pct, min: 0, max: 100 });
     LG.lineChart("c-temp", m.unraid_temp || {}, { ...o, rename: strip });
+    const pol = (sec.temps || {}).ok === false ? sec.temps.error : "";
+    document.getElementById("n-temp").textContent = empty(m.unraid_temp) ? (pol ? "Sensors: " + pol
+      : "No temperature data yet. On Unraid API 4.37.5 or older the sensor list is only read while every disk spins (reading it would wake them); the CPU package temperature is shown instead when the API provides it.") : "";
     const net = {};
     for (const [l, v] of Object.entries(m.unraid_net_rx_bps || {})) net[strip(l) + " rx"] = v;
     for (const [l, v] of Object.entries(m.unraid_net_tx_bps || {})) net[strip(l) + " tx"] = v;
     LG.lineChart("c-net", net, { ...o, fmt: v => LG.bps(v), neg: l => l.endsWith(" tx") });
+    document.getElementById("n-net").textContent = empty(net) ? ((sec.network || {}).error ? "No network data: " + sec.network.error + "." : "No network data yet.") : "";
   } else if (tab === "storage") {
     LG.lineChart("c-spin", m.unraid_group_spinning || {}, { ...o, rename: strip, min: 0, step: true });
-    LG.lineChart("c-pused", m.unraid_pool_used_pct || {}, { ...o, rename: strip, fmt: pct, min: 0, max: 100 });
     LG.lineChart("c-dtemp", m.unraid_disk_temp || {}, { ...o, rename: strip });
-    LG.lineChart("c-dused", m.unraid_disk_used_pct || {}, { ...o, rename: strip, fmt: pct, min: 0, max: 100 });
   } else if (tab === "docker") {
-    LG.lineChart("c-ctr", m.unraid_containers_running || {}, { ...o, rename: () => "running" });
     const top = (series, n) => Object.fromEntries(Object.entries(series || {}).sort((a, b) => b[1].reduce((s, p) => s + p[1], 0) - a[1].reduce((s, p) => s + p[1], 0)).slice(0, n));
     LG.lineChart("c-ccpu", top(m.container_cpu_pct, 8), { ...o, rename: strip, fmt: pct });
     LG.lineChart("c-cmem", top(m.container_mem_bytes, 8), { ...o, rename: strip, fmt: LG.bytes });
+    const why = [(sec.docker_api || {}).error, (sec.docker_stats || {}).error].filter(Boolean).join(" · ");
+    document.querySelectorAll(".n-ctr").forEach(n => n.textContent = empty(m.container_cpu_pct) ? (why ? "No data: " + why : "No data yet - collected every poll interval (at least 60 s).") : "");
   }
 }
 async function logs() {
