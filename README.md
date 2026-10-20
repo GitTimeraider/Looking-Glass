@@ -184,7 +184,7 @@ decide it for every rule:
 | IDS | Suricata's priority (1 = critical … 4 = low), one step down when IPS mode dropped it, up when confirmed |
 | CrowdSec decision for an internet IP / for an internal IP | low (it is handled) / high |
 | Internal device contacted a threat-intel address / internet address of a threat list probes you | high, critical when confirmed / info |
-| Zenarmor malware / C2 / phishing: blocked / NOT blocked; other categories: blocked / not blocked | high / critical; low / medium |
+| Zenarmor malware / C2 / phishing: blocked / NOT blocked; other categories: blocked / not blocked | high / critical; low / medium (blocked ones per *Settings › Zenarmor › Alert on traffic Zenarmor blocked*: threats only by default, all or never) |
 | DNS tunneling, DGA names, NXDOMAIN storm | high, medium, low - each up when confirmed |
 | Malicious domain looked up (blocked): 1-2 domains / 3+ | medium / high, up when confirmed |
 | Suspicious outbound port (Tor, IRC, RDP, SMB, mining…) blocked / allowed | low / medium, up when confirmed |

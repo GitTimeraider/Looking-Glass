@@ -115,6 +115,11 @@ FIELDS: list[Field] = [
     Field("zenarmor_es_password", "zenarmor", "Stream password", "secret", "Must match Zenarmor's streaming password."),
     Field("zenarmor_es_allowed", "zenarmor", "Allowed senders", "list",
           "IPs / CIDRs allowed to stream (empty = same as syslog allowed senders).", placeholder="192.168.1.1"),
+    Field("zenarmor_blocked_alerts", "zenarmor", "Alert on traffic Zenarmor blocked", "choice",
+          "threats = only when the blocked traffic was malware, botnet / command & control, phishing, ransomware or "
+          "crypto mining (the device itself is probably infected); all = also policy / app category blocks (low); "
+          "never = no alerts for blocked traffic at all, not even malware. Traffic Zenarmor flagged but did NOT block is "
+          "always alerted.", choices=("threats", "all", "never")),
     # ingest
     Field("syslog_allowed_senders", "ingest", "Syslog allowed senders", "list",
           "IPs / CIDRs (your OPNsense). Empty accepts everyone - not recommended.", placeholder="192.168.1.1"),
