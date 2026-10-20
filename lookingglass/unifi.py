@@ -138,7 +138,8 @@ def device_from_v1(d: dict[str, Any], stats: dict[str, Any] | None) -> dict[str,
         "gateway" if "gateway" in feats else "device"
     s = stats or {}
     up = s.get("uplink") or {}
-    return {"mac": (d.get("macAddress") or "").lower(), "name": d.get("name") or d.get("model"), "model": d.get("model"),
+    return {"mac": (d.get("macAddress") or "").lower(), "name": d.get("name") or d.get("model") or (d.get("macAddress") or "?").lower(),
+            "model": d.get("model"),
             "kind": kind, "type": None, "id": d.get("id"),
             "state": str(d.get("state") or "unknown").lower().replace("_", " "), "adopted": True, "ip": d.get("ipAddress"),
             "version": d.get("firmwareVersion"), "upgradable": bool(d.get("firmwareUpdatable")),
@@ -406,13 +407,17 @@ class UnifiPoller:
                 await self.poll()
                 self.failures = 0
                 self.status.update(ok=True, error=None, last=time.time())
-            except (UnifiError, httpx.HTTPError, OSError) as exc:
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - also bad data / database errors: report, never crash-loop
+                if not isinstance(exc, (UnifiError, httpx.HTTPError, OSError)):
+                    log.exception("UniFi poll failed")
                 self.failures += 1
                 self.status.update(ok=False, error=f"{type(exc).__name__}: {exc}", last=time.time())
                 log.warning("UniFi: %s", exc)
                 if isinstance(exc, UnifiError) and exc.status in (401, 403):
                     self.client.legacy, self.client.v1, self.client.logged_in = False, None, False
-                if self.failures == 3:
+                if self.failures == 3 and isinstance(exc, (UnifiError, httpx.HTTPError, OSError)):
                     await raise_alert("unifi_unreachable", "medium", "UniFi controller is unreachable", "unifi_down",
                                       description=str(exc))
             await db.set_snapshot("unifi:status", self.status)
@@ -490,7 +495,7 @@ class UnifiPoller:
             for metric, key in (("unifi_device_cpu", "cpu"), ("unifi_device_mem", "mem"),
                                 ("unifi_device_tx_bps", "tx_bps"), ("unifi_device_rx_bps", "rx_bps")):
                 if d.get(key) is not None:
-                    rows.append((metric, d["name"], float(d[key])))
+                    rows.append((metric, d["name"] or d["mac"] or "?", float(d[key])))
         sats = [x["satisfaction"] for x in wifi if x.get("satisfaction") is not None]
         if sats:
             rows.append(("unifi_wifi_satisfaction", "", sum(sats) / len(sats)))

@@ -55,3 +55,9 @@ def test_events():
     c = unifi.event_from_system_log({"id": "s2", "title_raw": "WiFi Client Connected", "timestamp": 1792400000000,
                                      "parameters": {"client": {"id": "AA:AA:AA:AA:AA:63", "type": "CLIENT", "ip": "192.168.1.63"}}}, "d")
     assert c["action"] == "client_connect" and c["src_ip"] == "192.168.1.63" and c["data"]["mac"] == "aa:aa:aa:aa:aa:63"
+
+
+def test_v1_device_without_name_or_model_still_has_a_label():
+    # a nameless device used to give a NULL metrics label: the insert failed and every UniFi chart stayed empty
+    d = unifi.device_from_v1({"id": "x", "macAddress": "AA:BB:CC:00:00:09", "features": ["switching"]}, {"cpuUtilizationPct": 5})
+    assert d["name"] == "aa:bb:cc:00:00:09"
