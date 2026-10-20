@@ -7,6 +7,7 @@ Values are applied onto the shared ``Settings`` object, so the rest of the code 
 from __future__ import annotations
 
 import ipaddress
+import re
 import logging
 import os
 from dataclasses import dataclass, field
@@ -24,7 +25,7 @@ class Field:
     key: str
     group: str
     label: str
-    kind: str  # str | secret | bool | int | choice | text
+    kind: str  # str | secret | bool | int | choice | text | list (one entry per line in the UI, stored ', ' separated)
     help: str = ""
     choices: tuple[str, ...] = ()
     min: int | None = None
@@ -112,19 +113,19 @@ FIELDS: list[Field] = [
     # Zenarmor
     Field("zenarmor_es_user", "zenarmor", "Stream username", "str", "Optional basic auth; must match Zenarmor's streaming username."),
     Field("zenarmor_es_password", "zenarmor", "Stream password", "secret", "Must match Zenarmor's streaming password."),
-    Field("zenarmor_es_allowed", "zenarmor", "Allowed senders", "str",
-          "Comma separated IPs/CIDRs allowed to stream (empty = same as syslog allowed senders).", placeholder="192.168.1.1"),
+    Field("zenarmor_es_allowed", "zenarmor", "Allowed senders", "list",
+          "IPs / CIDRs allowed to stream (empty = same as syslog allowed senders).", placeholder="192.168.1.1"),
     # ingest
-    Field("syslog_allowed_senders", "ingest", "Syslog allowed senders", "str",
-          "Comma separated IPs/CIDRs (your OPNsense). Empty accepts everyone - not recommended.", placeholder="192.168.1.1"),
-    Field("internal_networks", "ingest", "Extra internal networks", "str",
+    Field("syslog_allowed_senders", "ingest", "Syslog allowed senders", "list",
+          "IPs / CIDRs (your OPNsense). Empty accepts everyone - not recommended.", placeholder="192.168.1.1"),
+    Field("internal_networks", "ingest", "Extra internal networks", "list",
           "CIDRs treated as internal besides RFC1918/CGNAT/ULA, e.g. public ranges you own.", placeholder="203.0.113.0/28"),
     Field("timezone", "ingest", "Time zone", "str", "IANA name; used for syslog timestamps without zone and daily reports.",
           placeholder="Europe/Amsterdam"),
     # behaviour & ML
     Field("behavior_enabled", "behavior", "Learn device behaviour", "bool", "Learn per device which countries, ports, "
           "domains, TLS programs and hours are normal, and alert on what is new or unusual."),
-    Field("behavior_exclude", "behavior", "Never analyse these devices", "str", "Comma separated IPs, CIDRs or MAC "
+    Field("behavior_exclude", "behavior", "Never analyse these devices", "list", "IPs, CIDRs or MAC "
           "addresses skipped by ALL behaviour, anomaly and risk rules (e.g. a backup server, Looking Glass itself).",
           placeholder="192.168.1.10, 192.168.50.0/24, aa:bb:cc:dd:ee:ff"),
     Field("behavior_learn_days", "behavior", "Learning period (days)", "int", "How far back the normal behaviour of a "
@@ -154,14 +155,14 @@ FIELDS: list[Field] = [
           "blocks, failed logins, DNS, failed lookups, per log source) against the same hour in previous weeks."),
     Field("seasonal_sensitivity", "behavior", "Hour of the week: sensitivity", "int", "How many 'normal deviations' "
           "above usual before an alert (3 = sensitive, 10 = only big spikes).", min=2, max=30),
-    Field("seasonal_ignore", "behavior", "Hour of the week: ignore metrics", "str", "Comma separated metric names from "
+    Field("seasonal_ignore", "behavior", "Hour of the week: ignore metrics", "list", "Metric names from "
           "these alerts, e.g. blocks, dns, source:firewall.", placeholder="blocks, source:nginx"),
     Field("risk_enabled", "behavior", "Risk score per device / address", "bool", "Every alert adds points (info 1, low "
           "3, medium 8, high 20, critical 40; once per rule) that fade over time; one alert when the total is high."),
     Field("risk_threshold", "behavior", "Risk score: alert from", "int", "", min=10, max=1000),
     Field("risk_half_life", "behavior", "Risk score: half-life (hours)", "int", "After this many hours an alert counts "
           "half.", min=1, max=720),
-    Field("risk_exclude", "behavior", "Risk score: skip these addresses", "str", "Comma separated IPs / CIDRs."),
+    Field("risk_exclude", "behavior", "Risk score: skip these addresses", "list", "IPs / CIDRs."),
     Field("feedback_mode", "behavior", "Learn from 'false positive'", "choice", "suggest = show a suggestion on the "
           "Alerts page after repeated false positives; auto = also create a rule that lowers them to info (listed "
           "under Alert filters, undo there); off.", choices=("suggest", "auto", "off")),
@@ -176,10 +177,10 @@ FIELDS: list[Field] = [
     Field("intel_ja3", "intel", "SSLBL JA3 (malware TLS fingerprints)", "bool"),
     Field("intel_tor", "intel", "Tor detection", "choice", "outbound = devices connecting to the Tor network; both = "
           "also Tor exit nodes reaching your services; off.", choices=("outbound", "both", "off")),
-    Field("intel_tor_allow", "intel", "Devices allowed to use Tor", "str", "Comma separated IPs / CIDRs / MACs."),
+    Field("intel_tor_allow", "intel", "Devices allowed to use Tor", "list", "IPs / CIDRs / MACs."),
     Field("intel_mining", "intel", "Crypto-mining pools", "bool", "Lookups of / connections to known mining pools."),
-    Field("mining_domains", "intel", "Extra mining pool domains", "str", "Comma separated, added to the built-in list."),
-    Field("intel_allow", "intel", "Never flag these domains / IPs", "str", "Comma separated domains (incl. subdomains) "
+    Field("mining_domains", "intel", "Extra mining pool domains", "list", "Added to the built-in list."),
+    Field("intel_allow", "intel", "Never flag these domains / IPs", "list", "Domains (incl. their subdomains) "
           "and IPs / CIDRs, for false positives in the feeds."),
     Field("nod_enabled", "intel", "Track newly seen domains", "bool", "Remembers the first time any device looks up a "
           "domain; beaconing and random-domain alerts to such a domain weigh heavier."),
@@ -188,18 +189,18 @@ FIELDS: list[Field] = [
           "the registry."),
     Field("nod_young_days", "intel", "Young domain: registered less than (days)", "int", "", min=1, max=365),
     Field("nod_lookups_per_hour", "intel", "RDAP lookups per hour (max)", "int", "", min=1, max=1000),
-    Field("canary_targets", "intel", "Canary addresses", "text", "One per line or comma separated: IP, IP:port or "
+    Field("canary_targets", "intel", "Canary addresses", "list", "IP, IP:port or "
           "CIDR that nothing should ever contact. The firewall must see (and log) that traffic: e.g. the firewall's own "
           "LAN address on unused ports (192.168.1.1:23) or an unused IP in ANOTHER VLAN - traffic inside one subnet "
           "never passes OPNsense.", placeholder="192.168.1.1:23\n192.168.1.1:445\n192.168.20.250"),
-    Field("canary_exclude", "intel", "Canary: ignore these sources", "str", "e.g. your own network scanner."),
+    Field("canary_exclude", "intel", "Canary: ignore these sources", "list", "e.g. your own network scanner."),
     Field("canary_internal_only", "intel", "Canary: only devices inside", "bool", "Off = also internet addresses "
           "(port forwards used as a honeypot)."),
     Field("exposure_watch", "intel", "Watch what is open to the internet", "bool", "Alerts on new / changed port "
           "forwards and firewall rules (OPNsense API; needs the 'Firewall: Rules' / 'NAT' read privileges)."),
     Field("arp_watch", "intel", "ARP spoofing detection", "bool", "OPNsense's ARP table and kernel messages: an IP "
           "flipping between devices, a device claiming the firewall's address, one device holding many IPs."),
-    Field("arp_exclude", "intel", "ARP: ignore these IPs / MACs", "str", "e.g. failover (CARP / VRRP) addresses, "
+    Field("arp_exclude", "intel", "ARP: ignore these IPs / MACs", "list", "e.g. failover (CARP / VRRP) addresses, "
           "Wi-Fi repeaters, VM hosts with bridged guests."),
     Field("arp_flips", "intel", "ARP: IP changes per hour before alerting", "int", "", min=2, max=100),
     # display
@@ -210,8 +211,8 @@ FIELDS: list[Field] = [
     Field("retention_days", "data", "Keep events (days)", "int", "", min=1, max=3650),
     Field("metrics_retention_days", "data", "Keep metrics (days)", "int", "", min=1, max=3650),
     Field("detection_interval", "data", "Detection interval (seconds)", "int", "", min=10, max=3600),
-    Field("dns_ignore_domains", "data", "DNS: domains to ignore", "str",
-          "Comma separated domains (subdomains included) the DNS checks - random-looking / DGA names, tunneling, NXDOMAIN "
+    Field("dns_ignore_domains", "data", "DNS: domains to ignore", "list",
+          "Domains (subdomains included) the DNS checks - random-looking / DGA names, tunneling, NXDOMAIN "
           "storms - skip, e.g. CDNs or latency probes with random names. Logs and dashboards still show them.",
           placeholder="atoma.cloud, example-cdn.net"),
     Field("geoip_db", "data", "GeoIP database path", "str", "MaxMind GeoLite2-City or -Country .mmdb inside the data volume.",
@@ -254,6 +255,9 @@ def _coerce(f: Field, value: Any) -> Any:
         if (f.min is not None and v < f.min) or (f.max is not None and v > f.max):
             raise SettingsError(f"{f.label}: must be between {f.min} and {f.max}")
         return v
+    if f.kind == "list":  # one entry per line (or comma separated): trimmed, duplicates dropped, stored ", " separated
+        items = [p.strip() for p in re.split(r"[,;\n]+", "" if value is None else str(value))]
+        value = ", ".join(dict.fromkeys(p for p in items if p))
     v = "" if value is None else str(value).strip()
     if f.kind == "choice" and v not in f.choices:
         raise SettingsError(f"{f.label}: must be one of {', '.join(f.choices)}")
@@ -261,7 +265,7 @@ def _coerce(f: Field, value: Any) -> Any:
         raise SettingsError(f"{f.label}: must start with http:// or https://")
     if f.key in ("syslog_allowed_senders", "internal_networks", "zenarmor_es_allowed") and v:
         for part in v.split(","):
-            try:
+            try:  # an invalid line is named, nothing is saved
                 ipaddress.ip_network(part.strip(), strict=False)
             except ValueError as exc:
                 raise SettingsError(f"{f.label}: '{part.strip()}' is not an IP address or CIDR") from exc
