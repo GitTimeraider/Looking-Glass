@@ -264,6 +264,37 @@ def _flat(v: Any) -> str:
     return "" if v is None else str(v)
 
 
+def zen_details(d: dict[str, Any]) -> dict[str, str]:
+    """What a Zenarmor record is about - application, its category, web category, security category, policy - from
+    whichever fields this record type carries (Zenarmor has no separate "block reason": these say why)."""
+    alert_info = d.get("alertinfo") if isinstance(d.get("alertinfo"), dict) else {}
+    out = {
+        "app": d.get("app_name") or d.get("application") or d.get("app_proto"),
+        "app_category": d.get("app_category") or d.get("application_category"),
+        "web_category": d.get("category") or _flat(d.get("domain_categories")) or d.get("web_category"),
+        "security": d.get("alert_category") or _flat(alert_info.get("category")) or _flat(d.get("security_tags"))
+                    or alert_info.get("signature"),
+        "policy": d.get("policy_name") or d.get("policy") or d.get("policyid"),
+    }
+    return {k: str(v) for k, v in out.items() if v not in (None, "", [], {})}
+
+
+def zen_describe(z: dict[str, str]) -> str:
+    """'app Steam (Games) · web category Games · policy 3'"""
+    parts = []
+    if z.get("app"):
+        parts.append(f"app {z['app']}" + (f" ({z['app_category']})" if z.get("app_category") else ""))
+    elif z.get("app_category"):
+        parts.append(f"app category {z['app_category']}")
+    if z.get("web_category") and z.get("web_category") != z.get("app_category"):
+        parts.append(f"web category {z['web_category']}")
+    if z.get("security"):
+        parts.append(f"security {z['security']}")
+    if z.get("policy"):
+        parts.append(f"policy {z['policy']}")
+    return " · ".join(parts)
+
+
 def zenarmor_record(family: str, d: dict[str, Any], ts: datetime, host: str | None = None,
                     program: str = "zenarmor") -> dict[str, Any]:
     """Normalise one Zenarmor document (any family) into an event."""
@@ -277,7 +308,7 @@ def zenarmor_record(family: str, d: dict[str, Any], ts: datetime, host: str | No
 
     if family == "dns":
         domain = d.get("query")
-        summary = f"DNS {d.get('qtype', '')} {domain}" + (f" [{category}]" if category else "")
+        summary = " ".join(x for x in ("DNS", str(d.get("qtype") or ""), str(domain or "")) if x) + (f" [{category}]" if category else "")
     elif family == "tls":
         domain = d.get("server_name")
         summary = f"TLS {domain}" + (f" [{category}]" if category else "")
@@ -292,6 +323,11 @@ def zenarmor_record(family: str, d: dict[str, Any], ts: datetime, host: str | No
         summary = f"{d.get('app_name') or d.get('app_proto') or 'flow'} -> {domain or d.get('ip_dst_saddr')}" + \
                   (f" [{category}]" if category else "")
     action = "block" if blocked else ("threat" if family == "alert" else family)
+    z = zen_details(d)
+    what = zen_describe(z)
+    if what:  # e.g. "BLOCKED TLS store.steampowered.com - app Steam (Games) · policy 2"
+        base = f"Threat alert: {domain or d.get('ip_dst_saddr') or ''}".strip() if family == "alert" else summary.split(" [")[0]
+        summary = f"{base} - {what}"
     data = {k: v for k, v in d.items() if k not in ("src_geoip", "dst_geoip") and v not in (None, "", [], {})}
     if device:
         data["device"] = device
@@ -306,7 +342,7 @@ def zenarmor_record(family: str, d: dict[str, Any], ts: datetime, host: str | No
         username=d.get("src_username") or None,
         src_country=src_geo.get("country_code2") or None, dst_country=dst_geo.get("country_code2") or None,
         message=(("BLOCKED " if blocked else "") + summary)[:4000],
-        data={"family": family, "security": security, "category": category, **data},
+        data={"family": family, "security": security, "category": category, **data, "zen": z},
     )
 
 

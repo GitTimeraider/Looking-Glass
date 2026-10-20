@@ -133,3 +133,40 @@ def test_zenarmor_blocked_alert_setting():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_zenarmor_alerts_name_app_category_and_policy():
+    from lookingglass.parsers.security import zenarmor_record
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events, alerts")
+            t = NOW - timedelta(minutes=1)
+            await db.copy_events([
+                zenarmor_record("conn", {"is_blocked": 1, "ip_src_saddr": "192.168.30.5", "ip_dst_saddr": "155.133.230.1",
+                                         "ip_dst_port": 27015, "app_name": "MySQL", "app_category": "Database", "policyid": "2"}, t),
+                zenarmor_record("dns", {"is_blocked": 1, "ip_src_saddr": "192.168.30.6", "query": "bad.example",
+                                        "domain_categories": ["Phishing"]}, t)])
+            msg = await pool.fetchval("SELECT message FROM events WHERE host(src_ip) = '192.168.30.5'")
+            assert msg == "BLOCKED MySQL -> 155.133.230.1 - app MySQL (Database) · policy 2"
+            await db.kv_set("wm:zenarmor", 0)
+            await DetectionEngine(Settings(zenarmor_blocked_alerts="all")).zenarmor_threats()
+            a = {r["ip"]: r for r in await pool.fetch(
+                "SELECT host(src_ip) ip, title, severity, description FROM alerts WHERE rule = 'zenarmor_threat'")}
+            assert a["192.168.30.5"]["title"] == "Zenarmor blocked: 192.168.30.5 → 155.133.230.1 (MySQL, Database)"
+            assert "app MySQL (Database) · policy 2" in a["192.168.30.5"]["description"]
+            assert "Zenarmor › Policies" in a["192.168.30.5"]["description"] and a["192.168.30.5"]["severity"] == "low"
+            assert a["192.168.30.6"]["severity"] == "high" and "Phishing" in a["192.168.30.6"]["title"]
+            # default (threats only): the policy block is skipped, the phishing lookup still alerts
+            await pool.execute("TRUNCATE alerts")
+            await db.kv_set("wm:zenarmor", 0)
+            await DetectionEngine(Settings()).zenarmor_threats()
+            assert [r["ip"] for r in await pool.fetch("SELECT host(src_ip) ip FROM alerts")] == ["192.168.30.6"]
+            await pool.execute("TRUNCATE events, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
