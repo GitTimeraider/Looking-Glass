@@ -18,6 +18,24 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 MODE = sys.argv[2] if len(sys.argv) > 2 else "gateway"
 app = FastAPI()
+# a realistic answer (the IPs / names are the ones tools/simulate.py and the mocks produce)
+SAMPLE_ANSWER = """## Executive summary
+One internal device needs attention now: **192.168.1.33 (office laptop)** shows several independent signs of an
+infection. The rest is the usual internet background noise, all blocked.
+
+## Findings
+| Severity | Finding | Evidence |
+|---|---|---|
+| **Critical** | 192.168.1.33 talks to command & control | Allowed connection to 185.100.87.41:9001 (Tor), Zenarmor blocked *update-check.badsite.example* (Command and Control), IDS: *ET MALWARE Cobalt Strike Beacon Observed* |
+| **High** | DNS tunneling from 192.168.1.21 | 800 unique subdomains of *exfil-example.net* in 10 minutes |
+| **High** | Password guessed on the firewall | 7 failed logins for `root` from 192.168.1.66, then a successful one |
+| Low | Port scans from the internet | 203.0.113.5 tried 120 ports - all blocked |
+
+## Recommended actions
+1. **Isolate 192.168.1.33**: UniFi Network › Client Devices › *Office laptop* › Block, then scan or reinstall it.
+2. Check 192.168.1.21 for the program that queries *exfil-example.net*.
+3. Change the `root` password of the firewall and find out who logged in from 192.168.1.66.
+"""
 GATEWAY_504 = "<html><head><title>504 Gateway Time-out</title></head><body><h1>504 Gateway Time-out</h1>nginx</body></html>"
 
 
@@ -32,8 +50,7 @@ async def chat(request: Request):
         msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {
             "name": "sql_query", "arguments": json.dumps({"query": "SELECT count(*) FROM events"})}}]}
     else:
-        msg = {"role": "assistant", "content": "## Executive summary\n\nNothing alarming. **Mock analysis** based on the "
-                                               "report data and one query."}
+        msg = {"role": "assistant", "content": SAMPLE_ANSWER}
     if not stream:
         return JSONResponse({"choices": [{"message": msg}]})
 

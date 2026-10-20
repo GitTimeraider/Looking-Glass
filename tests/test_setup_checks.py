@@ -56,3 +56,27 @@ def test_channels_and_duplicates():
             await db.pool().execute("DELETE FROM snapshots WHERE key = 'poller_status'")
             await db.close()
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_runs_with_every_integration_configured():
+    """Setup & status must not crash whatever is configured (a name clash once broke it with UniFi + behaviour on)."""
+    async def main():
+        await db.connect(DSN)
+        try:
+            await db.pool().execute("INSERT INTO device_profile (key, kind, value, first_seen) VALUES ('aa:bb:cc:00:00:01', "
+                                    "'country', 'NL', now() - interval '3 days') ON CONFLICT DO NOTHING")
+            await db.set_snapshot("unifi:status", {"ok": True, "mode": "classic", "version": "10.0", "sections": {}})
+            res = await setup_checks.run(Settings(
+                opnsense_url="http://x", opnsense_api_key="k", opnsense_api_secret="s", unifi_url="http://u",
+                unifi_api_key="k", ai_base_url="http://a/v1", ai_api_key="k", ai_model="m", smtp_host="m", smtp_from="a@b.c",
+                canary_targets="192.168.1.1:23", behavior_enabled=True, exposure_watch=True))
+            ids = {c["id"] for c in res["checks"]}
+            assert {"behavior", "unifi", "canary"} <= ids
+            assert "devices profiled" in next(c["summary"] for c in res["checks"] if c["id"] == "behavior")
+            await db.pool().execute("DELETE FROM device_profile")
+            await db.pool().execute("DELETE FROM snapshots WHERE key = 'unifi:status'")
+        finally:
+            await db.close()
+
+    asyncio.run(main())

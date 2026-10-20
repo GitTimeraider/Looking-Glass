@@ -14,6 +14,25 @@ The web UI is protected by a password **plus mandatory MFA** (authenticator app 
 
 Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64), built by GitHub Actions.
 
+## Screenshots
+
+*Demo data: simulated OPNsense traffic and the mock OPNsense / UniFi / Unraid / AI servers from `tools/`.*
+
+![Overview: events, blocks, alerts and logins of the last 24 hours](docs/screenshots/overview.png)
+
+| | |
+|---|---|
+| **Alerts** - every alert says why it got its severity, which device it is and where it is connected; mute, re-rate or ask the AI | **AI analyst** - asks the database itself and answers with findings and actions |
+| ![Alerts](docs/screenshots/alerts.png) | ![AI analyst](docs/screenshots/ai-analyst.png) |
+| **Firewall dashboard** - one of nine dashboards (DNS, web server, threats, Zenarmor, logins, VPN, Wi-Fi, logs) | **Devices** - inventory from ARP, DHCP, UniFi and Zenarmor, with risk score and learned behaviour |
+| ![Firewall dashboard](docs/screenshots/firewall.png) | ![Devices](docs/screenshots/devices.png) |
+| **OPNsense** - hardware, load, temperatures, gateways, interfaces and services | **UniFi** - access points, switches, Wi-Fi and wired clients, neighbouring Wi-Fi |
+| ![OPNsense](docs/screenshots/opnsense.png) | ![UniFi](docs/screenshots/unifi.png) |
+| **Unraid** - array, disks (never woken up), Docker, VMs, UPS | **Reports** - daily / weekly / monthly, with an AI analysis |
+| ![Unraid](docs/screenshots/unraid.png) | ![Report](docs/screenshots/report.png) |
+| **Setup & status** - checks every data source and says exactly what to change where | **Settings** - everything in the web UI (secrets encrypted), every detection with its own switches and exceptions |
+| ![Setup & status](docs/screenshots/setup-status.png) | ![Settings](docs/screenshots/settings-behaviour.png) |
+
 ## What it collects
 
 | Source | How | What you get |

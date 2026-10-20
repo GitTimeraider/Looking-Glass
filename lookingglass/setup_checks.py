@@ -340,10 +340,10 @@ async def run(settings: Settings) -> dict[str, Any]:
     # ------------------------------------------------- behaviour & intel ---
     if settings.behavior_enabled:
         prof = await db.pool().fetchrow("SELECT count(DISTINCT key) devices, min(first_seen) since FROM device_profile")
-        n, since = (prof["devices"], prof["since"]) if prof else (0, None)
+        profiled, since = (prof["devices"], prof["since"]) if prof else (0, None)  # not "n": that is the count helper
         days = (time.time() - since.timestamp()) / 86400 if since else 0
         check("behavior", "Behaviour learning", "ok" if days >= settings.behavior_min_days else "info", [],
-              f"{n} devices profiled, learning for {days:.1f} days." + ("" if days >= settings.behavior_min_days else
+              f"{profiled} devices profiled, learning for {days:.1f} days." + ("" if days >= settings.behavior_min_days else
               f" New-behaviour alerts start after {settings.behavior_min_days} days per device."),
               link="/settings#behavior")
     feeds = await db.kv_get("intel:status", {}) or {}

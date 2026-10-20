@@ -49,7 +49,7 @@ DEVICES = [
          {"port_idx": 16, "name": "OPNsense", "up": True, "enable": True, "speed": 1000, "is_uplink": True, "rx_bytes": 2e11, "tx_bytes": 1e11}]},
 ]
 CLIENTS = [
-    {"mac": "aa:aa:aa:aa:aa:33", "ip": "192.168.1.33", "name": "Rod's laptop", "hostname": "laptop", "oui": "Dell Inc.",
+    {"mac": "aa:aa:aa:aa:aa:33", "ip": "192.168.1.33", "name": "Office laptop", "hostname": "laptop", "oui": "Dell Inc.",
      "is_wired": False, "essid": "Home", "ap_mac": "f4:e2:c6:00:00:01", "radio": "na", "channel": 44, "signal": -54,
      "satisfaction": 98, "tx_bytes": 3.2e9, "rx_bytes": 2.1e10, "uptime": 36000, "network": "LAN", "vlan": 0},
     {"mac": "aa:aa:aa:aa:aa:63", "ip": "192.168.1.63", "hostname": "pixel-7", "oui": "Google, Inc.", "is_wired": False,
