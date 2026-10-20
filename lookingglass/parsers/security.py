@@ -415,6 +415,37 @@ _DHCP_ACK = re.compile(r"DHCPACK (?:on|to) (?P<ip>[0-9.]+) (?:to|\() ?(?P<mac>[0
 _KEA_LEASE = re.compile(r"DHCP4_LEASE_ALLOC.*?hwtype=\d+ (?P<mac>[0-9a-f:]{17}).*?lease (?P<ip>[0-9.]+)", re.I)
 _DNSMASQ = re.compile(r"DHCPACK\((?P<iface>[^)]+)\) (?P<ip>[0-9.]+) (?P<mac>[0-9a-f:]{17})(?: (?P<host>\S+))?", re.I)
 _CONFIG_CHANGE = re.compile(r"(?:config(?:uration)? (?:change|changed)|user .* changed configuration|/conf/config\.xml)", re.I)
+# OPNsense audit line written on every config save (Core/Config.php):
+# "user root@192.168.1.10 changed configuration to /conf/backup/config-1700000000.1234.xml in /api/nginx/settings/set ..."
+_CONFIG_AUDIT = re.compile(r"user (?P<user>\S+?)(?:@(?P<ip>[0-9A-Fa-f.:]+))?(?: \((?P<by>[^)]*)\))? changed configuration to \S+ in (?P<uri>\S+)")
+# readable names of the most common OPNsense parts (API module or legacy page prefix)
+CONFIG_AREAS = {
+    "firewall": "Firewall", "filter": "Firewall", "nginx": "Nginx", "unbound": "Unbound DNS", "ids": "Intrusion detection",
+    "interfaces": "Interfaces", "routes": "Routes", "routing": "Gateways", "core": "System", "system": "System",
+    "wireguard": "WireGuard", "openvpn": "OpenVPN", "ipsec": "IPsec", "kea": "Kea DHCP", "dhcpv4": "DHCP", "dhcpv6": "DHCPv6",
+    "services_dhcp": "DHCP", "dnsmasq": "Dnsmasq", "cron": "Cron", "zenarmor": "Zenarmor", "crowdsec": "CrowdSec",
+    "haproxy": "HAProxy", "acmeclient": "ACME", "monit": "Monit", "syslog": "Logging", "diagnostics": "Diagnostics",
+    "trust": "Certificates", "auth": "Users & groups", "system_usermanager": "Users & groups", "captiveportal": "Captive portal",
+    "trafficshaper": "Traffic shaper", "dyndns": "Dynamic DNS", "vlan": "VLANs", "ntpd": "NTP", "unboundplus": "Unbound DNS",
+}
+
+
+def config_change(msg: str) -> dict[str, Any] | None:
+    """Who changed what: user, client IP, the changed part (API module / page) and the request path."""
+    m = _CONFIG_AUDIT.search(msg)
+    if not m:
+        return None
+    uri = m["uri"].split("?")[0]
+    parts = [p for p in uri.split("/") if p]
+    if len(parts) >= 2 and parts[0] == "api":  # /api/<module>/<controller>/<action>
+        area, detail = parts[1].lower(), parts[2] if len(parts) > 2 else ""
+    else:  # legacy page (/firewall_rules_edit.php) or a script run from the console
+        area = re.sub(r"(_edit|_manager)?\.(php|py|sh|inc)$", "", parts[-1] if parts else uri).lower()
+        detail = ""
+    label = CONFIG_AREAS.get(area) or area.replace("_", " ")  # legacy pages: "firewall_rules" -> "firewall rules"
+    user = m["user"]
+    return {"user": None if user in ("(system)", "(root)") else user, "ip": m["ip"], "by": m["by"],
+            "area": area, "label": label, "detail": detail, "path": uri}
 
 VPN_PROGRAMS = ("openvpn", "charon", "ipsec", "wireguard", "wg", "strongswan")  # incl. openvpn_server1, openvpn_client2
 AUTH_PROGRAMS = ("sshd", "sshd-session", "audit", "login", "su", "sudo", "lighttpd", "php-cgi", "php", "webgui", "configd.py", "api")
@@ -456,6 +487,10 @@ def parse_generic(ts: datetime, host: str | None, program: str | None, severity:
     if prog.startswith(VPN_PROGRAMS):
         ips = find_ips(msg)
         return event(ts, "vpn", host=host, program=program, severity=severity, src_ip=ips[0] if ips else None, message=msg[:4000])
+    cfg = config_change(msg)
+    if cfg:
+        return event(ts, "auth" if prog.startswith(AUTH_PROGRAMS) else "system", host=host, program=program, severity=severity,
+                     action="config_change", src_ip=cfg["ip"], username=cfg["user"], message=msg[:4000], data={"config": cfg})
     if prog.startswith(AUTH_PROGRAMS):
         action = "config_change" if _CONFIG_CHANGE.search(msg) else None
         ips = find_ips(msg)

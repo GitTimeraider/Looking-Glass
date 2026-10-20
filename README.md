@@ -102,6 +102,10 @@ those under *Settings › Data & detection › DNS: domains to ignore* (subdomai
 * **Undo / adjust anything**: every muted or re-rated alert links (✎) to the rule that did it, so you can edit, pause or
   delete it; a re-rated alert also has **Restore <old severity>** for just that alert. The Alerts page shows
   **Mute & severity rules (N active)**, a direct link to the full list.
+* **Configuration changes** name what was changed and by whom, e.g. *Configuration change on fw: Nginx by admin from
+  192.168.1.10* (taken from the OPNsense audit log line). Filter on the part with the text condition (`Nginx`,
+  `Unbound DNS`, `firewall rules` …), on the user (`admin`) or on the IP condition (the address the change came from).
+  **Mute similar…** on such an alert pre-fills the rule and the changed part.
 
 ### Email notifications
 

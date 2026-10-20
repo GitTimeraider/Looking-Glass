@@ -170,3 +170,33 @@ def test_zenarmor_alerts_name_app_category_and_policy():
             await db.close()
 
     asyncio.run(main())
+
+
+def test_config_change_says_what_and_who():
+    from lookingglass.parsers.security import config_change
+    line = ("<37>Oct 20 10:15:01 fw audit[42]: user admin@192.168.1.10 changed configuration to "
+            "/conf/backup/config-1760000000.1234.xml in /api/nginx/settings/set /api/nginx/settings/set made changes")
+    e = parse_line(line, sender="x", local_tz=timezone.utc)
+    assert (e["action"], e["username"], e["src_ip"]) == ("config_change", "admin", "192.168.1.10")
+    assert e["data"]["config"]["label"] == "Nginx" and e["data"]["config"]["path"] == "/api/nginx/settings/set"
+    legacy = config_change("user root@10.0.0.5 changed configuration to /conf/backup/c.xml in /firewall_rules_edit.php?id=3 x")
+    assert (legacy["area"], legacy["label"], legacy["user"]) == ("firewall_rules", "firewall rules", "root")
+    system = config_change("user (root) changed configuration to /conf/backup/c.xml in /usr/local/sbin/pluginctl ")
+    assert system["user"] is None and system["ip"] is None
+    if not DSN:
+        return
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events, alerts")
+            await pool.execute("DELETE FROM kv WHERE key LIKE 'wm:%'")
+            await db.copy_events([e])
+            await DetectionEngine(Settings()).config_changes()
+            a = (await alerts(pool, "config_change"))[0]
+            assert a["title"] == "Configuration change on fw: Nginx by admin from 192.168.1.10" and a["ip"] == "192.168.1.10"
+            assert a["data"]["config"]["area"] == "nginx"
+        finally:
+            await db.close()
+    asyncio.run(main())

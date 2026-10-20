@@ -51,9 +51,12 @@ function why(a) {
 }
 const desc = a => (a.description || "").replace(/(^|\n\n)Severity (info|low|medium|high|critical): [^\n]*/, "").trim();
 // alert filter pre-filled from this alert: same rule, same source IP (when there is one)
-const muteUrl = (a, action) => "/settings?" + new URLSearchParams({ mute: 1, rule: a.rule, ...(a.src_ip ? { ip: a.src_ip } : {}),
-  ...(action ? { action, to: a.severity } : {}),
-  name: `${action ? "Severity of" : "Mute"} ${a.rule}${a.src_ip ? " from " + a.src_ip : ""}` }) + "#filters";
+const muteUrl = (a, action) => {
+  const cfg = (a.data || {}).config;  // config change: mute only changes of this part (e.g. "Nginx"), from any IP
+  return "/settings?" + new URLSearchParams({ mute: 1, rule: a.rule, ...(a.src_ip && !cfg ? { ip: a.src_ip } : {}),
+    ...(cfg && cfg.label ? { text: cfg.label } : {}), ...(action ? { action, to: a.severity } : {}),
+    name: `${action ? "Severity of" : "Mute"} ${a.rule}${cfg && cfg.label ? " " + cfg.label : a.src_ip ? " from " + a.src_ip : ""}` }) + "#filters";
+};
 function override(a) {
   const o = (a.data || {}).severity_override;
   if (!o) return "";

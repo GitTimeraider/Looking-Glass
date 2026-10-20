@@ -240,8 +240,9 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
              "sql": f"SELECT host(src_ip) ip, max(src_country) country, max(coalesce(program, source)) svc, (array_agg(DISTINCT username))[1:6] users, count(*) n, max(ts) last FROM events WHERE action = 'login_failed' AND {W} GROUP BY 1 ORDER BY 5 DESC LIMIT 25"},
             {"id": "ok", "title": "Successful logins", "type": "table", "drill": {"base": {"source": "", "action": "login_success,vpn_connect"}, "by": {"ip": "ip", "user": "username"}}, "cols": [["ts", "Time", "time"], ["username", "User"], ["ip", "From", "ip"], ["prog", "Via"]],
              "sql": f"SELECT ts, username, host(src_ip) ip, coalesce(program, source) prog FROM events WHERE action IN ('login_success', 'vpn_connect') AND {W} ORDER BY ts DESC LIMIT 50"},
-            {"id": "cfg", "title": "Configuration changes", "type": "table", "drill": {"base": {"source": "", "action": "config_change"}, "by": {"host": "host"}}, "cols": [["ts", "Time", "time"], ["host", "Host"], ["message", "Message"]],
-             "sql": f"SELECT ts, host, left(message, 200) message FROM events WHERE action = 'config_change' AND {W} ORDER BY ts DESC LIMIT 50"},
+            {"id": "cfg", "title": "Configuration changes", "type": "table", "drill": {"base": {"source": "", "action": "config_change"}, "by": {"host": "host"}}, "cols": [["ts", "Time", "time"], ["host", "Host"], ["part", "Changed"], ["username", "By"], ["ip", "From", "ip"], ["message", "Message"]],
+             "sql": f"SELECT ts, host, coalesce(data->'config'->>'label', '?') part, username, host(src_ip) ip, left(message, 160) message "
+                    f"FROM events WHERE action = 'config_change' AND {W} ORDER BY ts DESC LIMIT 50"},
             log_panel("source = 'auth'"),
         ]},
     "vpn": {
