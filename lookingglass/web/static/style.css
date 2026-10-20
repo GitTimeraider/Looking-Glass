@@ -295,3 +295,12 @@ details.card > summary { cursor: pointer; }
 .suggest { border-left: 3px solid var(--accent); }
 .suggest .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--border); }
 .suggest .row:first-of-type { border-top: 0; }
+
+/* devices page: collapsible charts, a device list as tall as the window */
+.charts-fold { margin-bottom: 14px; }
+.charts-fold > summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 8px; user-select: none; }
+.dev-list { padding-top: 6px; padding-bottom: 6px; }
+.dev-list td { padding-top: 5px; padding-bottom: 5px; }
+.dev-list th { z-index: 1; }
+.dev-list td { white-space: nowrap; }
+.dev-list td .cell-clip { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
