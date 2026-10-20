@@ -55,7 +55,8 @@ def device(name: str, desc: str, var: dict[str, str]) -> dict[str, Any]:
     power = _num(var.get("ups.realpower"))
     if power is None and load is not None and _num(var.get("ups.realpower.nominal")):
         power = round(_num(var["ups.realpower.nominal"]) * load / 100, 1)
-    model = " ".join(x for x in (var.get("device.mfr") or var.get("ups.mfr"), var.get("device.model") or var.get("ups.model")) if x)
+    model = " ".join(x.strip() for x in (var.get("device.mfr") or var.get("ups.mfr"), var.get("device.model") or var.get("ups.model"))
+                     if x and x.strip())
     return {"id": f"nut:{name}", "name": name, "model": model or desc, "source": "NUT",
             "status": status_text(var.get("ups.status", "")), "status_codes": var.get("ups.status", ""),
             "battery": {"chargeLevel": _num(var.get("battery.charge")), "estimatedRuntime": _num(var.get("battery.runtime")),

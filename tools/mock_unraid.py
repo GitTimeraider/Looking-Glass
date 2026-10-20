@@ -78,7 +78,9 @@ def answer(q: str, variables: dict) -> dict:
                                        "swapTotal": 0, "swapUsed": 0, "percentSwapTotal": 0},
                             "temperature": {"sensors": [{"name": "CPU Tctl", "type": "CPU_PACKAGE", "current": {"value": 50 + random.random() * 5, "status": "NORMAL"}, "warning": 80, "critical": 95},
                                                         {"name": "Motherboard", "type": "MOTHERBOARD", "current": {"value": 38.0, "status": "NORMAL"}, "warning": None, "critical": None}]},
-                            "network": [{"name": "eth0", "operstate": "up", "rxSec": random.random() * 2e6, "txSec": random.random() * 5e5, "receiveErrors": 0, "transmitErrors": 0}]}}
+                            "network": [{"name": n, "operstate": "up", "rxSec": random.random() * f, "txSec": random.random() * f / 4, "receiveErrors": 0, "transmitErrors": 0}
+                                        for n, f in (("eth0", 2e6), ("br0", 1.5e6), ("lo", 1e5), ("docker0", 0), ("br-0a1b2c3d4e5f", 4e5),
+                                                     ("veth1a2b3c4", 2e5), ("veth5d6e7f8", 1e5), ("veth9a8b7c6", 5e4))]}}
     if "array" in q:
         return {"array": {"state": "STARTED", "capacity": {"kilobytes": {"free": "9000000000", "used": "15000000000", "total": "24000000000"},
                                                            "disks": {"free": "1", "used": "3", "total": "4"}},
@@ -92,6 +94,9 @@ def answer(q: str, variables: dict) -> dict:
                                      disk(32, "ssd", "CACHE", 38, rotational=False, fs="zfs", size=2_000_000_000),
                                      disk(33, "ssd2", "CACHE", 37, rotational=False, fs="zfs", size=2_000_000_000, fs_size=False)],
                           "boot": {**disk(40, "flash", "FLASH", None, rotational=False, fs="vfat", size=32_000_000), "device": "sda"}}}
+    if "networks" in q:
+        return {"docker": {"networks": [{"id": "srv:0a1b2c3d4e5f" + "0" * 52, "name": "proxynet", "driver": "bridge"},
+                                        {"id": "srv:" + "f" * 64, "name": "bridge", "driver": "bridge"}]}}
     if "docker" in q:
         def c(cid, name, image, state, auto=True):
             return {"id": "srv1:" + cid, "names": ["/" + name], "image": image, "state": state, "status": "Up 3 days" if state == "RUNNING" else "Exited (1) 2 hours ago",

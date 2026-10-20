@@ -73,3 +73,14 @@ def test_docker_stats_strings():
     assert unraid._size("512MiB") == 512 * 1024 ** 2 and unraid._size("1.5GB") == 1_500_000_000 and unraid._size("0B") == 0
     assert unraid._size("--") is None and unraid._io_pair("1.2MB / 300kB") == (1_200_000, 300_000)
     assert unraid._short_id("4f1c...:abc123") == "abc123" and unraid._short_id("abc123") == "abc123"
+
+
+def test_network_labels():
+    from lookingglass.unraid import interface_names, net_label
+    nets = interface_names([{"id": "0a1b2c3d4e5f" + "0" * 52, "name": "proxynet", "driver": "bridge"},
+                             {"id": "9" * 64, "name": "bridge", "driver": "bridge", "options": {"com.docker.network.bridge.name": "docker0"}},
+                             {"id": "1" * 64, "name": "host", "driver": "host"}])
+    assert nets == {"br-0a1b2c3d4e5f": "proxynet", "docker0": "bridge"}
+    assert net_label("lo", nets) is None and net_label("veth9a8b7c6", nets) == "containers (all veth)"
+    assert net_label("br-0a1b2c3d4e5f", nets) == "docker: proxynet" and net_label("br-ffffffffffff", nets) == "docker: br-ffffffffffff"
+    assert net_label("br0", nets) == "br0" and net_label("docker0", nets) == "docker: bridge"
