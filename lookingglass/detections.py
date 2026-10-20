@@ -608,10 +608,28 @@ class DetectionEngine:
     async def config_changes(self) -> None:
         last, current = await self._watermark("config")
         rows = await db.pool().fetch(
-            "SELECT host, program, message, ts FROM events WHERE id > $1 AND id <= $2 AND action = 'config_change' LIMIT 50", last, current)
+            "SELECT host, program, message, ts, username, host(src_ip) ip, data->'config' cfg FROM events "
+            "WHERE id > $1 AND id <= $2 AND action = 'config_change' LIMIT 50", last, current)
         for r in rows:
-            await raise_alert("config_change", "info", f"Configuration change on {r['host'] or 'firewall'}",
-                              f"config:{r['host']}", events={"action": "config_change", "host": r["host"]}, description=r["message"][:1000])
+            cfg = r["cfg"] or {}
+            where = r["host"] or "firewall"
+            if not cfg:  # a log line without the OPNsense audit details
+                await raise_alert("config_change", "info", f"Configuration change on {where}", f"config:{r['host']}",
+                                  events={"action": "config_change", "host": r["host"]}, description=r["message"][:1000])
+                continue
+            # what was changed and by whom go in the title, so an alert filter can match them ("Nginx", "admin", …)
+            who = (f" by {r['username']}" if r["username"] else "") + (f" (as {cfg['by']})" if cfg.get("by") else "") + \
+                  (f" from {r['ip']}" if r["ip"] else "")
+            part = cfg.get("label") or cfg.get("area") or "?"
+            await raise_alert(
+                "config_change", "info", f"Configuration change on {where}: {part}{who}",
+                f"config:{r['host']}:{cfg.get('area')}:{r['username']}", src_ip=r["ip"],
+                events={"action": "config_change", "host": r["host"], **({"user": r["username"]} if r["username"] else {})},
+                data={"config": cfg},
+                description=f"Changed: {part}{' › ' + cfg['detail'] if cfg.get('detail') else ''} (via {cfg.get('path')}). "
+                            f"Changed by: {r['username'] or 'the system (no user)'}{' from ' + r['ip'] if r['ip'] else ''}. "
+                            f"Each save is a backup in System › Configuration › History, where you can compare it with the "
+                            f"previous version. Log line: {r['message'][:600]}")
         await self._commit("config", current)
 
     # --------------------------------------------------------- web rules ---
