@@ -137,6 +137,7 @@ class Settings(BaseSettings):
     ai_model: str = "claude-opus-5-5"
     ai_max_tool_rounds: int = 12
     ai_timeout: int = 300
+    ai_stream: bool = True
     ai_daily_report: bool = False
     ai_daily_report_hour: int = 7
     geoip_db: str = "/data/GeoLite2-City.mmdb"

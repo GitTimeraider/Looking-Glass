@@ -140,6 +140,16 @@ excludes devices from all of them.
 2. Looking Glass › Settings › Threat intel & traps › **Canary addresses**: `192.168.1.1:23, 192.168.1.1:445,
    192.168.1.1:3389` (your firewall's LAN address), Save.
 
+### AI analysis: timeouts and "504 Gateway Timeout"
+
+A report's AI analysis is an agent run of several model calls (the model looks into the data with its tools) and runs
+in the background: the report opens right away, the AI part fills in when ready, and a failure shows the reason with
+**Retry AI analysis**. Answers are **streamed** (*Settings › AI analyst › Stream answers*, on by default): gateways and
+proxies in front of a model (OpenRouter, LiteLLM, Cloudflare, nginx) often cut off requests that send nothing for 60-100
+seconds, which is what a 504 means - a streamed answer keeps the connection busy. Overload / gateway errors (429, 502,
+503, 504) are retried twice. Still 504? Raise the timeout of your own proxy (e.g. LiteLLM `timeout`, nginx
+`proxy_read_timeout`), use a faster model or lower *Max tool rounds*.
+
 ### How severity is decided
 
 Every alert shows **"Why <severity>"**: the base reason and every step up (↑) or down (↓). The same four questions

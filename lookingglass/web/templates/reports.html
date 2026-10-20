@@ -15,7 +15,7 @@
 async function load() {
   const rows = await LG.api("/api/reports");
   LG.table("#list", [{k: "id", l: "#"}, {k: "title", l: "Report", f: (v, r) => `<a href="/reports/${r.id}">${LG.esc(v)}</a>`},
-    {k: "created_at", l: "Created", f: LG.time}, {k: "period_h", l: "Period (h)", num: true}, {k: "has_ai", l: "AI", f: v => v ? "✔" : ""},
+    {k: "created_at", l: "Created", f: LG.time}, {k: "period_h", l: "Period (h)", num: true}, {k: "has_ai", l: "AI", f: (v, r) => r.ai_state === "running" ? `<span class="spinner" title="AI analysis running"></span>` : r.ai_state === "failed" ? `<span class="err" title="AI analysis failed - open the report to retry">failed</span>` : v ? "✔" : ""},
     {k: "id", l: "", f: v => `<a href="/api/reports/${v}/download">json</a> · <a href="#" data-del="${v}">delete</a>`}], rows, "No reports yet");
   document.querySelectorAll("[data-del]").forEach(a => a.onclick = async e => { e.preventDefault(); if (confirm("Delete report?")) { await LG.api(`/api/reports/${a.dataset.del}`, { method: "DELETE" }); load(); } });
 }

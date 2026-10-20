@@ -6,9 +6,11 @@ chat-completions + tools protocol.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -273,9 +275,54 @@ async def run_tool(name: str, args: dict[str, Any]) -> str:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
 
+RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529}
+STATUS_TEXT = {400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 408: "Request Timeout",
+               413: "Payload Too Large", 429: "Too Many Requests", 500: "Internal Server Error", 502: "Bad Gateway",
+               503: "Service Unavailable", 504: "Gateway Timeout", 524: "A Timeout Occurred (Cloudflare)", 529: "Overloaded"}
+
+
+class AIError(Exception):
+    def __init__(self, status: int, body: str, retry_after: str | None = None) -> None:
+        self.status, self.body = status, body or ""
+        try:
+            self.retry_after = min(60.0, float(retry_after)) if retry_after else None
+        except ValueError:
+            self.retry_after = None
+        super().__init__(f"HTTP {status}")
+
+
+def explain_ai_error(exc: Exception | None, seconds: float, step: int, s: Settings) -> str:
+    """A readable reason (and what to do) instead of a bare status code."""
+    where = f"step {step} of the analysis, after {seconds:.0f} s and 3 attempts"
+    if isinstance(exc, AIError):
+        text = re.sub(r"<[^>]+>", " ", exc.body)  # gateways answer with HTML error pages
+        text = re.sub(r"\s+", " ", text).strip()[:300]
+        head = f"The AI endpoint answered HTTP {exc.status} {STATUS_TEXT.get(exc.status, '')}".rstrip() + f" ({where})."
+        hint = {
+            504: " A gateway / proxy in front of the model gave up waiting for the answer. Keep 'Stream answers' on "
+                 "(Settings › AI analyst), raise the proxy's timeout if you run one (e.g. LiteLLM / nginx), or use a faster "
+                 "model; fewer 'Max tool rounds' also shortens the analysis.",
+            524: " Cloudflare in front of the endpoint cut the request off after 100 s - keep 'Stream answers' on.",
+            502: " The gateway could not reach the model (provider down or overloaded) - try again later.",
+            503: " The provider is overloaded or in maintenance - try again later.",
+            529: " The provider is overloaded - try again later.",
+            429: " Rate limit or quota reached at the provider - wait, or check your plan / credits.",
+            401: " The API key was refused (Settings › AI analyst).",
+            403: " The API key may not use this model, or the account has no credits.",
+            404: " Wrong base URL or model name (Settings › AI analyst).",
+            413: " The request was too large for the endpoint - lower 'Max tool rounds'.",
+        }.get(exc.status, "")
+        return head + hint + (f" Details: {text}" if text else "")
+    if isinstance(exc, httpx.TimeoutException):
+        return (f"No answer from the AI endpoint within {s.ai_timeout} s ({where}). Raise 'Request timeout' "
+                "(Settings › AI analyst) or keep 'Stream answers' on.")
+    return f"The AI endpoint could not be reached ({where}): {type(exc).__name__}: {exc}"
+
+
 class Analyst:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._no_stream = False  # the endpoint rejected streaming once: use normal requests
 
     async def _system_prompt(self) -> str:
         rows = await db.pool().fetch("SELECT source, count(*) n FROM events WHERE ts > now() - interval '24 hours' GROUP BY 1 ORDER BY 2 DESC")
@@ -286,13 +333,80 @@ class Analyst:
                 .replace("{style}", time_style(self.settings)).replace("{zone}", self.settings.timezone or "UTC")
                 .replace("{volumes}", volumes))
 
-    async def _complete(self, client: httpx.AsyncClient, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        body = {"model": self.settings.ai_model, "messages": messages, "tools": TOOLS, "tool_choice": "auto", "max_tokens": 16000}
-        r = await client.post("chat/completions", json=body)
-        if r.status_code >= 400:
-            raise RuntimeError(f"AI endpoint returned HTTP {r.status_code}: {r.text[:500]}")
-        data = r.json()
-        return data["choices"][0]["message"]
+    async def _complete(self, client: httpx.AsyncClient, messages: list[dict[str, Any]], tools: bool = True,
+                        step: int = 1) -> dict[str, Any]:
+        """One model call (streamed when possible), retried on overload / gateway errors and timeouts."""
+        body: dict[str, Any] = {"model": self.settings.ai_model, "messages": messages, "max_tokens": 16000}
+        if tools:
+            body.update(tools=TOOLS, tool_choice="auto")
+        started = time.monotonic()
+        last: Exception | None = None
+        for attempt in range(3):
+            if attempt:
+                await asyncio.sleep(last.retry_after if isinstance(last, AIError) and last.retry_after else 5 * 4 ** (attempt - 1))
+            try:
+                if self.settings.ai_stream and not self._no_stream:
+                    try:
+                        return await self._stream(client, body)
+                    except AIError as exc:
+                        if exc.status in (400, 404, 415, 422) and "stream" in exc.body.lower():
+                            log.info("AI endpoint does not stream (%s) - using normal requests", exc.status)
+                            self._no_stream = True
+                        else:
+                            raise
+                r = await client.post("chat/completions", json=body)
+                if r.status_code >= 400:
+                    raise AIError(r.status_code, r.text, r.headers.get("retry-after"))
+                return r.json()["choices"][0]["message"]
+            except AIError as exc:
+                last = exc
+                if exc.status not in RETRY_STATUS:
+                    break
+            except (httpx.TimeoutException, httpx.RemoteProtocolError, httpx.ConnectError) as exc:
+                last = exc
+            log.warning("AI request (step %d, attempt %d) failed: %s", step, attempt + 1, last)
+        raise RuntimeError(explain_ai_error(last, time.monotonic() - started, step, self.settings)) from last
+
+    async def _stream(self, client: httpx.AsyncClient, body: dict[str, Any]) -> dict[str, Any]:
+        """OpenAI-compatible server-sent events: content and tool call fragments are put back together."""
+        content: list[str] = []
+        calls: dict[int, dict[str, Any]] = {}
+        async with client.stream("POST", "chat/completions", json={**body, "stream": True}) as r:
+            if r.status_code >= 400:
+                raise AIError(r.status_code, (await r.aread()).decode(errors="replace"), r.headers.get("retry-after"))
+            if "text/event-stream" not in r.headers.get("content-type", "") and "stream" not in r.headers.get("content-type", ""):
+                data = json.loads(await r.aread())  # the endpoint ignored "stream": a normal answer
+                return data["choices"][0]["message"]
+            async for line in r.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload)
+                except ValueError:
+                    continue
+                if chunk.get("error"):
+                    err = chunk["error"]
+                    raise AIError(int(err.get("code") or 500) if str(err.get("code", "")).isdigit() else 500,
+                                  json.dumps(err)[:500])
+                for choice in chunk.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    if delta.get("content"):
+                        content.append(delta["content"])
+                    for tc in delta.get("tool_calls") or []:
+                        cur = calls.setdefault(int(tc.get("index", len(calls))), {"id": None, "name": "", "arguments": ""})
+                        cur["id"] = tc.get("id") or cur["id"]
+                        fn = tc.get("function") or {}
+                        cur["name"] += fn.get("name") or ""
+                        cur["arguments"] += fn.get("arguments") or ""
+        msg: dict[str, Any] = {"role": "assistant", "content": "".join(content)}
+        if calls:
+            msg["tool_calls"] = [{"id": c["id"] or f"call_{i}", "type": "function",
+                                  "function": {"name": c["name"], "arguments": c["arguments"] or "{}"}}
+                                 for i, c in sorted(calls.items())]
+        return msg
 
     async def chat(self, history: list[dict[str, Any]], user_message: str) -> list[dict[str, Any]]:
         """Run the agent loop. ``history`` holds earlier user/assistant/tool messages (no system prompt).
@@ -305,8 +419,8 @@ class Analyst:
         base = self.settings.ai_base_url.rstrip("/") + "/"
         headers = {"Authorization": f"Bearer {self.settings.ai_api_key}"}
         async with httpx.AsyncClient(base_url=base, headers=headers, timeout=self.settings.ai_timeout) as client:
-            for _ in range(self.settings.ai_max_tool_rounds):
-                msg = await self._complete(client, [system, *history, *new])
+            for step in range(1, self.settings.ai_max_tool_rounds + 1):
+                msg = await self._complete(client, [system, *history, *new], step=step)
                 assistant: dict[str, Any] = {"role": "assistant", "content": msg.get("content") or ""}
                 calls = msg.get("tool_calls") or []
                 if calls:
@@ -324,17 +438,21 @@ class Analyst:
                     result = await run_tool(c["function"]["name"], args if isinstance(args, dict) else {})
                     new.append({"role": "tool", "tool_call_id": c["id"], "content": result})
             # out of tool rounds: ask for a final answer without tools
-            body = {"model": self.settings.ai_model, "max_tokens": 16000,
-                    "messages": [system, *history, *new, {"role": "user", "content": "Tool budget exhausted. Give your final answer now based on what you found."}]}
-            r = await client.post("chat/completions", json=body)
-            r.raise_for_status()
-            new.append({"role": "assistant", "content": r.json()["choices"][0]["message"].get("content") or ""})
+            final = await self._complete(client, [system, *history, *new, {"role": "user", "content":
+                                         "Tool budget exhausted. Give your final answer now based on what you found."}],
+                                         tools=False, step=self.settings.ai_max_tool_rounds + 1)
+            new.append({"role": "assistant", "content": final.get("content") or ""})
             return new
 
-    async def analyse(self, hours: int = 24) -> str:
+    async def analyse(self, hours: int = 24, data: dict[str, Any] | None = None) -> str:
         prompt = (f"Perform a full security review of the last {hours} hours. Check open alerts, blocked and allowed traffic, "
                   "inbound exposure, outbound anomalies from internal hosts, DNS, web server, IDS, CrowdSec, Zenarmor, Q-Feeds, "
                   "authentication and system health. Report: 1) executive summary, 2) findings ranked by severity with evidence, "
                   "3) recommended actions, 4) blind spots (missing log sources).")
+        if data:
+            # the report's numbers up front: the model only needs tools to dig into what stands out (fewer, shorter
+            # requests - long agent runs are what gateways time out on)
+            prompt += ("\n\nThe report data for this period is already collected (JSON below). Base the review on it and "
+                       "use the tools only to investigate specific findings in more depth.\n\n" + _dump(data, 30000))
         msgs = await self.chat([], prompt)
         return msgs[-1].get("content") or ""
