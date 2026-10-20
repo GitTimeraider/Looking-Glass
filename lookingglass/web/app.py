@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import math
 import re
 from datetime import datetime
 import logging
@@ -743,7 +744,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             names.split(","), secs, step, prefix)
         out: dict[str, dict[str, list]] = {}
         for r in rows:
-            out.setdefault(r["name"], {}).setdefault(r["labels"], []).append([r["t"].isoformat(), round(r["v"], 3)])
+            if r["v"] is not None and math.isfinite(r["v"]):  # NaN / inf cannot be sent as JSON
+                out.setdefault(r["name"], {}).setdefault(r["labels"], []).append([r["t"].isoformat(), round(r["v"], 3)])
         return out
 
     # ----------------------------------------------------------- hardware ---
@@ -890,10 +892,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         docker_url = str(payload.get("docker_url") or "").strip().rstrip("/") or None
         if docker_url and not docker_url.startswith(("http://", "https://")):
             raise HTTPException(400, "Docker URL must start with http:// or https://")
+        nut = str(payload.get("nut") or "").strip()[:200]
+        if nut and nut.lower() != "off" and not re.fullmatch(r"(?:[\w.-]+@)?[\w.\-\[\]:]*", nut):
+            raise HTTPException(400, "NUT: use ups@host:port, host, or off")
         return {"name": str(payload.get("name") or "Unraid").strip()[:60], "url": url,
                 "api_key": str(payload.get("api_key") or "").strip(), "verify_ssl": bool(payload.get("verify_ssl")),
                 "docker_url": docker_url, "collect_logs": bool(payload.get("collect_logs", True)),
-                "enabled": bool(payload.get("enabled", True))}
+                "enabled": bool(payload.get("enabled", True)), "nut": nut}
 
     @app.post("/api/unraid/servers")
     async def add_unraid(payload: dict = Body(...)):
@@ -901,8 +906,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if not v["api_key"]:
             raise HTTPException(400, "API key is required")
         sid = await db.pool().fetchval(
-            "INSERT INTO unraid_servers (name, url, api_key, verify_ssl, docker_url, collect_logs, enabled) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id", *{**v, "api_key": crypto.encrypt(v["api_key"])}.values())
+            "INSERT INTO unraid_servers (name, url, api_key, verify_ssl, docker_url, collect_logs, enabled, nut) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id", *{**v, "api_key": crypto.encrypt(v["api_key"])}.values())
         return {"id": sid}
 
     @app.put("/api/unraid/servers/{sid}")
@@ -910,7 +915,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         v = _validate_server(payload)
         await db.pool().execute(
             "UPDATE unraid_servers SET name = $2, url = $3, api_key = COALESCE(nullif($4, ''), api_key), verify_ssl = $5, "
-            "docker_url = $6, collect_logs = $7, enabled = $8 WHERE id = $1", sid,
+            "docker_url = $6, collect_logs = $7, enabled = $8, nut = $9 WHERE id = $1", sid,
             *{**v, "api_key": crypto.encrypt(v["api_key"]) if v["api_key"] else ""}.values())
         return {"ok": True}
 
@@ -926,7 +931,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if not v["api_key"] and payload.get("id"):
             v["api_key"] = crypto.decrypt(await db.pool().fetchval("SELECT api_key FROM unraid_servers WHERE id = $1",
                                                                   int(payload["id"])) or "")
-        return await unraid_test(v["url"], v["api_key"], v["verify_ssl"], v["docker_url"])
+        return await unraid_test(v["url"], v["api_key"], v["verify_ssl"], v["docker_url"], v["nut"])
 
     @app.get("/api/unraid/{sid}")
     async def unraid_overview(sid: int):

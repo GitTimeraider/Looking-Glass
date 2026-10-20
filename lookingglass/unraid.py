@@ -16,17 +16,19 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
 import ssl
 import struct
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
 import httpx
 import websockets
 
-from . import crypto, db
+from . import crypto, db, nut
 from . import unraid_storage as storage
 from .config import Settings
 from .detections import raise_alert
@@ -59,6 +61,8 @@ QUERIES: dict[str, str] = {
     } }""",
     # separate: on API <= 4.37.5 this runs smartctl on every disk (wakes them) - only sent when that is harmless
     "temps": """{ metrics { temperature { sensors { name type current { value status } warning critical } } } }""",
+    # CPU package temperature + power (hwmon / RAPL - never touches a disk); used when the sensor list is not read
+    "cpu_pkg": """{ info { cpu { packages { temp totalPower } } } }""",
     "metrics_basic": """{ metrics { cpu { percentTotal cpus { percentTotal } } memory { total used available percentTotal swapTotal swapUsed percentSwapTotal } } }""",
     "array": """{ array {
         state
@@ -99,9 +103,10 @@ class GraphQLError(Exception):
 
 def _num(v: Any) -> float | None:
     try:
-        return float(v)
+        f = float(v)
     except (TypeError, ValueError):
         return None
+    return f if math.isfinite(f) else None
 
 
 class UnraidClient:
@@ -195,6 +200,7 @@ class UnraidServerPoller:
         self.awake_history: list[bool] = []  # "every sleep-capable disk spins" for the last array readings
         self.api_version: str | None = None
         self.smart_done: dict[str, float] = {}
+        self.sensor_temps_at = 0.0  # last time the temperature sensor list was read
 
     @property
     def prefs(self) -> dict[str, Any]:
@@ -226,35 +232,39 @@ class UnraidServerPoller:
         self.status["sections"][key] = {"ok": False, "error": err}
         return None
 
+    async def step(self, name: str, fn: Callable[[], Awaitable[None]]) -> None:
+        """Run one part of a poll. An unexpected error (bad data, a bug) only stops that part and is shown on the
+        page (Unraid › Overview › Connection) and in the container log; connection errors stop the whole poll."""
+        try:
+            await fn()
+        except (httpx.HTTPError, OSError, GraphQLError):
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.exception("unraid %s: %s failed", self.name, name)
+            self.status["sections"][name] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+
     async def poll(self) -> None:
         p = max(20, self.settings.poll_interval)
         try:
             if self.due("info", 600):
-                d = await self.section("info", "info")
-                if d:
-                    await self.snap("info", d.get("info"))
-                    self.api_version = (((d.get("info") or {}).get("versions") or {}).get("core") or {}).get("api")
+                await self.step("info", self.poll_info)
             if self.due("metrics", p):
-                await self.poll_metrics()
+                await self.step("metrics", self.poll_metrics)
             if self.due("array", min(p, 60)):
-                await self.poll_array()
-            await self.poll_temps()
-            await self.poll_smart()
+                await self.step("array", self.poll_array)
+            await self.step("temps", self.poll_temps)
+            await self.step("smart", self.poll_smart)
             if self.due("docker", p):
-                await self.poll_docker()
+                await self.step("docker", self.poll_docker)
             if self.due("notifications", 120):
-                await self.poll_notifications()
+                await self.step("notifications", self.poll_notifications)
             if self.due("misc", 300):
-                for key in ("vms", "ups", "shares"):
-                    d = await self.section(key, key)
-                    if d is not None:
-                        await self.snap(key, d.get({"ups": "upsDevices"}.get(key, key)))
-                await self.check_ups()
+                await self.step("misc", self.poll_misc)
             if self.server.get("collect_logs") and self.due("logs", 120):
-                await self.poll_container_logs()
-                await self.poll_syslog()
+                await self.step("container_logs", self.poll_container_logs)
+                await self.step("syslog", self.poll_syslog)
             if self.due("docker_stats", max(p, 60)):
-                await (self.poll_docker_stats() if self.client.docker else self.poll_docker_stats_api())
+                await self.step("docker_stats", self.poll_stats)
             self.failures = 0
             self.status.update(ok=True, error=None, last=time.time())
         except (httpx.HTTPError, OSError, GraphQLError) as exc:
@@ -266,6 +276,53 @@ class UnraidServerPoller:
                                   f"unraid_down:{self.sid}", description=str(exc))
 
     # ------------------------------------------------------------ sections ---
+    async def poll_info(self) -> None:
+        d = await self.section("info", "info")
+        if d:
+            await self.snap("info", d.get("info"))
+            self.api_version = (((d.get("info") or {}).get("versions") or {}).get("core") or {}).get("api")
+
+    async def poll_misc(self) -> None:
+        for key in ("vms", "ups", "shares"):
+            d = await self.section(key, key)
+            if d is not None:
+                data = d.get({"ups": "upsDevices"}.get(key, key))
+                if key == "ups":
+                    data = (data or []) + await self.nut_ups(bool(data))
+                await self.snap(key, data)
+        await self.check_ups()
+
+    async def nut_ups(self, api_has_ups: bool) -> list[dict[str, Any]]:
+        """UPS from a NUT server (Unraid NUT plugin). Setting empty: try the Unraid host itself, but only when the
+        API reports no UPS and without complaining if nothing answers; 'off': never; otherwise that server."""
+        setting = str(self.server.get("nut") or "").strip()
+        if setting.lower() == "off" or (not setting and api_has_ups):
+            self.status["sections"].pop("nut", None)
+            return []
+        ups, host, port = nut.parse_target(setting, urlsplit(self.server["url"]).hostname)
+        try:
+            found = await nut.read_ups(host, port, ups)
+        except (OSError, ConnectionError, asyncio.TimeoutError) as exc:
+            if setting:
+                self.status["sections"]["nut"] = {"ok": False, "error": f"NUT {host}:{port}: {type(exc).__name__} {exc}"[:300]}
+            else:
+                self.status["sections"].pop("nut", None)
+            return []
+        self.status["sections"]["nut"] = {"ok": True, "variant": f"{host}:{port}"}
+        return found
+
+    async def poll_stats(self) -> None:
+        """CPU / memory per container: Docker API (socket proxy) when configured, else - or when that fails - the
+        Unraid API subscription."""
+        if self.client.docker:
+            try:
+                await self.poll_docker_stats()
+                return
+            except (httpx.HTTPError, OSError, ValueError) as exc:
+                hint = " - the socket proxy needs CONTAINERS=1" if "403" in str(exc) else ""
+                self.status["sections"]["docker_api"] = {"ok": False, "error": f"Docker API: {type(exc).__name__}: {exc}{hint}"[:300]}
+        await self.poll_docker_stats_api()
+
     async def poll_metrics(self) -> None:
         d = await self.section("metrics", "metrics", "metrics_basic")
         if not d:
@@ -287,7 +344,24 @@ class UnraidServerPoller:
         for n in m.get("network") or []:
             if n.get("name") and _num(n.get("rxSec")) is not None:
                 rows.append(("unraid_net_rx_bps", f"{sid}:{n['name']}", round(_num(n["rxSec"]) * 8, 1)))
-                rows.append(("unraid_net_tx_bps", f"{sid}:{n['name']}", round(_num(n.get("txSec")) * 8, 1)))
+                rows.append(("unraid_net_tx_bps", f"{sid}:{n['name']}", round((_num(n.get("txSec")) or 0.0) * 8, 1)))
+        self.status["sections"]["network"] = (
+            {"ok": True} if m.get("network") else
+            {"ok": False, "error": "this Unraid API version reports no network metrics"
+                                   if self.status["sections"].get("metrics", {}).get("variant") == "metrics_basic"
+                                   else "no network interfaces reported"})
+        # the sensor list may be skipped (spun-down disks on older APIs): then keep at least the CPU package temperature
+        if time.time() - self.sensor_temps_at > 600 and not self.last_run.get("cpu_pkg_unsupported"):
+            d = await self.section("cpu_pkg", "cpu_pkg")
+            if d is None:  # older API without it: not an error, just not available
+                self.status["sections"].pop("cpu_pkg", None)
+                self.last_run["cpu_pkg_unsupported"] = time.time()
+            pkgs = (((d or {}).get("info") or {}).get("cpu") or {}).get("packages") or {}
+            for i, t in enumerate(pkgs.get("temp") or []):
+                if _num(t) is not None and _num(t) > 0:
+                    rows.append(("unraid_temp", f"{sid}:CPU package{f' {i}' if i else ''}", _num(t)))
+            if _num(pkgs.get("totalPower")) is not None:
+                rows.append(("unraid_cpu_power_w", sid, _num(pkgs["totalPower"])))
         await db.add_metrics(rows)
 
     async def poll_temps(self) -> None:
@@ -305,6 +379,8 @@ class UnraidServerPoller:
             return
         sensors = ((d.get("metrics") or {}).get("temperature") or {}).get("sensors") or []
         await self.snap("temps", {"sensors": sensors})
+        if sensors:
+            self.sensor_temps_at = time.time()
         sid, rows = str(self.sid), []
         for s in sensors:
             v = _num((s.get("current") or {}).get("value"))
@@ -741,7 +817,8 @@ def _sig(s: dict[str, Any]) -> tuple:
     return (s["url"], s["api_key"], s["verify_ssl"], s.get("docker_url"), s.get("collect_logs"), s["name"])
 
 
-async def test_connection(url: str, api_key: str, verify_ssl: bool, docker_url: str | None) -> dict[str, Any]:
+async def test_connection(url: str, api_key: str, verify_ssl: bool, docker_url: str | None,
+                          nut_target: str = "") -> dict[str, Any]:
     client = UnraidClient({"url": url, "api_key": crypto.encrypt(api_key) if api_key else "", "verify_ssl": verify_ssl,
                            "docker_url": docker_url})
     out: dict[str, Any] = {}
@@ -754,7 +831,20 @@ async def test_connection(url: str, api_key: str, verify_ssl: bool, docker_url: 
         try:
             r = await client.docker.get("/version")
             out["docker"] = {"ok": r.status_code == 200, "version": r.json().get("Version") if r.status_code == 200 else r.text[:200]}
+            if r.status_code == 200:  # stats need the container list too (socket proxy: CONTAINERS=1)
+                c = await client.docker.get("/containers/json")
+                if c.status_code != 200:
+                    out["docker"] = {"ok": False, "error": f"version OK, but listing containers gives HTTP {c.status_code}"
+                                                           f"{' - set CONTAINERS=1 on the socket proxy' if c.status_code == 403 else ''}"}
         except (httpx.HTTPError, OSError, ValueError) as exc:
             out["docker"] = {"ok": False, "error": str(exc)}
+    if nut_target.strip().lower() not in ("", "off"):
+        ups, host, port = nut.parse_target(nut_target, urlsplit(url).hostname)
+        try:
+            found = await nut.read_ups(host, port, ups)
+            out["nut"] = {"ok": bool(found), "ups": [f"{u['name']} ({u['model']}): {u['status']}" for u in found],
+                          **({} if found else {"error": "connected, but no UPS listed"})}
+        except (OSError, ConnectionError, asyncio.TimeoutError) as exc:
+            out["nut"] = {"ok": False, "error": f"{host}:{port}: {type(exc).__name__} {exc}"}
     await client.close()
     return out

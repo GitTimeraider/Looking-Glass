@@ -114,6 +114,7 @@
     <input name="url" placeholder="URL, e.g. http://192.168.1.10" required>
     <input name="api_key" placeholder="API key" autocomplete="off">
     <input name="docker_url" placeholder="Optional: Docker API (socket proxy) e.g. http://192.168.1.10:2375">
+    <input name="nut" placeholder="UPS via NUT: empty = auto, off, or ups@192.168.1.10:3493" title="UPS managed by the NUT plugin (Network UPS Tools). Empty: when the Unraid API knows no UPS, Looking Glass asks NUT on the Unraid host itself (port 3493). Or enter [upsname@]host[:port], or off.">
     <label class="chk"><input type="checkbox" name="verify_ssl"> verify TLS certificate</label>
     <label class="chk"><input type="checkbox" name="collect_logs" checked> collect container &amp; system logs</label>
     <label class="chk"><input type="checkbox" name="enabled" checked> enabled</label>
@@ -144,7 +145,11 @@
       <li>URL: the address you use for the Unraid web UI (e.g. <code>http://192.168.1.10</code> or <code>https://tower.local</code>).</li>
       <li>CPU / memory per container comes from the Unraid API itself (API 4.29 or newer). Only on older versions:
         run the <code>docker-socket-proxy</code> container on Unraid (see <code>examples/docker-compose.unraid-socket-proxy.yml</code>)
-        and enter it as Docker API. Never expose the raw Docker socket.</li>
+        and enter it as Docker API (the proxy needs <code>CONTAINERS=1</code>). Never expose the raw Docker socket.</li>
+      <li><b>UPS with the NUT plugin</b>: the Unraid API only knows Unraid's built-in UPS service. Leave the NUT field
+        empty and Looking Glass asks NUT on the Unraid host (port 3493) when the API reports no UPS. If that does not work,
+        in Unraid open <i>Settings › NUT Settings</i>, set <i>Network Mode</i> / <i>Listen</i> so other machines may connect
+        (netserver, port 3493), and enter <code>upsname@unraid-ip</code> here; <b>Test connection</b> checks it.</li>
     </ol>
   </details>
 </div>
@@ -303,7 +308,7 @@ loadPurge();
 /* ---------- Unraid servers ---------- */
 const f = document.getElementById("f"), msg = (t, ok) => { const m = document.getElementById("msg"); m.innerHTML = t; m.className = "small " + (ok ? "ok-msg" : "err"); };
 function payload() {
-  return { id: f.id.value ? Number(f.id.value) : null, name: f.name.value, url: f.url.value, api_key: f.api_key.value, docker_url: f.docker_url.value,
+  return { id: f.id.value ? Number(f.id.value) : null, name: f.name.value, url: f.url.value, api_key: f.api_key.value, docker_url: f.docker_url.value, nut: f.nut.value,
            verify_ssl: f.verify_ssl.checked, collect_logs: f.collect_logs.checked, enabled: f.enabled.checked };
 }
 function resetForm() { f.reset(); f.id.value = ""; document.getElementById("save").textContent = "Add server"; document.getElementById("form-title").textContent = "Add Unraid server"; document.getElementById("cancel").hidden = true; f.api_key.placeholder = "API key"; }
@@ -317,7 +322,7 @@ async function load() {
   document.querySelectorAll("[data-edit]").forEach(a => a.onclick = e => {
     e.preventDefault(); const r = rows.find(x => x.id === Number(a.dataset.edit));
     f.id.value = r.id; f.name.value = r.name; f.url.value = r.url; f.api_key.value = ""; f.api_key.placeholder = "API key (leave empty to keep " + r.api_key + ")";
-    f.docker_url.value = r.docker_url || ""; f.verify_ssl.checked = r.verify_ssl; f.collect_logs.checked = r.collect_logs; f.enabled.checked = r.enabled;
+    f.docker_url.value = r.docker_url || ""; f.nut.value = r.nut || ""; f.verify_ssl.checked = r.verify_ssl; f.collect_logs.checked = r.collect_logs; f.enabled.checked = r.enabled;
     document.getElementById("save").textContent = "Save changes"; document.getElementById("form-title").textContent = "Edit " + r.name; document.getElementById("cancel").hidden = false;
   });
   document.querySelectorAll("[data-del]").forEach(a => a.onclick = async e => {
@@ -337,9 +342,10 @@ document.getElementById("test").onclick = async () => {
   msg(`<span class="spinner"></span> testing…`, true);
   try {
     const r = await LG.api("/api/unraid/test", { method: "POST", body: payload() });
-    const g = r.graphql || {}, d = r.docker;
+    const g = r.graphql || {}, d = r.docker, n = r.nut;
     msg(`GraphQL API: ${g.ok ? `OK – ${LG.esc((g.info || {}).os?.hostname || "")} Unraid ${LG.esc((g.info || {}).versions?.core?.unraid || "")}` : "FAILED – " + LG.esc(g.error)}` +
-        (d ? `<br>Docker API: ${d.ok ? "OK – Docker " + LG.esc(d.version) : "FAILED – " + LG.esc(d.error || d.version)}` : ""), g.ok && (!d || d.ok));
+        (d ? `<br>Docker API: ${d.ok ? "OK – Docker " + LG.esc(d.version) : "FAILED – " + LG.esc(d.error || d.version)}` : "") +
+        (n ? `<br>NUT: ${n.ok ? "OK – " + n.ups.map(LG.esc).join("; ") : "FAILED – " + LG.esc(n.error)}` : ""), g.ok && (!d || d.ok) && (!n || n.ok));
   } catch (err) { msg(LG.esc(err.message)); }
 };
 document.getElementById("cancel").onclick = resetForm;
