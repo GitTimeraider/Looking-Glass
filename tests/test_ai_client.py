@@ -120,3 +120,24 @@ def test_invalid_tool_arguments_become_empty_object():
     assert ai._valid_json('{"query": "SELECT') == "{}"
     assert ai._valid_json('{"a": 1}') == '{"a": 1}'
     assert ai._valid_json(None) == "{}"
+
+
+def test_no_empty_text_next_to_tool_calls():
+    """Anthropic (behind OmniRoute / LiteLLM) refuses empty text blocks with HTTP 400."""
+    sent = []
+
+    def handler(req):
+        sent.append(json.loads(req.content)["messages"])
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+
+    history = [{"role": "user", "content": "x"},
+               {"role": "assistant", "content": "", "tool_calls": [
+                   {"id": "c1", "type": "function", "function": {"name": "list_alerts", "arguments": "{}"}}]},
+               {"role": "tool", "tool_call_id": "c1", "content": ""}]
+
+    async def main():
+        async with httpx.AsyncClient(base_url="https://ai.example/v1/", transport=httpx.MockTransport(handler)) as client:
+            await Analyst(Settings(**{**S.__dict__, "ai_stream": False}))._complete(client, history)
+    asyncio.run(main())
+    assert sent[0][1]["content"] is None and sent[0][2]["content"] == "(no output)"
+    assert history[1]["content"] == ""  # the stored conversation is left as it is

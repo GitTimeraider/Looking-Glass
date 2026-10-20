@@ -295,6 +295,16 @@ def _valid_json(arguments: Any) -> str:
     return json.dumps(value) if isinstance(value, dict) else "{}"
 
 
+def _clean_message(m: dict[str, Any]) -> dict[str, Any]:
+    """No empty text next to tool calls: gateways that translate to Anthropic (OmniRoute, LiteLLM ...) send it on as an
+    empty text block, which the API refuses with HTTP 400 ("text content blocks must be non-empty")."""
+    if m.get("role") == "assistant" and m.get("tool_calls") and not m.get("content"):
+        return {**m, "content": None}
+    if m.get("role") == "tool" and not m.get("content"):
+        return {**m, "content": "(no output)"}
+    return m
+
+
 def plain_tool_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The conversation with tool calls and results written out as ordinary assistant / user messages."""
     out: list[dict[str, Any]] = []
@@ -372,7 +382,8 @@ class Analyst:
     async def _complete(self, client: httpx.AsyncClient, messages: list[dict[str, Any]], tools: bool = True,
                         step: int = 1) -> dict[str, Any]:
         """One model call (streamed when possible), retried on overload / gateway errors and timeouts."""
-        body: dict[str, Any] = {"model": self.settings.ai_model, "messages": messages, "max_tokens": 16000}
+        body: dict[str, Any] = {"model": self.settings.ai_model, "messages": [_clean_message(m) for m in messages],
+                                "max_tokens": 16000}
         if tools:
             body.update(tools=TOOLS, tool_choice="auto")
         started = time.monotonic()
