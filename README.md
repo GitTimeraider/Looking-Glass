@@ -106,17 +106,6 @@ and also teaches Looking Glass (repeated ones become a mute / lower suggestion).
 similar…**. **Trusted** on the Devices page marks a device as known: it is never counted as "new device" in attack
 chains (it does not silence real alerts about the device).
 
-### New devices and private (randomized) MAC addresses
-
-Phones and laptops use a *private* Wi-Fi MAC address (second character 2, 6, A or E - marked **private** on the
-Devices page) and many change it per network or regularly. Every new MAC is a device Looking Glass has never seen, so
-by default (*Settings › Data & detection › New device alerts: smart*) a private MAC first waits up to 10 minutes for
-its DHCP name: if a known device has that name, it is treated as the same device (no alert, the trusted mark and notes
-are copied, the Devices page shows "= old MAC"). Other choices: *all*, *no-random* (never for private MACs) and *off*.
-To stop the changes at the source, give your own devices a fixed private address: iPhone › Settings › Wi-Fi › (i) ›
-Private Wi-Fi Address: **Fixed**; Android › Wi-Fi › network › Privacy: **Use randomized MAC** (not "non-persistent");
-Windows › Wi-Fi › Random hardware addresses: **On** (not "Change daily").
-
 ### Behaviour & machine learning
 
 *Settings › Behaviour & ML* - every check has its own switch, and **Never analyse these devices** (IPs, CIDRs, MACs)

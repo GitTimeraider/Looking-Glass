@@ -53,7 +53,6 @@ class Settings(BaseSettings):
     timezone: str = "UTC"
     time_format: str = "24h"
     dns_ignore_domains: str = ""
-    new_device_alerts: str = "smart"
     # behaviour & anomaly detection (Settings › Behaviour & ML)
     behavior_enabled: bool = True
     behavior_exclude: str = ""

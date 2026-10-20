@@ -27,7 +27,6 @@
 {% block scripts %}
 <script>
 let devs = [], show = "all";
-const privateMac = mac => /^.[26ae]/i.test(mac || "");
 LG.seg(document.getElementById("show"), show, v => { show = v; render(); });
 const count = (arr, f) => Object.entries(arr.reduce((a, x) => { const k = f(x) || "?"; a[k] = (a[k] || 0) + 1; return a; }, {})).sort((a, b) => b[1] - a[1]);
 async function load() {
@@ -53,9 +52,7 @@ function render() {
   LG.table("#list", [
     {k: "online", l: "", f: v => `<span class="dot ${v ? "ok" : ""}" title="${v ? "online" : "offline"}"></span>`},
     {k: "hostname", l: "Name", f: (v, r) => `<b>${LG.esc(v || "–")}</b>${v && r.name_source ? ` <span class="small muted" title="${LG.esc(NAME_SRC[r.name_source] || r.name_source)}">${LG.esc(r.name_source === "manual" ? "✎" : r.name_source)}</span>` : ""}${r.notes ? `<div class="small muted">${LG.esc(r.notes)}</div>` : ""}`},
-    {k: "ip", l: "IP", f: LG.ip}, {k: "mac", l: "MAC", f: (v, r) => `<span class="mono small">${LG.esc(v)}</span>` +
-      (privateMac(v) ? ` <span class="pill" title="Private (randomized) Wi-Fi address: phones and laptops may change it per network or regularly">private</span>` : "") +
-      (r.same_as ? `<div class="small muted" title="Recognised by name: the private MAC of this device changed">= ${LG.esc(r.same_as)}</div>` : "")},
+    {k: "ip", l: "IP", f: LG.ip}, {k: "mac", l: "MAC", f: v => `<span class="mono small">${LG.esc(v)}</span>`},
     {k: "vendor", l: "Vendor"}, {k: "interface", l: "Interface"},
     {k: "conn_where", l: "Connected to", f: (v, r) => v ? `${LG.esc(v)}${r.conn_signal ? `<div class="small muted">${r.conn_signal} dBm</div>` : ""}` : ""},
     {k: "lease_type", l: "Lease", f: (v, r) => `${LG.esc(v || "")}${r.lease_expires ? `<div class="small muted">${LG.esc(r.lease_expires)}</div>` : ""}`},
