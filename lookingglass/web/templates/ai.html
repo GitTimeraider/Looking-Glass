@@ -45,17 +45,12 @@ document.getElementById("presets").innerHTML = PRESETS.map(p => `<button class="
 document.querySelectorAll("#presets button").forEach(b => b.onclick = () => send(b.textContent));
 
 function renderMessages(msgs) {
-  msgsEl.innerHTML = msgs.map(m => {
+  // only the questions and the final answers: the analyst's interim notes and its tool calls (queries) are left out
+  msgsEl.innerHTML = msgs.map((m, i) => {
     if (m.role === "user") return `<div class="msg user">${LG.esc(m.content)}</div>`;
-    if (m.role === "tool") return "";
-    let html = "";
-    if (m.content) html += `<div class="msg assistant">${LG.md(m.content)}</div>`;
-    for (const c of m.tool_calls || []) {
-      let args = c.function.arguments; try { args = JSON.stringify(JSON.parse(args), null, 1); } catch (e) {}
-      const res = msgs.find(x => x.role === "tool" && x.tool_call_id === c.id);
-      html += `<details class="msg tool"><summary>🔧 ${LG.esc(c.function.name)} ${LG.esc(args.length > 120 ? args.slice(0, 120) + "…" : args)}</summary><pre>${LG.esc(args)}</pre>${res ? `<pre>${LG.esc(res.content.slice(0, 5000))}</pre>` : ""}</details>`;
-    }
-    return html;
+    const next = msgs[i + 1];
+    const final = m.role === "assistant" && m.content && !(m.tool_calls || []).length && (!next || next.role === "user");
+    return final ? `<div class="msg assistant">${LG.md(m.content)}</div>` : "";
   }).join("");
   msgsEl.scrollTop = msgsEl.scrollHeight;
 }
