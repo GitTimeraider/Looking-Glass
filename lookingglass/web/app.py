@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import re
 from datetime import datetime
@@ -153,12 +154,14 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         }
 
     @app.get("/api/events")
-    async def events(request: Request, source: str | None = None, ip: str | None = None, action: str | None = None,
+    async def events(request: Request, source: str | None = None, ip: str | None = None, src: str | None = None,
+                     dst: str | None = None, action: str | None = None,
                      q: str | None = None, hours: float = Query(24, gt=0), limit: int = Query(100, ge=1, le=1000),
                      offset: int = Query(0, ge=0), min_severity: int | None = Query(None, ge=0, le=7),
                      start: str | None = None, end: str | None = None):
         """Event search. Besides the form fields every dashboard click-through filter is accepted:
         program, host, domain, user, port, proto, iface, direction, country, start/end (ISO time) and
+        ``ip`` (either side) / ``src`` / ``dst``: comma separated IPs or CIDRs;
         ``d_<key>=<value>`` for a key inside the event's JSON data (``none`` matches an empty value)."""
         where: list[str] = []
         args: list[Any] = []
@@ -181,11 +184,21 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             where.append(f"ts > now() - make_interval(secs => {arg(hours * 3600)})")
         if source:
             where.append(f"source = ANY({arg(source.split(','))}::text[])")
-        if ip:
-            ip = ip.strip()
-            op = "<<=" if "/" in ip else "="
-            a = arg(ip)
-            where.append(f"(src_ip {op} {a}::inet OR dst_ip {op} {a}::inet)")
+        def nets(value: str, label: str) -> list[str]:
+            out = []
+            for part in re.split(r"[,\s]+", value.strip()):
+                if not part:
+                    continue
+                try:
+                    out.append(str(ipaddress.ip_network(part, strict=False)))
+                except ValueError as exc:
+                    raise HTTPException(400, f"{label}: '{part}' is not an IP address or CIDR") from exc
+            return out
+        for value, cols, label in ((ip, ("src_ip", "dst_ip"), "IP"), (src, ("src_ip",), "Source IP"),
+                                   (dst, ("dst_ip",), "Destination IP")):
+            if value and value.strip():
+                a = arg(nets(value, label))
+                where.append("(" + " OR ".join(f"{c} <<= ANY({a}::inet[])" for c in cols) + ")")
         if action:  # "a,b" = any of; "http_4*" = prefix
             acts = action.split(",")
             exact, prefixes = [a for a in acts if not a.endswith("*")], [a[:-1] + "%" for a in acts if a.endswith("*")]

@@ -6,7 +6,9 @@
     <option value="">all sources</option>
     {% for s in ["firewall","nginx","unbound","crowdsec","suricata","zenarmor","qfeeds","auth","vpn","dhcp","system","unraid","docker"] %}<option>{{ s }}</option>{% endfor %}
   </select>
-  <input name="ip" placeholder="IP or CIDR">
+  <input name="ip" placeholder="any IP (source or destination)" title="IP or CIDR, several: comma separated">
+  <input name="src" placeholder="source IP" title="Source IP or CIDR, several: comma separated">
+  <input name="dst" placeholder="destination IP" title="Destination IP or CIDR, several: comma separated">
   <input name="action" placeholder="action (block, login_failed, …)">
   <input name="q" placeholder="text / domain / user" style="flex:1">
   <select name="min_severity">
@@ -14,7 +16,12 @@
   </select>
   <select name="hours">
     <option value="1">1 hour</option><option value="6">6 hours</option><option value="24" selected>24 hours</option><option value="168">7 days</option><option value="720">30 days</option><option value="2160">90 days</option>
+    <option value="custom">custom…</option>
   </select>
+  <span class="range" id="custom-range" hidden>
+    <label class="small muted">from <input type="date" id="d-from"><input id="h-from" class="hm" placeholder="00:00"></label>
+    <label class="small muted">until <input type="date" id="d-until" title="empty = now"><input id="h-until" class="hm" placeholder="now"></label>
+  </span>
   <button type="submit">Search</button>
 </form>
 <div class="chips" id="chips"></div>
@@ -26,26 +33,66 @@ const form = document.getElementById("f");
 const qs = LG.qs();
 // filters that came from a dashboard click and have no form field: shown as removable chips
 const LABELS = { program: "program", host: "host", domain: "domain", user: "user", port: "port", proto: "protocol",
-                 iface: "interface", direction: "direction", country: "country", start: "from", end: "until" };
+                 iface: "interface", direction: "direction", country: "country" };
 const extra = {};
+/* custom time range: a date picker + a time field in the 24 / 12 hour format of Settings › Display (a browser
+   date-time field would follow the browser's language instead); sent as ISO (UTC) start / end */
+const $ = id => document.getElementById(id);
+const pad = n => String(n).padStart(2, "0");
+const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const hm = d => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", ...LG.hc() });
+function setRange(which, iso) { const d = new Date(iso); $("d-" + which).value = ymd(d); $("h-" + which).value = hm(d); }
+function parseTime(t) {  // "14:05", "14.05", "2:05 pm", "9" -> [hours, minutes] or null
+  const m = String(t || "").trim().toLowerCase().match(/^(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?$/);
+  if (!m) return null;
+  let h = Number(m[1]); const min = Number(m[2] || 0);
+  if (m[3]) { if (h < 1 || h > 12) return null; h = (h % 12) + (m[3] === "pm" ? 12 : 0); }
+  return h < 24 && min < 60 ? [h, min] : null;
+}
+function rangeDate(which) {  // the chosen moment, null when empty, NaN when invalid
+  const day = $("d-" + which).value, t = $("h-" + which).value;
+  if (!day && !t) return null;
+  const tm = t ? parseTime(t) : [which === "until" ? 23 : 0, which === "until" ? 59 : 0];
+  if (!day || !tm) return NaN;
+  const [y, mo, d] = day.split("-").map(Number);
+  return new Date(y, mo - 1, d, tm[0], tm[1]);
+}
+function showRange() { $("custom-range").hidden = form.elements.hours.value !== "custom"; }
+form.elements.hours.onchange = () => {
+  if (form.elements.hours.value === "custom" && !$("d-from").value) {
+    setRange("from", Date.now() - 864e5); $("d-until").value = ""; $("h-until").value = "";
+  }
+  showRange();
+};
+if (qs.start || qs.end) {  // e.g. a click on a chart bar: that bar's time span
+  form.elements.hours.value = "custom";
+  if (qs.start) setRange("from", qs.start);
+  if (qs.end) setRange("until", qs.end);
+}
+showRange();
 for (const [k, v] of Object.entries(qs)) {
+  if (k === "start" || k === "end" || (k === "hours" && (qs.start || qs.end))) continue;
   if (k === "source" && v && ![...form.elements.source.options].some(o => o.value === v)) form.elements.source.add(new Option(v.replaceAll(",", " + "), v));
   if (form.elements[k]) form.elements[k].value = v;
   else if (k !== "limit" && k !== "offset") extra[k] = v;
 }
-if (qs.hours && !form.elements.hours.value) form.elements.hours.add(new Option(qs.hours + " hours", qs.hours, true, true));
+if (qs.hours && !qs.start && !qs.end && !form.elements.hours.value) form.elements.hours.add(new Option(qs.hours + " hours", qs.hours, true, true));
 let offset = 0, rows = [];
 
 function chips() {
   const el = document.getElementById("chips");
-  const fmt = (k, v) => (k === "start" || k === "end") ? LG.time(v) : v === "none" ? "(empty)" : v;
+  const fmt = (k, v) => v === "none" ? "(empty)" : v;
   el.innerHTML = Object.entries(extra).map(([k, v]) => `<span class="chip">${LG.esc(LABELS[k] || k.replace(/^d_/, ""))} = <b>${LG.esc(fmt(k, v))}</b><button type="button" data-k="${LG.esc(k)}" title="remove filter">×</button></span>`).join("");
   el.querySelectorAll("button").forEach(b => b.onclick = () => { delete extra[b.dataset.k]; chips(); search(false); });
-  form.elements.hours.disabled = !!(extra.start || extra.end);
 }
 function params() {
   const p = new URLSearchParams();
-  for (const el of form.elements) if (el.name && el.value && !el.disabled) p.set(el.name, el.value);
+  for (const el of form.elements) if (el.name && el.value && !el.disabled && !(el.name === "hours" && el.value === "custom")) p.set(el.name, el.value);
+  if (form.elements.hours.value === "custom") {
+    const a = rangeDate("from"), b = rangeDate("until");
+    if (a) p.set("start", a.toISOString());
+    if (b) p.set("end", b.toISOString());
+  }
   for (const [k, v] of Object.entries(extra)) p.set(k, v);
   return p;
 }
@@ -70,6 +117,12 @@ function render() {
   });
 }
 async function search(append) {
+  if (form.elements.hours.value === "custom") {
+    const a = rangeDate("from"), b = rangeDate("until"), say = t => { $("results").innerHTML = `<div class="empty">${t}</div>`; };
+    if (Number.isNaN(a) || Number.isNaN(b) || (a && isNaN(a)) || (b && isNaN(b)))
+      return say(`Enter a date and a time like ${window.LG_TIME_FORMAT === "12h" ? "2:05 PM" : "14:05"}.`);
+    if (a && b && a >= b) return say(`"From" must be before "until".`);
+  }
   if (!append) { offset = 0; rows = []; }
   const p = params(); p.set("limit", 200); p.set("offset", offset);
   history.replaceState(null, "", "?" + params().toString());
