@@ -307,3 +307,10 @@ details.card > summary { cursor: pointer; }
 
 /* list settings: one entry per line */
 .settings-form textarea.list-input { resize: vertical; white-space: pre-wrap; word-break: break-all; line-height: 1.5; min-height: 64px; }
+
+/* event search: custom time range */
+#f .range { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#f .range label { display: inline-flex; gap: 6px; align-items: center; }
+#f input[type=datetime-local] { color-scheme: dark; }
+#f .range input[type=date] { color-scheme: dark; }
+#f .range input.hm { width: 86px; }
