@@ -131,8 +131,17 @@ def create_es_app(settings: Settings, writer: EventWriter) -> Starlette:
                 op, meta = next(iter(action.items()))
             except (ValueError, StopIteration, AttributeError):
                 continue
-            idx = (meta or {}).get("_index") or default_idx
-            if op in ("index", "create", "update") and i < len(lines):
+            if not isinstance(meta, dict):
+                # not an action line ({"index": {...}}) - a document whose action line was lost or a stray object
+                if meta is not None:
+                    continue
+                meta = {}
+            idx = meta.get("_index") or default_idx
+            if op in ("index", "create", "update"):
+                while i < len(lines) and not lines[i].strip():  # tolerate blank lines between action and document
+                    i += 1
+                if i >= len(lines):
+                    break
                 doc_line = lines[i].strip()
                 i += 1
                 try:
@@ -148,7 +157,7 @@ def create_es_app(settings: Settings, writer: EventWriter) -> Starlette:
                         ev = zenarmor_record(family, doc, now, host=peer, program="zenarmor-es")
                         writer.put(ev)
                         stats["docs"] += 1
-            items.append({op: {"_index": idx, "_id": (meta or {}).get("_id") or "0", "_version": 1, "result": "created",
+            items.append({op: {"_index": idx, "_id": meta.get("_id") or "0", "_version": 1, "result": "created",
                                "_shards": {"total": 1, "successful": 1, "failed": 0}, "status": 201}})
         stats.update(bulk=stats["bulk"] + 1, last=time.time(), peer=peer)
         STATS.extra["zenarmor_es"] = dict(stats)
