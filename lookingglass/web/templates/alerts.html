@@ -10,6 +10,8 @@
   <button class="secondary" id="close">Close</button>
   <button class="secondary" id="close-fp" title="Close and remember it was a false positive - repeated ones become a suggestion to mute or lower them">Close as false positive</button>
   <button class="secondary" id="reopen">Re-open</button>
+  <button class="danger" id="del-sel" hidden title="Permanently delete the selected closed alerts">Delete selected</button>
+  <button class="danger" id="del-closed" hidden title="Permanently delete every closed alert">Delete all closed…</button>
   <input id="filter" placeholder="filter…" style="flex:1">
   <a class="btn secondary" href="/settings#filters" id="filters-link" title="Mute filters and severity rules: see, adjust, pause or remove them">Mute &amp; severity rules</a>
 </div>
@@ -19,7 +21,7 @@
 {% block scripts %}
 <script>
 let status = "open", alerts = [];
-LG.seg(document.getElementById("status"), status, v => { status = v; load(); });
+LG.seg(document.getElementById("status"), status, v => { status = v; delButtons(); load(); });
 async function load() {
   const [list, counts] = await Promise.all([LG.api(`/api/alerts?status=${status}`), LG.api("/api/alerts/counts")]);
   alerts = list;
@@ -76,16 +78,20 @@ function render() {
   const f = document.getElementById("filter").value.toLowerCase();
   const rows = alerts.filter(a => !f || JSON.stringify(a).toLowerCase().includes(f));
   const el = document.getElementById("list");
-  if (!rows.length) { el.innerHTML = `<div class="empty">No alerts.</div>`; return; }
+  if (!rows.length) { el.innerHTML = `<div class="empty">No alerts.</div>`; selButton(); return; }
   el.innerHTML = `<div class="table-wrap tall"><table><thead><tr><th></th><th>Sev</th><th>Alert</th><th>Rule</th><th>Source</th><th class="num">Count</th><th>Seen</th><th></th></tr></thead><tbody>` +
     rows.map(a => `<tr id="a${a.id}">
-      <td><input type="checkbox" value="${a.id}"></td><td>${LG.sev(a.severity)}</td>
+      <td><input type="checkbox" value="${a.id}" ${picked.has(a.id) ? "checked" : ""}></td><td>${LG.sev(a.severity)}</td>
       <td><b>${LG.esc(a.title)}</b>${a.muted_by ? `<div class="small muted-by">🔇 Muted by <a href="/settings?edit=${a.muted_by.id}#filters" title="Adjust this filter">${LG.esc(a.muted_by.name)} ✎</a>${a.muted_by.action === "close" ? " (created as closed)" : " - new alerts like this are not created"}</div>` : ""}${override(a)}${why(a)}<div class="small muted">${LG.esc(desc(a))}</div></td>
       <td class="small rule-cell">${LG.esc(a.rule)}</td><td>${a.src_ip ? LG.ip(a.src_ip) : `<span class="muted">–</span>`}${device(a)}</td><td class="num">${LG.num(a.count)}</td>
       <td class="small seen-cell" title="first ${LG.esc(LG.time(a.created_at))}">last ${LG.ago(a.last_seen)}<div class="muted">first ${LG.time(a.created_at)}</div><span class="pill">${LG.esc(a.status)}</span>${a.close_reason === "false_positive" ? `<span class="pill" title="Closed as false positive">false positive</span>` : ""}</td>
       <td><div class="actions">${eventsUrl(a) ? `<a class="btn secondary small" href="${eventsUrl(a)}" title="Show the events behind this alert">Events</a>` : ""}${a.muted_by ? `<button type="button" class="secondary small" data-unmute="${a.muted_by.id}" title="Delete the filter “${LG.esc(a.muted_by.name)}” so alerts like this are created again">Unmute</button>`
         : `<a class="btn secondary small" href="${muteUrl(a)}" title="Create a filter that stops alerts like this one">Mute similar…</a>`}<a class="btn secondary small" href="${muteUrl(a, "severity")}" title="Give alerts like this one your own severity from now on">Change severity…</a>{% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do.`)}" title="Let the AI analyst investigate this alert">Ask AI</a>{% endif %}</div></td>
     </tr>`).join("") + "</tbody></table></div>";
+  el.querySelectorAll("input[type=checkbox]").forEach(c => c.onchange = () => {
+    c.checked ? picked.add(Number(c.value)) : picked.delete(Number(c.value)); selButton();
+  });
+  selButton();
   el.querySelectorAll("[data-unmute]").forEach(b => b.onclick = () => unmute(Number(b.dataset.unmute)));
   el.querySelectorAll("[data-restore]").forEach(b => b.onclick = async () => {
     await LG.api(`/api/alerts/${b.dataset.restore}/restore-severity`, { method: "POST" }); load();
@@ -96,10 +102,19 @@ function render() {
   });
   if (location.hash) { const t = document.querySelector(location.hash.replace("#", "#a")); if (t) { t.scrollIntoView(); t.style.outline = "2px solid var(--accent)"; } }
 }
-function selected() { return [...document.querySelectorAll("#list input:checked")].map(i => Number(i.value)); }
+/* selection: kept across the automatic refresh; "Select all" selects every shown alert, or clears when all are */
+const picked = new Set();
+const boxes = () => [...document.querySelectorAll("#list input[type=checkbox]")];
+function selected() { return boxes().filter(i => i.checked).map(i => Number(i.value)); }
+function selButton() {
+  const all = boxes(), n = all.filter(i => i.checked).length, b = document.getElementById("sel-all");
+  b.textContent = all.length && n === all.length ? "Select none" : "Select all";
+  b.title = n ? `${n} selected` : "";
+}
 async function setStatus(s, reason) {
   const ids = selected(); if (!ids.length) return;
-  await LG.api("/api/alerts/status", { method: "POST", body: { ids, status: s, reason } }); load(); suggestions();
+  await LG.api("/api/alerts/status", { method: "POST", body: { ids, status: s, reason } });
+  ids.forEach(id => picked.delete(id)); load(); suggestions();
 }
 /* learned from "Close as false positive": suggest muting / lowering patterns that keep coming back */
 async function suggestions() {
@@ -121,8 +136,30 @@ document.getElementById("ack").onclick = () => setStatus("acknowledged");
 document.getElementById("close").onclick = () => setStatus("closed", "resolved");
 document.getElementById("close-fp").onclick = () => setStatus("closed", "false_positive");
 document.getElementById("reopen").onclick = () => setStatus("open");
-document.getElementById("sel-all").onclick = () => document.querySelectorAll("#list input[type=checkbox]").forEach(i => i.checked = !i.checked);
+document.getElementById("sel-all").onclick = () => {
+  const all = boxes(), on = !(all.length && all.every(i => i.checked));
+  all.forEach(i => { i.checked = on; on ? picked.add(Number(i.value)) : picked.delete(Number(i.value)); });
+  selButton();
+};
+/* deleting closed alerts (only in the Closed view; the server never deletes open / acknowledged ones) */
+const DEL_NOTE = "\n\nThis cannot be undone. A closed alert also remembers that you closed it: if the same thing happens " +
+                 "again it now comes back as a NEW open alert. To silence something for good, use Mute similar… instead.";
+function delButtons() {
+  document.getElementById("del-sel").hidden = document.getElementById("del-closed").hidden = status !== "closed";
+}
+document.getElementById("del-sel").onclick = async () => {
+  const ids = selected(); if (!ids.length) return alert("Select the closed alerts to delete first.");
+  if (!confirm(`Permanently delete ${ids.length} selected closed alert(s)?` + DEL_NOTE)) return;
+  await LG.api("/api/alerts/delete", { method: "POST", body: { ids } }); ids.forEach(id => picked.delete(id)); load();
+};
+document.getElementById("del-closed").onclick = async () => {
+  const { count } = await LG.api("/api/alerts/delete", { method: "POST", body: { all_closed: true, dry_run: true } });
+  if (!count) return alert("There are no closed alerts.");
+  if (!confirm(`Permanently delete ALL ${LG.num(count)} closed alerts (all time, not only the last 30 days)?` + DEL_NOTE)) return;
+  const r = await LG.api("/api/alerts/delete", { method: "POST", body: { all_closed: true } }); picked.clear(); load();
+  alert(`${LG.num(r.deleted)} closed alerts deleted.`);
+};
 document.getElementById("filter").oninput = render;
-load(); suggestions(); setInterval(load, 60000);
+delButtons(); load(); suggestions(); setInterval(load, 60000);
 </script>
 {% endblock %}
