@@ -31,6 +31,30 @@ SUSPICIOUS_OUT_PORTS = {
 }
 
 
+# Was a connection ALLOWED? The firewall's own verdict wins. Zenarmor also logs connection ATTEMPTS ("conn" records -
+# it sees the packets on the LAN side before the firewall rules act), so a Zenarmor record only counts as allowed when
+# the destination answered (packets / bytes came back) - a connection a firewall rule blocked gets no answer.
+ZEN_ANSWERED = ("(source = 'zenarmor' AND action = 'conn' AND (coalesce(data->>'dst_npackets', '') ~ '^[1-9]' "
+                "OR coalesce(data->>'dst_nbytes', '') ~ '^[1-9]' OR coalesce(data->>'dst_pbytes', '') ~ '^[1-9]'))")
+ALLOWED_ROW = (f"((source = 'firewall' AND action = 'pass') OR {ZEN_ANSWERED} "
+               "OR (source NOT IN ('firewall', 'zenarmor') AND action IN ('pass', 'allow')))")
+# per group of events (src, dst, ...): allowed unless only Zenarmor says so and the firewall blocked it
+ALLOWED_AGG = (f"(bool_or(source = 'firewall' AND action = 'pass') OR bool_or(source NOT IN ('firewall', 'zenarmor') "
+               f"AND action IN ('pass', 'allow')) OR (bool_or({ZEN_ANSWERED}) AND NOT bool_or(source = 'firewall' "
+               "AND action IN ('block', 'drop'))))")
+FW_BLOCKED_AGG = "count(*) FILTER (WHERE source = 'firewall' AND action IN ('block', 'drop'))"
+FW_RULE_AGG = "max(data->>'label') FILTER (WHERE source = 'firewall' AND action IN ('block', 'drop'))"
+
+
+def verdict(passed: bool, fw_blocked: int = 0, rule: str | None = None) -> str:
+    """'ALLOWED' / 'blocked by the OPNsense firewall (rule "x", 12×)' / 'blocked' - for alert texts."""
+    if passed:
+        return "ALLOWED"
+    if fw_blocked:
+        return f"blocked by the OPNsense firewall ({f'rule “{rule}”, ' if rule else ''}{fw_blocked}×)"
+    return "blocked"
+
+
 # remote admin / file sharing: what ransomware and worms use to spread inside a network (MITRE T1021)
 LATERAL_PORTS = {22: "SSH", 23: "telnet", 135: "RPC", 139: "NetBIOS", 445: "SMB", 3389: "RDP", 5900: "VNC",
                  5985: "WinRM", 5986: "WinRM", 2375: "Docker API", 2376: "Docker API"}
@@ -486,24 +510,26 @@ class DetectionEngine:
     async def suspicious_outbound_ports(self) -> None:
         last, current = await self._watermark("susp_ports")
         rows = await db.pool().fetch(
-            "SELECT src_ip, dst_ip, dst_port, action, count(*) AS hits FROM events WHERE id > $1 AND id <= $2 "
+            f"SELECT src_ip, dst_ip, dst_port, count(*) AS hits, {ALLOWED_AGG} AS passed, {FW_BLOCKED_AGG} AS fw_blocked, "
+            f"{FW_RULE_AGG} AS fw_rule FROM events WHERE id > $1 AND id <= $2 "
             "AND source IN ('firewall', 'zenarmor') AND dst_port = ANY($3::int[]) AND src_ip IS NOT NULL "
-            "GROUP BY src_ip, dst_ip, dst_port, action", last, current, list(SUSPICIOUS_OUT_PORTS))
+            "GROUP BY src_ip, dst_ip, dst_port", last, current, list(SUSPICIOUS_OUT_PORTS))
         for r in rows:
             src, dst = str(r["src_ip"]), str(r["dst_ip"])
             if not self.internal(src) or self.internal(dst):
                 continue
-            passed = r["action"] in ("pass", "conn", "allow")
+            passed = r["passed"]
+            how = verdict(passed, r["fw_blocked"], r["fw_rule"])
             rating = Rating("medium", "the connection was ALLOWED out") if passed else \
-                Rating("low", "the connection was blocked")
+                Rating("low", f"the connection was {how}")
             rating.sticky = True
             corroborate(rating, await evidence(src, "suspicious_outbound_port"))
             await raise_alert(
                 "suspicious_outbound_port", rating,
-                f"{src} → {dst}:{r['dst_port']} ({SUSPICIOUS_OUT_PORTS[r['dst_port']]}) {'ALLOWED' if passed else r['action']}",
+                f"{src} → {dst}:{r['dst_port']} ({SUSPICIOUS_OUT_PORTS[r['dst_port']]}) {'ALLOWED' if passed else 'blocked'}",
                 f"susp_port:{src}:{r['dst_port']}", src_ip=src, events={"source": "firewall", "ip": src, "port": r["dst_port"]}, dst_ip=dst, count=r["hits"],
                 description=f"Internal host {src} connected to external {dst} on port {r['dst_port']} "
-                            f"({SUSPICIOUS_OUT_PORTS[r['dst_port']]}); action={r['action']}.")
+                            f"({SUSPICIOUS_OUT_PORTS[r['dst_port']]}): {how}.")
         await self._commit("susp_ports", current)
 
     # -------------------------------------------------------- auth rules ---
@@ -961,7 +987,7 @@ class DetectionEngine:
         rows = await db.pool().fetch(
             "SELECT src_ip, dst_port, count(*) AS hits, (array_agg(DISTINCT host(dst_ip)))[1:8] AS dsts FROM events "
             "WHERE id > $1 AND id <= $2 AND source IN ('firewall', 'zenarmor') AND dst_port IN (53, 853) "
-            "AND action IN ('pass', 'allow', 'conn') AND src_ip IS NOT NULL AND dst_ip IS NOT NULL "
+            f"AND {ALLOWED_ROW} AND src_ip IS NOT NULL AND dst_ip IS NOT NULL "
             "GROUP BY src_ip, dst_port", last, current)
         for r in rows:
             src = str(r["src_ip"])
@@ -992,7 +1018,9 @@ class DetectionEngine:
                     "SELECT domain AS dst FROM events WHERE source = 'unbound' AND ts > now() - interval '7 days' "
                     "AND domain = ANY($1::text[]) GROUP BY domain HAVING count(DISTINCT src_ip) > 2"),
             "conn": ("SELECT src_ip, host(dst_ip) AS dst, ts FROM events WHERE source IN ('zenarmor', 'firewall') "
-                     "AND action IN ('pass', 'allow', 'conn') AND ts > now() - interval '6 hours' AND src_ip IS NOT NULL "
+                     # every attempt counts, blocked ones too: malware keeps retrying at its rhythm
+                     "AND action IN ('pass', 'allow', 'conn', 'block', 'drop') AND ts > now() - interval '6 hours' "
+                     "AND src_ip IS NOT NULL "
                      "AND dst_ip IS NOT NULL",
                      "SELECT host(dst_ip) AS dst FROM events WHERE source IN ('zenarmor', 'firewall') "
                      "AND ts > now() - interval '7 days' AND host(dst_ip) = ANY($1::text[]) GROUP BY dst_ip "
@@ -1025,11 +1053,21 @@ class DetectionEngine:
                             time.time() - await db.kv_get("nod:since") > 3 * 86400:
                         rating.up("and the domain was first seen on your network less than 3 days ago")
                 what = r["dst"] if kind == "dns" else f"address {r['dst']}"
+                how = ""
+                if kind == "conn":
+                    v = await db.pool().fetchrow(
+                        f"SELECT {ALLOWED_AGG} passed, {FW_BLOCKED_AGG} fw_blocked, {FW_RULE_AGG} fw_rule FROM events "
+                        "WHERE src_ip = $1::inet AND dst_ip = $2::inet AND ts > now() - interval '6 hours' "
+                        "AND source IN ('firewall', 'zenarmor')", src, r["dst"])
+                    how = verdict(v["passed"], v["fw_blocked"], v["fw_rule"])
+                    if not v["passed"]:
+                        rating.note(f"{how} - the firewall stops it, but the device keeps trying (malware retries like this)")
                 await raise_alert(
                     "beaconing", rating, f"Possible beaconing: {src} → {what} every {every}", f"beacon:{src}:{r['dst']}",
                     src_ip=src, dst_ip=r["dst"] if kind == "conn" else None, count=r["n"], mode="max",
                     events={"ip": src, "q": r["dst"]} if kind == "dns" else {"ip": src},
-                    description=f"{src} contacted {what} {r['n']} times in 6 hours at very regular intervals (every {every}). "
+                    description=f"{src} contacted {what} {r['n']} times in 6 hours at very regular intervals (every {every})"
+                                + (f"; {how}" if how else "") + ". "
                                 "Check which program on the device does this; if it is a known service, add it to "
                                 "Settings › Data & detection › DNS: domains to ignore or mute it.")
 
@@ -1038,7 +1076,7 @@ class DetectionEngine:
         spread (and what management or backup tools do on purpose)."""
         rows = await db.pool().fetch(
             "SELECT src_ip, array_agg(DISTINCT host(dst_ip)) AS dsts, count(*) AS hits, array_agg(DISTINCT dst_port) AS ports, "
-            "count(*) FILTER (WHERE action IN ('pass', 'allow', 'conn')) AS passed FROM events "
+            f"count(*) FILTER (WHERE {ALLOWED_ROW}) AS passed FROM events "
             "WHERE source IN ('firewall', 'zenarmor') AND ts > now() - interval '15 minutes' AND dst_port = ANY($1::int[]) "
             "AND src_ip IS NOT NULL AND dst_ip IS NOT NULL AND src_ip <> dst_ip GROUP BY src_ip HAVING count(DISTINCT dst_ip) >= 5",
             list(LATERAL_PORTS))
