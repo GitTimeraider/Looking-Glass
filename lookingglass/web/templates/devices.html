@@ -9,12 +9,15 @@
   <div class="seg" id="show"><button data-v="all">All</button><button data-v="online">Online</button><button data-v="new">New (7d)</button><button data-v="untrusted">Untrusted</button><button data-v="alerts">With alerts</button></div>
   <input id="filter" placeholder="filter by name, IP, MAC, vendor, interface…" style="flex:1">
 </div>
-<div class="grid g3" style="margin-bottom:14px">
-  <div class="card"><h3>Devices by interface</h3><div class="chart-box sm"><canvas id="c-if"></canvas></div></div>
-  <div class="card"><h3>Top vendors</h3><div class="chart-box sm"><canvas id="c-vendor"></canvas></div></div>
-  <div class="card"><h3>Most active devices (24h events)</h3><div class="chart-box sm"><canvas id="c-active"></canvas></div></div>
-</div>
-<div class="card"><div id="list"></div></div>
+<details class="charts-fold" id="dev-charts" open>
+  <summary>Charts <span class="muted small">(click to hide - the device list gets the room)</span></summary>
+  <div class="grid g3">
+    <div class="card"><h3>Devices by interface</h3><div class="chart-box sm"><canvas id="c-if"></canvas></div></div>
+    <div class="card"><h3>Top vendors</h3><div class="chart-box sm"><canvas id="c-vendor"></canvas></div></div>
+    <div class="card"><h3>Most active devices (24h events)</h3><div class="chart-box sm"><canvas id="c-active"></canvas></div></div>
+  </div>
+</details>
+<div class="card dev-list"><div id="list"></div></div>
 <dialog id="prof" class="dlg">
   <div class="dlg-head"><h3 id="prof-title">Learned behaviour</h3><button class="secondary" id="prof-close">Close</button></div>
   <div id="prof-body"></div>
@@ -27,6 +30,17 @@
 {% block scripts %}
 <script>
 let devs = [], show = "all";
+/* the device list uses the window's height: it fills the space below it, or (when the charts take that room) the
+   whole window once scrolled to - the column headers stay on top while the list scrolls */
+function fitList() {
+  const wrap = document.querySelector("#list .table-wrap"); if (!wrap) return;
+  const top = wrap.getBoundingClientRect().top + window.scrollY, below = window.innerHeight - top - 24;
+  wrap.style.maxHeight = Math.max(320, below >= window.innerHeight * 0.55 ? below : window.innerHeight - 90) + "px";
+}
+window.addEventListener("resize", fitList);
+const fold = document.getElementById("dev-charts");
+try { if (localStorage.getItem("devices:charts") === "closed") fold.open = false; } catch (e) {}
+fold.addEventListener("toggle", () => { try { localStorage.setItem("devices:charts", fold.open ? "open" : "closed"); } catch (e) {} fitList(); });
 LG.seg(document.getElementById("show"), show, v => { show = v; render(); });
 const count = (arr, f) => Object.entries(arr.reduce((a, x) => { const k = f(x) || "?"; a[k] = (a[k] || 0) + 1; return a; }, {})).sort((a, b) => b[1] - a[1]);
 async function load() {
@@ -51,10 +65,10 @@ function render() {
   document.getElementById("info").textContent = `${rows.length} shown`;
   LG.table("#list", [
     {k: "online", l: "", f: v => `<span class="dot ${v ? "ok" : ""}" title="${v ? "online" : "offline"}"></span>`},
-    {k: "hostname", l: "Name", f: (v, r) => `<b>${LG.esc(v || "–")}</b>${v && r.name_source ? ` <span class="small muted" title="${LG.esc(NAME_SRC[r.name_source] || r.name_source)}">${LG.esc(r.name_source === "manual" ? "✎" : r.name_source)}</span>` : ""}${r.notes ? `<div class="small muted">${LG.esc(r.notes)}</div>` : ""}`},
+    {k: "hostname", l: "Name", f: (v, r) => `<b class="cell-clip" title="${LG.esc(v || "")}">${LG.esc(v || "–")}</b>${v && r.name_source ? ` <span class="small muted" title="${LG.esc(NAME_SRC[r.name_source] || r.name_source)}">${LG.esc(r.name_source === "manual" ? "✎" : r.name_source)}</span>` : ""}${r.notes ? `<div class="small muted cell-clip" title="${LG.esc(r.notes)}">${LG.esc(r.notes)}</div>` : ""}`},
     {k: "ip", l: "IP", f: LG.ip}, {k: "mac", l: "MAC", f: v => `<span class="mono small">${LG.esc(v)}</span>`},
-    {k: "vendor", l: "Vendor"}, {k: "interface", l: "Interface"},
-    {k: "conn_where", l: "Connected to", f: (v, r) => v ? `${LG.esc(v)}${r.conn_signal ? `<div class="small muted">${r.conn_signal} dBm</div>` : ""}` : ""},
+    {k: "vendor", l: "Vendor", f: v => v ? `<span class="cell-clip" title="${LG.esc(v)}">${LG.esc(v)}</span>` : ""}, {k: "interface", l: "Interface"},
+    {k: "conn_where", l: "Connected to", f: (v, r) => v ? `<span class="cell-clip" title="${LG.esc(v)}">${LG.esc(v)}</span>${r.conn_signal ? ` <span class="small muted">${r.conn_signal} dBm</span>` : ""}` : ""},
     {k: "lease_type", l: "Lease", f: (v, r) => `${LG.esc(v || "")}${r.lease_expires ? `<div class="small muted">${LG.esc(r.lease_expires)}</div>` : ""}`},
     {k: "sources", l: "Seen via", f: v => (v || []).map(s => `<span class="pill">${LG.esc(s)}</span>`).join("")},
     {k: "events", l: "Events 24h", num: true}, {k: "blocked", l: "Blocked", num: true}, {k: "dns", l: "DNS", num: true},
@@ -65,6 +79,7 @@ function render() {
     {k: "trusted", l: "Trusted", f: (v, r) => `<input type="checkbox" data-trust="${LG.esc(r.mac)}" ${v ? "checked" : ""}>`},
     {k: "mac", l: "", f: v => `<a href="#" data-edit="${LG.esc(v)}">edit</a>`},
   ], rows, "No devices yet - they appear from the ARP table / DHCP leases once the OPNsense API is connected.");
+  fitList();
   document.querySelectorAll("[data-prof]").forEach(a => a.onclick = e => { e.preventDefault(); profile(a.dataset.prof); });
   document.querySelectorAll("[data-trust]").forEach(c => c.onchange = () => LG.api(`/api/devices/${c.dataset.trust}`, { method: "POST", body: { trusted: c.checked } }));
   document.querySelectorAll("[data-edit]").forEach(a => a.onclick = async e => {
