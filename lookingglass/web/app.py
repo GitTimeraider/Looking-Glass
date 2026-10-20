@@ -468,6 +468,24 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         counts = {s: 0 for s in ("open", "acknowledged", "closed")} | {r["status"]: r["n"] for r in rows}
         return {**counts, "all": sum(counts.values())}
 
+    @app.post("/api/alerts/delete")
+    async def delete_alerts(payload: dict = Body(...)):
+        """Permanently delete CLOSED alerts: the selected ones ("ids") or all of them ("all_closed"). "dry_run" only
+        counts. Open / acknowledged alerts are never deleted here."""
+        if payload.get("all_closed"):
+            where, args = "status = 'closed'", []
+        else:
+            ids = [int(i) for i in payload.get("ids") or []]
+            if not ids:
+                raise HTTPException(400, "nothing selected")
+            where, args = "status = 'closed' AND id = ANY($1::bigint[])", [ids]
+        if payload.get("dry_run"):
+            return {"count": await db.pool().fetchval(f"SELECT count(*) FROM alerts WHERE {where}", *args)}
+        res = await db.pool().execute(f"DELETE FROM alerts WHERE {where}", *args)
+        n = int(res.split()[-1])
+        log.info("deleted %d closed alert(s)", n)
+        return {"deleted": n}
+
     @app.post("/api/alerts/status")
     async def set_alert_status(payload: dict = Body(...)):
         ids = [int(i) for i in payload.get("ids", [])]
