@@ -120,7 +120,14 @@ async function send(text) {
   msgsEl.insertAdjacentHTML("beforeend", `<div class="msg assistant" id="thinking"><span class="spinner"></span> investigating… (the analyst queries the log database, this can take a minute)</div>`);
   msgsEl.scrollTop = msgsEl.scrollHeight;
   try {
-    const r = await LG.api("/api/ai/message", { method: "POST", body: { chat_id: chatId, text } });
+    const { job } = await LG.api("/api/ai/message", { method: "POST", body: { chat_id: chatId, text } });
+    let r;
+    for (;;) {  // the analysis runs on the server; polling keeps every request short for proxies in front
+      await new Promise(res => setTimeout(res, 2000));
+      try { r = await LG.api(`/api/ai/jobs/${job}`); }
+      catch (e) { if (/^HTTP 50[234]\b/.test(e.message)) continue; throw e; }  // proxy hiccup: just ask again
+      if (r.done) break;
+    }
     chatId = r.chat_id;
     convo = convo.slice(0, -1).concat(r.messages);
     renderMessages(convo); loadChats();

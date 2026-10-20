@@ -12,7 +12,8 @@ const LG = {
     if (r.status === 401) { location.href = "/login"; throw new Error("not authenticated"); }
     const ct = r.headers.get("content-type") || "";
     const data = ct.includes("json") ? await r.json() : await r.text();
-    if (!r.ok) throw new Error((data && data.detail) || r.statusText);
+    // a proxy in front (nginx 504 ...) answers with an HTML page and, over HTTP/2, an empty status text
+    if (!r.ok) throw new Error((data && data.detail) || `HTTP ${r.status} ${r.statusText}`.trim());
     return data;
   },
   esc(v) {

@@ -6,6 +6,8 @@ import ipaddress
 import json
 import math
 import re
+import secrets
+import time
 from datetime import datetime
 import logging
 from pathlib import Path
@@ -675,8 +677,28 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "WITH d AS (DELETE FROM ai_chats WHERE id = ANY($1::bigint[]) RETURNING 1) SELECT count(*) FROM d", ids)
         return {"ok": True, "deleted": deleted}
 
+    ai_jobs: dict[str, dict[str, Any]] = {}
+
+    async def run_ai_message(job_id: str, chat_id: int | None, history: list[dict[str, Any]], text: str) -> None:
+        job = ai_jobs[job_id]
+        try:
+            new = await analyst.chat(history, text)
+            messages = history + new
+            if chat_id:
+                await db.pool().execute("UPDATE ai_chats SET messages = $2, updated_at = now() WHERE id = $1", chat_id, messages)
+            else:
+                chat_id = await db.pool().fetchval("INSERT INTO ai_chats (title, messages) VALUES ($1, $2) RETURNING id",
+                                                   text[:80], messages)
+            job.update(status="done", chat_id=chat_id, messages=new)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("AI request failed")
+            job.update(status="error", error=f"AI request failed: {exc}")
+        job["finished"] = time.time()
+
     @app.post("/api/ai/message")
     async def ai_message(payload: dict = Body(...)):
+        """Starts the analysis and answers at once: an agent run takes minutes, longer than reverse proxies in front of
+        Looking Glass wait for a response (nginx: 60 s). The page polls /api/ai/jobs/{job} for the result."""
         text = str(payload.get("text", "")).strip()
         if not text:
             raise HTTPException(400, "empty message")
@@ -690,18 +712,23 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 history = row["messages"]
             else:
                 chat_id = None
-        try:
-            new = await analyst.chat(history, text)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("AI request failed")
-            raise HTTPException(502, f"AI request failed: {exc}") from exc
-        messages = history + new
-        if chat_id:
-            await db.pool().execute("UPDATE ai_chats SET messages = $2, updated_at = now() WHERE id = $1", int(chat_id), messages)
-        else:
-            chat_id = await db.pool().fetchval("INSERT INTO ai_chats (title, messages) VALUES ($1, $2) RETURNING id",
-                                               text[:80], messages)
-        return {"chat_id": chat_id, "messages": new}
+        for old_id in [k for k, j in ai_jobs.items() if j.get("finished") and j["finished"] < time.time() - 3600]:
+            del ai_jobs[old_id]
+        job_id = secrets.token_urlsafe(12)
+        ai_jobs[job_id] = {"status": "running", "started": time.time()}
+        _background(run_ai_message(job_id, int(chat_id) if chat_id else None, history, text))
+        return {"job": job_id}
+
+    @app.get("/api/ai/jobs/{job_id}")
+    async def ai_job(job_id: str):
+        job = ai_jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "AI job not found (Looking Glass restarted?) - send the question again")
+        if job["status"] == "error":
+            raise HTTPException(502, job["error"])
+        if job["status"] == "done":
+            return {"done": True, "chat_id": job["chat_id"], "messages": job["messages"]}
+        return {"done": False, "seconds": int(time.time() - job["started"])}
 
 
     # ------------------------------------------------- function dashboards ---

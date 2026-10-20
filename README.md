@@ -181,6 +181,10 @@ seconds, which is what a 504 means - a streamed answer keeps the connection busy
 503, 504) are retried twice. Still 504? Raise the timeout of your own proxy (e.g. LiteLLM `timeout`, nginx
 `proxy_read_timeout`), use a faster model or lower *Max tool rounds*.
 
+The **AI chat** works the same way: the question starts the run on the server and the page asks for the result
+every few seconds, so a reverse proxy in front of Looking Glass itself (nginx `proxy_read_timeout`, 60 s by default)
+no longer cuts long answers off.
+
 ### How severity is decided
 
 Every alert shows **"Why <severity>"**: the base reason and every step up (↑) or down (↓). The same four questions
