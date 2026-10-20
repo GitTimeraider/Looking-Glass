@@ -281,6 +281,38 @@ STATUS_TEXT = {400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "
                503: "Service Unavailable", 504: "Gateway Timeout", 524: "A Timeout Occurred (Cloudflare)", 529: "Overloaded"}
 
 
+TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
+
+
+def _valid_json(arguments: Any) -> str:
+    """Tool call arguments as a JSON object string: servers refuse the next request when they are cut off / invalid."""
+    if isinstance(arguments, dict):
+        return json.dumps(arguments)
+    try:
+        value = json.loads(arguments or "{}")
+    except ValueError:
+        return "{}"
+    return json.dumps(value) if isinstance(value, dict) else "{}"
+
+
+def plain_tool_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The conversation with tool calls and results written out as ordinary assistant / user messages."""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            calls = "; ".join(f'{c["function"]["name"]}({c["function"].get("arguments") or "{}"})' for c in m["tool_calls"])
+            out.append({"role": "assistant", "content": ((m.get("content") or "") + f"\n[called tools: {calls}]").strip()})
+        elif m.get("role") == "tool":
+            text = f'[tool result]\n{m.get("content") or ""}'
+            if out and out[-1]["role"] == "user" and str(out[-1]["content"]).startswith("[tool result]"):
+                out[-1] = {"role": "user", "content": out[-1]["content"] + "\n\n" + text}
+            else:
+                out.append({"role": "user", "content": text})
+        else:
+            out.append(m)
+    return out
+
+
 class AIError(Exception):
     def __init__(self, status: int, body: str, retry_after: str | None = None) -> None:
         self.status, self.body = status, body or ""
@@ -291,9 +323,9 @@ class AIError(Exception):
         super().__init__(f"HTTP {status}")
 
 
-def explain_ai_error(exc: Exception | None, seconds: float, step: int, s: Settings) -> str:
+def explain_ai_error(exc: Exception | None, seconds: float, step: int, s: Settings, attempts: int = 3) -> str:
     """A readable reason (and what to do) instead of a bare status code."""
-    where = f"step {step} of the analysis, after {seconds:.0f} s and 3 attempts"
+    where = f"step {step} of the analysis, after {seconds:.0f} s and {attempts} attempt{'s' if attempts != 1 else ''}"
     if isinstance(exc, AIError):
         text = re.sub(r"<[^>]+>", " ", exc.body)  # gateways answer with HTML error pages
         text = re.sub(r"\s+", " ", text).strip()[:300]
@@ -307,6 +339,10 @@ def explain_ai_error(exc: Exception | None, seconds: float, step: int, s: Settin
             503: " The provider is overloaded or in maintenance - try again later.",
             529: " The provider is overloaded - try again later.",
             429: " Rate limit or quota reached at the provider - wait, or check your plan / credits.",
+            400: " The endpoint (or the model's chat template) rejected the request. From step 2 on it carries the "
+                 "tool results: a local model with a small context window (Ollama / llama.cpp / vLLM) runs out of room - "
+                 "raise its context size (e.g. Ollama num_ctx, llama.cpp --ctx-size) or use a model with tool support; "
+                 "the server's own log names the exact reason.",
             401: " The API key was refused (Settings › AI analyst).",
             403: " The API key may not use this model, or the account has no credits.",
             404: " Wrong base URL or model name (Settings › AI analyst).",
@@ -341,9 +377,12 @@ class Analyst:
             body.update(tools=TOOLS, tool_choice="auto")
         started = time.monotonic()
         last: Exception | None = None
+        attempts, again = 0, False
         for attempt in range(3):
-            if attempt:
+            if attempt and not again:
                 await asyncio.sleep(last.retry_after if isinstance(last, AIError) and last.retry_after else 5 * 4 ** (attempt - 1))
+            again = False
+            attempts += 1
             try:
                 if self.settings.ai_stream and not self._no_stream:
                     try:
@@ -360,12 +399,20 @@ class Analyst:
                 return r.json()["choices"][0]["message"]
             except AIError as exc:
                 last = exc
+                if exc.status in (400, 422) and any(m.get("role") == "tool" for m in body["messages"]):
+                    # some servers / chat templates reject tool call messages in the history: send them as plain text
+                    log.warning("AI endpoint refused tool messages (HTTP %d: %s) - retrying with tool results as text",
+                                exc.status, exc.body[:500] or "empty answer")
+                    body["messages"] = plain_tool_history(body["messages"])
+                    again = True
+                    continue
                 if exc.status not in RETRY_STATUS:
+                    log.warning("AI request (step %d) refused: HTTP %d %s", step, exc.status, exc.body[:500] or "(empty answer)")
                     break
             except (httpx.TimeoutException, httpx.RemoteProtocolError, httpx.ConnectError) as exc:
                 last = exc
             log.warning("AI request (step %d, attempt %d) failed: %s", step, attempt + 1, last)
-        raise RuntimeError(explain_ai_error(last, time.monotonic() - started, step, self.settings)) from last
+        raise RuntimeError(explain_ai_error(last, time.monotonic() - started, step, self.settings, attempts)) from last
 
     async def _stream(self, client: httpx.AsyncClient, body: dict[str, Any]) -> dict[str, Any]:
         """OpenAI-compatible server-sent events: content and tool call fragments are put back together."""
@@ -399,7 +446,8 @@ class Analyst:
                         cur = calls.setdefault(int(tc.get("index", len(calls))), {"id": None, "name": "", "arguments": ""})
                         cur["id"] = tc.get("id") or cur["id"]
                         fn = tc.get("function") or {}
-                        cur["name"] += fn.get("name") or ""
+                        if fn.get("name") and cur["name"] not in TOOL_NAMES:  # some servers repeat the name per chunk
+                            cur["name"] += fn["name"]
                         cur["arguments"] += fn.get("arguments") or ""
         msg: dict[str, Any] = {"role": "assistant", "content": "".join(content)}
         if calls:
@@ -424,9 +472,11 @@ class Analyst:
                 assistant: dict[str, Any] = {"role": "assistant", "content": msg.get("content") or ""}
                 calls = msg.get("tool_calls") or []
                 if calls:
-                    assistant["tool_calls"] = [{"id": c["id"], "type": "function",
-                                                "function": {"name": c["function"]["name"], "arguments": c["function"].get("arguments") or "{}"}}
-                                               for c in calls]
+                    assistant["tool_calls"] = [{"id": c.get("id") or f"call_{step}_{i}", "type": "function",
+                                                "function": {"name": c["function"]["name"],
+                                                             "arguments": _valid_json(c["function"].get("arguments"))}}
+                                               for i, c in enumerate(calls)]
+                    calls = assistant["tool_calls"]
                 new.append(assistant)
                 if not calls:
                     return new

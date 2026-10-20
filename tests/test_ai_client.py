@@ -89,3 +89,34 @@ def test_401_is_not_retried(monkeypatch):
     except RuntimeError as exc:
         assert "refused" in str(exc)
     assert len(calls) == 1
+
+
+def test_tool_messages_refused_retried_as_plain_text(monkeypatch):
+    """Some servers / chat templates answer 400 once the history holds tool messages: send them as text instead."""
+    monkeypatch.setattr(ai.asyncio, "sleep", no_wait)
+    seen = []
+
+    def handler(req):
+        msgs = json.loads(req.content)["messages"]
+        seen.append([m["role"] for m in msgs])
+        if any(m["role"] == "tool" for m in msgs):
+            return httpx.Response(400, content=b"")
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "done"}}]})
+
+    history = [{"role": "user", "content": "check alert"},
+               {"role": "assistant", "content": "", "tool_calls": [
+                   {"id": "c1", "type": "function", "function": {"name": "list_alerts", "arguments": "{}"}}]},
+               {"role": "tool", "tool_call_id": "c1", "content": "[]"}]
+
+    async def main():
+        async with httpx.AsyncClient(base_url="https://ai.example/v1/", transport=httpx.MockTransport(handler)) as client:
+            return await Analyst(Settings(**{**S.__dict__, "ai_stream": False}))._complete(client, history)
+    msg = asyncio.run(main())
+    assert msg["content"] == "done"
+    assert seen == [["user", "assistant", "tool"], ["user", "assistant", "user"]]
+
+
+def test_invalid_tool_arguments_become_empty_object():
+    assert ai._valid_json('{"query": "SELECT') == "{}"
+    assert ai._valid_json('{"a": 1}') == '{"a": 1}'
+    assert ai._valid_json(None) == "{}"
