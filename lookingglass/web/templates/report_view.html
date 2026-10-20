@@ -9,7 +9,8 @@
   <a class="btn secondary noprint" href="/api/reports/{{ report_id }}/download">Download JSON</a>
   <button onclick="window.print()">Print / PDF</button>
 </header>
-<div id="ai-card" class="card" hidden style="margin-bottom:14px"><h3>AI analysis</h3><div id="ai" class="msg assistant" style="border:0"></div></div>
+<div id="ai-card" class="card" hidden style="margin-bottom:14px"><h3>AI analysis</h3>
+  <div id="ai-state" class="small"></div><div id="ai" class="msg assistant" style="border:0"></div></div>
 <div class="grid kpis" id="kpis"></div>
 <div class="grid g2" style="margin-top:14px" id="sections"></div>
 {% endblock %}
@@ -38,12 +39,32 @@ const SECTIONS = [
   ["clients_with_security_events", "Clients with security events (UniFi + OPNsense)", [{k: "name", l: "Device"}, {k: "ip", l: "IP"}, {k: "conn_where", l: "Connected to"}, {k: "fw", l: "FW blocks", num: true}, {k: "dns", l: "DNS blocked", num: true}, {k: "threats", l: "Threats", num: true}]],
   ["unifi_events", "UniFi events", [{k: "action", l: "Event"}, {k: "clients", l: "Clients", num: true}, {k: "n", l: "Count", num: true}]],
 ];
+/* the AI analysis runs in the background: show progress, then the result - or why it failed, with Retry */
+let aiStarted = Date.now();
+function showAI(r) {
+  const card = document.getElementById("ai-card"), st = document.getElementById("ai-state"), ai = document.getElementById("ai");
+  card.hidden = !(r.ai_summary || r.ai_state);
+  if (r.ai_state === "running") {
+    st.innerHTML = `<span class="spinner"></span> The AI is analysing this report (usually 1-5 minutes; it looks into the data with its tools). This page updates by itself - you can also leave and come back.`;
+    st.className = "small muted";
+    setTimeout(async () => showAI(await LG.api("/api/reports/{{ report_id }}")), 5000);
+  } else if (r.ai_state === "failed") {
+    st.innerHTML = `<b>The AI analysis failed:</b> ${LG.esc(r.ai_error || "unknown error")}<div style="margin-top:8px"><button id="ai-retry">Retry AI analysis</button> <a class="btn secondary" href="/settings#ai">AI settings</a></div>`;
+    st.className = "small err";
+    document.getElementById("ai-retry").onclick = async () => {
+      await LG.api("/api/reports/{{ report_id }}/ai", { method: "POST" }); aiStarted = Date.now();
+      showAI(await LG.api("/api/reports/{{ report_id }}"));
+    };
+  } else { st.innerHTML = ""; }
+  ai.innerHTML = r.ai_summary ? LG.md(r.ai_summary) : "";
+  ai.hidden = !r.ai_summary;
+}
 (async () => {
   const r = await LG.api("/api/reports/{{ report_id }}");
   const d = r.data;
   document.getElementById("title").textContent = `${r.title} — ${LG.time(r.created_at)}`;
   document.title = r.title;
-  if (r.ai_summary) { document.getElementById("ai-card").hidden = false; document.getElementById("ai").innerHTML = LG.md(r.ai_summary); }
+  showAI(r);
   const tot = d.totals || {}, fa = Object.fromEntries((d.firewall_actions || []).map(x => [x.action, x.n]));
   const sev = Object.fromEntries((d.alerts_by_severity || []).map(x => [x.severity, x.n]));
   const k = (l, v) => `<div class="card kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`;

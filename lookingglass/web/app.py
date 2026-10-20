@@ -21,7 +21,7 @@ from ..ai import Analyst
 from ..config import Settings
 from ..ingest import STATS
 from ..dashboards import DASHBOARDS, run_dashboard
-from ..reports import build_report, timeline
+from ..reports import build_report, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
 from ..parsers.common import real_name
 from ..unraid import test_connection as unraid_test
@@ -48,6 +48,16 @@ PAGES = {
     "/setup": ("setup.html", "Setup"),
     "/settings": ("settings.html", "Settings"),
 }
+
+
+_TASKS: set[asyncio.Task] = set()
+
+
+def _background(coro) -> None:
+    """Run a coroutine after the response; keep a reference so it is not garbage collected."""
+    task = asyncio.create_task(coro)
+    _TASKS.add(task)
+    task.add_done_callback(_TASKS.discard)
 
 
 def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, Any] | None = None) -> FastAPI:
@@ -555,7 +565,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     # ----------------------------------------------------------- reports ---
     @app.get("/api/reports")
     async def list_reports():
-        rows = await db.pool().fetch("SELECT id, created_at, period_h, title, ai_summary IS NOT NULL has_ai FROM reports ORDER BY id DESC LIMIT 200")
+        rows = await db.pool().fetch("SELECT id, created_at, period_h, title, ai_summary IS NOT NULL has_ai, ai_state FROM reports "
+                                     "ORDER BY id DESC LIMIT 200")
         return db.records(rows)
 
     @app.post("/api/reports")
@@ -564,17 +575,25 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if hours <= 0 or hours > 24 * 90:
             raise HTTPException(400, "hours out of range")
         data = await build_report(hours)
-        summary = None
-        if payload.get("ai") and settings.ai_enabled:
-            try:
-                summary = await analyst.analyse(hours)
-            except Exception as exc:  # noqa: BLE001
-                summary = f"AI analysis failed: {exc}"
+        ai = bool(payload.get("ai") and settings.ai_enabled)
         label = {24: "Daily", 168: "Weekly", 720: "Monthly"}.get(hours, f"{hours}h")
         rid = await db.pool().fetchval(
-            "INSERT INTO reports (period_h, title, data, ai_summary) VALUES ($1, $2, $3, $4) RETURNING id",
-            hours, f"{label} security report", data, summary)
+            "INSERT INTO reports (period_h, title, data, ai_state) VALUES ($1, $2, $3, $4) RETURNING id",
+            hours, f"{label} security report", data, "running" if ai else None)
+        if ai:  # the AI analysis takes minutes: in the background, the report page shows its progress
+            _background(run_ai_summary(analyst, rid))
         return {"id": rid}
+
+    @app.post("/api/reports/{report_id}/ai")
+    async def retry_report_ai(report_id: int):
+        if not settings.ai_enabled:
+            raise HTTPException(400, "AI is not configured (Settings › AI analyst)")
+        state = await db.pool().fetchval("SELECT ai_state FROM reports WHERE id = $1", report_id)
+        if state == "running":
+            return {"ok": True, "state": "running"}
+        await db.pool().execute("UPDATE reports SET ai_state = 'running', ai_error = NULL WHERE id = $1", report_id)
+        _background(run_ai_summary(analyst, report_id))
+        return {"ok": True, "state": "running"}
 
     @app.get("/api/reports/{report_id}")
     async def get_report(report_id: int):

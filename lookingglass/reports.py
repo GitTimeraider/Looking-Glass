@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from . import db
+
+log = logging.getLogger(__name__)
 
 # name -> (sql, description). $1 = window in seconds
 QUERIES: dict[str, str] = {
@@ -90,3 +93,18 @@ async def timeline(hours: float = 24, buckets: int = 48) -> dict[str, Any]:
         "SELECT to_timestamp(floor(extract(epoch FROM ts) / $2) * $2) AS bucket, count(*) n FROM events "
         "WHERE ts > now() - make_interval(secs => $1) AND action IN ('block', 'drop', 'ban') GROUP BY 1 ORDER BY 1", secs, step)
     return {"step": step, "series": db.records(rows), "blocked": db.records(blocked)}
+
+
+async def run_ai_summary(analyst, report_id: int) -> None:
+    """Fill in the AI analysis of a stored report (runs in the background; state in reports.ai_state / ai_error)."""
+    row = await db.pool().fetchrow("SELECT period_h, data FROM reports WHERE id = $1", report_id)
+    if not row:
+        return
+    await db.pool().execute("UPDATE reports SET ai_state = 'running', ai_error = NULL WHERE id = $1", report_id)
+    try:
+        summary = await analyst.analyse(row["period_h"], row["data"])
+        await db.pool().execute("UPDATE reports SET ai_summary = $2, ai_state = 'done', ai_error = NULL WHERE id = $1",
+                                report_id, summary)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("AI analysis of report %s failed: %s", report_id, exc)
+        await db.pool().execute("UPDATE reports SET ai_state = 'failed', ai_error = $2 WHERE id = $1", report_id, str(exc)[:2000])

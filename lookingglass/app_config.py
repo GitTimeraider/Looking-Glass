@@ -102,7 +102,11 @@ FIELDS: list[Field] = [
     Field("ai_api_key", "ai", "API key", "secret", "Anthropic: console.anthropic.com › API keys."),
     Field("ai_model", "ai", "Model", "str", "e.g. claude-opus-5-5", placeholder="claude-opus-5-5"),
     Field("ai_max_tool_rounds", "ai", "Max tool rounds per question", "int", "", min=1, max=50),
-    Field("ai_timeout", "ai", "Request timeout (seconds)", "int", "", min=10, max=1800),
+    Field("ai_timeout", "ai", "Request timeout (seconds)", "int", "Per request to the model; also the longest "
+          "pause allowed while an answer streams in.", min=10, max=1800),
+    Field("ai_stream", "ai", "Stream answers", "bool", "Receive answers word by word. Keeps the connection busy, so "
+          "gateways / proxies in front of the model (OpenRouter, LiteLLM, Cloudflare, nginx) don't cut long answers off "
+          "with 504 Gateway Timeout. Switched off automatically if the endpoint can't stream."),
     Field("ai_daily_report", "ai", "Daily AI report", "bool", "Write an AI-analysed 24h report every morning (Reports page)."),
     Field("ai_daily_report_hour", "ai", "Daily report hour (local time)", "int", "", min=0, max=23),
     # Zenarmor

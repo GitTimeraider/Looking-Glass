@@ -17,7 +17,7 @@ from .detections import DetectionEngine, dhcp_listener, zenarmor_device_listener
 from .enrich import Enricher
 from .ingest import EventWriter, SyslogServer
 from .opnsense import Poller
-from .reports import build_report
+from .reports import build_report, run_ai_summary
 from .unifi import UnifiPoller
 from .unraid import UnraidManager
 from .web.app import create_app
@@ -118,9 +118,10 @@ async def daily_ai_report(settings, analyst: Analyst) -> None:
         await db.kv_set("daily_report", key)
         try:
             data = await build_report(24)
-            summary = await analyst.analyse(24) if settings.ai_enabled else None
-            await db.pool().execute("INSERT INTO reports (period_h, title, data, ai_summary) VALUES (24, $1, $2, $3)",
-                                    f"Daily security report {key}", data, summary)
+            rid = await db.pool().fetchval("INSERT INTO reports (period_h, title, data) VALUES (24, $1, $2) RETURNING id",
+                                           f"Daily security report {key}", data)
+            if settings.ai_enabled:
+                await run_ai_summary(analyst, rid)  # a failure is stored with the report (Retry on its page)
             log.info("daily report %s created", key)
         except Exception:  # noqa: BLE001
             log.exception("daily report failed")
