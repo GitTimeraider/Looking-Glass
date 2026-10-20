@@ -14,6 +14,7 @@ from .parsers.common import real_name
 from .config import Settings
 from .ingest import STATS
 from .parsers.common import is_internal_ip, parse_networks
+from .parsers.security import zen_describe
 
 log = logging.getLogger(__name__)
 
@@ -704,17 +705,21 @@ class DetectionEngine:
 
     async def zenarmor_threats(self) -> None:
         last, current = await self._watermark("zenarmor")
+        mode = self.settings.zenarmor_blocked_alerts  # Settings › Zenarmor
         rows = await db.pool().fetch(
             "SELECT src_ip, coalesce(domain, host(dst_ip)) AS target, coalesce(data->>'security', data->>'security_tags', '') AS threat, "
-            "bool_or(action = 'block') AS blocked, count(*) AS hits "
+            "bool_or(action = 'block') AS blocked, count(*) AS hits, max(data->'zen'->>'app') app, "
+            "max(data->'zen'->>'app_category') app_category, max(data->'zen'->>'web_category') web_category, "
+            "max(data->'zen'->>'policy') policy "
             "FROM events WHERE id > $1 AND id <= $2 AND source = 'zenarmor' "
-            "AND (data->>'family' = 'alert' OR coalesce(data->>'security', data->>'security_tags', '') <> '') "
+            "AND (data->>'family' = 'alert' OR coalesce(data->>'security', data->>'security_tags', '') <> '' "
+            "     OR action = 'block') "  # blocked by category / policy: judged below (setting)
             "GROUP BY 1, 2, 3", last, current)
         for r in rows:
-            threat = r["threat"] or "threat alert"
+            what = zen_describe({k: r[k] for k in ("app", "app_category", "web_category", "policy") if r[k]})
+            threat = r["threat"] or r["app_category"] or r["web_category"] or r["app"] or "threat alert"
             src = str(r["src_ip"]) if r["src_ip"] else None
             bad = any(w in threat.lower() for w in ("malware", "botnet", "phishing", "command", "c2", "ransom", "crypto"))
-            mode = self.settings.zenarmor_blocked_alerts  # Settings › Zenarmor
             if r["blocked"] and (mode == "never" or (mode == "threats" and not bad)):
                 continue  # blocked by policy (or all blocks, if chosen): Zenarmor did its job, nothing to look into
             if bad:
@@ -727,10 +732,16 @@ class DetectionEngine:
                 ev = await evidence(src, "zenarmor_threat")
                 ev["zen"] = 0  # that is this alert
                 corroborate(rating, ev, 1)
-            await raise_alert("zenarmor_threat", rating, f"Zenarmor: {src} → {r['target']} ({threat[:60]})",
+            label = threat if not r["app"] or r["app"] in threat else f"{r['app']}, {threat}"
+            await raise_alert("zenarmor_threat", rating,
+                              f"Zenarmor{' blocked' if r['blocked'] else ''}: {src} → {r['target']} ({label[:60]})",
                               f"zen:{src}:{r['target']}", src_ip=src, events={"source": "zenarmor", "ip": src}, count=r["hits"],
+                              data={k: r[k] for k in ("app", "app_category", "web_category", "policy") if r[k]},
                               description=f"Zenarmor flagged traffic from {src} to {r['target']} as '{threat}' "
-                                          f"({'blocked' if r['blocked'] else 'NOT blocked'}).")
+                                          f"({'blocked' if r['blocked'] else 'NOT blocked'})."
+                                          + (f" Details: {what}." if what else "")
+                                          + (f" Blocked by Zenarmor policy {r['policy']} (Zenarmor › Policies) - change the "
+                                             "policy there if this traffic should be allowed." if r["blocked"] and r["policy"] else ""))
         await self._commit("zenarmor", current)
 
     # --------------------------------------------------------- DNS rules ---
