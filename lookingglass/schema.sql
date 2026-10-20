@@ -270,3 +270,7 @@ ALTER TABLE alerts ADD COLUMN IF NOT EXISTS close_reason TEXT;  -- 'false_positi
 -- AI analysis of a report runs in the background: running | done | failed (+ the reason)
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS ai_state TEXT;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS ai_error TEXT;
+
+-- "new device" alerts are decided by the detection loop (private / randomized MACs wait for their name first)
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS new_pending BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS same_as TEXT;  -- earlier MAC of the same device (private MAC changed)

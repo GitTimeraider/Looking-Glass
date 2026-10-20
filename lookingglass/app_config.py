@@ -210,6 +210,11 @@ FIELDS: list[Field] = [
     Field("retention_days", "data", "Keep events (days)", "int", "", min=1, max=3650),
     Field("metrics_retention_days", "data", "Keep metrics (days)", "int", "", min=1, max=3650),
     Field("detection_interval", "data", "Detection interval (seconds)", "int", "", min=10, max=3600),
+    Field("new_device_alerts", "data", "New device alerts", "choice", "smart = a private (randomized) Wi-Fi MAC with the "
+          "name of a device you already have counts as that device (no alert; it gets its trusted mark and notes) - "
+          "phones and laptops change their private MAC per network or every day; all = every new MAC; no-random = "
+          "never for private MACs (guests' phones), only real hardware addresses; off = no new device alerts.",
+          choices=("smart", "all", "no-random", "off")),
     Field("dns_ignore_domains", "data", "DNS: domains to ignore", "str",
           "Comma separated domains (subdomains included) the DNS checks - random-looking / DGA names, tunneling, NXDOMAIN "
           "storms - skip, e.g. CDNs or latency probes with random names. Logs and dashboards still show them.",

@@ -314,15 +314,17 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
             d.get("interface") or None, origin, d.get("lease_type"), d.get("lease_expires"), bool(d.get("online")),
             source, name_rank(source) if source else 0, d.get("conn_type"), d.get("conn_where"), d.get("conn_signal"))
         if new and not first_run:
-            await raise_alert(
-                "new_device", Rating("low", "an unknown MAC address appeared - usually a new phone, guest or randomised "
-                                            "Wi-Fi address; mark it trusted on the Devices page when you know it", sticky=True),
-                f"New device on network: {d['mac']} ({d.get('hostname') or d.get('ip') or '?'})",
-                f"new_device:{d['mac']}",
-                description=f"A MAC address never seen before appeared via {origin}: "
-                            f"ip={d.get('ip')} hostname={d.get('hostname')} vendor={d.get('vendor')} interface={d.get('interface')}. "
-                            "Verify it is a known device (intruder / rogue device check) and mark it trusted on the Devices page.",
-                src_ip=d.get("ip"), data={k: v for k, v in d.items() if v is not None})
+            # decided by DetectionEngine.new_devices: a private MAC first waits for its name (DHCP), so a phone that
+            # changed its private address can be recognised as a device you already have
+            await pool.execute("UPDATE devices SET new_pending = true WHERE mac = $1", d["mac"])
+
+
+def is_private_mac(mac: str | None) -> bool:
+    """Locally administered ("private" / randomized) address: 2nd hex digit 2, 6, A or E."""
+    try:
+        return bool(int(str(mac).replace("-", ":").split(":")[0], 16) & 0x02)
+    except (ValueError, IndexError):
+        return False
 
 
 _zen_seen: dict[str, float] = {}
@@ -372,7 +374,7 @@ class DetectionEngine:
                          self.external_admin_login, self.web_attacks, self.web_scanner, self.ids_alerts,
                          self.crowdsec_alerts, self.qfeeds_hits, self.zenarmor_threats, self.dns_anomalies,
                          self.internal_blocked_outbound, self.suspicious_outbound_ports, self.config_changes,
-                         self.password_spray, self.distributed_brute_force, self.login_location, self.dns_bypass,
+                         self.new_devices, self.password_spray, self.distributed_brute_force, self.login_location, self.dns_bypass,
                          self.beaconing, self.lateral_movement, self.large_upload,
                          self.threat_intel, self.canary, self.arp_spoofing, self.young_domains,
                          self.behavior_profiles, self.behavior_hourly, self.behavior_cleanup,
@@ -842,6 +844,53 @@ class DetectionEngine:
     async def young_domains(self) -> None:
         if self._due("rdap", 60):
             await self.intel.rdap(self.internal)
+
+    async def new_devices(self) -> None:
+        """Alert on MAC addresses never seen before - but recognise phones / laptops that changed their private MAC."""
+        pool = db.pool()
+        rows = await pool.fetch(
+            "SELECT mac, host(ip) ip, hostname, vendor, interface, sources, first_seen, conn_where FROM devices "
+            "WHERE new_pending ORDER BY first_seen")
+        mode = self.settings.new_device_alerts
+        now = time.time()
+        for d in rows:
+            private = is_private_mac(d["mac"])
+            if private and not d["hostname"] and now - d["first_seen"].timestamp() < 600 and mode not in ("off", "no-random"):
+                continue  # give DHCP up to 10 minutes to tell its name
+            await pool.execute("UPDATE devices SET new_pending = false WHERE mac = $1", d["mac"])
+            if mode == "off" or (private and mode == "no-random"):
+                continue
+            twin = None
+            if private and d["hostname"]:
+                twin = await pool.fetchrow(
+                    "SELECT coalesce(same_as, mac) AS mac, trusted, notes, hostname FROM devices WHERE mac <> $1 AND lower(hostname) = lower($2) "
+                    "AND NOT new_pending ORDER BY last_seen DESC LIMIT 1", d["mac"], d["hostname"])
+            if twin and mode == "smart":
+                note = f"Same device as {twin['mac']} (its private Wi-Fi MAC changed)"
+                await pool.execute(
+                    "UPDATE devices SET same_as = $2, trusted = trusted OR $3, "
+                    "notes = CASE WHEN coalesce(notes, '') = '' THEN coalesce(nullif($4, ''), $5) ELSE notes END WHERE mac = $1",
+                    d["mac"], twin["mac"], twin["trusted"], twin["notes"], note)
+                log.info("device %s (%s) recognised as %s - private MAC changed", d["mac"], d["hostname"], twin["mac"])
+                continue
+            why = ("an unknown device appeared; mark it trusted on the Devices page when you know it" if not private else
+                   "an unknown PRIVATE (randomized) Wi-Fi address appeared - a new or guest phone / laptop, or one of yours "
+                   "that changed its private address and has no known name yet")
+            label = d["hostname"] or d["ip"] or "?"
+            await raise_alert(
+                "new_device", Rating("low", why, sticky=True), f"New device on network: {d['mac']} ({label})",
+                f"new_device:{d['mac']}", src_ip=d["ip"],
+                data={k: v for k, v in {"mac": d["mac"], "ip": d["ip"], "hostname": d["hostname"], "vendor": d["vendor"],
+                                         "interface": d["interface"], "private_mac": private}.items() if v not in (None, "")},
+                description=f"A MAC address never seen before appeared via {', '.join(d['sources'] or [])}: ip={d['ip']} "
+                            f"hostname={d['hostname']} vendor={d['vendor']} interface={d['interface']}. Verify it is a known "
+                            "device (intruder / rogue device check) and mark it trusted on the Devices page."
+                            + (" This is a private (randomized) MAC: phones and laptops use one per Wi-Fi network and may "
+                               "change it regularly. For your own devices, a fixed address stops these alerts: iPhone › "
+                               "Settings › Wi-Fi › (i) › Private Wi-Fi Address: Fixed; Android › Wi-Fi › network › Privacy: "
+                               "randomized MAC (not 'non-persistent' / 'per connection'); Windows › Wi-Fi › Random hardware "
+                               "addresses: On (not 'Change daily'). Or: Settings › Data & detection › New device alerts."
+                               if private else ""))
 
     async def password_spray(self) -> None:
         """One address trying MANY different usernames: a list-based attack, not a forgotten password."""
