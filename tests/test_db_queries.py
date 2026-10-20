@@ -30,3 +30,16 @@ def test_all_queries():
         finally:
             await db.close()
     asyncio.run(main())
+
+
+def test_add_metrics_skips_bad_rows_instead_of_failing():
+    async def main():
+        await db.connect(DSN)
+        try:
+            await db.pool().execute("DELETE FROM metrics WHERE name LIKE 'test_%'")
+            await db.add_metrics([("test_m", None, 1.0), ("test_m", "ok", float("nan")), ("test_m", "x", None), ("test_m", "y", 2)])
+            rows = await db.pool().fetch("SELECT labels, value FROM metrics WHERE name = 'test_m' ORDER BY value")
+            assert [(r["labels"], r["value"]) for r in rows] == [("", 1.0), ("y", 2.0)]
+        finally:
+            await db.close()
+    asyncio.run(main())

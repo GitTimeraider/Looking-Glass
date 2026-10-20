@@ -17,11 +17,10 @@
   <div class="grid g3" style="margin-top:14px">
     <div class="card span2"><h3>Clients over time</h3><div class="chart-box sm"><canvas id="c-clients"></canvas></div></div>
     <div class="card"><h3>Health</h3><div id="health"></div></div>
-    <div class="card"><h3>Clients per Wi-Fi network</h3><div class="chart-box sm"><canvas id="c-ssid"></canvas></div></div>
+    <div class="card"><h3>Clients per Wi-Fi network</h3><div class="chart-box sm"><canvas id="c-ssid"></canvas></div><div class="small muted cl-note"></div></div>
     <div class="card"><h3>Clients per access point</h3><div class="chart-box sm"><canvas id="c-ap"></canvas></div></div>
-    <div class="card"><h3>Wi-Fi experience (avg satisfaction %)</h3><div class="chart-box sm"><canvas id="c-sat"></canvas></div></div>
-    <div class="card"><h3>Device CPU %</h3><div class="chart-box sm"><canvas id="c-cpu"></canvas></div></div>
-    <div class="card span2"><h3>Device uplink throughput</h3><div class="chart-box sm"><canvas id="c-tp"></canvas></div></div>
+    <div class="card"><h3>Wi-Fi experience (avg satisfaction %)</h3><div class="chart-box sm"><canvas id="c-sat"></canvas></div><div class="small muted cl-note"></div></div>
+    <div class="card span3"><h3>Device uplink throughput</h3><div class="chart-box sm"><canvas id="c-tp"></canvas></div></div>
   </div>
 </section>
 <section data-s="devices" hidden>
@@ -148,19 +147,22 @@ function clients() {
 document.getElementById("cfilter").oninput = () => D && clients();
 document.getElementById("ctype").onchange = () => D && clients();
 async function charts() {
-  const m = await LG.api(`/api/metrics/multi?hours=${hours}&names=unifi_clients,unifi_ssid_clients,unifi_ap_clients,unifi_wifi_satisfaction,unifi_device_cpu,unifi_device_tx_bps,unifi_device_rx_bps`);
+  const m = await LG.api(`/api/metrics/multi?hours=${hours}&names=unifi_clients,unifi_ssid_clients,unifi_ap_clients,unifi_wifi_satisfaction,unifi_device_tx_bps,unifi_device_rx_bps`);
   const o = { hours };
   LG.lineChart("c-clients", m.unifi_clients || {}, { ...o, fill: true, rename: l => l === "wifi" ? "Wi-Fi" : l });
   LG.lineChart("c-ssid", m.unifi_ssid_clients || {}, o);
   LG.lineChart("c-ap", m.unifi_ap_clients || {}, o);
   LG.lineChart("c-sat", m.unifi_wifi_satisfaction || {}, { ...o, min: 0, max: 100, rename: () => "experience", fmt: v => Math.round(v) + "%" });
-  LG.lineChart("c-cpu", m.unifi_device_cpu || {}, { ...o, min: 0, fmt: v => Math.round(v) + "%" });
+  // the integration API (API key without the classic API) does not report SSID or experience per client
+  const classic = !D || !D.status || /classic/.test(D.status.mode || "");
+  document.querySelectorAll(".cl-note").forEach(n => n.textContent = classic ? ""
+    : "Not available through the UniFi integration API (API key) – it needs the classic API: a local username / password under Settings › UniFi.");
   const tp = {};
   for (const [k2, v] of Object.entries(m.unifi_device_rx_bps || {})) tp[k2 + " down"] = v;
   for (const [k2, v] of Object.entries(m.unifi_device_tx_bps || {})) tp[k2 + " up"] = v;
   LG.lineChart("c-tp", tp, { ...o, fmt: v => LG.bps(v), neg: l => l.endsWith(" up") });
 }
-showTab(tab); load();
+load().then(() => showTab(tab));
 setInterval(() => { load(); if (tab === "overview") charts(); }, 60000);
 </script>
 {% endblock %}

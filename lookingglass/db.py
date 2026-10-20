@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -125,6 +126,9 @@ async def kv_set(key: str, value: Any) -> None:
 
 
 async def add_metrics(rows: list[tuple[str, str, float]]) -> None:
+    # one bad row (no label, NaN, None) must not lose the whole batch: labels default to '', unusable values are skipped
+    rows = [(n, "" if lab is None else str(lab), float(v)) for n, lab, v in rows
+            if isinstance(v, (int, float)) and math.isfinite(v)]
     if not rows:
         return
     async with pool().acquire() as conn:

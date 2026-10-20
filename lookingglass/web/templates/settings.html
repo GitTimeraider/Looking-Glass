@@ -312,10 +312,21 @@ function payload() {
            verify_ssl: f.verify_ssl.checked, collect_logs: f.collect_logs.checked, enabled: f.enabled.checked };
 }
 function resetForm() { f.reset(); f.id.value = ""; document.getElementById("save").textContent = "Add server"; document.getElementById("form-title").textContent = "Add Unraid server"; document.getElementById("cancel").hidden = true; f.api_key.placeholder = "API key"; }
+const statusHtml = v => v ? `<span class="dot ${v.ok ? "ok" : "bad"}"></span>${v.ok ? "ok" : LG.esc((v.error || "").slice(0, 100))} <span class="muted small">${v.last ? LG.ago(v.last) : ""}</span>` : `<span class="muted">waiting…</span>`;
+let shownServers = "";
+/** Every 30 s while this tab is open: only the status text changes in place - the table (and the link you may be
+ *  clicking) is rebuilt only when the servers themselves changed. */
+async function refreshStatus() {
+  if (document.querySelector('section[data-s="unraid"]').hidden || document.hidden) return;
+  const rows = await LG.api("/api/unraid/servers");
+  if (JSON.stringify(rows.map(r => [r.id, r.name, r.url, r.docker_url, r.enabled])) !== shownServers) return load();
+  rows.forEach(r => { const el = document.querySelector(`[data-status="${r.id}"]`); if (el) el.innerHTML = statusHtml(r.status); });
+}
 async function load() {
   const rows = await LG.api("/api/unraid/servers");
+  shownServers = JSON.stringify(rows.map(r => [r.id, r.name, r.url, r.docker_url, r.enabled]));
   LG.table("#list", [{k: "name", l: "Name", f: (v, r) => `<a href="/unraid">${LG.esc(v)}</a>`}, {k: "url", l: "URL"}, {k: "docker_url", l: "Docker API"},
-    {k: "status", l: "Status", f: v => v ? `<span class="dot ${v.ok ? "ok" : "bad"}"></span>${v.ok ? "ok" : LG.esc((v.error || "").slice(0, 100))} <span class="muted small">${v.last ? LG.ago(v.last) : ""}</span>` : `<span class="muted">waiting…</span>`},
+    {k: "status", l: "Status", f: (v, r) => `<span data-status="${r.id}">${statusHtml(v)}</span>`},
     {k: "enabled", l: "Enabled", f: v => v ? "yes" : "no"},
     {k: "id", l: "", f: v => `<a href="#" data-edit="${v}">edit</a> · <a href="#" data-storage="${v}">arrays &amp; pools</a> · <a href="#" data-del="${v}">delete</a>`}], rows, "No Unraid servers yet.");
   document.querySelectorAll("[data-storage]").forEach(a => a.onclick = e => { e.preventDefault(); openStorage(rows.find(x => x.id === Number(a.dataset.storage))); });
@@ -385,7 +396,7 @@ document.getElementById("storage-save").onclick = async () => {
     m.className = "small ok-msg"; m.textContent = "Saved – applies within a minute."; load();
   } catch (e) { m.className = "small err"; m.textContent = e.message; }
 };
-load(); setInterval(load, 30000);
+load(); setInterval(refreshStatus, 30000);
 
 /* ---------- alert filters ---------- */
 let FLT = { filters: [], rules: {}, labels: {} };
