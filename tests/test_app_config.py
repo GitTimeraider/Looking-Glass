@@ -82,3 +82,16 @@ def test_env_import_save_and_encryption(tmp_path, monkeypatch):
             await db.pool().execute("DELETE FROM app_settings")
             await db.close()
     asyncio.run(main())
+
+
+def test_list_fields_one_per_line():
+    from lookingglass import app_config
+    f = app_config.BY_KEY["intel_allow"]
+    assert f.kind == "list"
+    assert app_config._coerce(f, " evil.example\n\n  203.0.113.5 ,evil.example;x.org\n") == "evil.example, 203.0.113.5, x.org"
+    assert app_config._coerce(f, "") == ""
+    nets = app_config.BY_KEY["syslog_allowed_senders"]
+    assert app_config._coerce(nets, "192.168.1.1\n10.0.0.0/8") == "192.168.1.1, 10.0.0.0/8"
+    import pytest
+    with pytest.raises(app_config.SettingsError, match="not-an-ip"):
+        app_config._coerce(nets, "192.168.1.1\nnot-an-ip")

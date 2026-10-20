@@ -217,6 +217,11 @@ function fieldHtml(f) {
   let input;
   if (f.kind === "bool") input = `<label class="chk"><input type="checkbox" id="${id}" ${f.value ? "checked" : ""}> ${LG.esc(f.label)}</label>`;
   else if (f.kind === "choice") input = `<select id="${id}">${f.choices.map(c => `<option ${c === f.value ? "selected" : ""}>${LG.esc(c)}</option>`).join("")}</select>`;
+  else if (f.kind === "list") {  // one entry per line; grows with its content (see wireLists)
+    const items = splitList(f.value);
+    input = `<textarea id="${id}" class="list-input" rows="${Math.min(14, Math.max(3, items.length + 1))}" spellcheck="false"
+      placeholder="${LG.esc(splitList(f.placeholder).join("\n"))}">${LG.esc(items.join("\n"))}</textarea>`;
+  }
   else if (f.kind === "text") input = `<textarea id="${id}" rows="4" placeholder="${LG.esc(f.placeholder || "")}">${LG.esc(f.value || "")}</textarea>`;
   else if (f.kind === "secret") input = `<div class="secret-row"><input type="password" id="${id}" autocomplete="new-password"
       placeholder="${f.is_set ? "•••••••• stored - type to replace" : "not set"}">
@@ -224,7 +229,19 @@ function fieldHtml(f) {
   else input = `<input id="${id}" type="${f.kind === "int" ? "number" : "text"}" value="${LG.esc(f.value ?? "")}" placeholder="${LG.esc(f.placeholder || "")}"
       ${f.min != null ? `min="${f.min}"` : ""} ${f.max != null ? `max="${f.max}"` : ""}>`;
   return f.kind === "bool" ? `<div class="setting">${input}${help}</div>`
-    : `<div class="setting"><label for="${id}"><b>${LG.esc(f.label)}</b>${f.kind === "secret" ? ` <span class="badge ${f.is_set ? "ok" : ""}">${f.is_set ? "set" : "empty"}</span>` : ""}</label>${input}${help}</div>`;
+    : `<div class="setting"><label for="${id}"><b>${LG.esc(f.label)}</b>${f.kind === "secret" ? ` <span class="badge ${f.is_set ? "ok" : ""}">${f.is_set ? "set" : "empty"}</span>` : ""}${f.kind === "list" ? ` <span class="small muted" data-count-for="${id}"></span>` : ""}</label>${input}${f.kind === "list" ? `<div class="small muted">One per line.</div>` : ""}${help}</div>`;
+}
+const splitList = v => String(v || "").split(/[,;\n]+/).map(x => x.trim()).filter(Boolean);
+function wireLists() {
+  document.querySelectorAll("textarea.list-input").forEach(t => {
+    const count = document.querySelector(`[data-count-for="${t.id}"]`);
+    const fit = () => {
+      const n = splitList(t.value).length;
+      if (count) count.textContent = n ? `(${n} ${n === 1 ? "entry" : "entries"})` : "";
+      t.rows = Math.min(14, Math.max(3, t.value.split("\n").length + 1));  // longer lists scroll inside the box
+    };
+    t.oninput = fit; fit();
+  });
 }
 function groupValues(g) {
   const out = {};
@@ -239,6 +256,7 @@ function groupValues(g) {
 async function loadSettings() {
   const d = await LG.api("/api/settings"); FIELDS = d.fields;
   document.querySelectorAll(".settings-form").forEach(form => form.innerHTML = FIELDS.filter(f => f.group === form.dataset.group).map(fieldHtml).join(""));
+  wireLists();
 }
 const gmsg = (g, html, ok) => { const m = document.getElementById("msg-" + g); m.innerHTML = html; m.className = "small " + (ok ? "ok-msg" : "err"); };
 document.querySelectorAll("[data-save]").forEach(b => b.onclick = async () => {

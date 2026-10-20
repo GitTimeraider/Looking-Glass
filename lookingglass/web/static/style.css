@@ -304,3 +304,6 @@ details.card > summary { cursor: pointer; }
 .dev-list th { z-index: 1; }
 .dev-list td { white-space: nowrap; }
 .dev-list td .cell-clip { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+
+/* list settings: one entry per line */
+.settings-form textarea.list-input { resize: vertical; white-space: pre-wrap; word-break: break-all; line-height: 1.5; min-height: 64px; }
