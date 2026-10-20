@@ -19,7 +19,7 @@
       <div class="card"><h3>CPU %</h3><div class="chart-box sm"><canvas id="c-cpu"></canvas></div></div>
       <div class="card"><h3>Memory / swap %</h3><div class="chart-box sm"><canvas id="c-mem"></canvas></div></div>
       <div class="card"><h3>Temperatures °C</h3><div class="chart-box sm"><canvas id="c-temp"></canvas></div><div class="small muted" id="n-temp"></div></div>
-      <div class="card span2"><h3>Network (receive + / transmit −)</h3><div class="chart-box sm"><canvas id="c-net"></canvas></div><div class="small muted" id="n-net"></div></div>
+      <div class="card span2"><h3>Network (receive + / transmit −)</h3><div class="chart-box tall"><canvas id="c-net"></canvas></div><div class="small muted" id="n-net"></div></div>
       <div class="card"><h3>Per-core load now</h3><div class="chart-box sm"><canvas id="c-cores"></canvas></div></div>
       <div class="card"><h3>VMs</h3><div id="vms"></div></div>
       <div class="card"><h3>UPS</h3><div id="ups"></div></div>
@@ -79,8 +79,15 @@ document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
 const pct = v => Math.round(v) + "%";
 const D = k => (snap[k] || {}).data;
 const kbytes = v => LG.bytes(Number(v) * 1024);
+// module sizes should be bytes, but some API versions report KiB / MiB: scale to match the memory the OS sees
+const ramSize = (layout, seen) => {
+  const sum = layout.reduce((a, x) => a + Number(x.size || 0), 0);
+  if (!sum || !seen) return sum;
+  return [1, 1024, 1024 ** 2, 1024 ** 3].map(f => sum * f).reduce((best, v) => Math.abs(Math.log(v / seen)) < Math.abs(Math.log(best / seen)) ? v : best);
+};
 // "used" from the API includes cache / buffers; really in use (what the % is based on) = total - available
-const memUsed = m => m.available !== undefined && m.available !== null ? Number(m.total) - Number(m.available) : m.used;
+const memUsed = m => m.percentTotal !== undefined && m.percentTotal !== null ? Number(m.total) * m.percentTotal / 100
+  : m.available !== undefined && m.available !== null ? Number(m.total) - Number(m.available) : m.used;
 async function init() {
   servers = await LG.api("/api/unraid/servers");
   if (!servers.length) { document.getElementById("empty").hidden = false; return; }
@@ -121,7 +128,7 @@ function overview(d) {
     <div>System</div><div>${LG.esc([(info.system || {}).manufacturer, (info.system || {}).model].filter(Boolean).join(" ") || "–")}</div>
     <div>Board</div><div>${LG.esc([(info.baseboard || {}).manufacturer, (info.baseboard || {}).model].filter(Boolean).join(" ") || "–")}</div>
     <div>CPU</div><div>${LG.esc([cpu.manufacturer, cpu.brand].filter(Boolean).join(" ") || "–")} ${cpu.cores ? `(${cpu.cores}C/${cpu.threads}T${cpu.speedmax ? ", " + cpu.speedmax + " GHz" : ""})` : ""}</div>
-    <div>RAM</div><div>${layout.length ? `${LG.bytes(layout.reduce((a, x) => a + Number(x.size || 0), 0))} in ${layout.length} module(s) ${LG.esc(layout[0].type || "")} ${layout[0].clockSpeed || ""}${layout[0].clockSpeed ? " MHz" : ""}` : "–"}</div>
+    <div>RAM</div><div>${layout.length ? `${LG.bytes(ramSize(layout, mem.total))} in ${layout.length} module(s) ${LG.esc(layout[0].type || "")} ${layout[0].clockSpeed || ""}${layout[0].clockSpeed ? " MHz" : ""}` : "–"}</div>
     <div>Up since</div><div>${os.uptime ? (isNaN(new Date(os.uptime)) ? LG.esc(os.uptime) : LG.time(os.uptime)) : "–"}</div></div>`;
   LG.chart("c-cores", { type: "bar", data: { labels: ((m.cpu || {}).cpus || []).map((_, i) => "" + i), datasets: [{ data: ((m.cpu || {}).cpus || []).map(c => c.percentTotal), backgroundColor: "#3b82f6" }] },
     options: { maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { y: { min: 0, max: 100 } } } });
@@ -233,9 +240,10 @@ async function charts() {
     const pol = (sec.temps || {}).ok === false ? sec.temps.error : "";
     document.getElementById("n-temp").textContent = empty(m.unraid_temp) ? (pol ? "Sensors: " + pol
       : "No temperature data yet. On Unraid API 4.37.5 or older the sensor list is only read while every disk spins (reading it would wake them); the CPU package temperature is shown instead when the API provides it.") : "";
-    const net = {};
-    for (const [l, v] of Object.entries(m.unraid_net_rx_bps || {})) net[strip(l) + " rx"] = v;
-    for (const [l, v] of Object.entries(m.unraid_net_tx_bps || {})) net[strip(l) + " tx"] = v;
+    // older data still has one line per veth / loopback: leave those out, and interfaces without any traffic
+    const net = {}, keep = (l, v) => !/^(veth|lo$)/.test(strip(l)) && v.some(p => p[1] > 0);
+    for (const [l, v] of Object.entries(m.unraid_net_rx_bps || {})) if (keep(l, v)) net[strip(l) + " rx"] = v;
+    for (const [l, v] of Object.entries(m.unraid_net_tx_bps || {})) if (keep(l, v)) net[strip(l) + " tx"] = v;
     LG.lineChart("c-net", net, { ...o, fmt: v => LG.bps(v), neg: l => l.endsWith(" tx") });
     document.getElementById("n-net").textContent = empty(net) ? ((sec.network || {}).error ? "No network data: " + sec.network.error + "." : "No network data yet.") : "";
   } else if (tab === "storage") {

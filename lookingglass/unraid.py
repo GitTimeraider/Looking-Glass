@@ -91,6 +91,8 @@ QUERIES: dict[str, str] = {
     "vms": """{ vms { domains { id name state } } }""",
     "ups": """{ upsDevices { id name model status battery { chargeLevel estimatedRuntime health } power { loadPercentage currentPower inputVoltage outputVoltage } } }""",
     "shares": """{ shares { name free used size comment cache } }""",
+    # Docker networks: their bridges (br-<id>, docker0, custom names) show up as network interfaces
+    "docker_networks": """{ docker { networks { id name driver options } } }""",
     "docker_stats": "subscription { dockerContainerStats { id cpuPercent memUsage memPercent netIO blockIO } }",
     # wakes EVERY spun-down disk (smartctl -a without -n standby inside the API) - only sent when all disks spin
     "disks": """{ disks { id device name vendor size type interfaceType smartStatus temperature isSpinning serialNum firmwareRevision } }""",
@@ -201,6 +203,7 @@ class UnraidServerPoller:
         self.api_version: str | None = None
         self.smart_done: dict[str, float] = {}
         self.sensor_temps_at = 0.0  # last time the temperature sensor list was read
+        self._nets: dict[str, str] = {}  # Docker network names by bridge interface (br-<id>, docker0, …)
 
     @property
     def prefs(self) -> dict[str, Any]:
@@ -316,6 +319,30 @@ class UnraidServerPoller:
         self.status["sections"]["nut"] = {"ok": True, "variant": f"{host}:{port}"}
         return found
 
+    async def docker_networks(self) -> dict[str, str]:
+        """{bridge interface: Docker network name}, every 10 minutes: from the Unraid API, else the Docker API
+        (socket proxy needs NETWORKS=1). Without either the names stay technical - not an error."""
+        if self.due("docker_networks", 600):
+            nets: list[dict[str, Any]] | None = None
+            d = await self.section("docker_networks", "docker_networks")
+            if d is not None:
+                nets = [{"id": _short_id(n.get("id")), "name": n.get("name"), "driver": n.get("driver"), "options": n.get("options")}
+                        for n in (d.get("docker") or {}).get("networks") or []]
+            elif self.client.docker:
+                try:
+                    r = await self.client.docker.get("/networks")
+                    r.raise_for_status()
+                    nets = [{"id": n.get("Id"), "name": n.get("Name"), "driver": n.get("Driver"), "options": n.get("Options")}
+                            for n in r.json()]
+                    self.status["sections"]["docker_networks"] = {"ok": True, "variant": "Docker API"}
+                except (httpx.HTTPError, ValueError):
+                    pass
+            if nets is None:
+                self.status["sections"].pop("docker_networks", None)
+            else:
+                self._nets = interface_names(nets)
+        return self._nets
+
     async def poll_stats(self) -> None:
         """CPU / memory per container: Docker API (socket proxy) when configured, else - or when that fails - the
         Unraid API subscription."""
@@ -346,10 +373,17 @@ class UnraidServerPoller:
             rows.append(("unraid_mem_pct", sid, round(_num(mem["percentTotal"]), 2)))
         if _num(mem.get("percentSwapTotal")) is not None:
             rows.append(("unraid_swap_pct", sid, round(_num(mem["percentSwapTotal"]), 2)))
+        nets = await self.docker_networks() if m.get("network") else {}
+        traffic: dict[str, list[float]] = {}
         for n in m.get("network") or []:
-            if n.get("name") and _num(n.get("rxSec")) is not None:
-                rows.append(("unraid_net_rx_bps", f"{sid}:{n['name']}", round(_num(n["rxSec"]) * 8, 1)))
-                rows.append(("unraid_net_tx_bps", f"{sid}:{n['name']}", round((_num(n.get("txSec")) or 0.0) * 8, 1)))
+            label = net_label(n.get("name") or "", nets)
+            if label and _num(n.get("rxSec")) is not None:
+                t = traffic.setdefault(label, [0.0, 0.0])
+                t[0] += _num(n["rxSec"]) * 8
+                t[1] += (_num(n.get("txSec")) or 0.0) * 8
+        for label, (rx, tx) in traffic.items():
+            rows.append(("unraid_net_rx_bps", f"{sid}:{label}", round(rx, 1)))
+            rows.append(("unraid_net_tx_bps", f"{sid}:{label}", round(tx, 1)))
         self.status["sections"]["network"] = (
             {"ok": True} if m.get("network") else
             {"ok": False, "error": "this Unraid API version reports no network metrics"
@@ -732,6 +766,37 @@ class UnraidServerPoller:
             rows.append(("container_mem_bytes", f"{self.sid}:{st['name']}", float(st["mem_bytes"])))
         await db.add_metrics(rows)
         self.status["sections"]["docker_stats"] = {"ok": True}
+
+
+def net_label(name: str, docker_nets: dict[str, str]) -> str | None:
+    """Readable chart label for a network interface; None = leave out.
+
+    veth* are the host ends of container network cables (one per container, random names Docker gives no mapping
+    for) - added up as one line; per-container traffic is in the Docker tab. br-<id> is a Docker network bridge."""
+    if not name or name == "lo":
+        return None
+    if name.startswith("veth"):
+        return "containers (all veth)"
+    if name in docker_nets:
+        return f"docker: {docker_nets[name]}"
+    if name.startswith("br-"):
+        return f"docker: {name}"
+    if name == "docker0":
+        return "docker: bridge"
+    return name
+
+
+def interface_names(networks: list[dict[str, Any]]) -> dict[str, str]:
+    """Docker bridge networks -> {interface: network name}: 'br-' + the first 12 characters of the network id, or the
+    bridge name set in its options (docker0 for the default 'bridge' network, br0 for Unraid's custom network)."""
+    out: dict[str, str] = {}
+    for n in networks:
+        if str(n.get("driver") or "") != "bridge" or not n.get("id"):
+            continue
+        opts = n.get("options") if isinstance(n.get("options"), dict) else {}
+        iface = opts.get("com.docker.network.bridge.name") or f"br-{str(n['id'])[:12]}"
+        out[iface] = str(n.get("name") or iface)
+    return out
 
 
 def _short_id(value: Any) -> str:
