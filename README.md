@@ -98,6 +98,14 @@ those under *Settings › Data & detection › DNS: domains to ignore* (subdomai
    mailed once per rule; muted alerts are never mailed. **Preview** shows what a rule would have matched, **send test**
    mails the newest matching alert, untick *On* to pause a rule. Delivery errors show in the rule list.
 
+### Closing an alert
+
+**Close** sticks: while the same thing keeps happening, the closed alert only counts the new sightings - it comes back
+as open only when it gets **worse** (higher severity) or after 24 quiet hours. **Close as false positive** does the same
+and also teaches Looking Glass (repeated ones become a mute / lower suggestion). To never see something again: **Mute
+similar…**. **Trusted** on the Devices page marks a device as known: it is never counted as "new device" in attack
+chains (it does not silence real alerts about the device).
+
 ### Behaviour & machine learning
 
 *Settings › Behaviour & ML* - every check has its own switch, and **Never analyse these devices** (IPs, CIDRs, MACs)
