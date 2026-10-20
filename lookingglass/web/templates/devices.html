@@ -66,18 +66,15 @@ function render() {
   LG.table("#list", [
     {k: "online", l: "", f: v => `<span class="dot ${v ? "ok" : ""}" title="${v ? "online" : "offline"}"></span>`},
     {k: "hostname", l: "Name", f: (v, r) => `<b class="cell-clip" title="${LG.esc(v || "")}">${LG.esc(v || "–")}</b>${v && r.name_source ? ` <span class="small muted" title="${LG.esc(NAME_SRC[r.name_source] || r.name_source)}">${LG.esc(r.name_source === "manual" ? "✎" : r.name_source)}</span>` : ""}${r.notes ? `<div class="small muted cell-clip" title="${LG.esc(r.notes)}">${LG.esc(r.notes)}</div>` : ""}`},
-    {k: "ip", l: "IP", f: LG.ip}, {k: "mac", l: "MAC", f: v => `<span class="mono small">${LG.esc(v)}</span>`},
-    {k: "vendor", l: "Vendor", f: v => v ? `<span class="cell-clip" title="${LG.esc(v)}">${LG.esc(v)}</span>` : ""}, {k: "interface", l: "Interface"},
-    {k: "conn_where", l: "Connected to", f: (v, r) => v ? `<span class="cell-clip" title="${LG.esc(v)}">${LG.esc(v)}</span>${r.conn_signal ? ` <span class="small muted">${r.conn_signal} dBm</span>` : ""}` : ""},
-    {k: "lease_type", l: "Lease", f: (v, r) => `${LG.esc(v || "")}${r.lease_expires ? `<div class="small muted">${LG.esc(r.lease_expires)}</div>` : ""}`},
-    {k: "sources", l: "Seen via", f: v => (v || []).map(s => `<span class="pill">${LG.esc(s)}</span>`).join("")},
-    {k: "events", l: "Events 24h", num: true}, {k: "blocked", l: "Blocked", num: true}, {k: "dns", l: "DNS", num: true},
-    {k: "alerts", l: "Alerts", f: v => v ? `<a href="/alerts" class="badge high">${v}</a>` : ""},
-    {k: "risk", l: "Risk", num: true, f: v => v ? `<span class="badge ${Number(v) >= 60 ? "high" : Number(v) >= 20 ? "medium" : "low"}" title="Risk score">${Math.round(v)}</span>` : ""},
+    {k: "ip", l: "IP / MAC", f: (v, r) => `${LG.ip(v)}<div class="muted">${LG.mac(r.mac)}</div>`},
+    {k: "vendor", l: "Vendor / interface", f: (v, r) => `${v ? `<span class="cell-clip" title="${LG.esc(v)}">${LG.esc(v)}</span>` : ""}${r.interface ? `<div class="small muted">${LG.esc(r.interface)}</div>` : ""}`},
+    {k: "conn_where", l: "Connected to", f: (v, r) => v ? `<span class="cell-clip" title="${LG.esc(v)}">${LG.esc(v)}</span>${r.conn_signal ? `<div class="small muted">${r.conn_signal} dBm</div>` : ""}` : ""},
+    {k: "lease_type", l: "Lease / seen via", f: (v, r) => `${LG.esc(v || "")}${r.lease_expires ? `<div class="small muted">${LG.esc(r.lease_expires)}</div>` : ""}<div>${(r.sources || []).map(s => `<span class="pill">${LG.esc(s)}</span>`).join("")}</div>`},
+    {k: "events", l: "Activity 24h", f: (v, r) => `<span class="small" title="Events / blocked / DNS queries in the last 24 hours">${LG.num(v)} ev<br>${LG.num(r.blocked)} blk<br>${LG.num(r.dns)} dns</span>`},
+    {k: "risk", l: "Alerts / risk", f: (v, r) => `${r.alerts ? `<a href="/alerts" class="badge high">${r.alerts}</a> ` : ""}${v ? `<span class="badge ${Number(v) >= 60 ? "high" : Number(v) >= 20 ? "medium" : "low"}" title="Risk score">${Math.round(v)}</span>` : ""}`},
     {k: "learned", l: "Learned", f: (v, r) => `<a href="#" data-prof="${LG.esc(r.mac)}" title="What is normal for this device">${v ? `${LG.num(v)} items` : "–"}</a>`},
-    {k: "first_seen", l: "First seen", f: LG.time}, {k: "last_seen", l: "Last seen", f: LG.ago},
-    {k: "trusted", l: "Trusted", f: (v, r) => `<input type="checkbox" data-trust="${LG.esc(r.mac)}" ${v ? "checked" : ""}>`},
-    {k: "mac", l: "", f: v => `<a href="#" data-edit="${LG.esc(v)}">edit</a>`},
+    {k: "last_seen", l: "Seen", f: (v, r) => `<span class="small">${LG.ago(v)}<div class="muted" title="First seen">since ${LG.time(r.first_seen)}</div></span>`},
+    {k: "trusted", l: "Trusted", f: (v, r) => `<input type="checkbox" data-trust="${LG.esc(r.mac)}" ${v ? "checked" : ""}> <a href="#" data-edit="${LG.esc(r.mac)}">edit</a>`},
   ], rows, "No devices yet - they appear from the ARP table / DHCP leases once the OPNsense API is connected.");
   fitList();
   document.querySelectorAll("[data-prof]").forEach(a => a.onclick = e => { e.preventDefault(); profile(a.dataset.prof); });

@@ -352,12 +352,12 @@ function openStorage(r) {
   document.getElementById("storage-title").textContent = `Arrays & pools – ${r.name}`;
   const prefs = r.storage || { groups: {} }, groups = r.groups || [];
   const spin = g => g.disks === g.ssd ? `${g.disks} SSD` : `${g.spinning} spinning · ${g.standby} spun down${g.ssd ? ` · ${g.ssd} SSD` : ""}`;
-  document.getElementById("storage-groups").innerHTML = groups.length ? `<table><thead><tr><th>Array / pool</th><th>Disks</th><th>Monitor</th><th>SMART check (only while all disks spin)</th></tr></thead><tbody>` +
+  document.getElementById("storage-groups").innerHTML = groups.length ? `<div class="table-wrap"><table><thead><tr><th>Array / pool</th><th>Disks</th><th>Monitor</th><th>SMART check (only while all disks spin)</th></tr></thead><tbody>` +
     groups.map(g => { const p = (prefs.groups || {})[g.name] || {}; return `<tr data-g="${LG.esc(g.name)}">
       <td><b>${LG.esc(g.name)}</b> <span class="muted small">${g.kind}${g.fsType ? " · " + LG.esc(g.fsType) : ""}</span></td>
       <td class="small">${g.excluded ? "excluded" : spin(g)}</td>
       <td><label class="chk"><input type="checkbox" class="g-mon" ${p.exclude ? "" : "checked"}> show &amp; alert</label></td>
-      <td><select class="g-smart">${SMART.map(([v, l]) => `<option value="${v}" ${(p.smart_minutes || 0) === v ? "selected" : ""}>${l}</option>`).join("")}</select></td></tr>`; }).join("") + `</tbody></table>`
+      <td><select class="g-smart">${SMART.map(([v, l]) => `<option value="${v}" ${(p.smart_minutes || 0) === v ? "selected" : ""}>${l}</option>`).join("")}</select></td></tr>`; }).join("") + `</tbody></table></div>`
     : `<div class="empty">No array or pool data received from this server yet – wait a minute and reopen.</div>`;
   document.getElementById("sensor-temps").value = prefs.sensor_temps || "auto";
   const pol = (r.status || {}).disk_policy || {};

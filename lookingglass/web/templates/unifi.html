@@ -135,7 +135,7 @@ function clients() {
   document.getElementById("cinfo").textContent = `${rows.length} shown`;
   LG.table("#clients", [
     {k: "name", l: "Name", f: (v, r) => `<b>${LG.esc(v || "–")}</b>${r.guest ? ` <span class="pill">guest</span>` : ""}${r.blocked ? ` <span class="badge high">blocked</span>` : ""}`},
-    {k: "ip", l: "IP", f: LG.ip}, {k: "mac", l: "MAC", f: v => `<span class="mono small">${LG.esc(v)}</span>`}, {k: "vendor", l: "Vendor"},
+    {k: "ip", l: "IP", f: LG.ip}, {k: "mac", l: "MAC", f: LG.mac}, {k: "vendor", l: "Vendor"},
     {k: "wired", l: "Type", s: r => r.wired ? "wired" : "wifi", f: v => v ? "wired" : "Wi-Fi"},
     {k: "where", l: "Connected to"}, {k: "ssid", l: "SSID", f: (v, r) => v ? `${LG.esc(v)}${r.radio ? `<div class="small muted">${LG.esc(r.radio)}${r.channel ? " ch " + r.channel : ""}</div>` : ""}` : ""},
     {k: "network", l: "Network", f: (v, r) => `${LG.esc(v || "")}${r.vlan ? `<span class="small muted"> vlan ${r.vlan}</span>` : ""}`},

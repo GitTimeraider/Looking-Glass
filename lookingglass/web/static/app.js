@@ -56,7 +56,8 @@ const LG = {
   },
   sev(s) { return `<span class="badge ${LG.esc(s)}">${LG.esc(s)}</span>`; },
   syslogSev(n) { return ["emerg", "alert", "crit", "err", "warn", "notice", "info", "debug"][n] || n; },
-  ip(ip) { return ip ? `<a class="mono" href="/events?ip=${encodeURIComponent(ip)}&hours=168" title="show events">${LG.esc(ip)}</a>` : ""; },
+  ip(ip) { return ip ? `<a class="mono${String(ip).includes(":") ? "" : " whole"}" href="/events?ip=${encodeURIComponent(ip)}&hours=168" title="show events">${LG.esc(ip)}</a>` : ""; },
+  mac(m) { return m ? `<span class="mono small whole">${LG.esc(m)}</span>` : ""; },
   src(s) { return `<span class="badge src">${LG.esc(s)}</span>`; },
   flag(cc) {
     if (!cc || cc.length !== 2) return "";
@@ -99,9 +100,10 @@ const LG = {
     const body = rows.map((r, i) => `<tr${onRow ? ` class="clickable" data-row="${i}" title="Show matching events"` : ""}>` + cols.map(c => {
       const v = r[c.k];
       const html = c.f ? c.f(v, r) : (c.num ? LG.num(v) : LG.esc(Array.isArray(v) ? v.join(", ") : v));
-      return `<td class="${c.num ? "num" : ""}">${html}</td>`;
+      return `<td class="${c.num ? "num" : ""}" data-label="${LG.esc(c.l || "")}">${html}</td>`;
     }).join("") + "</tr>").join("");
     el.innerHTML = `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    LG.fit(el.querySelector(".table-wrap"));
     el.querySelectorAll("th[data-sort]").forEach(th => th.onclick = () => {
       const i = Number(th.dataset.sort), c = cols[i];
       el._sort = { i, dir: mark && mark.i === i ? -mark.dir : (c.num || c.desc ? -1 : 1) };
@@ -111,6 +113,29 @@ const LG = {
       if (e.target.closest("a")) return;
       onRow(rows[Number(tr.dataset.row)]);
     });
+  },
+  /** Never scroll sideways: a table that does not fit its box (narrow card, phone) gets tighter cells, and if that is
+   *  not enough it is shown as stacked "label: value" rows instead. Checked again whenever the box changes size. Cells need data-label (LG.table sets it). */
+  fit(wrap) {
+    if (!wrap) return;
+    // hand-built tables: take the stacked labels from the header
+    const heads = [...wrap.querySelectorAll("thead th")].map(th => th.textContent.trim());
+    wrap.querySelectorAll("tbody > tr").forEach(tr => [...tr.children].forEach((td, i) => {
+      if (!td.hasAttribute("data-label") && !td.hasAttribute("colspan")) td.setAttribute("data-label", heads[i] || "");
+    }));
+    const check = () => {
+      // first try tighter cells; stack only if that still does not fit
+      wrap.classList.remove("stacked", "compact");
+      const t = wrap.querySelector("table"), over = () => t && t.scrollWidth > wrap.clientWidth;
+      if (over()) wrap.classList.add("compact");
+      if (over()) { wrap.classList.remove("compact"); wrap.classList.add("stacked"); }
+    };
+    check();
+    if (!wrap._fitObs && window.ResizeObserver) {
+      let w = wrap.clientWidth;
+      wrap._fitObs = new ResizeObserver(() => { if (Math.abs(wrap.clientWidth - w) > 1) { w = wrap.clientWidth; check(); } });
+      wrap._fitObs.observe(wrap);
+    }
   },
   // Bar / pie order: "desc" (largest first, as the server sends them), "asc" or "name"
   sortRows(rows, mode) {
@@ -257,3 +282,11 @@ const LG = {
     return `<div class="gauge"><div class="gv">${pct === null || pct === undefined ? "–" : Math.round(p) + "%"}</div><div class="bar ${cls}"><i style="width:${p}%"></i></div><div class="l">${LG.esc(label)}</div>${sub ? `<div class="small muted">${sub}</div>` : ""}</div>`;
   },
 };
+// Every table on every page - also the ones a page builds itself - gets the no-sideways-scrolling check (LG.fit).
+if (window.MutationObserver) {
+  const fitAll = () => document.querySelectorAll(".table-wrap").forEach(w => { if (!w._fitObs) LG.fit(w); });
+  let queued = false;
+  new MutationObserver(() => { if (!queued) { queued = true; requestAnimationFrame(() => { queued = false; fitAll(); }); } })
+    .observe(document.documentElement, { childList: true, subtree: true });
+  document.addEventListener("DOMContentLoaded", fitAll);
+}

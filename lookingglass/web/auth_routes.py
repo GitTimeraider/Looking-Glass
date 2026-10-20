@@ -235,7 +235,7 @@ def register(app: FastAPI, settings: Settings, templates: Jinja2Templates) -> No
         user, mfa = await current_user(request)
         if not user:
             return RedirectResponse("/login")
-        return render(request, "account.html", title="Account", path="/account", user=user, mfa=mfa,
+        return render(request, "account.html", title="Account", path="/account", user=user["username"], mfa=mfa,
                       setup=not mfa, ai_enabled=settings.ai_enabled)
 
     @app.get("/api/account")
