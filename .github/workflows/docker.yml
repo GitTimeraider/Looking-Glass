@@ -1,10 +1,13 @@
 name: build
 
+# documentation-only changes (README, screenshots, example compose files) neither test nor build a new image
 on:
   push:
     branches: [master, main]
-    tags: ["v*"]
+    tags: ["v*"]  # path filters do not apply to tags: a release always builds
+    paths-ignore: ["**.md", "docs/**", "examples/**", "LICENSE"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "examples/**", "LICENSE"]
   workflow_dispatch:
 
 permissions:
