@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from .. import __version__, app_config, auth, crypto, db
-from ..ai import Analyst
+from ..ai import Analyst, request_log
 from ..config import Settings
 from ..ingest import STATS
 from ..dashboards import DASHBOARDS, run_dashboard
@@ -1062,7 +1062,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         cand = _candidate(payload.get("values"))
         if not cand.ai_enabled:
             return {"ok": False, "error": "base URL, API key and model are required"}
-        log.info("AI connection test (Settings › AI analyst › Test)")
+        request_log.info("AI connection test (Settings › AI analyst › Test)")
         body = {"model": cand.ai_model, "max_tokens": 20, "messages": [{"role": "user", "content": "Reply with the single word OK."}]}
         try:
             async with httpx.AsyncClient(base_url=cand.ai_base_url.rstrip("/") + "/", timeout=60,

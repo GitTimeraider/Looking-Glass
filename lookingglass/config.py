@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     syslog_tcp_port: int = 5514
     zenarmor_es_port: int = 9200  # Zenarmor Elasticsearch-compatible receiver port, 0 disables
     log_level: str = "INFO"
+    log_ai_requests: bool = False  # LOG_AI_REQUESTS=true: log every AI request and what started it
 
     # ================ application (web UI -> Settings, database) ============
     # Defaults below; see app_config.FIELDS for labels and help texts.
