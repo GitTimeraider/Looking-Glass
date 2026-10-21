@@ -121,6 +121,7 @@ async def daily_ai_report(settings, analyst: Analyst) -> None:
             rid = await db.pool().fetchval("INSERT INTO reports (period_h, title, data) VALUES (24, $1, $2) RETURNING id",
                                            f"Daily security report {key}", data)
             if settings.ai_enabled:
+                log.info("daily report %s: starting the AI analysis", key)
                 await run_ai_summary(analyst, rid)  # a failure is stored with the report (Retry on its page)
             log.info("daily report %s created", key)
         except Exception:  # noqa: BLE001
