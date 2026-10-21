@@ -79,6 +79,19 @@ def test_correlation_rules():
             lat = await alerts(pool, "lateral_movement")
             assert lat and lat[0]["severity"] == "high" and "SMB" in lat[0]["title"]  # medium + allowed
             assert (await alerts(pool, "dns_bypass"))[0]["ip"] == "192.168.1.60"
+            # with a DNS redirect (port forward 53 -> Unbound) the logged 8.8.8.8 queries were answered locally ...
+            await db.set_snapshot("nat_rules", [{"interface": "lan", "destination_port": "53", "target": "127.0.0.1"}])
+            await db.copy_events([ev("zenarmor", 1, action="conn", src_ip="192.168.1.61", dst_ip="8.8.8.8", dst_port=53,
+                                     data={"dst_npackets": "1"}),
+                                  ev("firewall", 1, action="pass", src_ip="192.168.1.61", dst_ip="8.8.8.8", dst_port=53),
+                                  # ... unless the firewall logged it leaving towards the internet
+                                  ev("firewall", 1, action="pass", src_ip="192.168.1.62", dst_ip="8.8.4.4", dst_port=53,
+                                     direction="out"),
+                                  ev("firewall", 1, action="pass", src_ip="192.168.1.61", dst_ip="1.1.1.1", dst_port=853)])
+            await eng.dns_bypass()
+            got = {(a["ip"], "(53)" in a["title"]) for a in await alerts(pool, "dns_bypass")}
+            assert ("192.168.1.61", True) not in got and ("192.168.1.61", False) in got and ("192.168.1.62", True) in got
+            await db.set_snapshot("nat_rules", [])
             beacon = await alerts(pool, "beaconing")
             assert beacon and "every 5 min" in beacon[0]["title"]
             geo = await alerts(pool, "login_new_location")

@@ -212,6 +212,11 @@ FIELDS: list[Field] = [
     Field("time_format", "display", "Time format", "choice", "24h = 14:05, 12h = 2:05 PM, browser = whatever your browser's "
           "language uses. Applies to the web UI, notification mails and the AI analyst's answers and reports (mails and "
           "AI use the Time zone under Ingestion & network; browser = 24h there).", choices=("24h", "12h", "browser")),
+    Field("theme", "display", "Theme", "choice", "dark, light, or auto = follow the light / dark setting of the browser "
+          "or operating system. Applies to everyone using this Looking Glass.", choices=("dark", "light", "auto")),
+    Field("accent", "display", "Accent color", "choice", "Color of buttons, links and highlights; the background gets a "
+          "light tint of it too (light + purple = lavender). The preview changes as you pick; Save to keep it.",
+          choices=("blue", "indigo", "purple", "pink", "red", "orange", "green", "teal", "cyan", "gray")),
     # data
     Field("retention_days", "data", "Keep events (days)", "int", "", min=1, max=3650),
     Field("metrics_retention_days", "data", "Keep metrics (days)", "int", "", min=1, max=3650),

@@ -3,7 +3,37 @@
   --accent: #3b82f6; --accent2: #60a5fa; --ok: #22c55e; --warn: #f59e0b; --bad: #ef4444; --crit: #d946ef;
   --info: #64748b; --low: #38bdf8; --medium: #f59e0b; --high: #ef4444; --critical: #d946ef;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --a4: #60a5fa; --a5: #3b82f6; --a6: #2563eb; --a7: #1d4ed8; --tint: 0%;
+  color-scheme: dark;
 }
+/* Themes (Settings › Display): <html data-mode="dark|light" data-accent="..."> - the accent colors buttons, links and
+   highlights and tints the background a little, so "light + purple" is lavender, not just purple buttons. */
+[data-accent=blue]   { --a4: #60a5fa; --a5: #3b82f6; --a6: #2563eb; --a7: #1d4ed8; --tint: 0%; }
+[data-accent=indigo] { --a4: #818cf8; --a5: #6366f1; --a6: #4f46e5; --a7: #4338ca; --tint: 7%; }
+[data-accent=purple] { --a4: #a78bfa; --a5: #8b5cf6; --a6: #7c3aed; --a7: #6d28d9; --tint: 8%; }
+[data-accent=pink]   { --a4: #f472b6; --a5: #ec4899; --a6: #db2777; --a7: #be185d; --tint: 6%; }
+[data-accent=red]    { --a4: #f87171; --a5: #ef4444; --a6: #dc2626; --a7: #b91c1c; --tint: 5%; }
+[data-accent=orange] { --a4: #fb923c; --a5: #f97316; --a6: #ea580c; --a7: #c2410c; --tint: 5%; }
+[data-accent=green]  { --a4: #34d399; --a5: #10b981; --a6: #059669; --a7: #047857; --tint: 5%; }
+[data-accent=teal]   { --a4: #2dd4bf; --a5: #14b8a6; --a6: #0d9488; --a7: #0f766e; --tint: 5%; }
+[data-accent=cyan]   { --a4: #22d3ee; --a5: #06b6d4; --a6: #0891b2; --a7: #0e7490; --tint: 5%; }
+[data-accent=gray]   { --a4: #94a3b8; --a5: #64748b; --a6: #475569; --a7: #334155; --tint: 0%; }
+:root[data-accent] { --accent: var(--a5); --accent2: var(--a4); }
+:root[data-mode=light] {
+  --bg: #f3f5f9; --panel: #ffffff; --panel2: #eaeef4; --border: #d5dce6; --text: #18212d; --muted: #5a6779;
+  --accent: var(--a6); --accent2: var(--a7); --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --crit: #c026d3;
+  --low: #0284c7; --medium: #d97706; --high: #dc2626; --critical: #c026d3;
+  color-scheme: light;
+}
+@supports (color: color-mix(in srgb, red 50%, blue)) {
+  :root[data-accent] { --bg: color-mix(in srgb, var(--a5) var(--tint), #0f1419); --panel: color-mix(in srgb, var(--a5) var(--tint), #161d26);
+                  --panel2: color-mix(in srgb, var(--a5) var(--tint), #1c2531); --border: color-mix(in srgb, var(--a5) calc(var(--tint) * 1.5), #263241); }
+  :root[data-mode=light][data-accent] { --bg: color-mix(in srgb, var(--a5) calc(var(--tint) * .9), #f3f5f9); --panel: color-mix(in srgb, var(--a5) calc(var(--tint) * .25), #ffffff);
+                  --panel2: color-mix(in srgb, var(--a5) var(--tint), #eaeef4); --border: color-mix(in srgb, var(--a5) calc(var(--tint) * 1.5), #d5dce6); }
+}
+[data-mode=light] .logview .l3 { color: #b91c1c; } [data-mode=light] .logview .l4 { color: #a16207; }
+[data-mode=light] .badge.src { background: #475569; }
+[data-mode=light] nav.side { box-shadow: 1px 0 0 var(--border); }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 a { color: var(--accent2); text-decoration: none; }
@@ -116,6 +146,7 @@ button:disabled { opacity: .5; cursor: wait; }
 .msgs { flex: 1; overflow: auto; padding-right: 6px; min-height: 300px; }
 .msg { margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border); overflow-wrap: anywhere; }
 .msg.user { background: #1e3a5f; border-color: #1e3a5f; margin-left: 15%; }
+.msg.user { background: color-mix(in srgb, var(--accent) 22%, var(--panel)); border-color: color-mix(in srgb, var(--accent) 35%, var(--panel)); }
 .msg.assistant { background: var(--panel2); }
 .msg.tool { font-size: 12px; color: var(--muted); padding: 4px 12px; background: transparent; border-style: dashed; }
 .msg table { margin: 8px 0; } .msg pre { max-height: 300px; }
@@ -144,7 +175,7 @@ nav.side a { padding: 6px 12px; }
 nav.side .foot { position: static; margin-top: 18px; padding: 0 12px; }
 .ok-msg { color: var(--ok); } .err { color: var(--bad); }
 .or { text-align: center; color: var(--muted); margin: 10px 0; font-size: 12px; }
-.warn-box { border-color: var(--warn); background: #3a2a0a; }
+.warn-box { border-color: var(--warn); background: #3a2a0a; background: color-mix(in srgb, var(--warn) 14%, var(--panel)); }
 .span2 { grid-column: span 2; } .span3 { grid-column: 1 / -1; }
 @media (max-width: 1100px) { .span2 { grid-column: 1 / -1; } }
 .gauge { text-align: center; } .gauge .gv { font-size: 24px; font-weight: 700; } .gauge .l { color: var(--muted); font-size: 12px; text-transform: uppercase; margin-top: 4px; }
@@ -200,7 +231,7 @@ tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--pane
 .todo.dup { color: var(--warn); }
 .avoid { margin-top: 3px; color: var(--muted); font-size: 12px; }
 details.card > summary { cursor: pointer; }
-.badge.info { background: #1e3a5f; color: var(--accent2); }
+.badge.info { background: #1e3a5f; background: color-mix(in srgb, var(--accent) 24%, var(--panel2)); color: var(--accent2); }
 #checks .table-wrap { max-height: none; overflow: visible; }
 
 /* settings: delete collected data */
@@ -311,8 +342,6 @@ details.card > summary { cursor: pointer; }
 /* event search: custom time range */
 #f .range { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 #f .range label { display: inline-flex; gap: 6px; align-items: center; }
-#f input[type=datetime-local] { color-scheme: dark; }
-#f .range input[type=date] { color-scheme: dark; }
 #f .range input.hm { width: 86px; }
 
 /* ---------- no horizontal scrolling anywhere ---------- */
@@ -353,3 +382,8 @@ nav.side .grp { color: var(--accent2); font-size: 12.5px; font-weight: 700; lett
   padding: 12px 12px 6px; border-top: 1px solid var(--border); }
 nav.side .brand + .grp { margin-top: 0; padding-top: 4px; border-top: 0; }
 nav.side .grp ~ a { margin-left: 4px; }
+
+/* Settings › Display: accent swatches (each one's color comes from its own data-accent) */
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
+.swatch { width: 26px; height: 26px; padding: 0; border-radius: 50%; background: var(--a5); border: 2px solid var(--panel); box-shadow: 0 0 0 1px var(--border); }
+.swatch.on { box-shadow: 0 0 0 2px var(--text); }

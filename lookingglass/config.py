@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     # Defaults below; see app_config.FIELDS for labels and help texts.
     timezone: str = "UTC"
     time_format: str = "24h"
+    theme: str = "dark"
+    accent: str = "blue"
     dns_ignore_domains: str = ""
     # behaviour & anomaly detection (Settings › Behaviour & ML)
     behavior_enabled: bool = True

@@ -30,6 +30,7 @@ from .behavior import Matcher
 from .config import Settings
 from .detections import (ALLOWED_AGG, FW_BLOCKED_AGG, FW_RULE_AGG, Rating, corroborate, dga_like, evidence, ignore_list,
                          ignored_domain, raise_alert, registered_domain, verdict)
+from .parsers.common import is_internal_ip
 
 log = logging.getLogger(__name__)
 
@@ -480,6 +481,29 @@ def describe_rule(r: dict[str, Any]) -> str:
              if f("target") else "", f"({f('description', 'descr')})" if f("description", "descr") else "",
              "[disabled]" if str(r.get("enabled", "1")) in ("0", "false") else ""]
     return " ".join(p for p in parts if p).replace("  ", " ")
+
+
+def dns_redirects(rows: list[dict[str, Any]] | None) -> list[str]:
+    """Active port forwards that send DNS (port 53) to the firewall itself / another inside address - the usual
+    'force all devices through my resolver' NAT rule. One describe_rule() line per rule."""
+    out = []
+    for r in rows or []:
+        if not isinstance(r, dict) or str(r.get("enabled", "1")) in ("0", "false") \
+                or str(r.get("disabled", "0")) in ("1", "true") or str(r.get("nordr", "0")) in ("1", "true"):
+            continue
+        port = str(next((r[k] for k in ("destination_port", "destination.port", "dstport") if r.get(k) not in (None, "")), ""))
+        lo, _, hi = port.lower().replace(":", "-").partition("-")
+        if lo == "domain" or (lo.isdigit() and (int(lo) == 53 or hi.isdigit() and int(lo) <= 53 <= int(hi))):
+            target = str(r.get("target") or "").strip()
+            try:
+                addr = ipaddress.ip_address(target)
+                if not (addr.is_loopback or is_internal_ip(addr)):
+                    continue  # redirected to a DNS server on the internet: still past the own resolver
+            except ValueError:
+                if not target:
+                    continue  # an alias / interface address ("LAN address") counts as local
+            out.append(describe_rule(r))
+    return out
 
 
 def exposure_changes(prev: dict[str, str], cur: dict[str, str]) -> tuple[list[str], list[str], list[str]]:

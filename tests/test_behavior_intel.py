@@ -10,7 +10,7 @@ from lookingglass import db
 from lookingglass.behavior import Behavior, Matcher
 from lookingglass.config import Settings
 from lookingglass.detections import DetectionEngine
-from lookingglass.intel import (Intel, describe_rule, exposure_changes, opens_inbound, parse_canaries, parse_feed)
+from lookingglass.intel import (Intel, describe_rule, dns_redirects, exposure_changes, opens_inbound, parse_canaries, parse_feed)
 from lookingglass.mlforest import SubspaceForest
 from lookingglass.parsers.common import event
 
@@ -65,6 +65,17 @@ def test_exposure_diff():
     assert not opens_inbound(describe_rule({"action": "block", "interface": "lan"}))
     added, changed, removed = exposure_changes({"a": "x", "b": "y"}, {"a": "x2", "c": "z"})
     assert (added, removed) == (["z"], ["y"]) and changed == ["x  →  x2"]
+
+
+def test_dns_redirects():
+    rdr = {"interface": "lan", "protocol": "TCP/UDP", "destination_net": "!lan", "destination_port": "53",
+           "target": "127.0.0.1", "local-port": "53", "description": "force DNS"}
+    assert len(dns_redirects([rdr])) == 1 and "force DNS" in dns_redirects([rdr])[0]
+    assert dns_redirects([{**rdr, "target": "lanip"}, {**rdr, "destination_port": "domain", "target": "192.168.1.1"},
+                          {**rdr, "destination_port": "1-1024"}]).__len__() == 3
+    assert dns_redirects([{**rdr, "enabled": "0"}, {**rdr, "disabled": "1"}, {**rdr, "nordr": "1"},
+                          {**rdr, "destination_port": "443"}, {**rdr, "target": "9.9.9.9"}]) == []
+    assert dns_redirects(None) == []
 
 
 # ------------------------------------------------------------------- DB ---
