@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import uvicorn
 
 from . import __version__, app_config, auth, crypto, db, db_config, notify
-from .ai import Analyst
+from .ai import Analyst, request_log
 from .config import get_settings
 from .detections import DetectionEngine, dhcp_listener, zenarmor_device_listener
 from .enrich import Enricher
@@ -121,7 +121,7 @@ async def daily_ai_report(settings, analyst: Analyst) -> None:
             rid = await db.pool().fetchval("INSERT INTO reports (period_h, title, data) VALUES (24, $1, $2) RETURNING id",
                                            f"Daily security report {key}", data)
             if settings.ai_enabled:
-                log.info("daily report %s: starting the AI analysis", key)
+                request_log.info("daily report %s: starting the AI analysis", key)
                 await run_ai_summary(analyst, rid)  # a failure is stored with the report (Retry on its page)
             log.info("daily report %s created", key)
         except Exception:  # noqa: BLE001
@@ -151,6 +151,7 @@ async def amain() -> None:
     settings = get_settings()
     logging.basicConfig(level=settings.log_level.upper(), format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    request_log.setLevel(logging.INFO if settings.log_ai_requests else logging.WARNING)
     log.info("Looking Glass %s starting", __version__)
     try:
         crypto.init(settings.data_dir)

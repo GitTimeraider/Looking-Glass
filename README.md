@@ -692,6 +692,7 @@ user / password / SSL mode · first account.
 | `SECRET_KEY` (or `SECRET_KEY_FILE`) | generated, stored in DB | cookie signing key |
 | `WEB_PORT` / `SYSLOG_UDP_PORT` / `SYSLOG_TCP_PORT` / `ZENARMOR_ES_PORT` | `8080` / `5514` / `5514` / `9200` | container listen ports (`ZENARMOR_ES_PORT=0` disables the receiver) |
 | `LOG_LEVEL` | `INFO` | logging verbosity |
+| `LOG_AI_REQUESTS` | `false` | `true` logs every request to the AI endpoint and what started it (chat / Ask AI, report, daily report, connection test) |
 
 ## Security notes
 
