@@ -262,6 +262,20 @@ async function loadSettings() {
   const d = await LG.api("/api/settings"); FIELDS = d.fields;
   document.querySelectorAll(".settings-form").forEach(form => form.innerHTML = FIELDS.filter(f => f.group === form.dataset.group).map(fieldHtml).join(""));
   wireLists();
+  wireTheme();
+}
+/* Display: preview the theme while picking; swatches set the accent select (their color comes from data-accent) */
+function wireTheme() {
+  const mode = document.getElementById("s-theme"), accent = document.getElementById("s-accent");
+  if (!mode || !accent) return;
+  const f = FIELDS.find(x => x.key === "accent");
+  accent.insertAdjacentHTML("afterend", `<div class="swatches">${f.choices.map(c =>
+    `<button type="button" class="swatch" data-accent="${LG.esc(c)}" title="${LG.esc(c)}" aria-label="${LG.esc(c)}"></button>`).join("")}</div>`);
+  const sync = () => { LG.theme(mode.value, accent.value);
+    document.querySelectorAll(".swatch").forEach(s => s.classList.toggle("on", s.dataset.accent === accent.value)); };
+  document.querySelectorAll(".swatch").forEach(s => s.onclick = () => { accent.value = s.dataset.accent; sync(); });
+  mode.onchange = accent.onchange = sync;
+  sync();
 }
 const gmsg = (g, html, ok) => { const m = document.getElementById("msg-" + g); m.innerHTML = html; m.className = "small " + (ok ? "ok-msg" : "err"); };
 document.querySelectorAll("[data-save]").forEach(b => b.onclick = async () => {

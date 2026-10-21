@@ -170,6 +170,22 @@ const LG = {
                   zenarmor: "#a855f7", qfeeds: "#ec4899", auth: "#eab308", vpn: "#06b6d4", dhcp: "#84cc16", system: "#64748b",
                   unraid: "#f43f5e", docker: "#0ea5e9" },
   charts: {},
+  /* theme (Settings › Display): <html data-theme> is the setting, data-mode the light / dark actually shown */
+  theme(mode, accent) {
+    const r = document.documentElement;
+    if (mode) r.dataset.theme = mode;
+    if (accent) r.dataset.accent = accent;
+    r.dataset.mode = r.dataset.theme === "auto" ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+      : r.dataset.theme === "light" ? "light" : "dark";
+    LG.chartColors();
+    Object.values(LG.charts).forEach(c => c.update("none"));
+  },
+  chartColors() {  // axis text and grid lines follow the theme
+    if (!window.Chart) return;
+    const css = getComputedStyle(document.documentElement);
+    Chart.defaults.color = css.getPropertyValue("--muted").trim() || "#8b98a9";
+    Chart.defaults.borderColor = css.getPropertyValue("--border").trim() || "#263241";
+  },
   chart(id, config) {
     if (LG.charts[id]) LG.charts[id].destroy();
     const el = document.getElementById(id);
@@ -178,8 +194,7 @@ const LG = {
     const empty = !ds.length || ds.every(d => !(d.data || []).length);
     box.classList.toggle("nodata", empty);
     if (empty) { delete LG.charts[id]; return null; }
-    Chart.defaults.color = "#8b98a9";
-    Chart.defaults.borderColor = "#263241";
+    LG.chartColors();
     LG.charts[id] = new Chart(el, config);
     return LG.charts[id];
   },
@@ -291,3 +306,6 @@ if (window.MutationObserver) {
     .observe(document.documentElement, { childList: true, subtree: true });
   document.addEventListener("DOMContentLoaded", fitAll);
 }
+
+LG.theme();  // resolve data-theme="auto" before the page is painted (this script loads in <head>)
+matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => LG.theme());

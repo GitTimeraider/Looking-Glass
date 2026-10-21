@@ -331,6 +331,9 @@ Next logins ask for password + TOTP code or passkey.
 * **Ingestion & network** tab – set *Syslog allowed senders* to your OPNsense IP and your *Time zone*.
 * **Display** tab – *Time format*: 24-hour (default, 14:05), 12-hour (2:05 PM) or your browser's default - for the
   web UI, notification mails and the AI analyst (mails and AI write times in your *Time zone*).
+  *Theme*: dark (default), light, or auto (follows the browser / operating system), and an *Accent color* (blue,
+  indigo, purple, pink, red, orange, green, teal, cyan or gray) for buttons, links and a light tint of the background -
+  e.g. light + purple, dark + purple. The page previews your pick right away; *Save* keeps it.
 * **Zenarmor** / **Unraid servers** / **Data & detection** tabs – optional (see the sections below).
 
 Everything applies immediately. API keys, secrets and passwords are encrypted (Fernet/AES) with a key that is
