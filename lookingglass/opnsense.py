@@ -335,22 +335,29 @@ class Poller:
         await track_devices(devices, origin="arp", mark_online=True)
 
     async def poll_exposure(self) -> None:
-        """Port forwards and firewall rules: alert when something new is opened to the internet (or changed)."""
-        if not self.settings.exposure_watch:
-            return
+        """Port forwards and firewall rules: alert when something new is opened to the internet (or changed). The port
+        forwards are kept as a snapshot either way: the DNS bypass detection needs to know about DNS redirects."""
         from .intel import describe_rule, exposure_changes, opens_inbound
         cur: dict[str, str] = {}
         reachable = False
         for kind, path in (("nat", "firewall/d_nat/search_rule"), ("filter", "firewall/filter/search_rule")):
+            if kind == "filter" and not self.settings.exposure_watch:
+                continue
             try:
                 rows = await self.api.search(path, rows=5000)
             except ApiError as exc:
                 if exc.status in (400, 403, 404):
+                    if kind == "nat":
+                        await db.set_snapshot("nat_rules", [])  # unknown: no redirect assumed
                     continue  # older OPNsense (rules not in the API yet) or no privilege
                 raise
             reachable = True
+            if kind == "nat":
+                await db.set_snapshot("nat_rules", rows)
             for r in rows:
                 cur[f"{kind}:{r.get('uuid') or describe_rule(r)}"] = describe_rule(r)
+        if not self.settings.exposure_watch:
+            return
         labels = await db.get_snapshot("rule_labels") or {}
         for rid, descr in labels.items() if isinstance(labels, dict) else []:
             if descr:

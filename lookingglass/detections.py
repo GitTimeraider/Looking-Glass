@@ -1001,27 +1001,46 @@ class DetectionEngine:
 
     async def dns_bypass(self) -> None:
         """Devices that talk to DNS servers on the internet directly, past your own resolver and its blocklists."""
+        from .intel import dns_redirects  # local import: intel imports this module
         last, current = await self._watermark("dns_bypass")
         rows = await db.pool().fetch(
-            "SELECT src_ip, dst_port, count(*) AS hits, (array_agg(DISTINCT host(dst_ip)))[1:8] AS dsts FROM events "
+            "SELECT src_ip, dst_port, count(*) AS hits, (array_agg(DISTINCT host(dst_ip)))[1:8] AS dsts, "
+            "bool_or(source = 'firewall' AND direction = 'out') AS left_wan FROM events "
             "WHERE id > $1 AND id <= $2 AND source IN ('firewall', 'zenarmor') AND dst_port IN (53, 853) "
             f"AND {ALLOWED_ROW} AND src_ip IS NOT NULL AND dst_ip IS NOT NULL "
             "GROUP BY src_ip, dst_port", last, current)
+        # A NAT port forward that sends port 53 to Unbound catches these queries, but Zenarmor (it sees the packets
+        # before NAT) and the firewall's pass log still show the original destination (8.8.8.8). Only a pass OUT
+        # (on the way to the internet, after NAT) proves the query really left. Known redirect: the configured port
+        # forwards (OPNsense API) or the redirect's own log lines ('rdr', NAT rule with logging on).
+        redirects = dns_redirects(await db.get_snapshot("nat_rules"))
+        rdr_seen = {str(x["src_ip"]) for x in await db.pool().fetch(
+            "SELECT DISTINCT src_ip FROM events WHERE source = 'firewall' AND action = 'rdr' AND dst_port = 53 "
+            "AND src_ip IS NOT NULL AND ts > now() - interval '1 hour'")} if rows else set()
         for r in rows:
             src = str(r["src_ip"])
             dsts = [d for d in r["dsts"] or [] if not self.internal(d)]
             if not self.internal(src) or not dsts:
                 continue
+            if r["dst_port"] == 53 and (redirects or src in rdr_seen) and not r["left_wan"]:
+                continue  # caught by the DNS redirect: answered by your own resolver
             kind = "DNS-over-TLS (853)" if r["dst_port"] == 853 else "plain DNS (53)"
             rating = corroborate(Rating("low", "bypasses your DNS server and its blocklists - common for Chromecast / "
                                                "some IoT with hard-coded DNS, but also used by malware to avoid "
                                                "filtering", sticky=True), await evidence(src, "dns_bypass"))
+            if r["dst_port"] == 53 and redirects:
+                fix = (f"The firewall logged it leaving towards the internet although a DNS redirect exists "
+                       f"({redirects[0]}): check that the redirect's interface / source covers {src}.")
+            elif r["dst_port"] == 53:
+                fix = ("To force all devices through it: OPNsense › Firewall › NAT › Port Forward: redirect LAN TCP/UDP "
+                       "53 to 127.0.0.1 (Unbound). Already have that redirect? Then give Looking Glass's API user the "
+                       "'Firewall: NAT: Port Forward' privilege (or tick 'Log' on the NAT rule) so it knows.")
+            else:
+                fix = "DNS-over-TLS can't be redirected: block it with a LAN rule for TCP 853 to the internet."
             await raise_alert(
                 "dns_bypass", rating, f"{src} uses external DNS servers directly ({kind})", f"dns_bypass:{src}:{r['dst_port']}",
                 src_ip=src, events={"ip": src, "port": r["dst_port"]}, count=r["hits"],
-                description=f"{src} sent {kind} queries to {', '.join(dsts)} instead of your own resolver. To force all "
-                            "devices through it: OPNsense › Firewall › NAT › Port Forward: redirect LAN TCP/UDP 53 to "
-                            "127.0.0.1 (Unbound), and a LAN rule blocking TCP 853 to the internet.")
+                description=f"{src} sent {kind} queries to {', '.join(dsts)} instead of your own resolver. {fix}")
         await self._commit("dns_bypass", current)
 
     async def beaconing(self) -> None:
