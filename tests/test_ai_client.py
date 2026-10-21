@@ -141,3 +141,55 @@ def test_no_empty_text_next_to_tool_calls():
     asyncio.run(main())
     assert sent[0][1]["content"] is None and sent[0][2]["content"] == "(no output)"
     assert history[1]["content"] == ""  # the stored conversation is left as it is
+
+
+def test_dropped_stream_retried_without_streaming(monkeypatch):
+    """'peer closed connection without sending complete message body': the next try is a normal request."""
+    monkeypatch.setattr(ai.asyncio, "sleep", no_wait)
+    seen = []
+
+    def handler(req):
+        seen.append(bool(json.loads(req.content).get("stream")))
+        if seen[-1]:
+            raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "plain"}}]})
+    a, msg = run(handler)
+    assert msg["content"] == "plain" and seen == [True, False] and not a._no_stream
+
+
+def test_last_try_shortens_older_tool_results(monkeypatch):
+    monkeypatch.setattr(ai.asyncio, "sleep", no_wait)
+    sizes = []
+
+    def handler(req):
+        msgs = json.loads(req.content)["messages"]
+        sizes.append([len(m["content"]) for m in msgs if m["role"] == "tool"])
+        if len(sizes) < 3:
+            raise httpx.RemoteProtocolError("peer closed connection")
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+
+    def call(i):
+        return {"role": "assistant", "content": "", "tool_calls": [
+            {"id": f"c{i}", "type": "function", "function": {"name": "list_alerts", "arguments": "{}"}}]}
+
+    history = [{"role": "user", "content": "x"}, call(1), {"role": "tool", "tool_call_id": "c1", "content": "a" * 20000},
+               call(2), {"role": "tool", "tool_call_id": "c2", "content": "b" * 20000}]
+
+    async def main():
+        async with httpx.AsyncClient(base_url="https://ai.example/v1/", transport=httpx.MockTransport(handler)) as client:
+            return await Analyst(S)._complete(client, history, step=3)
+    assert asyncio.run(main())["content"] == "ok"
+    assert sizes[:2] == [[20000, 20000]] * 2 and sizes[2][0] < 5000 and sizes[2][1] == 20000
+    assert len(history[2]["content"]) == 20000  # the stored conversation is left as it is
+
+
+def test_error_explains_a_dropped_connection(monkeypatch):
+    monkeypatch.setattr(ai.asyncio, "sleep", no_wait)
+
+    def handler(req):
+        raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+    try:
+        run(handler, step=5)
+    except RuntimeError as exc:
+        text = str(exc)
+    assert "closed the connection" in text and "step 5" in text and "num_ctx" in text

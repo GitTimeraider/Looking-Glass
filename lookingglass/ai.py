@@ -307,6 +307,15 @@ def _clean_message(m: dict[str, Any]) -> dict[str, Any]:
     return m
 
 
+def compact_tool_results(messages: list[dict[str, Any]], limit: int = 4000) -> list[dict[str, Any]]:
+    """Older tool results cut short, the latest round kept whole: a smaller request for endpoints that drop the
+    connection once the history grows (a local model running out of memory / context, a proxy's body size limit)."""
+    last = max((i for i, m in enumerate(messages) if m.get("role") == "assistant"), default=len(messages))
+    return [{**m, "content": m["content"][:limit] + f"... [shortened from {len(m['content'])} chars]"}
+            if i < last and m.get("role") == "tool" and len(m.get("content") or "") > limit else m
+            for i, m in enumerate(messages)]
+
+
 def plain_tool_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The conversation with tool calls and results written out as ordinary assistant / user messages."""
     out: list[dict[str, Any]] = []
@@ -364,6 +373,12 @@ def explain_ai_error(exc: Exception | None, seconds: float, step: int, s: Settin
     if isinstance(exc, httpx.TimeoutException):
         return (f"No answer from the AI endpoint within {s.ai_timeout} s ({where}). Raise 'Request timeout' "
                 "(Settings › AI analyst) or keep 'Stream answers' on.")
+    if isinstance(exc, (httpx.RemoteProtocolError, httpx.ReadError)):
+        return (f"The AI endpoint closed the connection in the middle of the answer ({where}): {type(exc).__name__}: {exc}. "
+                "The model server (or a proxy in front of it) dropped the request - most often a local model that runs out "
+                "of memory or context once the tool results pile up (raise its context size, e.g. Ollama num_ctx, or use a "
+                "smaller model), or a proxy's request size / time limit. Lowering 'Max tool rounds' (Settings › AI analyst) "
+                "keeps the requests smaller; the server's own log names the exact reason.")
     return f"The AI endpoint could not be reached ({where}): {type(exc).__name__}: {exc}"
 
 
@@ -390,7 +405,7 @@ class Analyst:
             body.update(tools=TOOLS, tool_choice="auto")
         started = time.monotonic()
         last: Exception | None = None
-        attempts, again = 0, False
+        attempts, again, stream = 0, False, True
         request_log.info("AI request: step %d, %d messages, model %s at %s", step, len(messages), self.settings.ai_model,
                  str(client.base_url))
         for attempt in range(3):
@@ -398,8 +413,10 @@ class Analyst:
                 await asyncio.sleep(last.retry_after if isinstance(last, AIError) and last.retry_after else 5 * 4 ** (attempt - 1))
             again = False
             attempts += 1
+            if attempt == 2 and step > 1:
+                body["messages"] = compact_tool_results(body["messages"])  # last try: a smaller request
             try:
-                if self.settings.ai_stream and not self._no_stream:
+                if self.settings.ai_stream and not self._no_stream and stream:
                     try:
                         return await self._stream(client, body)
                     except AIError as exc:
@@ -424,7 +441,10 @@ class Analyst:
                 if exc.status not in RETRY_STATUS:
                     log.warning("AI request (step %d) refused: HTTP %d %s", step, exc.status, exc.body[:500] or "(empty answer)")
                     break
-            except (httpx.TimeoutException, httpx.RemoteProtocolError, httpx.ConnectError) as exc:
+            except (httpx.RemoteProtocolError, httpx.ReadError) as exc:
+                # connection dropped in the middle of the answer: some gateways break on long streams, try a normal request
+                last, stream = exc, False
+            except (httpx.TimeoutException, httpx.ConnectError) as exc:
                 last = exc
             log.warning("AI request (step %d, attempt %d) failed: %s", step, attempt + 1, last)
         raise RuntimeError(explain_ai_error(last, time.monotonic() - started, step, self.settings, attempts)) from last
