@@ -389,6 +389,8 @@ class Analyst:
         started = time.monotonic()
         last: Exception | None = None
         attempts, again = 0, False
+        log.info("AI request: step %d, %d messages, model %s at %s", step, len(messages), self.settings.ai_model,
+                 str(client.base_url))
         for attempt in range(3):
             if attempt and not again:
                 await asyncio.sleep(last.retry_after if isinstance(last, AIError) and last.retry_after else 5 * 4 ** (attempt - 1))
@@ -473,6 +475,7 @@ class Analyst:
         Returns the new messages produced in this turn (user message included)."""
         if not self.settings.ai_enabled:
             raise RuntimeError("AI is not configured: set AI_BASE_URL, AI_API_KEY and AI_MODEL")
+        log.info("AI analysis started: %s", user_message[:120].replace("\n", " "))
         new: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
         system = {"role": "system", "content": await self._system_prompt()}
         base = self.settings.ai_base_url.rstrip("/") + "/"
