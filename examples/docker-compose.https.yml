@@ -56,6 +56,7 @@ services:
     image: postgres:18
     container_name: looking-glass-db
     restart: unless-stopped
+    shm_size: 256mb                   # Docker's default /dev/shm is 64 MB; parallel queries need more
     user: postgres                    # start directly as the postgres user, so no capabilities are needed
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
