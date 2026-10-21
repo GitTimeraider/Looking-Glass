@@ -6,6 +6,8 @@
   Needs a PostgreSQL server first, e.g. the "postgresql16" app from Community Applications (create a user and a
   database "lookingglass"). After starting, open the WebUI: the setup wizard asks for the setup code (container
   log: Docker tab > container icon > Logs), the database address / user / password and your login.
+  Give that PostgreSQL container 512 MB of shared memory (Edit > Advanced View > Extra Parameters, see README): Docker's 64 MB
+  default makes big dashboard queries fail with "could not resize shared memory segment".
   Runs as nobody:users (99:100), the owner of Unraid appdata shares, with all capabilities dropped and
   no-new-privileges (Advanced View > Extra Parameters). An existing appdata folder owned by someone else:
   Unraid terminal: chown -R 99:100 /mnt/user/appdata/looking-glass

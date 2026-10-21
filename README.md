@@ -425,6 +425,13 @@ then `docker compose restart looking-glass`. Make sure the file belongs to the c
 > not `/var/lib/postgresql/data` as in 17 and older. Mounted at the old path, it refuses to start. Fresh installs need
 > nothing extra.
 
+> **`could not resize shared memory segment … No space left on device`** on a dashboard: Docker gives a container
+> only 64 MB of `/dev/shm`, and PostgreSQL's parallel queries run out of it once the tables grow. The compose files
+> set `shm_size: 512mb` on the `db` service. Older compose file: add that line under `db:` (next to `restart:`), then
+> run `docker compose up -d` in `~/looking-glass` on the Docker host. PostgreSQL as a separate container (Unraid,
+> Portainer …): add `--shm-size=512m` to its *Extra Parameters* / run options. Can't change it (external server)?
+> Run `ALTER SYSTEM SET max_parallel_workers_per_gather = 0; SELECT pg_reload_conf();` in `psql` as a superuser.
+
 ### Switching an existing database from `postgres:18-alpine` to `postgres:18`
 
 Compose files before October 2026 used `postgres:18-alpine`. The two images differ in two ways that matter for an
