@@ -204,15 +204,16 @@ async def amain() -> None:
     server.install_signal_handlers = lambda: None  # we handle signals ourselves
 
     web = asyncio.create_task(server.serve(), name="web")
+    servers = [web]  # web servers are stopped with should_exit: cancelling one logs a CancelledError traceback
     es_server = None
     if settings.zenarmor_es_port:
         es_server = uvicorn.Server(uvicorn.Config(create_es_app(settings, writer), host=settings.web_host,
-                                                  port=settings.zenarmor_es_port, log_level="warning"))
+                                                  port=settings.zenarmor_es_port, log_level="warning", lifespan="off"))
         es_server.install_signal_handlers = lambda: None
-        tasks.append(asyncio.create_task(es_server.serve(), name="zenarmor-es"))
+        servers.append(asyncio.create_task(es_server.serve(), name="zenarmor-es"))
         log.info("Zenarmor Elasticsearch-compatible receiver on port %s", settings.zenarmor_es_port)
     log.info("web UI on http://%s:%s", settings.web_host, settings.web_port)
-    done, _ = await asyncio.wait([web, asyncio.create_task(stop.wait()), *tasks], return_when=asyncio.FIRST_COMPLETED)
+    done, _ = await asyncio.wait([*servers, asyncio.create_task(stop.wait()), *tasks], return_when=asyncio.FIRST_COMPLETED)
     for t in done:
         if t.exception() if not t.cancelled() else None:
             log.error("task %s died: %r", t.get_name(), t.exception())
@@ -221,7 +222,7 @@ async def amain() -> None:
         es_server.should_exit = True
     for t in tasks:
         t.cancel()
-    await asyncio.gather(web, return_exceptions=True)
+    await asyncio.gather(*servers, *tasks, return_exceptions=True)
     await db.close()
 
 
