@@ -63,6 +63,18 @@ def test_feed_parsers():
     assert parse_feed("threatfox", tfa) == [("domain", "c2.example.net", "AgentTesla / botnet cc"),
                                             ("ip", "203.0.113.66", "Cobalt Strike / botnet cc")]
     assert parse_feed("threatfox", '{"query_status": "no_results"}') == []
+    # a malware URL on a shared site (GitHub release, Steam profile dead drop) does not make the whole site malicious;
+    # low-confidence ThreatFox IOCs are skipped
+    shared = ('{"query_status": "ok", "data": ['
+              '{"ioc": "https://github.com/x/y/releases/download/1/a.exe", "ioc_type": "url", "malware_printable": "Lumma"},'
+              '{"ioc": "https://steamcommunity.com/profiles/7656", "ioc_type": "url", "malware_printable": "Vidar"},'
+              '{"ioc": "https://raw.githubusercontent.com/x/y/main/p.ps1", "ioc_type": "url"},'
+              '{"ioc": "steamcommunity.com", "ioc_type": "domain"},'
+              '{"ioc": "maybe.example", "ioc_type": "domain", "confidence_level": 25},'
+              '{"ioc": "evil.github.io", "ioc_type": "domain", "confidence_level": "75"}]}')
+    assert parse_feed("threatfox", shared) == [("domain", "evil.github.io", None)]
+    assert parse_feed("urlhaus", '{"query_status": "ok", "urls": [{"host": "cdn.discordapp.com"}, {"host": "bad.example"}]}') \
+        == [("domain", "bad.example", "malware download site")]
     with pytest.raises(RuntimeError, match="Auth-Key"):
         parse_feed("urlhaus", '{"query_status": "unknown_auth_key"}')
     exits = parse_feed("tor_exit", '{"relays": [{"n": "x", "a": ["192.0.2.11"]}]}')  # Onionoo, flag=Exit

@@ -225,6 +225,10 @@ FIELDS: list[Field] = [
           "Domains (subdomains included) the DNS checks - random-looking / DGA names, tunneling, NXDOMAIN "
           "storms - skip, e.g. CDNs or latency probes with random names. Logs and dashboards still show them.",
           placeholder="atoma.cloud, example-cdn.net"),
+    Field("unraid_container_grace", "data", "Unraid: container alerts wait (minutes)", "int", "No 'container stopped' "
+          "alert until the Unraid server has been up this long (after a reboot containers are still starting) and the "
+          "container has been stopped this long. An open one closes by itself once the container has been running "
+          "again this long.", min=1, max=240),
     Field("geoip_db", "data", "GeoIP database path", "str", "MaxMind GeoLite2-City or -Country .mmdb inside the data volume.",
           placeholder="/data/GeoLite2-City.mmdb"),
 ]

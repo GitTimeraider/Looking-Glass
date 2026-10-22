@@ -1,4 +1,11 @@
+import asyncio
+import os
+
+import pytest
+
 from lookingglass import unraid_storage as st
+
+DSN = os.environ.get("TEST_DATABASE_URL")
 
 
 def d(name, typ="DATA", rot=True, spin=True, fs="xfs", fs_size=1000, used=600, idx=0, status="DISK_OK", device="sdx"):
@@ -84,3 +91,46 @@ def test_network_labels():
     assert net_label("lo", nets) is None and net_label("veth9a8b7c6", nets) == "containers (all veth)"
     assert net_label("br-0a1b2c3d4e5f", nets) == "docker: proxynet" and net_label("br-ffffffffffff", nets) == "docker: br-ffffffffffff"
     assert net_label("br0", nets) == "br0" and net_label("docker0", nets) == "docker: bridge"
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_container_down_waits_after_boot_and_closes_when_running_again():
+    from lookingglass import db
+    from lookingglass.config import Settings
+    from lookingglass.unraid import UnraidServerPoller
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE alerts")
+            p = UnraidServerPoller({"id": 1, "name": "Tower", "url": "http://tower", "api_key": "k", "verify_ssl": False},
+                                   Settings(unraid_container_grace=10), None)
+            stopped = [{"names": ["/plex"], "state": "EXITED", "autoStart": True, "status": "Exited (0)"}]
+            running = [{"names": ["/plex"], "state": "RUNNING", "autoStart": True, "status": "Up 11 minutes"}]
+            t = 1_000_000.0
+            p.boot_at, p.reachable_since = t - 60, t  # just rebooted: containers are still starting
+            await p.check_containers(stopped, now=t)
+            await p.check_containers(stopped, now=t + 300)
+            assert await pool.fetchval("SELECT count(*) FROM alerts") == 0
+            await p.check_containers(stopped, now=t + 601)  # up 10 min and still stopped: alert
+            assert await pool.fetchval("SELECT status FROM alerts") == "open"
+            await p.check_containers(running, now=t + 700)  # just started: stays open for now
+            assert await pool.fetchval("SELECT status FROM alerts") == "open"
+            await p.check_containers(running, now=t + 1301)  # running for 10 min: closed
+            row = await pool.fetchrow("SELECT status, close_reason, description FROM alerts")
+            assert row["status"] == "closed" and row["close_reason"] == "resolved" and "running again" in row["description"]
+            await p.check_containers(stopped, now=t + 1400)  # stops again: after the grace time a new / re-opened alert
+            await p.check_containers(stopped, now=t + 2001)
+            assert await pool.fetchval("SELECT status FROM alerts") == "open"
+            p.boot_at = None  # no boot time from the API: Looking Glass's own first contact counts
+            p.reachable_since = t + 3000
+            p.ctr_state.clear()
+            await pool.execute("TRUNCATE alerts")
+            await p.check_containers(stopped, now=t + 3000)
+            await p.check_containers(stopped, now=t + 3500)
+            assert await pool.fetchval("SELECT count(*) FROM alerts") == 0
+        finally:
+            await db.close()
+
+    asyncio.run(main())

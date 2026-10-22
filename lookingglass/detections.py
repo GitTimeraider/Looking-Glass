@@ -237,12 +237,12 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
         status = "closed"  # "create as closed": kept for reference, never shown as open
         data["filter"] = {"id": flt["id"], "name": flt.get("name")}
     row = await pool.fetchrow(
-        "SELECT id, severity, status, data ? 'filter' AS by_filter FROM alerts WHERE fingerprint = $1 "
+        "SELECT id, severity, status, data ? 'filter' OR data ? 'auto_closed' AS by_filter FROM alerts WHERE fingerprint = $1 "
         "AND last_seen > now() - interval '24 hours' ORDER BY id DESC LIMIT 1", fingerprint)
     if row and row["status"] == "closed" and status != "closed":
         # You closed it: it stays closed while it keeps happening (it only collects the new sightings), unless it gets
         # WORSE than when you closed it. After 24 quiet hours it can come back as a new alert. A mute filter that closed
-        # it and has since been removed / paused: back to open.
+        # it and has since been removed / paused, or closed automatically because the problem went away: back to open.
         worse = SEVERITIES.index(severity) > SEVERITIES.index(row["severity"])
         if not (worse or row["by_filter"]):
             count_sql = "count + $2" if mode == "add" else "GREATEST(count, $2)"
@@ -250,7 +250,7 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
             return
         if worse:
             description += (f"\n\nRe-opened: the severity rose from {row['severity']} to {severity} after it was closed.")
-        await pool.execute("UPDATE alerts SET status = 'open', close_reason = NULL, data = data - 'filter' WHERE id = $1", row["id"])
+        await pool.execute("UPDATE alerts SET status = 'open', close_reason = NULL, data = data - 'filter' - 'auto_closed' WHERE id = $1", row["id"])
         log.info("ALERT re-opened [%s] %s", severity, title)
     if row:
         sev = max(row["severity"], severity, key=SEVERITIES.index) if keep_max else severity
