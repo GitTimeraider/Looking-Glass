@@ -45,14 +45,15 @@ MINING_POOLS = (
     "xmrpool.eu", "zergpool.com", "zpool.ca", "xmrig.com", "gulf.moneroocean.stream", "pool.hashvault.pro",
     "mine.c3pool.com", "pool.supportxmr.com", "xmr.2miners.com", "rx.unmineable.com",
 )
-# "api": the abuse.ch API (Auth-Key in the header), used first when a key is set; "url" is the old download
+# "api": the abuse.ch API (Auth-Key in the header; POSTs "json" when given), used instead of "url" (the old download)
+# when a key is set
 FEEDS: dict[str, dict[str, Any]] = {
     "urlhaus": {"url": "https://urlhaus.abuse.ch/downloads/hostfile/", "setting": "intel_urlhaus", "hours": 24,
                 "label": "URLhaus", "abusech": True,
-                "api": {"method": "GET", "url": "https://urlhaus-api.abuse.ch/v1/urls/recent/limit/1000/"}},
+                "api": {"url": "https://urlhaus-api.abuse.ch/v1/urls/recent/limit/1000/"}},
     "threatfox": {"url": "https://threatfox.abuse.ch/export/csv/recent/", "setting": "intel_threatfox", "hours": 24,
                   "label": "ThreatFox", "abusech": True,
-                  "api": {"method": "POST", "url": "https://threatfox-api.abuse.ch/api/v1/", "json": {"query": "get_iocs", "days": 7}}},
+                  "api": {"url": "https://threatfox-api.abuse.ch/api/v1/", "json": {"query": "get_iocs", "days": 7}}},
     "feodo": {"url": "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt", "setting": "intel_feodo",
               "hours": 24, "label": "Feodo Tracker", "abusech": True},
     "sslbl_ja3": {"url": "https://sslbl.abuse.ch/blacklist/ja3_fingerprints.csv", "setting": "intel_ja3", "hours": 24,
@@ -155,7 +156,7 @@ class Intel:
         key = self.s.abusech_auth_key if feed.get("abusech") else ""
         h = {"Auth-Key": key} if key else {}
         if (api := feed.get("api")) and key:
-            r = await client.request(api["method"], api["url"], headers=h, json=api.get("json"))
+            r = await (client.post(api["url"], headers=h, json=api["json"]) if "json" in api else client.get(api["url"], headers=h))
             if r.status_code in (401, 403):
                 raise RuntimeError(f"HTTP {r.status_code}: abuse.ch refused the Auth-Key - check it under Settings › "
                                    "Threat intel & traps (auth.abuse.ch › Optional › Generate Auth-Key)")

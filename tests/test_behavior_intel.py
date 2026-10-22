@@ -290,8 +290,8 @@ def test_threat_intel_canary_and_arp():
 @needs_db
 def test_feed_download_and_rdap(monkeypatch):
     responses = {
-        "urlhaus.abuse.ch": httpx.Response(200, text="127.0.0.1\tbad.example\n"),
-        "threatfox.abuse.ch": httpx.Response(401, text="unauthorized"),
+        "urlhaus-api.abuse.ch": httpx.Response(200, json={"query_status": "ok", "urls": [{"host": "bad.example"}]}),
+        "threatfox-api.abuse.ch": httpx.Response(401, text="unauthorized"),
         "feodotracker.abuse.ch": httpx.Response(200, text="198.51.100.7\n"),
         "sslbl.abuse.ch": httpx.Response(200, text="e7d705a3286e19ea42f587b344ee6865,a,b,Tofsee\n"),
         "onionoo.torproject.org": httpx.Response(200, json={"relays": [{"a": ["192.0.2.9"]}]}),
@@ -308,11 +308,19 @@ def test_feed_download_and_rdap(monkeypatch):
         return resp
     monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
 
+    async def fake_post(self, url, **kw):
+        seen.append((url, (kw.get("headers") or {}).get("Auth-Key"), kw.get("json")))
+        resp = responses[httpx.URL(url).host]
+        resp.request = httpx.Request("POST", url)
+        return resp
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
     async def body(pool):
         st = await Intel(Settings(abusech_auth_key="k3y")).update(force=True)
         assert st["urlhaus"]["ok"] and st["urlhaus"]["count"] == 1 and st["tor_relay"]["count"] == 1
         assert st["threatfox"]["ok"] is False and "Auth-Key" in st["threatfox"]["error"]
-        assert ("https://urlhaus.abuse.ch/downloads/hostfile/", "k3y") in seen
+        assert ("https://urlhaus-api.abuse.ch/v1/urls/recent/limit/1000/", "k3y") in seen  # the API, not the old download
+        assert ("https://threatfox-api.abuse.ch/api/v1/", "k3y", {"query": "get_iocs", "days": 7}) in seen
         assert ("https://check.torproject.org/torbulkexitlist", None) in seen  # the key only goes to abuse.ch
         assert await pool.fetchval("SELECT count(*) FROM intel_indicators") == 5
         # RDAP: a 3-day-old domain looked up after the 2-day warm-up
