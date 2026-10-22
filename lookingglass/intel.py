@@ -17,6 +17,7 @@ import asyncio
 import csv
 import io
 import ipaddress
+import json
 import logging
 import time
 from collections import defaultdict
@@ -44,11 +45,15 @@ MINING_POOLS = (
     "xmrpool.eu", "zergpool.com", "zpool.ca", "xmrig.com", "gulf.moneroocean.stream", "pool.hashvault.pro",
     "mine.c3pool.com", "pool.supportxmr.com", "xmr.2miners.com", "rx.unmineable.com",
 )
+# "api": the abuse.ch API (Auth-Key in the header; POSTs "json" when given), used instead of "url" (the old download)
+# when a key is set
 FEEDS: dict[str, dict[str, Any]] = {
     "urlhaus": {"url": "https://urlhaus.abuse.ch/downloads/hostfile/", "setting": "intel_urlhaus", "hours": 24,
-                "label": "URLhaus", "abusech": True},
+                "label": "URLhaus", "abusech": True,
+                "api": {"url": "https://urlhaus-api.abuse.ch/v1/urls/recent/limit/1000/"}},
     "threatfox": {"url": "https://threatfox.abuse.ch/export/csv/recent/", "setting": "intel_threatfox", "hours": 24,
-                  "label": "ThreatFox", "abusech": True},
+                  "label": "ThreatFox", "abusech": True,
+                  "api": {"url": "https://threatfox-api.abuse.ch/api/v1/", "json": {"query": "get_iocs", "days": 7}}},
     "feodo": {"url": "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt", "setting": "intel_feodo",
               "hours": 24, "label": "Feodo Tracker", "abusech": True},
     "sslbl_ja3": {"url": "https://sslbl.abuse.ch/blacklist/ja3_fingerprints.csv", "setting": "intel_ja3", "hours": 24,
@@ -67,9 +72,44 @@ def _ip(value: str) -> str | None:
         return None
 
 
+def _threatfox_row(value: str, kind: str, threat: str, malware: str) -> tuple[str, str, str | None] | None:
+    info = " / ".join(x for x in (malware, threat.replace("_", " ")) if x and x.lower() != "none") or None
+    if kind == "domain":
+        return ("domain", value.lower().rstrip("."), info)
+    if kind == "ip:port" and (ip := _ip(value.rsplit(":", 1)[0])):
+        return ("ip", ip, info)
+    if kind == "url":
+        host = value.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower()
+        return ("ip", host, info) if _ip(host) else ("domain", host, info)
+    return None
+
+
+def _api_data(name: str, text: str) -> list[dict[str, Any]]:
+    """The entries of an abuse.ch API answer (URLhaus: "urls", ThreatFox: "data"); a refused query raises."""
+    r = json.loads(text)
+    st = r.get("query_status")
+    if st == "no_results":
+        return []
+    if st != "ok":
+        raise RuntimeError(f"abuse.ch API: {st or 'unexpected answer'}" +
+                           (" - check the Auth-Key (Settings › Threat intel & traps)" if "auth" in str(st).lower() else ""))
+    return (r.get("urls") if name == "urlhaus" else r.get("data")) or []
+
+
 def parse_feed(name: str, text: str) -> list[tuple[str, str, str | None]]:
-    """(kind, value, info) rows of one downloaded feed."""
+    """(kind, value, info) rows of one downloaded feed (URLhaus / ThreatFox: the API's JSON or the old download)."""
     out: list[tuple[str, str, str | None]] = []
+    if name in ("urlhaus", "threatfox") and text.lstrip().startswith("{"):
+        for e in _api_data(name, text):
+            if name == "urlhaus":
+                host = str(e.get("host") or "").strip().strip("[]").lower().rstrip(".")
+                if host and host != "localhost":
+                    info = "malware download site" + (f" ({e['threat'].replace('_', ' ')})" if e.get("threat") else "")
+                    out.append(("ip", _ip(host), info) if _ip(host) else ("domain", host, info))
+            elif row := _threatfox_row(str(e.get("ioc") or "").strip(), str(e.get("ioc_type") or ""),
+                                       str(e.get("threat_type") or ""), str(e.get("malware_printable") or "")):
+                out.append(row)
+        return list({(k, v): (k, v, i) for k, v, i in out}.values())
     lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
     if name == "urlhaus":
         for ln in lines:
@@ -80,15 +120,8 @@ def parse_feed(name: str, text: str) -> list[tuple[str, str, str | None]]:
         for row in csv.reader(lines, skipinitialspace=True):
             if len(row) < 8:
                 continue
-            value, kind, threat, malware = row[2].strip(), row[3].strip(), row[4].strip(), row[7].strip()
-            info = " / ".join(x for x in (malware, threat.replace("_", " ")) if x and x.lower() != "none") or None
-            if kind == "domain":
-                out.append(("domain", value.lower().rstrip("."), info))
-            elif kind == "ip:port" and (ip := _ip(value.rsplit(":", 1)[0])):
-                out.append(("ip", ip, info))
-            elif kind == "url":
-                host = value.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower()
-                out.append(("ip", host, info) if _ip(host) else ("domain", host, info))
+            if r := _threatfox_row(row[2].strip(), row[3].strip(), row[4].strip(), row[7].strip()):
+                out.append(r)
     elif name == "feodo":
         out += [("ip", ip, "botnet command & control server") for ln in lines if (ip := _ip(ln.split(",")[0]))]
     elif name == "sslbl_ja3":
@@ -96,7 +129,6 @@ def parse_feed(name: str, text: str) -> list[tuple[str, str, str | None]]:
             if row and len(row[0].strip()) == 32:
                 out.append(("ja3", row[0].strip().lower(), (row[3].strip() if len(row) > 3 else None) or "malware"))
     elif name == "tor_relay":
-        import json
         for relay in (json.loads(text).get("relays") or []):
             for a in relay.get("a") or []:
                 if ip := _ip(a):
@@ -118,6 +150,25 @@ class Intel:
         return v not in (False, "off")
 
     # ------------------------------------------------------------ download ---
+    async def _download(self, client: httpx.AsyncClient, feed: dict[str, Any]) -> str:
+        """The feed's text: abuse.ch's API when it has one and a key is set (the old download URLs answer 401 now),
+        else the download URL."""
+        key = self.s.abusech_auth_key if feed.get("abusech") else ""
+        h = {"Auth-Key": key} if key else {}
+        if (api := feed.get("api")) and key:
+            r = await (client.post(api["url"], headers=h, json=api["json"]) if "json" in api else client.get(api["url"], headers=h))
+            if r.status_code in (401, 403):
+                raise RuntimeError(f"HTTP {r.status_code}: abuse.ch refused the Auth-Key - check it under Settings › "
+                                   "Threat intel & traps (auth.abuse.ch › Optional › Generate Auth-Key)")
+            r.raise_for_status()
+            return r.text
+        r = await client.get(feed["url"], headers=h)
+        if r.status_code in (401, 403):
+            raise RuntimeError(f"HTTP {r.status_code}: abuse.ch wants an Auth-Key (Settings › Threat intel & traps)"
+                               if feed.get("abusech") else f"HTTP {r.status_code}")
+        r.raise_for_status()
+        return r.text
+
     async def update(self, force: bool = False) -> dict[str, Any]:
         status: dict[str, Any] = await db.kv_get("intel:status", {}) or {}
         headers = {"User-Agent": "Looking-Glass (self-hosted security monitor)"}
@@ -133,14 +184,8 @@ class Intel:
                     continue
                 if not force and st.get("ok") and time.time() - st.get("updated", 0) < feed["hours"] * 3600:
                     continue
-                h = {"Auth-Key": self.s.abusech_auth_key} if feed.get("abusech") and self.s.abusech_auth_key else {}
                 try:
-                    r = await client.get(feed["url"], headers=h)
-                    if r.status_code in (401, 403):
-                        raise RuntimeError(f"HTTP {r.status_code}: abuse.ch wants an Auth-Key (Settings › Threat intel "
-                                           "& traps)" if feed.get("abusech") else f"HTTP {r.status_code}")
-                    r.raise_for_status()
-                    rows = parse_feed(name, r.text)
+                    rows = parse_feed(name, await self._download(client, feed))
                     if not rows:
                         raise RuntimeError("the download contained no entries")
                     async with db.pool().acquire() as con, con.transaction():
