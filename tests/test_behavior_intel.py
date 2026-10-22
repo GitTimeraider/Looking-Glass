@@ -52,6 +52,19 @@ def test_feed_parsers():
     assert parse_feed("sslbl_ja3", "# ja3_md5,Firstseen,Lastseen,Listingreason\n"
                                    "e7d705a3286e19ea42f587b344ee6865,2019-01-01,2026-01-01,Tofsee\n")[0] == \
         ("ja3", "e7d705a3286e19ea42f587b344ee6865", "Tofsee")
+    # abuse.ch API answers (the old download URLs answer 401 now)
+    uh = ('{"query_status": "ok", "urls": [{"url": "http://Bad.Example./x.exe", "host": "Bad.Example.", "threat": "malware_download"},'
+          ' {"url": "http://198.51.100.9/a", "host": "198.51.100.9", "threat": "malware_download"}]}')
+    assert parse_feed("urlhaus", uh) == [("domain", "bad.example", "malware download site (malware download)"),
+                                         ("ip", "198.51.100.9", "malware download site (malware download)")]
+    tfa = ('{"query_status": "ok", "data": [{"ioc": "c2.example.net", "ioc_type": "domain", "threat_type": "botnet_cc", '
+           '"malware_printable": "AgentTesla"}, {"ioc": "203.0.113.66:443", "ioc_type": "ip:port", "threat_type": "botnet_cc", '
+           '"malware_printable": "Cobalt Strike"}, {"ioc": "abc", "ioc_type": "md5_hash", "threat_type": "payload"}]}')
+    assert parse_feed("threatfox", tfa) == [("domain", "c2.example.net", "AgentTesla / botnet cc"),
+                                            ("ip", "203.0.113.66", "Cobalt Strike / botnet cc")]
+    assert parse_feed("threatfox", '{"query_status": "no_results"}') == []
+    with pytest.raises(RuntimeError, match="Auth-Key"):
+        parse_feed("urlhaus", '{"query_status": "unknown_auth_key"}')
     tor = parse_feed("tor_relay", '{"relays": [{"n": "x", "a": ["192.0.2.9", "[2001:db8::9]"]}]}')
     assert {v for _, v, _ in tor} == {"192.0.2.9", "2001:db8::9"}
 
@@ -408,3 +421,23 @@ def test_blocked_beaconing_still_counts():
         assert "blocked by the OPNsense firewall (rule “Block LAN to WAN”" in b[0]["description"]
         assert "keeps trying" in b[0]["description"]
     run(body)
+
+
+def test_abusech_download_uses_api_with_key():
+    from lookingglass.intel import FEEDS
+    seen = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append((req.method, str(req.url), req.headers.get("Auth-Key")))
+        if "-api.abuse.ch" in req.url.host:
+            return httpx.Response(200, json={"query_status": "ok", "data": [], "urls": []})
+        return httpx.Response(401)
+
+    async def run(key):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await Intel(Settings(abusech_auth_key=key))._download(c, FEEDS["threatfox"])
+
+    asyncio.run(run("k"))
+    assert seen[-1] == ("POST", "https://threatfox-api.abuse.ch/api/v1/", "k")
+    with pytest.raises(RuntimeError, match="Auth-Key"):  # no key: the old download, which abuse.ch refuses
+        asyncio.run(run(""))
