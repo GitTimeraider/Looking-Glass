@@ -204,6 +204,9 @@ class UnraidServerPoller:
         self.smart_done: dict[str, float] = {}
         self.sensor_temps_at = 0.0  # last time the temperature sensor list was read
         self._nets: dict[str, str] = {}  # Docker network names by bridge interface (br-<id>, docker0, …)
+        self.boot_at: float | None = None  # when the server booted (Unraid API: os.uptime)
+        self.reachable_since: float | None = None  # first good poll since Looking Glass started / the server came back
+        self.ctr_state: dict[str, tuple[str, float]] = {}  # container -> (state, seen in that state since)
 
     @property
     def prefs(self) -> dict[str, Any]:
@@ -248,6 +251,9 @@ class UnraidServerPoller:
 
     async def poll(self) -> None:
         p = max(20, self.settings.poll_interval)
+        if self.failures or self.reachable_since is None:  # (back) online: maybe rebooted - read the boot time now
+            self.reachable_since = time.time()
+            self.last_run.pop("info", None)
         try:
             if self.due("info", 600):
                 await self.step("info", self.poll_info)
@@ -283,6 +289,9 @@ class UnraidServerPoller:
         d = await self.section("info", "info")
         if d:
             await self.snap("info", d.get("info"))
+            up = ((d.get("info") or {}).get("os") or {}).get("uptime")
+            boot = parse_iso(up) if isinstance(up, str) else None
+            self.boot_at = boot.timestamp() if boot and boot.timestamp() <= time.time() + 300 else None
             self.api_version = (((d.get("info") or {}).get("versions") or {}).get("core") or {}).get("api")
 
     async def poll_misc(self) -> None:
@@ -528,12 +537,35 @@ class UnraidServerPoller:
         running = sum(1 for c in containers if c.get("state") == "RUNNING")
         await db.add_metrics([("unraid_containers_running", str(self.sid), running),
                               ("unraid_containers_total", str(self.sid), len(containers))])
+        await self.check_containers(containers)
+
+    async def check_containers(self, containers: list[dict[str, Any]], now: float | None = None) -> None:
+        """'Container stopped' alerts, not while the server is still starting up (after a reboot Unraid starts the
+        containers one after another): only once the server has been up and the container stopped for the grace time.
+        An open alert closes by itself once its container has been running again for that long."""
+        now = now or time.time()
+        grace = max(1, self.settings.unraid_container_grace) * 60
+        up_since = max(self.boot_at or 0, self.reachable_since or now)
+        prefix = f"unraid_ctr:{self.sid}:"
+        open_fps = {r["fingerprint"] for r in await db.pool().fetch(
+            "SELECT fingerprint FROM alerts WHERE rule = 'unraid_container_down' AND status <> 'closed' "
+            "AND fingerprint LIKE $1", prefix.replace("%", r"\%").replace("_", r"\_") + "%")}
         for c in containers:
             name = (c.get("names") or ["?"])[0].lstrip("/")
-            if c.get("autoStart") and c.get("state") == "EXITED":
-                await raise_alert("unraid_container_down", "medium", f"{self.name}: container {name} is stopped",
-                                  f"unraid_ctr:{self.sid}:{name}",
+            state = str(c.get("state") or "")
+            if (prev := self.ctr_state.get(name)) is None or prev[0] != state:
+                self.ctr_state[name] = prev = (state, now)
+            since, fp = prev[1], prefix + name
+            if c.get("autoStart") and state == "EXITED" and now - up_since >= grace and now - since >= grace:
+                await raise_alert("unraid_container_down", "medium", f"{self.name}: container {name} is stopped", fp,
                                   description=f"Container is set to autostart but its state is EXITED ({c.get('status')}).")
+            elif state == "RUNNING" and fp in open_fps and now - since >= grace:
+                await db.pool().execute(
+                    "UPDATE alerts SET status = 'closed', close_reason = 'resolved', data = coalesce(data, '{}') || $2::jsonb, "
+                    "description = coalesce(description, '') || $3 WHERE fingerprint = $1 AND status <> 'closed'", fp,
+                    {"auto_closed": True}, f"\n\nClosed automatically: the container is running again "
+                                           f"({c.get('status') or 'RUNNING'}).")
+                log.info("unraid %s: container %s running again - alert closed", self.name, name)
 
     async def poll_notifications(self) -> None:
         d = await self.section("notifications", "notifications")

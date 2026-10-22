@@ -63,6 +63,18 @@ def test_feed_parsers():
     assert parse_feed("threatfox", tfa) == [("domain", "c2.example.net", "AgentTesla / botnet cc"),
                                             ("ip", "203.0.113.66", "Cobalt Strike / botnet cc")]
     assert parse_feed("threatfox", '{"query_status": "no_results"}') == []
+    # a malware URL on a shared site (GitHub release, Steam profile dead drop) does not make the whole site malicious;
+    # low-confidence ThreatFox IOCs are skipped
+    shared = ('{"query_status": "ok", "data": ['
+              '{"ioc": "https://github.com/x/y/releases/download/1/a.exe", "ioc_type": "url", "malware_printable": "Lumma"},'
+              '{"ioc": "https://steamcommunity.com/profiles/7656", "ioc_type": "url", "malware_printable": "Vidar"},'
+              '{"ioc": "https://raw.githubusercontent.com/x/y/main/p.ps1", "ioc_type": "url"},'
+              '{"ioc": "steamcommunity.com", "ioc_type": "domain"},'
+              '{"ioc": "maybe.example", "ioc_type": "domain", "confidence_level": 25},'
+              '{"ioc": "evil.github.io", "ioc_type": "domain", "confidence_level": "75"}]}')
+    assert parse_feed("threatfox", shared) == [("domain", "evil.github.io", None)]
+    assert parse_feed("urlhaus", '{"query_status": "ok", "urls": [{"host": "cdn.discordapp.com"}, {"host": "bad.example"}]}') \
+        == [("domain", "bad.example", "malware download site")]
     with pytest.raises(RuntimeError, match="Auth-Key"):
         parse_feed("urlhaus", '{"query_status": "unknown_auth_key"}')
     exits = parse_feed("tor_exit", '{"relays": [{"n": "x", "a": ["192.0.2.11"]}]}')  # Onionoo, flag=Exit
@@ -463,3 +475,48 @@ def test_feed_download_sources():
     # nothing works: every source's answer is in the error
     with pytest.raises(RuntimeError, match=r"ipblocklist_recommended.txt: HTTP 404; .*ipblocklist.txt: HTTP 404"):
         asyncio.run(run("", "feodo"))
+
+
+def test_own_feed_addresses():
+    from lookingglass.app_config import BY_KEY, SettingsError, _coerce
+    from lookingglass.intel import FEEDS, parse_sources
+    own = parse_sources("# moved lists\nfeodo: https://mirror.example/ipblocklist.txt\n\n"
+                        'ThreatFox: POST https://threatfox-api.abuse.ch/api/v2/ {"query": "get_iocs", "days": 3}\n')
+    assert own == {"feodo": [{"url": "https://mirror.example/ipblocklist.txt", "custom": True}],
+                   "threatfox": [{"url": "https://threatfox-api.abuse.ch/api/v2/", "json": {"query": "get_iocs", "days": 3},
+                                  "custom": True}]}
+    for bad, msg in (("nope: https://x.example/", "feed name"), ("feodo https://x.example/", "feed name"),
+                     ("feodo: ftp://x.example/", "not an http"), ("threatfox: POST https://x.example/ {bad", "JSON")):
+        with pytest.raises(ValueError, match=msg):
+            parse_sources(bad)
+        with pytest.raises(SettingsError, match=msg):  # saving the setting names the wrong line
+            _coerce(BY_KEY["intel_sources"], bad)
+
+    seen = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append((req.method, str(req.url), req.headers.get("Auth-Key"), req.content))
+        if req.url.host == "mirror.example":
+            return httpx.Response(200, text="198.51.100.7\n")
+        return httpx.Response(404)
+
+    async def run(sources, name):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await Intel(Settings(abusech_auth_key="k", intel_sources=sources))._download(c, name, FEEDS[name])
+
+    # yours come first and win; the Auth-Key is not sent to a non-abuse.ch host
+    rows, url = asyncio.run(run("feodo: https://mirror.example/ipblocklist.txt", "feodo"))
+    assert url == "https://mirror.example/ipblocklist.txt" and rows == [("ip", "198.51.100.7", "botnet command & control server")]
+    assert seen == [("GET", "https://mirror.example/ipblocklist.txt", None, b"")]
+    # yours fails: the built-in addresses are still tried after it
+    seen.clear()
+    with pytest.raises(RuntimeError, match=r"your address gone.example/x: HTTP 404; feodotracker"):
+        asyncio.run(run("feodo: https://gone.example/x", "feodo"))
+    assert [s[1] for s in seen] == ["https://gone.example/x", "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt",
+                                    "https://feodotracker.abuse.ch/downloads/ipblocklist.txt"]
+    assert seen[1][2] == "k"
+    # POST with your body
+    seen.clear()
+    with pytest.raises(RuntimeError):
+        asyncio.run(run('threatfox: POST https://threatfox-api.abuse.ch/api/v2/ {"query": "get_iocs", "days": 3}', "threatfox"))
+    assert seen[0][:3] == ("POST", "https://threatfox-api.abuse.ch/api/v2/", "k") and b'"days":3' in seen[0][3].replace(b" ", b"")

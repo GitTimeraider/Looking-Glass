@@ -91,6 +91,7 @@ class Settings(BaseSettings):
     intel_mining: bool = True
     mining_domains: str = ""
     intel_allow: str = ""
+    intel_sources: str = ""
     nod_enabled: bool = True
     nod_rdap: bool = False
     nod_young_days: int = 30
@@ -148,6 +149,7 @@ class Settings(BaseSettings):
     retention_days: int = 30
     metrics_retention_days: int = 90
     detection_interval: int = 60
+    unraid_container_grace: int = 10  # minutes
 
     # legacy: only imported once into the Unraid server list (Settings -> Integrations)
     unraid_name: str = "Unraid"

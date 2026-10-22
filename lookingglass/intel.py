@@ -45,6 +45,27 @@ MINING_POOLS = (
     "xmrpool.eu", "zergpool.com", "zpool.ca", "xmrig.com", "gulf.moneroocean.stream", "pool.hashvault.pro",
     "mine.c3pool.com", "pool.supportxmr.com", "xmr.2miners.com", "rx.unmineable.com",
 )
+# Sites where anyone can host files / pages under a path (github.com/<user>/..., steamcommunity.com/profiles/<id>,
+# cdn.discordapp.com/attachments/...). URLhaus and ThreatFox list malware URLs on them (payloads in GitHub releases,
+# Steam profiles as C2 "dead drops"), but only the URL is bad: DNS shows just the host name, so listing the host would
+# flag every visit to the site. Domains incl. subdomains - only ones whose subdomains all belong to the platform
+# (not e.g. github.io or amazonaws.com, where <name>.github.io is someone's own site).
+SHARED_HOSTS = (
+    "github.com", "githubusercontent.com", "gitlab.com", "bitbucket.org", "sourceforge.net",
+    "steamcommunity.com", "steampowered.com", "steamstatic.com",
+    "discord.com", "discordapp.com", "discordapp.net", "discord.gg",
+    "google.com", "googleusercontent.com", "googleapis.com", "gstatic.com", "youtube.com", "youtu.be",
+    "dropbox.com", "dropboxusercontent.com", "mediafire.com", "mega.nz", "box.com",
+    "microsoft.com", "live.com", "onedrive.com", "1drv.ms", "office.com", "windows.net",
+    "apple.com", "icloud.com", "amazon.com", "cloudflare.com", "archive.org",
+    "telegram.org", "t.me", "telegram.me", "telegra.ph", "pastebin.com",
+    "twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com", "reddit.com", "vk.com",
+    "bit.ly", "tinyurl.com",
+)
+# raise when what parse_feed keeps changes: the feeds are then downloaded again right away instead of after a day
+FEED_FORMAT = 2
+# ThreatFox: IOCs below this confidence (0-100) are skipped
+THREATFOX_MIN_CONFIDENCE = 50
 # "sources": where a feed can be downloaded, tried in order until one answers with entries - a list that moved or
 # disappeared (404, 410, ...) falls through to the next one. "json": POSTed instead of a GET; "key": needs the abuse.ch
 # Auth-Key (sent in the Auth-Key header, also to the other abuse.ch downloads when set). The old URLhaus / ThreatFox
@@ -68,11 +89,48 @@ FEEDS: dict[str, dict[str, Any]] = {
 }
 
 
+def parse_sources(text: str) -> dict[str, list[dict[str, Any]]]:
+    """Your own feed addresses (Settings › Threat intel & traps › Feed download addresses), by feed: one per line,
+    'feed: URL' or 'feed: POST URL {json}'. Empty lines and # comments are skipped; a wrong line raises ValueError."""
+    out: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for n, line in enumerate((text or "").splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, sep, rest = line.partition(":")
+        name, rest = name.strip().lower(), rest.strip()
+        if not sep or name not in FEEDS:
+            raise ValueError(f"line {n}: start with the feed name and a colon ({', '.join(FEEDS)}), e.g. feodo: https://...")
+        src: dict[str, Any] = {}
+        if rest[:5].upper() == "POST ":
+            url, _, body = rest[5:].strip().partition(" ")
+            try:
+                src["json"] = json.loads(body) if body.strip() else {}
+            except ValueError as exc:
+                raise ValueError(f"line {n}: the POST body is not valid JSON ({exc})") from exc
+        else:
+            url = rest
+        if not url.startswith(("http://", "https://")) or " " in url:
+            raise ValueError(f"line {n}: '{url}' is not an http:// or https:// address")
+        out[name].append({**src, "url": url, "custom": True})
+    return dict(out)
+
+
+def _abusech(url: str) -> bool:
+    host = (httpx.URL(url).host or "").lower()
+    return host == "abuse.ch" or host.endswith(".abuse.ch")
+
+
 def _ip(value: str) -> str | None:
     try:
         return str(ipaddress.ip_address(value.strip().strip("[]")))
     except ValueError:
         return None
+
+
+def shared_host(domain: str) -> bool:
+    d = domain.lower().rstrip(".")
+    return any(d == h or d.endswith("." + h) for h in SHARED_HOSTS)
 
 
 def _threatfox_row(value: str, kind: str, threat: str, malware: str) -> tuple[str, str, str | None] | None:
@@ -109,10 +167,12 @@ def parse_feed(name: str, text: str) -> list[tuple[str, str, str | None]]:
                 if host and host != "localhost":
                     info = "malware download site" + (f" ({e['threat'].replace('_', ' ')})" if e.get("threat") else "")
                     out.append(("ip", _ip(host), info) if _ip(host) else ("domain", host, info))
+            elif _confidence(e.get("confidence_level")) < THREATFOX_MIN_CONFIDENCE:
+                continue
             elif row := _threatfox_row(str(e.get("ioc") or "").strip(), str(e.get("ioc_type") or ""),
                                        str(e.get("threat_type") or ""), str(e.get("malware_printable") or "")):
                 out.append(row)
-        return list({(k, v): (k, v, i) for k, v, i in out}.values())
+        return _unique(out)
     lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
     if name == "urlhaus":
         for ln in lines:
@@ -142,7 +202,19 @@ def parse_feed(name: str, text: str) -> list[tuple[str, str, str | None]]:
             ip = _ip(parts[1]) if parts[0] == "ExitAddress" and len(parts) > 1 else _ip(ln)
             if ip:
                 out.append(("ip", ip, "Tor exit node"))
-    return list({(k, v): (k, v, i) for k, v, i in out}.values())
+    return _unique(out)
+
+
+def _confidence(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 100  # not given: keep
+
+
+def _unique(rows: list[tuple[str, str, str | None]]) -> list[tuple[str, str, str | None]]:
+    """One row per (kind, value), without the hosts of shared sites (SHARED_HOSTS)."""
+    return list({(k, v): (k, v, i) for k, v, i in rows if not (k == "domain" and shared_host(v))}.values())
 
 
 class Intel:
@@ -158,19 +230,25 @@ class Intel:
 
     # ------------------------------------------------------------ download ---
     async def _download(self, client: httpx.AsyncClient, name: str, feed: dict[str, Any]) -> tuple[list, str]:
-        """(rows, url) from the first of the feed's sources that answers with entries; raises with what each one said."""
+        """(rows, url) from the first of the feed's sources - your own addresses first, then the built-in ones - that
+        answers with entries; raises with what each one said."""
         key = self.s.abusech_auth_key if feed.get("abusech") else ""
-        h = {"Auth-Key": key} if key else {}
         errors: list[str] = []
-        for src in feed["sources"]:
+        try:
+            own = parse_sources(self.s.intel_sources).get(name, [])
+        except ValueError as exc:
+            own = []
+            errors.append(f"your feed addresses: {exc}")
+        for src in own + feed["sources"]:
             url = src["url"]
+            h = {"Auth-Key": key} if key and _abusech(url) else {}  # the key never goes to other hosts
             if src.get("key") and not key:
                 errors.append("needs an abuse.ch Auth-Key (Settings › Threat intel & traps: get a free one at auth.abuse.ch "
                               "› Optional › Generate Auth-Key)")
                 continue
             try:
                 r = await (client.post(url, headers=h, json=src["json"]) if "json" in src else client.get(url, headers=h))
-                if r.status_code in (401, 403) and feed.get("abusech"):
+                if r.status_code in (401, 403) and feed.get("abusech") and _abusech(url):
                     raise RuntimeError(f"HTTP {r.status_code}: abuse.ch " + ("refused the Auth-Key - check it under Settings › "
                                        "Threat intel & traps" if key else "wants an Auth-Key (Settings › Threat intel & traps)"))
                 r.raise_for_status()
@@ -180,7 +258,7 @@ class Intel:
                 return rows, url
             except Exception as exc:  # noqa: BLE001 - the next source may still work
                 msg = f"HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else str(exc) or type(exc).__name__
-                errors.append(f"{httpx.URL(url).host}{httpx.URL(url).path}: {msg}")
+                errors.append(("your address " if src.get("custom") else "") + f"{httpx.URL(url).host}{httpx.URL(url).path}: {msg}")
         raise RuntimeError("; ".join(errors))
 
     async def update(self, force: bool = False) -> dict[str, Any]:
@@ -196,7 +274,13 @@ class Intel:
                         changed = True
                     status[name] = {"enabled": False}
                     continue
-                if not force and st.get("ok") and time.time() - st.get("updated", 0) < feed["hours"] * 3600:
+                try:
+                    own = json.dumps(parse_sources(self.s.intel_sources).get(name, []), sort_keys=True)
+                except ValueError:
+                    own = None
+                # changed parsing or your own addresses for this feed: download again now
+                if not force and st.get("ok") and st.get("format") == FEED_FORMAT and st.get("own") == own and \
+                        time.time() - st.get("updated", 0) < feed["hours"] * 3600:
                     continue
                 try:
                     rows, url = await self._download(client, name, feed)
@@ -205,16 +289,28 @@ class Intel:
                         await con.copy_records_to_table("intel_indicators", columns=["kind", "value", "feed", "info"],
                                                         records=[(k, v, name, i) for k, v, i in rows])
                     status[name] = {"enabled": True, "ok": True, "count": len(rows), "updated": time.time(), "error": None,
-                                    "source": url}
+                                    "source": url, "format": FEED_FORMAT, "own": own}
                     changed = True
                     log.info("threat feed %s: %d entries from %s", name, len(rows), url)
                 except Exception as exc:  # noqa: BLE001
                     status[name] = {**st, "enabled": True, "ok": False, "error": str(exc)[:600], "tried": time.time()}
                     log.warning("threat feed %s: %s", name, exc)
         await db.kv_set("intel:status", status)
+        await self.close_shared_host_alerts()
         if changed:
             await db.kv_set("intel:version", time.time())
         return status
+
+    async def close_shared_host_alerts(self) -> None:
+        """Open feed alerts for a shared site (raised before those were left out of the feeds): closed."""
+        rows = await db.pool().fetch("SELECT id, data->>'indicator' AS ind FROM alerts WHERE rule = 'threat_feed' "
+                                     "AND status <> 'closed' AND data ? 'indicator'")
+        if ids := [r["id"] for r in rows if r["ind"] and shared_host(r["ind"])]:
+            await db.pool().execute(
+                "UPDATE alerts SET status = 'closed', close_reason = 'resolved', description = coalesce(description, '') || $2 "
+                "WHERE id = ANY($1::bigint[])", ids, "\n\nClosed automatically: the feed listed a single malicious URL "
+                "on this site, not the site itself - no longer flagged.")
+            log.info("closed %d threat feed alert(s) for shared sites (github.com, steamcommunity.com, ...)", len(ids))
 
     async def updater(self) -> None:
         await asyncio.sleep(60)
