@@ -257,16 +257,17 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             f"FROM alerts WHERE last_seen > now() - make_interval(secs => $1) {cond} "
             f"ORDER BY array_position(ARRAY['critical','high','medium','low','info'], severity), last_seen DESC LIMIT $2", *args)
         out = db.records(rows)
+        # one alert with unexpected stored data (an older version, a hand edit ...) must never fail the whole list:
+        # it is logged and shown without the extras
+        dict_or_empty = lambda v: v if isinstance(v, dict) else {}  # noqa: E731
+        for a in out:
+            a["src_name"] = dict_or_empty(dict_or_empty(a.get("data")).get("device")).get("hostname")
         # device name of the source IP: the one stored when the alert was created (the IP may belong to another
         # device by now); only alerts created before the device had a name get its current name
-        for a in out:
-            a["src_name"] = ((a.get("data") or {}).get("device") or {}).get("hostname")
         ips = list({a["src_ip"] for a in out if a.get("src_ip") and not a["src_name"]})
         names = {r["ip"]: r["hostname"] for r in await db.pool().fetch(
             "SELECT DISTINCT ON (ip) host(ip) ip, hostname FROM devices WHERE ip = ANY($1::inet[]) AND hostname IS NOT NULL "
             "ORDER BY ip, last_seen DESC", ips)} if ips else {}
-        for a in out:
-            a["src_name"] = a["src_name"] or names.get(a.get("src_ip"))
         # which enabled alert filter (mute) matches each alert - the alerts page offers "Unmute" for those
         from .. import alert_filters
 
@@ -274,11 +275,17 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         active_ids = {f["id"] for f in all_filters}
         filters = [f for f in all_filters if f["action"] != "severity"]
         for a in out:
-            f = next((f for f in filters if alert_filters.matches(f, a["rule"], a["severity"], a["title"], a.get("description") or "",
-                                                                 a.get("src_ip"), a.get("dst_ip"))), None)
-            a["muted_by"] = {"id": f["id"], "name": f.get("name") or f"filter #{f['id']}", "action": f["action"]} if f else None
-            ov = (a.get("data") or {}).get("severity_override")
-            a["override_active"] = bool(ov and (ov.get("filter") or {}).get("id") in active_ids)
+            a["src_name"] = a["src_name"] or names.get(a.get("src_ip"))
+            a["muted_by"], a["override_active"] = None, False
+            try:
+                f = next((f for f in filters if alert_filters.matches(f, a["rule"], a["severity"], a["title"], a.get("description") or "",
+                                                                     a.get("src_ip"), a.get("dst_ip"))), None)
+                a["muted_by"] = {"id": f["id"], "name": f.get("name") or f"filter #{f['id']}", "action": f["action"]} if f else None
+                ov = dict_or_empty(a.get("data")).get("severity_override")
+                a["override_active"] = isinstance(ov, dict) and dict_or_empty(ov.get("filter")).get("id") in active_ids
+            except Exception:  # noqa: BLE001
+                log.exception("alerts list: alert #%s (%s, severity %r) could not be checked against the alert filters",
+                              a.get("id"), a.get("rule"), a.get("severity"))
         return out
 
     # ------------------------------------------------------------ layouts ---
