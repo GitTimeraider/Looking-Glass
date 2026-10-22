@@ -233,6 +233,28 @@ tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--pane
 details.card > summary { cursor: pointer; }
 .badge.info { background: #1e3a5f; background: color-mix(in srgb, var(--accent) 24%, var(--panel2)); color: var(--accent2); }
 #checks .table-wrap { max-height: none; overflow: visible; }
+/* Setup & status: one block per data source check */
+.chk { padding: 10px 0 10px 10px; border-top: 1px solid var(--border); border-left: 3px solid transparent; }
+.chk:first-child { border-top: 0; }
+.chk.st-action { border-left-color: var(--bad); } .chk.st-duplicate { border-left-color: var(--warn); }
+.chk.st-info { border-left-color: var(--info); } .chk.st-ok { border-left-color: var(--ok); }
+.chk-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.chk-head .badge { min-width: 70px; text-align: center; }
+.chk-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.chk-meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.chk-meta .pill { margin: 0; }
+.chk-body { margin-top: 4px; padding-left: 80px; font-size: 13px; overflow-wrap: anywhere; }
+.chk.st-ok .chk-body, .chk.st-optional .chk-body { color: var(--muted); }
+@media (max-width: 760px) {
+  .chk { padding-left: 8px; }
+  .chk-head .badge { min-width: 0; }
+  .chk-meta { flex-basis: 100%; }
+  .chk-body { padding-left: 0; }
+  #sum { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  #sum .card { padding: 8px 10px; }
+  #sum .v { font-size: 20px; }
+  #sum .l { font-size: 10.5px; letter-spacing: .2px; }
+}
 
 /* settings: delete collected data */
 .danger-zone { border-color: #7f1d1d; }
