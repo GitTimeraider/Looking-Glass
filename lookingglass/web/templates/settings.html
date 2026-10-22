@@ -515,7 +515,7 @@ document.getElementById("flt-save").onclick = async () => {
 /* ---------- threat feeds ---------- */
 function showFeeds(r) {
   LG.table("#feeds", [
-    {k: "label", l: "Feed"},
+    {k: "label", l: "Feed", f: (v, x) => x.source ? `<span title="Downloaded from ${LG.esc(x.source)}">${LG.esc(v)}</span>` : LG.esc(v)},
     {k: "enabled", l: "State", f: (v, x) => v === false ? `<span class="muted">off</span>` : x.ok ? `<span class="badge ok">ok</span>` : x.error ? `<span class="badge high" title="${LG.esc(x.error)}">error</span>` : `<span class="muted">waiting</span>`},
     {k: "count", l: "Entries", num: true}, {k: "updated", l: "Updated", f: v => v ? LG.ago(v) : "never"},
     {k: "error", l: "", f: v => v ? `<span class="small err">${LG.esc(v)}</span>` : ""},
