@@ -187,6 +187,13 @@ FIELDS: list[Field] = [
     Field("mining_domains", "intel", "Extra mining pool domains", "list", "Added to the built-in list."),
     Field("intel_allow", "intel", "Never flag these domains / IPs", "list", "Domains (incl. their subdomains) "
           "and IPs / CIDRs, for false positives in the feeds."),
+    Field("intel_sources", "intel", "Feed download addresses", "text", "Your own addresses for the feeds, e.g. when "
+          "one moved. One per line: feed: URL - feeds: urlhaus, threatfox, feodo, sslbl_ja3, tor_relay, tor_exit. "
+          "Tried before the built-in addresses (top to bottom); the first that answers with entries is used, so a "
+          "working one of yours replaces the built-in one. For an API that wants a POST: feed: POST URL {json body}. "
+          "The abuse.ch Auth-Key is only sent to abuse.ch addresses.",
+          placeholder="threatfox: POST https://threatfox-api.abuse.ch/api/v1/ {\"query\": \"get_iocs\", \"days\": 3}\n"
+                      "feodo: https://feodotracker.abuse.ch/downloads/ipblocklist.txt"),
     Field("nod_enabled", "intel", "Track newly seen domains", "bool", "Remembers the first time any device looks up a "
           "domain; beaconing and random-domain alerts to such a domain weigh heavier."),
     Field("nod_rdap", "intel", "Look up the registration date (RDAP)", "bool", "Asks the domain registries (rdap.org) "
@@ -288,6 +295,12 @@ def _coerce(f: Field, value: Any) -> Any:
             ZoneInfo(v)
         except Exception as exc:  # noqa: BLE001
             raise SettingsError(f"{f.label}: unknown time zone '{v}'") from exc
+    if f.key == "intel_sources" and v:
+        from .intel import parse_sources
+        try:
+            parse_sources(v)
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: {exc}") from exc
     if f.key == "opnsense_ca_pem" and v and "BEGIN CERTIFICATE" not in v:
         raise SettingsError(f"{f.label}: paste a PEM certificate (-----BEGIN CERTIFICATE-----)")
     return v

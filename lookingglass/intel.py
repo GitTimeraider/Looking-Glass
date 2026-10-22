@@ -89,6 +89,38 @@ FEEDS: dict[str, dict[str, Any]] = {
 }
 
 
+def parse_sources(text: str) -> dict[str, list[dict[str, Any]]]:
+    """Your own feed addresses (Settings › Threat intel & traps › Feed download addresses), by feed: one per line,
+    'feed: URL' or 'feed: POST URL {json}'. Empty lines and # comments are skipped; a wrong line raises ValueError."""
+    out: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for n, line in enumerate((text or "").splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, sep, rest = line.partition(":")
+        name, rest = name.strip().lower(), rest.strip()
+        if not sep or name not in FEEDS:
+            raise ValueError(f"line {n}: start with the feed name and a colon ({', '.join(FEEDS)}), e.g. feodo: https://...")
+        src: dict[str, Any] = {}
+        if rest[:5].upper() == "POST ":
+            url, _, body = rest[5:].strip().partition(" ")
+            try:
+                src["json"] = json.loads(body) if body.strip() else {}
+            except ValueError as exc:
+                raise ValueError(f"line {n}: the POST body is not valid JSON ({exc})") from exc
+        else:
+            url = rest
+        if not url.startswith(("http://", "https://")) or " " in url:
+            raise ValueError(f"line {n}: '{url}' is not an http:// or https:// address")
+        out[name].append({**src, "url": url, "custom": True})
+    return dict(out)
+
+
+def _abusech(url: str) -> bool:
+    host = (httpx.URL(url).host or "").lower()
+    return host == "abuse.ch" or host.endswith(".abuse.ch")
+
+
 def _ip(value: str) -> str | None:
     try:
         return str(ipaddress.ip_address(value.strip().strip("[]")))
@@ -198,19 +230,25 @@ class Intel:
 
     # ------------------------------------------------------------ download ---
     async def _download(self, client: httpx.AsyncClient, name: str, feed: dict[str, Any]) -> tuple[list, str]:
-        """(rows, url) from the first of the feed's sources that answers with entries; raises with what each one said."""
+        """(rows, url) from the first of the feed's sources - your own addresses first, then the built-in ones - that
+        answers with entries; raises with what each one said."""
         key = self.s.abusech_auth_key if feed.get("abusech") else ""
-        h = {"Auth-Key": key} if key else {}
         errors: list[str] = []
-        for src in feed["sources"]:
+        try:
+            own = parse_sources(self.s.intel_sources).get(name, [])
+        except ValueError as exc:
+            own = []
+            errors.append(f"your feed addresses: {exc}")
+        for src in own + feed["sources"]:
             url = src["url"]
+            h = {"Auth-Key": key} if key and _abusech(url) else {}  # the key never goes to other hosts
             if src.get("key") and not key:
                 errors.append("needs an abuse.ch Auth-Key (Settings › Threat intel & traps: get a free one at auth.abuse.ch "
                               "› Optional › Generate Auth-Key)")
                 continue
             try:
                 r = await (client.post(url, headers=h, json=src["json"]) if "json" in src else client.get(url, headers=h))
-                if r.status_code in (401, 403) and feed.get("abusech"):
+                if r.status_code in (401, 403) and feed.get("abusech") and _abusech(url):
                     raise RuntimeError(f"HTTP {r.status_code}: abuse.ch " + ("refused the Auth-Key - check it under Settings › "
                                        "Threat intel & traps" if key else "wants an Auth-Key (Settings › Threat intel & traps)"))
                 r.raise_for_status()
@@ -220,7 +258,7 @@ class Intel:
                 return rows, url
             except Exception as exc:  # noqa: BLE001 - the next source may still work
                 msg = f"HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else str(exc) or type(exc).__name__
-                errors.append(f"{httpx.URL(url).host}{httpx.URL(url).path}: {msg}")
+                errors.append(("your address " if src.get("custom") else "") + f"{httpx.URL(url).host}{httpx.URL(url).path}: {msg}")
         raise RuntimeError("; ".join(errors))
 
     async def update(self, force: bool = False) -> dict[str, Any]:
@@ -236,7 +274,12 @@ class Intel:
                         changed = True
                     status[name] = {"enabled": False}
                     continue
-                if not force and st.get("ok") and st.get("format") == FEED_FORMAT and \
+                try:
+                    own = json.dumps(parse_sources(self.s.intel_sources).get(name, []), sort_keys=True)
+                except ValueError:
+                    own = None
+                # changed parsing or your own addresses for this feed: download again now
+                if not force and st.get("ok") and st.get("format") == FEED_FORMAT and st.get("own") == own and \
                         time.time() - st.get("updated", 0) < feed["hours"] * 3600:
                     continue
                 try:
@@ -246,7 +289,7 @@ class Intel:
                         await con.copy_records_to_table("intel_indicators", columns=["kind", "value", "feed", "info"],
                                                         records=[(k, v, name, i) for k, v, i in rows])
                     status[name] = {"enabled": True, "ok": True, "count": len(rows), "updated": time.time(), "error": None,
-                                    "source": url, "format": FEED_FORMAT}
+                                    "source": url, "format": FEED_FORMAT, "own": own}
                     changed = True
                     log.info("threat feed %s: %d entries from %s", name, len(rows), url)
                 except Exception as exc:  # noqa: BLE001

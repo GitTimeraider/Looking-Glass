@@ -91,6 +91,7 @@ class Settings(BaseSettings):
     intel_mining: bool = True
     mining_domains: str = ""
     intel_allow: str = ""
+    intel_sources: str = ""
     nod_enabled: bool = True
     nod_rdap: bool = False
     nod_young_days: int = 30
