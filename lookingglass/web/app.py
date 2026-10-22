@@ -257,6 +257,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             f"FROM alerts WHERE last_seen > now() - make_interval(secs => $1) {cond} "
             f"ORDER BY array_position(ARRAY['critical','high','medium','low','info'], severity), last_seen DESC LIMIT $2", *args)
         out = db.records(rows)
+        # current device name of the source IP: also for devices that got their name after the alert was created
+        ips = list({a["src_ip"] for a in out if a.get("src_ip")})
+        names = {r["ip"]: r["hostname"] for r in await db.pool().fetch(
+            "SELECT DISTINCT ON (ip) host(ip) ip, hostname FROM devices WHERE ip = ANY($1::inet[]) AND hostname IS NOT NULL "
+            "ORDER BY ip, last_seen DESC", ips)} if ips else {}
+        for a in out:
+            a["src_name"] = names.get(a.get("src_ip")) or ((a.get("data") or {}).get("device") or {}).get("hostname")
         # which enabled alert filter (mute) matches each alert - the alerts page offers "Unmute" for those
         from .. import alert_filters
 

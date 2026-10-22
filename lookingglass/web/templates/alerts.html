@@ -68,7 +68,8 @@ function override(a) {
 function device(a) {
   const d = (a.data || {}).device;
   if (!d) return "";
-  return `<div class="small muted">${LG.esc([d.hostname, d.vendor, d.mac].filter(Boolean).join(" · "))}</div>` +
+  const info = [a.src_name ? null : d.hostname, d.vendor, d.mac].filter(Boolean);  // the name itself is shown above the IP
+  return (info.length ? `<div class="small muted">${LG.esc(info.join(" · "))}</div>` : "") +
     (d.conn_where ? `<div class="small muted" title="Where UniFi sees this device">📍 ${LG.esc(d.conn_where)}${d.conn_signal ? ` · ${d.conn_signal} dBm` : ""}</div>` : "");
 }
 async function unmute(id) {
@@ -86,7 +87,7 @@ function render() {
     rows.map(a => `<tr id="a${a.id}">
       <td><input type="checkbox" value="${a.id}" ${picked.has(a.id) ? "checked" : ""}></td><td>${LG.sev(a.severity)}</td>
       <td><b>${LG.esc(a.title)}</b>${a.muted_by ? `<div class="small muted-by">🔇 Muted by <a href="/settings?edit=${a.muted_by.id}#filters" title="Adjust this filter">${LG.esc(a.muted_by.name)} ✎</a>${a.muted_by.action === "close" ? " (created as closed)" : " - new alerts like this are not created"}</div>` : ""}${override(a)}${why(a)}<div class="small muted">${LG.esc(desc(a))}</div></td>
-      <td class="small rule-cell">${LG.esc(a.rule)}</td><td>${a.src_ip ? LG.ip(a.src_ip) : `<span class="muted">–</span>`}${device(a)}</td><td class="num">${LG.num(a.count)}</td>
+      <td class="small rule-cell">${LG.esc(a.rule)}</td><td>${a.src_name ? `<div><b>${LG.esc(a.src_name)}</b></div>` : ""}${a.src_ip ? LG.ip(a.src_ip) : `<span class="muted">–</span>`}${device(a)}</td><td class="num">${LG.num(a.count)}</td>
       <td class="small seen-cell" title="first ${LG.esc(LG.time(a.created_at))}">last ${LG.ago(a.last_seen)}<div class="muted">first ${LG.time(a.created_at)}</div><span class="pill">${LG.esc(a.status)}</span>${a.close_reason === "false_positive" ? `<span class="pill" title="Closed as false positive">false positive</span>` : ""}</td>
       <td><div class="actions">${eventsUrl(a) ? `<a class="btn secondary small" href="${eventsUrl(a)}" title="Show the events behind this alert">Events</a>` : ""}${a.muted_by ? `<button type="button" class="secondary small" data-unmute="${a.muted_by.id}" title="Delete the filter “${LG.esc(a.muted_by.name)}” so alerts like this are created again">Unmute</button>`
         : `<a class="btn secondary small" href="${muteUrl(a)}" title="Create a filter that stops alerts like this one">Mute similar…</a>`}<a class="btn secondary small" href="${muteUrl(a, "severity")}" title="Give alerts like this one your own severity from now on">Change severity…</a>{% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do.`)}" title="Let the AI analyst investigate this alert">Ask AI</a>{% endif %}</div></td>
