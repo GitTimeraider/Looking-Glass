@@ -433,16 +433,24 @@ async function loadFilters() {
     rules.map(r => `<label class="chk"><input type="checkbox" name="rules" value="${LG.esc(r.rule)}"> ${LG.esc(r.label)} <span class="muted small mono">${LG.esc(r.rule)}</span></label>`).join("") +
     `</details>`).join("");
   document.querySelectorAll('#flt-rules input').forEach(c => c.onchange = ruleCounts);
-  LG.table("#flt-list", [
-    {k: "enabled", l: "On", f: (v, r) => `<input type="checkbox" data-ftoggle="${r.id}" ${v ? "checked" : ""} title="Untick to pause this filter (unmute for now, keep it for later)">`},
-    {k: "name", l: "Name", f: v => LG.esc(v || "–")},
-    {k: "id", l: "Matches", f: (v, r) => fltSummary(r)},
-    {k: "action", l: "Action", f: (v, r) => v === "close" ? "create as closed" : v === "severity" ? `severity → ${LG.sev(r.set_severity)}` : "don't create"},
-    {k: "hits", l: "Hits", num: true}, {k: "last_hit", l: "Last hit", f: v => v ? LG.ago(v) : "never"},
-    {k: "id", l: "", f: v => `<a href="#" data-fedit="${v}">edit</a> · <a href="#" data-fapply="${v}" title="Apply to the open / acknowledged alerts this filter matches">${(FLT.filters.find(x => x.id === v) || {}).action === "severity" ? "re-rate matching" : "close matching"}</a> · ${(FLT.filters.find(x => x.id === v) || {}).action === "severity"
-      ? `<a href="#" data-fdel="${v}" title="Delete this severity rule: open alerts it changed get their own severity back">delete</a>`
-      : `<a href="#" data-fdel="${v}" title="Delete the filter: these alerts are created again">unmute (delete)</a>`}`},
-  ], FLT.filters, "No filters yet - every alert is created.");
+  // one block per filter: on/off, name, what it does and how often it hit; what it matches and the actions below
+  const ACTION_TXT = f => f.action === "close" ? "create as closed" : f.action === "severity" ? `severity → ${LG.sev(f.set_severity)}` : "don't create";
+  document.getElementById("flt-list").innerHTML = FLT.filters.map(f => `<div class="flt${f.enabled ? "" : " off"}">
+    <div class="flt-head">
+      <label class="flt-on" title="Untick to pause this filter (unmute for now, keep it for later)"><input type="checkbox" data-ftoggle="${f.id}" ${f.enabled ? "checked" : ""}></label>
+      <b class="flt-name">${LG.esc(f.name || "–")}</b>
+      <span class="flt-act">${ACTION_TXT(f)}</span>
+      <span class="small muted flt-hits">${LG.num(f.hits || 0)} hits · last ${f.last_hit ? LG.ago(f.last_hit) : "never"}</span>
+    </div>
+    <div class="flt-match small"><span class="muted">Matches:</span> ${fltSummary(f) || `<span class="muted">nothing (no conditions)</span>`}</div>
+    <div class="flt-btns">
+      <button type="button" class="secondary small" data-fedit="${f.id}">Edit</button>
+      <button type="button" class="secondary small" data-fapply="${f.id}" title="Apply to the open / acknowledged alerts this filter matches">${f.action === "severity" ? "Re-rate matching" : "Close matching"}</button>
+      ${f.action === "severity"
+        ? `<button type="button" class="secondary small" data-fdel="${f.id}" title="Delete this severity rule: open alerts it changed get their own severity back">Delete</button>`
+        : `<button type="button" class="secondary small" data-fdel="${f.id}" title="Delete the filter: these alerts are created again">Unmute (delete)</button>`}
+    </div>
+  </div>`).join("") || `<div class="empty">No filters yet - every alert is created.</div>`;
   document.querySelectorAll("[data-ftoggle]").forEach(c => c.onchange = async () => {
     const f = FLT.filters.find(x => x.id === Number(c.dataset.ftoggle));
     await LG.api(`/api/alert-filters/${f.id}`, { method: "PUT", body: { ...f, enabled: c.checked } }); loadFilters();
@@ -546,16 +554,23 @@ const nmsg = (t, ok) => { const el = document.getElementById("nr-msg"); el.class
 async function loadRules() {
   NR = await LG.api("/api/notification-rules");
   document.getElementById("nr-rules").innerHTML = document.getElementById("flt-rules").innerHTML.replaceAll("data-count=", "data-ncount=");
-  LG.table("#nr-list", [
-    {k: "enabled", l: "On", f: (v, r) => `<input type="checkbox" data-ntoggle="${r.id}" ${v ? "checked" : ""} title="Untick to pause these mails">`},
-    {k: "name", l: "Name", f: v => LG.esc(v || "–")},
-    {k: "recipients", l: "To"},
-    {k: "id", l: "When", f: (v, r) => nrSummary(r) + (r.on_escalation ? ` <span class="muted small">(+ escalations)</span>` : "")},
-    {k: "min_interval", l: "How often", f: v => EVERY[v] || `max. every ${v} min`},
-    {k: "sent_count", l: "Mails", num: true},
-    {k: "last_sent", l: "Last mail", f: (v, r) => (v ? LG.ago(v) : "never") + (r.last_error ? `<div class="err small" title="${LG.esc(r.last_error)}">⚠ ${LG.esc(r.last_error.slice(0, 80))}</div>` : "")},
-    {k: "id", l: "", f: v => `<a href="#" data-nedit="${v}">edit</a> · <a href="#" data-ntest="${v}" title="Mail the newest matching alert now">send test</a> · <a href="#" data-ndel="${v}">delete</a>`},
-  ], NR.rules, NR.smtp ? "No notification rules yet - nothing is mailed." : "Set up the mail server above first, then add a rule here.");
+  // same block layout as the alert filters
+  document.getElementById("nr-list").innerHTML = NR.rules.map(r => `<div class="flt${r.enabled ? "" : " off"}">
+    <div class="flt-head">
+      <label class="flt-on" title="Untick to pause these mails"><input type="checkbox" data-ntoggle="${r.id}" ${r.enabled ? "checked" : ""}></label>
+      <b class="flt-name">${LG.esc(r.name || "–")}</b>
+      <span class="flt-act">→ ${LG.esc(r.recipients || "")}</span>
+      <span class="small muted flt-hits">${LG.num(r.sent_count || 0)} mails · last ${r.last_sent ? LG.ago(r.last_sent) : "never"}</span>
+    </div>
+    <div class="flt-match small"><span class="muted">When:</span> ${nrSummary(r)}${r.on_escalation ? ` <span class="muted">(+ escalations)</span>` : ""}
+      · <span class="muted">${LG.esc(EVERY[r.min_interval] || `max. every ${r.min_interval} min`)}</span></div>
+    ${r.last_error ? `<div class="flt-match small err" title="${LG.esc(r.last_error)}">⚠ ${LG.esc(r.last_error.slice(0, 200))}</div>` : ""}
+    <div class="flt-btns">
+      <button type="button" class="secondary small" data-nedit="${r.id}">Edit</button>
+      <button type="button" class="secondary small" data-ntest="${r.id}" title="Mail the newest matching alert now">Send test</button>
+      <button type="button" class="secondary small" data-ndel="${r.id}">Delete</button>
+    </div>
+  </div>`).join("") || `<div class="empty">${NR.smtp ? "No notification rules yet - nothing is mailed." : "Set up the mail server above first, then add a rule here."}</div>`;
   document.querySelectorAll("[data-ntoggle]").forEach(c => c.onchange = async () => {
     const r = NR.rules.find(x => x.id === Number(c.dataset.ntoggle));
     await LG.api(`/api/notification-rules/${r.id}`, { method: "PUT", body: { ...r, enabled: c.checked } }); loadRules();
