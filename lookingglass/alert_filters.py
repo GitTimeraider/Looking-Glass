@@ -118,6 +118,8 @@ def parse_nets(value: Any) -> list[ipaddress._BaseNetwork]:
 def matches(f: dict[str, Any], rule: str, severity: str, title: str, description: str,
             src_ip: str | None, dst_ip: str | None) -> bool:
     results: list[bool] = []  # one per filled-in condition
+    if severity not in SEVERITIES:  # an alert stored with an unknown severity: compared as info
+        severity = "info"
     if f.get("max_severity"):
         results.append(SEVERITIES.index(severity) <= SEVERITIES.index(f["max_severity"]))
     if f.get("min_severity"):  # notification rules: this severity and above
