@@ -65,6 +65,8 @@ def test_feed_parsers():
     assert parse_feed("threatfox", '{"query_status": "no_results"}') == []
     with pytest.raises(RuntimeError, match="Auth-Key"):
         parse_feed("urlhaus", '{"query_status": "unknown_auth_key"}')
+    exits = parse_feed("tor_exit", '{"relays": [{"n": "x", "a": ["192.0.2.11"]}]}')  # Onionoo, flag=Exit
+    assert exits == [("ip", "192.0.2.11", "Tor exit node")]
     tor = parse_feed("tor_relay", '{"relays": [{"n": "x", "a": ["192.0.2.9", "[2001:db8::9]"]}]}')
     assert {v for _, v, _ in tor} == {"192.0.2.9", "2001:db8::9"}
 
@@ -431,21 +433,33 @@ def test_blocked_beaconing_still_counts():
     run(body)
 
 
-def test_abusech_download_uses_api_with_key():
+def test_feed_download_sources():
     from lookingglass.intel import FEEDS
-    seen = []
+    seen, answers = [], {}
 
     def handler(req: httpx.Request) -> httpx.Response:
         seen.append((req.method, str(req.url), req.headers.get("Auth-Key")))
-        if "-api.abuse.ch" in req.url.host:
-            return httpx.Response(200, json={"query_status": "ok", "data": [], "urls": []})
-        return httpx.Response(401)
+        return answers.get(str(req.url), httpx.Response(404))
 
-    async def run(key):
+    async def run(key, name):
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
-            return await Intel(Settings(abusech_auth_key=key))._download(c, FEEDS["threatfox"])
+            return await Intel(Settings(abusech_auth_key=key))._download(c, name, FEEDS[name])
 
-    asyncio.run(run("k"))
+    # ThreatFox: the API with the key in the header
+    answers["https://threatfox-api.abuse.ch/api/v1/"] = httpx.Response(200, json={"query_status": "ok", "data": [
+        {"ioc": "c2.example.net", "ioc_type": "domain", "threat_type": "botnet_cc", "malware_printable": "X"}]})
+    assert asyncio.run(run("k", "threatfox"))[1] == "https://threatfox-api.abuse.ch/api/v1/"
     assert seen[-1] == ("POST", "https://threatfox-api.abuse.ch/api/v1/", "k")
-    with pytest.raises(RuntimeError, match="Auth-Key"):  # no key: the old download, which abuse.ch refuses
-        asyncio.run(run(""))
+    # without a key it is not even tried (the old download URLs are gone)
+    seen.clear()
+    with pytest.raises(RuntimeError, match="Auth-Key"):
+        asyncio.run(run("", "threatfox"))
+    assert not seen
+    # a list that moved: the next source is used
+    answers["https://check.torproject.org/exit-addresses"] = httpx.Response(
+        200, text="ExitNode ABC\nPublished 2026-10-22 10:00:00\nExitAddress 192.0.2.10 2026-10-22 10:05:00\n")
+    rows, url = asyncio.run(run("", "tor_exit"))
+    assert url == "https://check.torproject.org/exit-addresses" and rows == [("ip", "192.0.2.10", "Tor exit node")]
+    # nothing works: every source's answer is in the error
+    with pytest.raises(RuntimeError, match=r"ipblocklist_recommended.txt: HTTP 404; .*ipblocklist.txt: HTTP 404"):
+        asyncio.run(run("", "feodo"))

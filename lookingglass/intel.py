@@ -45,23 +45,26 @@ MINING_POOLS = (
     "xmrpool.eu", "zergpool.com", "zpool.ca", "xmrig.com", "gulf.moneroocean.stream", "pool.hashvault.pro",
     "mine.c3pool.com", "pool.supportxmr.com", "xmr.2miners.com", "rx.unmineable.com",
 )
-# "api": the abuse.ch API (Auth-Key in the header; POSTs "json" when given), used instead of "url" (the old download)
-# when a key is set
+# "sources": where a feed can be downloaded, tried in order until one answers with entries - a list that moved or
+# disappeared (404, 410, ...) falls through to the next one. "json": POSTed instead of a GET; "key": needs the abuse.ch
+# Auth-Key (sent in the Auth-Key header, also to the other abuse.ch downloads when set). The old URLhaus / ThreatFox
+# downloads (urlhaus.abuse.ch/downloads/hostfile/, threatfox.abuse.ch/export/csv/recent/) are gone: their APIs only.
 FEEDS: dict[str, dict[str, Any]] = {
-    "urlhaus": {"url": "https://urlhaus.abuse.ch/downloads/hostfile/", "setting": "intel_urlhaus", "hours": 24,
-                "label": "URLhaus", "abusech": True,
-                "api": {"url": "https://urlhaus-api.abuse.ch/v1/urls/recent/limit/1000/"}},
-    "threatfox": {"url": "https://threatfox.abuse.ch/export/csv/recent/", "setting": "intel_threatfox", "hours": 24,
-                  "label": "ThreatFox", "abusech": True,
-                  "api": {"url": "https://threatfox-api.abuse.ch/api/v1/", "json": {"query": "get_iocs", "days": 7}}},
-    "feodo": {"url": "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt", "setting": "intel_feodo",
-              "hours": 24, "label": "Feodo Tracker", "abusech": True},
-    "sslbl_ja3": {"url": "https://sslbl.abuse.ch/blacklist/ja3_fingerprints.csv", "setting": "intel_ja3", "hours": 24,
-                  "label": "SSLBL JA3", "abusech": True},
-    "tor_relay": {"url": "https://onionoo.torproject.org/summary?running=true", "setting": "intel_tor", "hours": 12,
-                  "label": "Tor relays"},
-    "tor_exit": {"url": "https://check.torproject.org/torbulkexitlist", "setting": "intel_tor", "hours": 12,
-                 "label": "Tor exit nodes"},
+    "urlhaus": {"setting": "intel_urlhaus", "hours": 24, "label": "URLhaus", "abusech": True, "sources": [
+        {"url": "https://urlhaus-api.abuse.ch/v1/urls/recent/limit/1000/", "key": True}]},
+    "threatfox": {"setting": "intel_threatfox", "hours": 24, "label": "ThreatFox", "abusech": True, "sources": [
+        {"url": "https://threatfox-api.abuse.ch/api/v1/", "json": {"query": "get_iocs", "days": 7}, "key": True}]},
+    "feodo": {"setting": "intel_feodo", "hours": 24, "label": "Feodo Tracker", "abusech": True, "sources": [
+        {"url": "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt"},
+        {"url": "https://feodotracker.abuse.ch/downloads/ipblocklist.txt"}]},
+    "sslbl_ja3": {"setting": "intel_ja3", "hours": 24, "label": "SSLBL JA3", "abusech": True, "sources": [
+        {"url": "https://sslbl.abuse.ch/blacklist/ja3_fingerprints.csv"}]},
+    "tor_relay": {"setting": "intel_tor", "hours": 12, "label": "Tor relays", "sources": [
+        {"url": "https://onionoo.torproject.org/summary?running=true"}]},
+    "tor_exit": {"setting": "intel_tor", "hours": 12, "label": "Tor exit nodes", "sources": [
+        {"url": "https://check.torproject.org/torbulkexitlist"},
+        {"url": "https://check.torproject.org/exit-addresses"},
+        {"url": "https://onionoo.torproject.org/summary?running=true&flag=Exit"}]},
 }
 
 
@@ -128,13 +131,17 @@ def parse_feed(name: str, text: str) -> list[tuple[str, str, str | None]]:
         for row in csv.reader(lines):
             if row and len(row[0].strip()) == 32:
                 out.append(("ja3", row[0].strip().lower(), (row[3].strip() if len(row) > 3 else None) or "malware"))
-    elif name == "tor_relay":
+    elif name == "tor_relay" or (name == "tor_exit" and text.lstrip().startswith("{")):  # Onionoo JSON
         for relay in (json.loads(text).get("relays") or []):
             for a in relay.get("a") or []:
                 if ip := _ip(a):
-                    out.append(("ip", ip, "Tor relay"))
-    elif name == "tor_exit":
-        out += [("ip", ip, "Tor exit node") for ln in lines if (ip := _ip(ln))]
+                    out.append(("ip", ip, "Tor relay" if name == "tor_relay" else "Tor exit node"))
+    elif name == "tor_exit":  # the bulk list (one IP per line) or exit-addresses ("ExitAddress <ip> <date>")
+        for ln in lines:
+            parts = ln.split()
+            ip = _ip(parts[1]) if parts[0] == "ExitAddress" and len(parts) > 1 else _ip(ln)
+            if ip:
+                out.append(("ip", ip, "Tor exit node"))
     return list({(k, v): (k, v, i) for k, v, i in out}.values())
 
 
@@ -150,24 +157,31 @@ class Intel:
         return v not in (False, "off")
 
     # ------------------------------------------------------------ download ---
-    async def _download(self, client: httpx.AsyncClient, feed: dict[str, Any]) -> str:
-        """The feed's text: abuse.ch's API when it has one and a key is set (the old download URLs answer 401 now),
-        else the download URL."""
+    async def _download(self, client: httpx.AsyncClient, name: str, feed: dict[str, Any]) -> tuple[list, str]:
+        """(rows, url) from the first of the feed's sources that answers with entries; raises with what each one said."""
         key = self.s.abusech_auth_key if feed.get("abusech") else ""
         h = {"Auth-Key": key} if key else {}
-        if (api := feed.get("api")) and key:
-            r = await (client.post(api["url"], headers=h, json=api["json"]) if "json" in api else client.get(api["url"], headers=h))
-            if r.status_code in (401, 403):
-                raise RuntimeError(f"HTTP {r.status_code}: abuse.ch refused the Auth-Key - check it under Settings › "
-                                   "Threat intel & traps (auth.abuse.ch › Optional › Generate Auth-Key)")
-            r.raise_for_status()
-            return r.text
-        r = await client.get(feed["url"], headers=h)
-        if r.status_code in (401, 403):
-            raise RuntimeError(f"HTTP {r.status_code}: abuse.ch wants an Auth-Key (Settings › Threat intel & traps)"
-                               if feed.get("abusech") else f"HTTP {r.status_code}")
-        r.raise_for_status()
-        return r.text
+        errors: list[str] = []
+        for src in feed["sources"]:
+            url = src["url"]
+            if src.get("key") and not key:
+                errors.append("needs an abuse.ch Auth-Key (Settings › Threat intel & traps: get a free one at auth.abuse.ch "
+                              "› Optional › Generate Auth-Key)")
+                continue
+            try:
+                r = await (client.post(url, headers=h, json=src["json"]) if "json" in src else client.get(url, headers=h))
+                if r.status_code in (401, 403) and feed.get("abusech"):
+                    raise RuntimeError(f"HTTP {r.status_code}: abuse.ch " + ("refused the Auth-Key - check it under Settings › "
+                                       "Threat intel & traps" if key else "wants an Auth-Key (Settings › Threat intel & traps)"))
+                r.raise_for_status()
+                rows = parse_feed(name, r.text)
+                if not rows:
+                    raise RuntimeError("the download contained no entries")
+                return rows, url
+            except Exception as exc:  # noqa: BLE001 - the next source may still work
+                msg = f"HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else str(exc) or type(exc).__name__
+                errors.append(f"{httpx.URL(url).host}{httpx.URL(url).path}: {msg}")
+        raise RuntimeError("; ".join(errors))
 
     async def update(self, force: bool = False) -> dict[str, Any]:
         status: dict[str, Any] = await db.kv_get("intel:status", {}) or {}
@@ -185,18 +199,17 @@ class Intel:
                 if not force and st.get("ok") and time.time() - st.get("updated", 0) < feed["hours"] * 3600:
                     continue
                 try:
-                    rows = parse_feed(name, await self._download(client, feed))
-                    if not rows:
-                        raise RuntimeError("the download contained no entries")
+                    rows, url = await self._download(client, name, feed)
                     async with db.pool().acquire() as con, con.transaction():
                         await con.execute("DELETE FROM intel_indicators WHERE feed = $1", name)
                         await con.copy_records_to_table("intel_indicators", columns=["kind", "value", "feed", "info"],
                                                         records=[(k, v, name, i) for k, v, i in rows])
-                    status[name] = {"enabled": True, "ok": True, "count": len(rows), "updated": time.time(), "error": None}
+                    status[name] = {"enabled": True, "ok": True, "count": len(rows), "updated": time.time(), "error": None,
+                                    "source": url}
                     changed = True
-                    log.info("threat feed %s: %d entries", name, len(rows))
+                    log.info("threat feed %s: %d entries from %s", name, len(rows), url)
                 except Exception as exc:  # noqa: BLE001
-                    status[name] = {**st, "enabled": True, "ok": False, "error": str(exc)[:300], "tried": time.time()}
+                    status[name] = {**st, "enabled": True, "ok": False, "error": str(exc)[:600], "tried": time.time()}
                     log.warning("threat feed %s: %s", name, exc)
         await db.kv_set("intel:status", status)
         if changed:

@@ -3,7 +3,7 @@
 <header class="top"><h1>Setup &amp; status</h1><span class="muted small" id="updated"></span></header>
 <div class="grid kpis" id="sum"></div>
 <div class="card" style="margin-top:14px">
-  <h3>Data sources<span class="sp"></span><span class="small muted" style="text-transform:none;letter-spacing:0">checked against what actually arrived in the last 24 hours</span></h3>
+  <h3 style="flex-wrap:wrap">Data sources<span class="sp"></span><span class="small muted" style="text-transform:none;letter-spacing:0;font-weight:400">checked against what actually arrived in the last 24 hours</span></h3>
   <div id="checks"></div>
   <p class="small muted" style="margin-top:10px">
     <span class="badge bad">to do</span> needed to get this data ·
@@ -86,15 +86,19 @@ async function checks() {
     .map(([k, l, c]) => `<div class="card kpi ${sm[k] ? c : ""}"><div class="v">${sm[k] || 0}</div><div class="l">${l}</div></div>`).join("");
   const rank = { action: 0, duplicate: 1, info: 2, ok: 3, optional: 4 };
   const rows = [...d.checks].sort((a, b) => rank[a.status] - rank[b.status]);
-  LG.table("#checks", [
-    {k: "status", l: "", f: v => `<span class="badge ${BADGE[v][0]}">${BADGE[v][1]}</span>`},
-    {k: "name", l: "Source", f: (v, r) => r.link ? `<a href="${r.link}"><b>${LG.esc(v)}</b></a>` : `<b>${LG.esc(v)}</b>`},
-    {k: "via", l: "Via", f: v => (v || []).map(x => `<span class="pill">${LG.esc(x)}</span>`).join(" ")},
-    {k: "count", l: "24 h", num: true, f: v => v === null || v === undefined ? "" : LG.num(v)},
-    {k: "last", l: "Last", f: v => v ? LG.ago(v) : ""},
-    {k: "summary", l: "Status / what to do", f: (v, r) => `<div>${LG.esc(v)}</div>` +
+  // one block per check: a header line (status, name, channel, volume), the explanation below it at full width
+  document.getElementById("checks").innerHTML = rows.map(r => `<div class="chk st-${LG.esc(r.status)}">
+    <div class="chk-head">
+      <span class="badge ${BADGE[r.status][0]}">${BADGE[r.status][1]}</span>
+      <span class="chk-name">${r.link ? `<a href="${r.link}"><b>${LG.esc(r.name)}</b></a>` : `<b>${LG.esc(r.name)}</b>`}</span>
+      <span class="chk-meta small muted">${(r.via || []).map(x => `<span class="pill">${LG.esc(x)}</span>`).join("")}${
+        r.count === null || r.count === undefined ? "" : `<span title="Received in the last 24 hours">${LG.num(r.count)} / 24 h</span>`}${
+        r.last ? `<span title="Last received">last ${LG.ago(r.last)}</span>` : ""}</span>
+    </div>
+    <div class="chk-body">${r.summary ? `<div>${LG.esc(r.summary)}</div>` : ""}` +
       r.todo.map(t => `<div class="todo ${r.status === "duplicate" ? "dup" : ""}">→ ${LG.esc(t)}</div>`).join("") +
-      r.avoid.map(t => `<div class="avoid">✕ Don't: ${LG.esc(t)}</div>`).join("")}], rows);
+      r.avoid.map(t => `<div class="avoid">✕ Don't: ${LG.esc(t)}</div>`).join("") + `</div>
+  </div>`).join("") || `<div class="empty">No checks.</div>`;
   document.getElementById("updated").textContent = "checked " + LG.clock();
 }
 checks(); setInterval(checks, 60000);
