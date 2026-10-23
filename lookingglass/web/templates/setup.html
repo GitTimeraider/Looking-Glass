@@ -25,7 +25,7 @@
 <details class="card setup" style="margin-top:14px">
   <summary><b>Full setup guide</b> – every step with explanations</summary>
   <p class="muted">Looking Glass combines two channels: <b>syslog</b> (OPNsense pushes logs, real time) and the <b>REST API</b>
-    (Looking Glass pulls system state, CrowdSec, Q-Feeds, IDS and Unbound data). Use both for the best coverage.</p>
+    (Looking Glass pulls system state, CrowdSec, Q-Feeds, Suricata and Unbound data). Use both for the best coverage.</p>
   <ol>
     <li><b>API key</b> — in the OPNsense web UI go to <i>System › Access › Users</i>, create a user (e.g. <code>lookingglass</code>),
       give it the privileges it needs (simplest: <i>GUI - All pages</i>; stricter: only the Diagnostics, Reporting, Firmware,

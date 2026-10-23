@@ -90,8 +90,10 @@ function render(d, only) {
       const ser = (p.drill || {}).series;
       LG.seriesChart("c-" + p.id, rows, { hours, onClick: base && ((t, s) => {
         const t0 = new Date(t);
+        // series_drill: a series that is not simply a value of the column (CrowdSec includes its firewall blocks)
+        const sd = ((p.drill || {}).series_drill || {})[s];
         go(p, { ...base, hours: undefined, start: t0.toISOString(), end: new Date(t0.getTime() + step * 1000).toISOString(),
-                ...(ser ? { [ser]: s === null || s === "?" ? "none" : s } : {}) });
+                ...(sd ? sd : ser ? { [ser]: s === null || s === "?" ? "none" : s } : {}) });
       }) });
     } else if (p.type === "pie") {
       const sorted = LG.sortRows(rows, chartSort[p.id] && chartSort[p.id]());

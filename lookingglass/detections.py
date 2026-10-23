@@ -172,7 +172,7 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
 
 def threat_signals(ev: dict[str, Any]) -> list[str]:
     """Independent signs that a host is compromised / malicious (for corroboration)."""
-    sig = [f"{ev[k]} {label}" for k, label in (("ids", "IDS alert(s)"), ("qfeeds", "threat-intel hit(s)"),
+    sig = [f"{ev[k]} {label}" for k, label in (("ids", "Suricata alert(s)"), ("qfeeds", "threat-intel hit(s)"),
                                                  ("zen", "Zenarmor threat event(s)")) if ev.get(k)]
     if ev.get("other_alerts"):
         sig.append("open alerts: " + ", ".join(ev["other_alerts"][:5]))
@@ -693,7 +693,7 @@ class DetectionEngine:
                 ev = await evidence(src, "ids")
                 ev["ids"] = 0  # that is this alert
                 corroborate(rating, ev, 1)
-            await raise_alert("ids", rating, f"IDS: {r['message']}", f"ids:{r['src_ip']}:{r['message']}",
+            await raise_alert("ids", rating, f"Suricata: {r['message']}", f"ids:{r['src_ip']}:{r['message']}",
                               events={"source": "suricata", "ip": str(r["src_ip"]) if r["src_ip"] else None, "q": r["message"][:80]},
                               src_ip=str(r["src_ip"]) if r["src_ip"] else None, dst_ip=str(r["dst_ip"]) if r["dst_ip"] else None,
                               count=r["hits"], description=f"Suricata signature '{r['message']}' ({r['cls'] or 'n/a'}) "
