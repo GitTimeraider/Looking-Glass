@@ -27,6 +27,11 @@ PRIV = ("(src_ip << '10.0.0.0/8' OR src_ip << '172.16.0.0/12' OR src_ip << '192.
 # data.blocklist by the poller) - the plugin's own rules log only with Services › CrowdSec › Settings › "Enable log for
 # rules". The rule names catch lines stored before the marking existed.
 CS_FW = "(source = 'firewall' AND (lower(data->>'blocklist') = 'crowdsec' OR data->>'label' LIKE 'CrowdSec (%'))"
+# CrowdSec events carry CrowdSec's own time (when it detected it), which can be long before Looking Glass pulled
+# them (first pull, a restart): they count in the period they happened OR reached Looking Glass in. Few rows - the
+# (source, ts) index narrows it to CrowdSec.
+CS_SEEN = ("(source = 'crowdsec' AND (ts > now() - make_interval(secs => $1) "
+           "OR received_at > now() - make_interval(secs => $1)))")
 # one blocklist of that setting from the poller's snapshot (lower-case name)
 BL = "(SELECT data->'{0}' FROM snapshots WHERE key = 'blocklists')"
 
@@ -146,7 +151,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
         "title": "Threats (Suricata · CrowdSec · Q-Feeds)", "source": "suricata,crowdsec,qfeeds", "group": "opnsense", "panels": [
             {"id": "kpi", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) FILTER (WHERE source = 'suricata') AS \"Suricata events\", "
-                f"count(*) FILTER (WHERE source = 'crowdsec' AND action = 'alert') AS \"CrowdSec alerts\", "
+                f"(SELECT count(*) FROM events WHERE {CS_SEEN} AND action = 'alert') AS \"CrowdSec alerts\", "
                 # active now (the API lists the current ones): a ban older than the period still counts
                 "(SELECT jsonb_array_length(data) FROM snapshots WHERE key = 'crowdsec_decisions' "
                 "AND jsonb_typeof(data) = 'array') AS \"CrowdSec active decisions\", "
@@ -157,7 +162,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                 f"count(*) FILTER (WHERE source = 'qfeeds' AND {PRIV}) AS \"Outbound threat-intel hits\", "
                 f"(SELECT count(*) FROM alerts WHERE status = 'open' AND severity IN ('high', 'critical')) AS \"Open high/critical alerts\" "
                 f"FROM events WHERE (source IN ('suricata', 'crowdsec', 'qfeeds') OR {CS_FW}) AND {W}",
-             "drill": {"tiles": {"Suricata events": {"source": "suricata"}, "CrowdSec alerts": {"source": "crowdsec", "action": "alert"},
+             "drill": {"tiles": {"Suricata events": {"source": "suricata"}, "CrowdSec alerts": {"source": "crowdsec", "action": "alert", "hours": 24 * 90},
                                  "CrowdSec active decisions": {"source": "crowdsec", "action": "ban,captcha", "hours": 24 * 90},
                                  "CrowdSec firewall blocks": {"source": "firewall", "d_blocklist": "CrowdSec"}, "CrowdSec blocklist IPs": None,
                                  "CrowdSec blocked packets (since rules loaded)": None,
@@ -184,8 +189,8 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             {"id": "sigs", "title": "Suricata signatures", "type": "table", "needs": "suricata", "drill": {"base": {"source": "suricata"}, "by": {"q": "sig"}}, "cols": [["sig", "Signature"], ["srcs", "Sources", "num"], ["n", "Hits", "num"], ["last", "Last", "ago"]],
              "sql": f"SELECT message sig, count(DISTINCT src_ip) srcs, count(*) n, max(ts) last FROM events WHERE source = 'suricata' AND action IS NOT NULL AND {W} GROUP BY 1 ORDER BY 3 DESC LIMIT 25"},
             {"id": "cs", "title": "CrowdSec scenarios", "type": "table", "needs": "crowdsec", "cols": [["scenario", "Scenario"], ["ips", "IPs", "num"], ["n", "Events", "num"]],
-             "drill": {"base": {"source": "crowdsec"}},
-             "sql": f"SELECT coalesce(data->>'scenario', data->>'reason', '?') scenario, count(DISTINCT src_ip) ips, count(*) n, data->>'scenario' o_d_scenario, data->>'reason' o_d_reason FROM events WHERE source = 'crowdsec' AND {W} GROUP BY 1, 4, 5 ORDER BY 3 DESC LIMIT 25"},
+             "drill": {"base": {"source": "crowdsec", "hours": 24 * 90}},
+             "sql": f"SELECT coalesce(data->>'scenario', data->>'reason', '?') scenario, count(DISTINCT src_ip) ips, count(*) n, data->>'scenario' o_d_scenario, data->>'reason' o_d_reason FROM events WHERE {CS_SEEN} GROUP BY 1, 4, 5 ORDER BY 3 DESC LIMIT 25"},
             {"id": "csfw", "title": "Blocked by the CrowdSec blocklist", "type": "table", "needs": "crowdsec",
              "drill": {"base": {"source": "firewall", "d_blocklist": "CrowdSec"}, "by": {"ip": "ip"}},
              "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["dir", "Dir"], ["n", "Blocks", "num"], ["last", "Last", "ago"]],
