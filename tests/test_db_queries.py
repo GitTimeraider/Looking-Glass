@@ -76,3 +76,28 @@ def test_threats_dashboard_crowdsec_and_switched_off_sources():
             await db.pool().execute("DELETE FROM snapshots WHERE key = 'crowdsec_decisions'")
             await db.close()
     asyncio.run(main())
+
+
+def test_crowdsec_alert_pulled_late_counts_in_the_period():
+    from datetime import datetime, timedelta, timezone
+    from lookingglass.parsers.common import event
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events")
+            # CrowdSec detected it 12 days ago, Looking Glass received it 2 days ago
+            old = datetime.now(timezone.utc) - timedelta(days=12)
+            await db.copy_events([event(old, "crowdsec", severity=4, action="alert", src_ip="217.138.199.210",
+                                        data={"scenario": "firewallservices/pf-scan-multi_ports"})])
+            await pool.execute("UPDATE events SET received_at = now() - interval '2 days'")
+            by = {p["id"]: p for p in (await run_dashboard("threats", 24 * 7))["panels"]}
+            assert by["kpi"]["rows"][0]["CrowdSec alerts"] == 1
+            assert by["cs"]["rows"][0]["scenario"] == "firewallservices/pf-scan-multi_ports"
+            by = {p["id"]: p for p in (await run_dashboard("threats", 24))["panels"]}  # neither happened nor arrived today
+            assert by["kpi"]["rows"][0]["CrowdSec alerts"] == 0 and not by["cs"]["rows"]
+        finally:
+            await db.pool().execute("TRUNCATE events")
+            await db.close()
+    asyncio.run(main())

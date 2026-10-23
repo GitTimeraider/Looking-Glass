@@ -65,8 +65,11 @@ async function load() {
 /** Event-search link for the events behind an alert (its filters over its time span, with some margin) */
 function eventsUrl(a) {
   const f = (a.data || {}).events || (a.src_ip ? { ip: a.src_ip } : null);
-  const t0 = new Date(a.created_at).getTime(), t1 = new Date(a.last_seen || a.created_at).getTime();
-  if (!f || isNaN(t0) || isNaN(t1)) return null;
+  // events pulled from an API (CrowdSec, Suricata, Q-Feeds) carry the tool's own time, which can lie before the alert
+  const d = a.data || {}, at = v => (v ? new Date(v).getTime() : NaN);
+  const t0 = Math.min(...[at(a.created_at), at(d.events_from)].filter(v => !isNaN(v)));
+  const t1 = Math.max(...[at(a.last_seen || a.created_at), at(d.events_to)].filter(v => !isNaN(v)));
+  if (!f || !isFinite(t0) || !isFinite(t1)) return null;
   return LG.drillUrl({ ...f, start: new Date(t0 - 15 * 60000).toISOString(), end: new Date(t1 + 5 * 60000).toISOString() });
 }
 // why the alert has its severity (detections.Rating); the same text is kept out of the description
