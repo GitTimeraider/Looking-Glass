@@ -85,7 +85,7 @@ async def run(settings: Settings) -> dict[str, Any]:
     # ------------------------------------------------------------- basics ---
     sysjob = _job(poller, "system")
     if not settings.opnsense_enabled:
-        check("api", "OPNsense API", "action", [], "Not configured - system state, DNS statistics, VPN, nginx, IDS, "
+        check("api", "OPNsense API", "action", [], "Not configured - system state, DNS statistics, VPN, nginx, Suricata, "
               "CrowdSec and Q-Feeds all come from the API.",
               ["Looking Glass › Settings › OPNsense: enter URL, API key and secret, Test connection, Save."], link="/settings#opnsense")
     elif sysjob.get("ok"):
@@ -196,27 +196,32 @@ async def run(settings: Settings) -> dict[str, Any]:
     ids_api, ids_sys = n("suricata:api"), n("suricata:syslog")
     ij = _job(poller, "ids")
     if ids_api and ids_sys:
-        check("ids", "Intrusion detection (Suricata)", "duplicate", ["API", "syslog"], "Alerts arrive via the API and via syslog.",
+        check("ids", "Suricata", "duplicate", ["API", "syslog"], "Alerts arrive via the API and via syslog.",
               ["OPNsense › Services › Intrusion Detection › Administration: untick 'Enable syslog alerts' / 'Enable eve syslog "
                "output' (the API already pulls every alert), or switch off Looking Glass › Settings › OPNsense › Pull Suricata IDS alerts."],
               count=ids_api, last_seen=last("suricata"), link="/dash/threats")
     elif ij.get("ok") and settings.ids_pull:
-        check("ids", "Intrusion detection (Suricata)", "ok", ["API"], "Alerts pulled via the API." + ("" if ids_api else " No alerts in 24 hours."),
+        check("ids", "Suricata", "ok", ["API"], "Alerts pulled via the API." + ("" if ids_api else " No alerts in 24 hours."),
               avoid=["'Enable syslog alerts' in Intrusion Detection (would duplicate)."], count=ids_api, last_seen=last("suricata"), link="/dash/threats")
     elif ids_sys:
-        check("ids", "Intrusion detection (Suricata)", "ok", ["syslog"], "Alerts via syslog.", count=ids_sys, last_seen=last("suricata"))
+        check("ids", "Suricata", "ok", ["syslog"], "Alerts via syslog.", count=ids_sys, last_seen=last("suricata"))
     elif ij.get("forbidden"):
-        check("ids", "Intrusion detection (Suricata)", "action", [], "The API user may not read IDS alerts.",
+        check("ids", "Suricata", "action", [], "The API user may not read Suricata alerts.",
               [f"{PRIV}: add 'Services: Intrusion Detection' (or 'GUI - All pages')."])
     else:
-        check("ids", "Intrusion detection (Suricata)", "optional", [], "Intrusion Detection not enabled on OPNsense (or the pull is off).")
+        check("ids", "Suricata", "optional", [], "Intrusion Detection not enabled on OPNsense (or the pull is off).")
 
     # ------------------------------------------------- CrowdSec / Q-Feeds ---
+    j = _job(poller, "crowdsec")
+    if j.get("ok") and settings.crowdsec_pull:
+        await _crowdsec_check(check, n("crowdsec"), last("crowdsec"))
     for key, name, job, pulled, page, hint in (
             ("crowdsec", "CrowdSec", "crowdsec", settings.crowdsec_pull, "Services: CrowdSec", ""),
             ("qfeeds", "Q-Feeds", "qfeeds", settings.qfeeds_pull, "Q-Feeds",
              " Events only exist for logged firewall rules that use the Q-Feeds aliases.")):
         j = _job(poller, job)
+        if key == "crowdsec" and j.get("ok") and pulled:
+            continue  # _crowdsec_check
         if j.get("ok") and pulled:
             check(key, name, "ok", ["API"], "Pulled via the API (no syslog needed)." + ("" if n(key) else f" Nothing in 24 hours.{hint}"),
                   count=n(key), last_seen=last(key), link="/dash/threats")
@@ -427,3 +432,68 @@ async def run(settings: Settings) -> dict[str, Any]:
     order = {"action": 0, "duplicate": 1, "info": 2, "ok": 3, "optional": 4}
     summary = {k: sum(1 for c in checks if c["status"] == k) for k in order}
     return {"checks": checks, "summary": summary, "generated": time.time()}
+
+
+async def _crowdsec_check(check: Any, own_events: int, own_last: Any) -> None:
+    """CrowdSec step by step: the plugin's API (CrowdSec's own detections), the firewall rules that use the CrowdSec
+    aliases (Settings › OPNsense › Blocklist aliases), the addresses in those tables (filled by the firewall bouncer,
+    mostly with the community blocklist), the packets the rules blocked and the logged blocks."""
+    st = await db.get_snapshot("crowdsec_status") or {}
+    bls = await db.get_snapshot("blocklists")
+    bl = (bls.get("crowdsec") if isinstance(bls, dict) else None) or {}
+    errors = bl.get("errors") or {}
+    labels = await db.get_snapshot("rule_labels") or {}
+    # rules found by alias; without the rule list (no privilege): the plugin's rules by name
+    rules = [r.get("rule", "") for r in bl.get("rules") or []]
+    named = sorted({d for d in (labels.values() if isinstance(labels, dict) else []) if str(d).startswith("CrowdSec (")})
+    fw = await db.pool().fetchrow(
+        "SELECT count(*) n, count(*) FILTER (WHERE lower(data->>'blocklist') = 'crowdsec' OR data->>'label' LIKE 'CrowdSec (%') cs, "
+        "count(*) FILTER (WHERE action IN ('block', 'drop') AND coalesce(data->>'label', '') IN ('', 'block rule')) unnamed "
+        "FROM events WHERE source = 'firewall' AND ts > now() - interval '24 hours'")
+    size, packets, aliases = bl.get("size"), bl.get("packets"), ", ".join(bl.get("aliases") or [])
+    if bls is None:
+        rules_txt = "not read yet"
+    elif not bl:
+        rules_txt = "no line named CrowdSec under Settings › OPNsense › Blocklist aliases"
+    elif "rules" in errors:
+        rules_txt = (", ".join(named) if named else "none of the plugin's 'CrowdSec (...)' rules by name") + \
+            f" (the rule list itself is not readable: HTTP {errors['rules']})"
+    else:
+        rules_txt = f"{len(rules)} rule(s) use {aliases}" + (f", {packets:,} packets blocked since the rules were loaded"
+                                                             if isinstance(packets, int) else "")
+    lines = [f"CrowdSec's own detections (API): {st.get('alerts', '?')} alerts, {st.get('decisions', '?')} active decisions "
+             "- the scenarios list in OPNsense is what CrowdSec watches for, these are what it actually caught.",
+             "Firewall rules: " + rules_txt,
+             "Blocklist tables: " + (f"{size:,} addresses" if isinstance(size, int) else
+                                     f"not readable (HTTP {errors['sizes']})" if "sizes" in errors else "not read yet"),
+             f"Firewall log, 24 hours: {fw['cs']:,} blocks by these rules (of {fw['n']:,} firewall lines)"]
+    todo: list[str] = []
+    if bl and "rules" not in errors and not rules and not named:
+        todo.append(f"No active firewall rule uses {aliases}: OPNsense › Services › CrowdSec › Settings - turn on 'Enable "
+                    "Remediation Component (IPS)' and 'Create blocklist rules', Apply. If the plugin renamed its aliases: "
+                    "Settings › OPNsense › Blocklist aliases.")
+    if errors.get("rules") == 403:
+        todo.append(f"{PRIV}: add 'Diagnostics: Firewall statistics' to the API user, so the rules using the aliases and "
+                    "their blocked packets can be read.")
+    if errors.get("sizes") == 403:
+        todo.append(f"{PRIV}: add 'Firewall: Alias: Edit' to the API user, so the blocklist size can be read.")
+    elif size == 0 and bl.get("tables"):
+        todo.append("The blocklist tables are empty, so the rules block nothing: OPNsense › Services › CrowdSec › "
+                    "Overview › Bouncers must list the firewall bouncer as valid with a recent 'Last API pull'. A new "
+                    "installation gets the community blocklist only some time after it registered.")
+    elif bl and "sizes" not in errors and not bl.get("tables"):
+        todo.append(f"OPNsense has no pf table matching {aliases}: the firewall bouncer is not running (Services › "
+                    "CrowdSec › Settings › 'Enable Remediation Component (IPS)'), or the aliases were renamed - then "
+                    "Settings › OPNsense › Blocklist aliases.")
+    if (rules or named) and size and not fw["cs"]:
+        if not fw["n"]:
+            todo.append("No firewall log arrives at all: set up the firewall log (syslog or 'Pull firewall log via API').")
+        else:
+            todo.append("No blocks by these rules were logged (the packet counter above counts them anyway): Services › "
+                        "CrowdSec › Settings › 'Enable log for rules', Apply - rules of your own: their 'Log' option. Then "
+                        "check Firewall › Log Files › Live View.")
+            if fw["unnamed"]:
+                todo.append(f"{fw['unnamed']:,} blocked lines in 24 hours have no rule name: the rule names are read from "
+                            f"the API every 10 minutes - if this stays, add 'Diagnostics: Firewall sessions' to the API user ({PRIV}).")
+    check("crowdsec", "CrowdSec", "action" if todo else "ok", ["API"], " · ".join(lines), todo,
+          count=own_events + fw["cs"], last_seen=own_last, link="/dash/threats")

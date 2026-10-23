@@ -6,6 +6,7 @@ import hashlib
 import json
 import ssl
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
@@ -128,6 +129,7 @@ class Poller:
             ("services", 300, self.poll_services),
             ("firmware", 6 * 3600, self.poll_firmware),
             ("rule_labels", 600, self.poll_rule_labels),
+            ("blocklists", 300, self.poll_blocklists),
             ("arp", 120, self.poll_arp),
             ("exposure", 900, self.poll_exposure),
             ("leases", 300, self.poll_leases),
@@ -647,6 +649,55 @@ class Poller:
             ev = crowdsec_decision_from_api(row)
             if ev:
                 self.writer.put(ev)
+        await db.set_snapshot("crowdsec_status", {"alerts": len(alerts), "decisions": len(decisions)})
+
+    async def poll_blocklists(self) -> None:
+        """The blocklist aliases of Settings › OPNsense › Blocklist aliases (CrowdSec, Q-Feeds, ...): the addresses in
+        their pf tables, the pf rules that use them (the plugin's own and yours) with the packets they blocked since the
+        rules were loaded - counted even when the rules do not log - and the rule ids, so the firewall log lines of
+        those rules get data.blocklist. cscli / the CrowdSec API never list the community blocklist: it only lives here."""
+        groups = filterlog.parse_blocklist_aliases(self.settings.blocklist_aliases)
+        errors: dict[str, int] = {}
+        sizes: dict[str, Any] = {}
+        rules: dict[str, Any] = {}
+        try:
+            sizes = ((await self.api.get("firewall/alias/get_table_size")) or {}).get("details") or {}
+        except ApiError as exc:
+            if exc.status not in (400, 403, 404):
+                raise
+            errors["sizes"] = exc.status
+        try:
+            res = (await self.api.get("diagnostics/firewall/pf_statistics/rules")) or {}
+            rules = ((res.get("rules") or {}).get("filter rules") or {}) if isinstance(res, dict) else {}
+        except ApiError as exc:
+            if exc.status not in (400, 403, 404):
+                raise
+            errors["rules"] = exc.status
+        out: dict[str, Any] = {}
+        rids: dict[str, str] = {}
+        for name, patterns in groups.items():
+            tables = {t: (v or {}).get("count") for t, v in sizes.items() if filterlog.alias_matches(t, patterns)}
+            found = []
+            for text, counters in rules.items():
+                # pfctl -vv prints a table as <name:addresses> (<name:*> when unused)
+                if any(filterlog.alias_matches(t, patterns) for t in re.findall(r"<([^>:]+)(?::[^>]*)?>", text)):
+                    m = re.search(r'label "([^"]+)"', text)
+                    c = counters if isinstance(counters, dict) else {}
+                    found.append({"rid": m[1] if m else None, "rule": text[:300], "packets": c.get("packets"),
+                                  "evaluations": c.get("evaluations"), "block": " block " in f" {text} "})
+                    if m:
+                        rids[m[1]] = name
+            out[name.lower()] = {
+                "name": name, "aliases": patterns, "tables": tables,
+                "size": sum(v for v in tables.values() if isinstance(v, int)) if tables else (None if "sizes" in errors else 0),
+                "rules": found, "rids": sorted({r["rid"] for r in found if r["rid"]}),
+                "packets": sum(r["packets"] for r in found if r["block"] and isinstance(r["packets"], int))
+                if found else (None if "rules" in errors else 0),
+                "errors": errors}
+        if "rules" not in errors:
+            filterlog.BLOCKLIST_RULES.clear()
+            filterlog.BLOCKLIST_RULES.update(rids)
+        await db.set_snapshot("blocklists", out)
 
     async def poll_qfeeds(self) -> None:
         # Q-Feeds has no event store: every call re-reads the firewall log files on OPNsense, oldest line of a file

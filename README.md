@@ -53,7 +53,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 ## Built-in detections
 
 Port scans, host sweeps, brute force (SSH / web GUI / VPN), **successful login after failures**, logins from public IPs,
-web attacks & scanners, IDS signatures, CrowdSec alerts, Q-Feeds hits (inbound probing / outbound C2), Zenarmor threats,
+web attacks & scanners, Suricata signatures, CrowdSec alerts, Q-Feeds hits (inbound probing / outbound C2), Zenarmor threats,
 DNS tunneling, DGA domains, NXDOMAIN storms, malicious-domain lookups, internal hosts blocked to many destinations,
 outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), new devices, UniFi access point / switch
 offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, gateway down, resources
@@ -410,7 +410,7 @@ These steps were checked against the current OPNsense documentation and source (
    add **block rules that use the Q-Feeds aliases with logging enabled**, e.g. on LAN: *block, destination = Q-Feeds
    alias, Log ✓* and on WAN: *block, source = Q-Feeds alias, Log ✓* (**Firewall › Rules**). The domain feeds are
    applied through Unbound's blocklist (*Register domain feeds* in **Security › Q-Feeds Connect**).
-8. **CrowdSec** needs nothing extra – alerts and decisions are read through the API.
+8. **CrowdSec** needs nothing extra – alerts and decisions are read through the API. These are only CrowdSec's own detections; the community blocklist (usually by far the most bans) blocks in the firewall, through the rules that use its aliases. *Settings › OPNsense › Blocklist aliases* names those aliases per tool (default `CrowdSec: crowdsec_blocklists, crowdsec6_blocklists` and `Q-Feeds: __qfeeds_*`, `*` as wildcard - change it when a plugin renames them, or add your own lists): Looking Glass finds every rule using them, reads the addresses in the tables and the packets the rules blocked, and marks their firewall log lines. Needs the API user's *Firewall: Alias: Edit* and *Diagnostics: Firewall statistics* privileges; for the logged blocks enable *Services › CrowdSec › Settings › Enable log for rules*.
 
 Check **Setup & Status** in Looking Glass: every source should show a recent "last message" and every API job "ok"
 (jobs for plugins you don't have show `n/a`).
@@ -637,7 +637,7 @@ How UniFi and OPNsense data are combined:
   *Firewall* (actions, interfaces, protocols, ports, countries, rules, allowed inbound, internal hosts being blocked),
   *DNS* (queries vs. blocked, types, rcodes, blocklists, clients, NXDOMAIN, tunneling candidates),
   *Web server* (status classes, attack patterns over time, vhosts, paths, 4xx probing, user agents, clients),
-  *Threats* (IDS, CrowdSec, Q-Feeds, alerts by rule/severity, top attackers across all sources, active bans),
+  *Threats* (Suricata, CrowdSec, Q-Feeds, alerts by rule/severity, top attackers across all sources, active bans),
   *Zenarmor* (record types, applications and app categories, web categories, DNS/TLS/HTTP, hosts and devices, blocked
   destinations, threats, top talkers),
   *Authentication* (failed/successful logins, IPs with failed logins, usernames tried, config changes),

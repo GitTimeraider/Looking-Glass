@@ -520,3 +520,69 @@ def test_own_feed_addresses():
     with pytest.raises(RuntimeError):
         asyncio.run(run('threatfox: POST https://threatfox-api.abuse.ch/api/v2/ {"query": "get_iocs", "days": 3}', "threatfox"))
     assert seen[0][:3] == ("POST", "https://threatfox-api.abuse.ch/api/v2/", "k") and b'"days":3' in seen[0][3].replace(b" ", b"")
+
+
+def test_blocklist_aliases_setting_and_log_marking():
+    from lookingglass.app_config import BY_KEY, SettingsError, _coerce
+    from lookingglass.parsers import filterlog
+    assert filterlog.parse_blocklist_aliases(Settings().blocklist_aliases) == {
+        "CrowdSec": ["crowdsec_blocklists", "crowdsec6_blocklists"], "Q-Feeds": ["__qfeeds_*"]}
+    assert filterlog.parse_blocklist_aliases("# mine\nMy list: bad_hosts\n\nmy list2:a b") == {"My list": ["bad_hosts"], "my list2": ["a", "b"]}
+    assert filterlog.alias_matches("__qfeeds_malware_ip", ["__qfeeds_*"]) and not filterlog.alias_matches("qfeeds", ["__qfeeds_*"])
+    for bad, msg in (("crowdsec_blocklists", "Name: alias"), ("CrowdSec:", "Name: alias"), ("X: a;b", "not an alias name")):
+        with pytest.raises(SettingsError, match=msg):
+            _coerce(BY_KEY["blocklist_aliases"], bad)
+    # the log lines of a rule that uses a blocklist alias are marked - syslog and API pull
+    filterlog.BLOCKLIST_RULES.clear()
+    filterlog.BLOCKLIST_RULES["abc123"] = "CrowdSec"
+    line = "77,,,abc123,igb0,match,block,in,4,0x0,,64,1,0,none,6,tcp,60,45.9.9.9,192.168.1.2,4444,22,0,S,1,,,,"
+    assert filterlog.parse(NOW, "fw", line)["data"]["blocklist"] == "CrowdSec"
+    assert "blocklist" not in filterlog.parse(NOW, "fw", line.replace("abc123", "other"))["data"]
+    ev = filterlog.from_api({"action": "block", "rid": "abc123", "src": "45.9.9.9", "__digest__": "d"}, NOW)
+    assert ev["data"]["blocklist"] == "CrowdSec"
+    filterlog.BLOCKLIST_RULES.clear()
+
+
+@needs_db
+def test_blocklists_poll_finds_rules_by_alias():
+    from lookingglass.opnsense import ApiError, Poller
+    from lookingglass.parsers import filterlog
+
+    class FakeApi:
+        rules_status = None
+
+        async def get(self, path, **kw):
+            if path == "firewall/alias/get_table_size":
+                return {"status": "ok", "details": {"crowdsec_blocklists": {"count": 15000}, "crowdsec6_blocklists": {"count": 900},
+                                                    "__qfeeds_malware_ip": {"count": 4000}, "bogons": {"count": 99}}}
+            if self.rules_status:
+                raise ApiError(self.rules_status, "forbidden")
+            return {"rules": {"filter rules": {
+                '@5(1) block drop in log quick inet from <crowdsec_blocklists:15000> to any label "aaa"': {"evaluations": 900, "packets": 120},
+                '@6(2) block drop out log quick inet from any to <crowdsec_blocklists:*> label "bbb"': {"evaluations": 50, "packets": 3},
+                '@7(3) block drop in quick inet from <__qfeeds_malware_ip:4000> to any label "ccc"': {"packets": 40},
+                '@8(4) pass in quick on igb1 inet from <lan_hosts> to any label "ddd"': {"packets": 9999}}}}
+
+    async def body(pool):
+        p = object.__new__(Poller)
+        p.settings, p.api = Settings(), FakeApi()
+        await p.poll_blocklists()
+        bl = await db.get_snapshot("blocklists")
+        cs, qf = bl["crowdsec"], bl["q-feeds"]
+        assert cs["size"] == 15900 and cs["packets"] == 123 and cs["rids"] == ["aaa", "bbb"]
+        assert qf["size"] == 4000 and qf["packets"] == 40 and qf["tables"] == {"__qfeeds_malware_ip": 4000}
+        assert filterlog.BLOCKLIST_RULES == {"aaa": "CrowdSec", "bbb": "CrowdSec", "ccc": "Q-Feeds"}
+        # renamed aliases: the setting is all it takes
+        p.settings = Settings(blocklist_aliases="CrowdSec: crowdsec6_*")
+        await p.poll_blocklists()
+        assert (await db.get_snapshot("blocklists"))["crowdsec"]["size"] == 900
+        # no privilege for the rule list: sizes still read, the marking is kept as it was
+        p.settings = Settings()
+        await p.poll_blocklists()
+        p.api.rules_status = 403
+        await p.poll_blocklists()
+        cs = (await db.get_snapshot("blocklists"))["crowdsec"]
+        assert cs["errors"] == {"rules": 403} and cs["packets"] is None and cs["size"] == 15900
+        assert filterlog.BLOCKLIST_RULES == {"aaa": "CrowdSec", "bbb": "CrowdSec", "ccc": "Q-Feeds"}
+        filterlog.BLOCKLIST_RULES.clear()
+    run(body)

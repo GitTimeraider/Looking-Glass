@@ -45,7 +45,7 @@ const WIDGETS = [
   { id: "web", title: "Web (nginx) responses", w: 1, body: "chart", el: "web", src: "nginx", sort: "web", small: true },
   { id: "web-tags", title: "Web attack patterns", w: 1, body: "table", el: "web-tags", src: "nginx" },
   { id: "web-clients", title: "Web top clients", w: 1, body: "table", el: "web-clients", src: "nginx" },
-  { id: "ids", title: "IDS (Suricata) signatures", w: 1, body: "table", el: "ids", src: "suricata" },
+  { id: "ids", title: "Suricata signatures", w: 1, body: "table", el: "ids", src: "suricata" },
   { id: "cs", title: "CrowdSec scenarios", w: 1, body: "table", el: "cs", src: "crowdsec" },
   { id: "qf", title: "Q-Feeds threat-intel hits", w: 1, body: "table", el: "qf", src: "qfeeds" },
   { id: "zen", title: "Zenarmor", w: 1, body: "table", el: "zen", src: "zenarmor" },
@@ -199,9 +199,9 @@ function render(d) {
     kpi("Blocked IPs", LG.num(k.blocked_ips)) +
     kpi("Open alerts", `${openTotal}${crit ? ` <span class="small" style="color:var(--bad)">(${crit} high+)</span>` : ""}`, crit ? "bad" : openTotal ? "warn" : "ok") +
     kpi("Login failures", LG.num(k.login_failed), k.login_failed ? "warn" : "") +
-    (on.suricata ? kpi("IDS events", LG.num(k.ids), k.ids ? "warn" : "") : "") +
+    (on.suricata ? kpi("Suricata events", LG.num(k.ids), k.ids ? "warn" : "") : "") +
     (on.unbound ? kpi("DNS queries", LG.num(k.dns)) : "") +
-    (on.crowdsec ? kpi("CrowdSec bans", k.crowdsec_decisions ?? "–") : "") +
+    (on.crowdsec ? kpi("CrowdSec bans", `${k.crowdsec_decisions ?? "–"}${k.crowdsec_blocklist != null ? ` <span class="small">+ ${LG.num(k.crowdsec_blocklist)} on the blocklist</span>` : ""}`) : "") +
     kpi("Devices (24h)", LG.num(k.devices));
   document.getElementById("updated").textContent = "updated " + LG.clock();
 

@@ -4,6 +4,8 @@ Field layout taken from OPNsense core ``src/opnsense/scripts/filter/read_log.py`
 """
 from __future__ import annotations
 
+import fnmatch
+import re
 from datetime import datetime
 from typing import Any
 
@@ -17,6 +19,37 @@ TCP = "srcport,dstport,datalen,tcpflags,seq,ack,urp,tcpopts".split(",")
 
 # rule id (md5 label / uuid) -> description, refreshed from the OPNsense API
 RULE_LABELS: dict[str, str] = {}
+# rule id -> blocklist name ("CrowdSec", "Q-Feeds", ...) for the pf rules that use a blocklist alias
+# (Settings › OPNsense › Blocklist aliases), refreshed from the OPNsense API; their log lines get data.blocklist
+BLOCKLIST_RULES: dict[str, str] = {}
+
+
+def parse_blocklist_aliases(text: str) -> dict[str, list[str]]:
+    """'Name: alias, alias_*' per line -> {name: [alias patterns]}; # comments and empty lines are skipped,
+    a wrong line raises ValueError."""
+    out: dict[str, list[str]] = {}
+    for n, line in enumerate((text or "").splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, sep, rest = line.partition(":")
+        aliases = [a.strip() for a in re.split(r"[,\s]+", rest) if a.strip()]
+        if not sep or not name.strip() or not aliases:
+            raise ValueError(f"line {n}: write it as Name: alias, alias - e.g. CrowdSec: crowdsec_blocklists")
+        if bad := [a for a in aliases if not re.fullmatch(r"[\w*?\[\]-]+", a)]:
+            raise ValueError(f"line {n}: '{bad[0]}' is not an alias name (letters, digits, _ and * as wildcard)")
+        out.setdefault(name.strip(), []).extend(aliases)
+    return out
+
+
+def alias_matches(table: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatchcase(table, p) for p in patterns)
+
+
+def _tag(data: dict[str, Any], rid: Any) -> dict[str, Any]:
+    if rid and (name := BLOCKLIST_RULES.get(str(rid))):
+        data["blocklist"] = name
+    return data
 
 
 def parse_fields(csv: str) -> dict[str, str] | None:
@@ -58,7 +91,8 @@ def parse(ts: datetime, host: str | None, message: str) -> dict[str, Any] | None
         message=f"{rec['action']} {direction} on {rec.get('interface')} "
                 f"{rec.get('src')}:{rec.get('srcport', '')} -> {rec.get('dst')}:{rec.get('dstport', '')} "
                 f"{(rec.get('protoname') or '').upper()} {label}".strip(),
-        data={k: v for k, v in rec.items() if k in ("rulenr", "rid", "label", "reason", "tcpflags", "length", "ttl", "anchorname")},
+        data=_tag({k: v for k, v in rec.items() if k in ("rulenr", "rid", "label", "reason", "tcpflags", "length", "ttl", "anchorname")},
+                  rec.get("rid")),
     )
 
 
@@ -75,7 +109,8 @@ def from_api(row: dict[str, Any], ts: datetime) -> dict[str, Any] | None:
         direction=row.get("dir"),
         message=f"{action} {row.get('dir')} on {row.get('interface')} {row.get('src')}:{row.get('srcport', '')} -> "
                 f"{row.get('dst')}:{row.get('dstport', '')} {(row.get('protoname') or '').upper()} {row.get('label', '')}".strip(),
-        data={k: row.get(k) for k in ("rulenr", "rid", "label", "reason", "tcpflags", "length", "ttl") if row.get(k)},
+        data=_tag({k: row.get(k) for k in ("rulenr", "rid", "label", "reason", "tcpflags", "length", "ttl") if row.get(k)},
+                  row.get("rid")),
         uid="fw:" + str(row.get("__digest__")),
     )
     return ev

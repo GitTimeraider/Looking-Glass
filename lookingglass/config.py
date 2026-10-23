@@ -118,6 +118,7 @@ class Settings(BaseSettings):
     firewall_log_pull: str = "auto"
     unbound_query_pull: bool = True
     crowdsec_pull: bool = True
+    blocklist_aliases: str = "CrowdSec: crowdsec_blocklists, crowdsec6_blocklists\nQ-Feeds: __qfeeds_*"
     qfeeds_pull: bool = True
     ids_pull: bool = True
     nginx_pull: bool = True

@@ -23,6 +23,14 @@ PRIV = ("(src_ip << '10.0.0.0/8' OR src_ip << '172.16.0.0/12' OR src_ip << '192.
         "OR src_ip << 'fc00::/7' OR src_ip << '100.64.0.0/10')")
 
 
+# firewall log lines of the rules that use the CrowdSec aliases (Settings › OPNsense › Blocklist aliases, marked
+# data.blocklist by the poller) - the plugin's own rules log only with Services › CrowdSec › Settings › "Enable log for
+# rules". The rule names catch lines stored before the marking existed.
+CS_FW = "(source = 'firewall' AND (lower(data->>'blocklist') = 'crowdsec' OR data->>'label' LIKE 'CrowdSec (%'))"
+# one blocklist of that setting from the poller's snapshot (lower-case name)
+BL = "(SELECT data->'{0}' FROM snapshots WHERE key = 'blocklists')"
+
+
 def log_panel(where: str, title: str = "Live log", limit: int = 150) -> dict[str, Any]:
     return {"id": "log", "title": title, "type": "log", "span": 3,
             "sql": f"SELECT ts, source, action, host(src_ip) src_ip, src_port, host(dst_ip) dst_ip, dst_port, domain, "
@@ -135,39 +143,73 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             log_panel("source = 'nginx'"),
         ]},
     "threats": {
-        "title": "Threats (IDS · CrowdSec · Q-Feeds)", "source": "suricata,crowdsec,qfeeds", "group": "opnsense", "panels": [
+        "title": "Threats (Suricata · CrowdSec · Q-Feeds)", "source": "suricata,crowdsec,qfeeds", "group": "opnsense", "panels": [
             {"id": "kpi", "type": "stat", "span": 3, "sql":
-                f"SELECT count(*) FILTER (WHERE source = 'suricata') AS \"IDS events\", "
+                f"SELECT count(*) FILTER (WHERE source = 'suricata') AS \"Suricata events\", "
                 f"count(*) FILTER (WHERE source = 'crowdsec' AND action = 'alert') AS \"CrowdSec alerts\", "
-                f"count(*) FILTER (WHERE source = 'crowdsec' AND action IN ('ban', 'captcha')) AS \"CrowdSec decisions\", "
+                # active now (the API lists the current ones): a ban older than the period still counts
+                "(SELECT jsonb_array_length(data) FROM snapshots WHERE key = 'crowdsec_decisions' "
+                "AND jsonb_typeof(data) = 'array') AS \"CrowdSec active decisions\", "
+                f"count(*) FILTER (WHERE {CS_FW}) AS \"CrowdSec firewall blocks\", "
+                f"({BL.format('crowdsec')}->>'size')::bigint AS \"CrowdSec blocklist IPs\", "
+                f"({BL.format('crowdsec')}->>'packets')::bigint AS \"CrowdSec blocked packets (since rules loaded)\", "
                 f"count(*) FILTER (WHERE source = 'qfeeds') AS \"Q-Feeds hits\", "
                 f"count(*) FILTER (WHERE source = 'qfeeds' AND {PRIV}) AS \"Outbound threat-intel hits\", "
                 f"(SELECT count(*) FROM alerts WHERE status = 'open' AND severity IN ('high', 'critical')) AS \"Open high/critical alerts\" "
-                f"FROM events WHERE source IN ('suricata', 'crowdsec', 'qfeeds') AND {W}",
-             "drill": {"tiles": {"IDS events": {"source": "suricata"}, "CrowdSec alerts": {"source": "crowdsec", "action": "alert"},
-                                 "CrowdSec decisions": {"source": "crowdsec", "action": "ban,captcha"}, "Q-Feeds hits": {"source": "qfeeds"},
-                                 "Outbound threat-intel hits": {"source": "qfeeds"}, "Open high/critical alerts": {"url": "/alerts"}}}},
-            {"id": "src", "title": "Threat events by source", "type": "timeseries", "span": 2, "drill": {"series": "source"},
-             "sql": f"SELECT {B} t, source series, count(*) v FROM events WHERE source IN ('suricata', 'crowdsec', 'qfeeds', 'zenarmor') AND (source <> 'zenarmor' OR action IN ('threat', 'block')) AND {W} GROUP BY 1, 2 ORDER BY 1"},
+                f"FROM events WHERE (source IN ('suricata', 'crowdsec', 'qfeeds') OR {CS_FW}) AND {W}",
+             "drill": {"tiles": {"Suricata events": {"source": "suricata"}, "CrowdSec alerts": {"source": "crowdsec", "action": "alert"},
+                                 "CrowdSec active decisions": {"source": "crowdsec", "action": "ban,captcha", "hours": 24 * 90},
+                                 "CrowdSec firewall blocks": {"source": "firewall", "d_blocklist": "CrowdSec"}, "CrowdSec blocklist IPs": None,
+                                 "CrowdSec blocked packets (since rules loaded)": None,
+                                 "Q-Feeds hits": {"source": "qfeeds"},
+                                 "Outbound threat-intel hits": {"source": "qfeeds"}, "Open high/critical alerts": {"url": "/alerts"}}},
+             # tiles of a source that is switched off (and has no data in the period) are left out, see run_dashboard
+             "needs_cols": {"Suricata events": "suricata", "CrowdSec alerts": "crowdsec", "CrowdSec active decisions": "crowdsec",
+                            "CrowdSec firewall blocks": "crowdsec", "CrowdSec blocklist IPs": "crowdsec",
+                            "CrowdSec blocked packets (since rules loaded)": "crowdsec", "Q-Feeds hits": "qfeeds",
+                            "Outbound threat-intel hits": "qfeeds"}},
+            # CrowdSec = its own detections + the blocks of the rules using its aliases (firewall log lines)
+            {"id": "src", "title": "Threat events by source", "type": "timeseries", "span": 2,
+             "drill": {"series": "source", "series_drill": {"crowdsec": {"source": "firewall", "d_blocklist": "CrowdSec"}}},
+             "sql": f"SELECT {B} t, CASE WHEN source = 'firewall' THEN 'crowdsec' ELSE source END series, count(*) v FROM events "
+                    f"WHERE (source IN ('suricata', 'crowdsec', 'qfeeds', 'zenarmor') AND (source <> 'zenarmor' OR action IN ('threat', 'block')) "
+                    f"OR {CS_FW}) AND {W} GROUP BY 1, 2 ORDER BY 1"},
             {"id": "alerts", "title": "Alerts by rule", "type": "pie", "drill": {"url": "/alerts"},
              "sql": "SELECT rule label, count(*) v FROM alerts WHERE last_seen > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 10"},
             {"id": "sev", "title": "Alerts over time by severity", "type": "timeseries", "span": 2, "drill": {"url": "/alerts"},
              "sql": "SELECT to_timestamp(floor(extract(epoch FROM created_at) / $2) * $2) t, severity series, count(*) v FROM alerts WHERE created_at > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 1"},
-            {"id": "cls", "title": "IDS classifications", "type": "pie",
+            {"id": "cls", "title": "Suricata classifications", "type": "pie", "needs": "suricata",
              "drill": {"base": {"source": "suricata"}},
              "sql": f"SELECT coalesce(data->>'classification', data->>'category', '?') label, count(*) v, data->>'classification' o_d_classification, data->>'category' o_d_category FROM events WHERE source = 'suricata' AND {W} GROUP BY 1, 3, 4 ORDER BY 2 DESC LIMIT 8"},
-            {"id": "sigs", "title": "IDS signatures", "type": "table", "drill": {"base": {"source": "suricata"}, "by": {"q": "sig"}}, "cols": [["sig", "Signature"], ["srcs", "Sources", "num"], ["n", "Hits", "num"], ["last", "Last", "ago"]],
+            {"id": "sigs", "title": "Suricata signatures", "type": "table", "needs": "suricata", "drill": {"base": {"source": "suricata"}, "by": {"q": "sig"}}, "cols": [["sig", "Signature"], ["srcs", "Sources", "num"], ["n", "Hits", "num"], ["last", "Last", "ago"]],
              "sql": f"SELECT message sig, count(DISTINCT src_ip) srcs, count(*) n, max(ts) last FROM events WHERE source = 'suricata' AND action IS NOT NULL AND {W} GROUP BY 1 ORDER BY 3 DESC LIMIT 25"},
-            {"id": "cs", "title": "CrowdSec scenarios", "type": "table", "cols": [["scenario", "Scenario"], ["ips", "IPs", "num"], ["n", "Events", "num"]],
+            {"id": "cs", "title": "CrowdSec scenarios", "type": "table", "needs": "crowdsec", "cols": [["scenario", "Scenario"], ["ips", "IPs", "num"], ["n", "Events", "num"]],
              "drill": {"base": {"source": "crowdsec"}},
              "sql": f"SELECT coalesce(data->>'scenario', data->>'reason', '?') scenario, count(DISTINCT src_ip) ips, count(*) n, data->>'scenario' o_d_scenario, data->>'reason' o_d_reason FROM events WHERE source = 'crowdsec' AND {W} GROUP BY 1, 4, 5 ORDER BY 3 DESC LIMIT 25"},
+            {"id": "csfw", "title": "Blocked by the CrowdSec blocklist", "type": "table", "needs": "crowdsec",
+             "drill": {"base": {"source": "firewall", "d_blocklist": "CrowdSec"}, "by": {"ip": "ip"}},
+             "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["dir", "Dir"], ["n", "Blocks", "num"], ["last", "Last", "ago"]],
+             "sql": f"SELECT host(CASE WHEN direction = 'out' THEN dst_ip ELSE src_ip END) ip, "
+                    f"max(CASE WHEN direction = 'out' THEN dst_country ELSE src_country END) country, "
+                    f"coalesce(direction, '?') dir, count(*) n, max(ts) last "
+                    f"FROM events WHERE {CS_FW} AND {W} GROUP BY 1, 3 ORDER BY 4 DESC LIMIT 25"},
+            {"id": "blocklists", "title": "Blocklists (Settings › OPNsense › Blocklist aliases)", "type": "table", "span": 2,
+             "drill": {"base": {"source": "firewall"}, "by": {"d_blocklist": "name"}},
+             "cols": [["name", "Blocklist"], ["aliases", "Aliases"], ["size", "Addresses", "num"], ["rules", "Rules", "num"],
+                      ["packets", "Blocked packets", "num"], ["logged", "Logged blocks", "num"]],
+             "sql": "SELECT b.value->>'name' name, (SELECT string_agg(a, ', ') FROM jsonb_array_elements_text(b.value->'aliases') a) aliases, "
+                    "(b.value->>'size')::bigint size, jsonb_array_length(coalesce(b.value->'rules', '[]')) rules, "
+                    "(b.value->>'packets')::bigint packets, (SELECT count(*) FROM events e WHERE e.source = 'firewall' "
+                    "AND e.data->>'blocklist' = b.value->>'name' AND e.ts > now() - make_interval(secs => $1)) logged "
+                    "FROM snapshots s, jsonb_each(CASE WHEN jsonb_typeof(s.data) = 'object' THEN s.data ELSE '{}'::jsonb END) b "
+                    "WHERE s.key = 'blocklists' ORDER BY 1"},
             {"id": "attackers", "title": "Top attackers across all sources", "type": "table", "drill": {"base": {"source": ""}, "by": {"ip": "ip"}},
              "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["sources", "Seen by"], ["n", "Events", "num"], ["last", "Last", "ago"]],
              "sql": f"SELECT host(src_ip) ip, max(src_country) country, array_agg(DISTINCT source) sources, count(*) n, max(ts) last FROM events WHERE {W} AND src_ip IS NOT NULL AND NOT {PRIV} AND (source IN ('suricata', 'crowdsec', 'qfeeds') OR action IN ('block', 'login_failed', 'waf_block')) GROUP BY 1 ORDER BY 4 DESC LIMIT 25"},
-            {"id": "qf", "title": "Q-Feeds matches", "type": "table", "drill": {"base": {"source": "qfeeds"}, "by": {"ip": "src"}}, "cols": [["src", "Source", "ip"], ["dst", "Destination", "ip"], ["dir", "Dir"], ["port", "Port"], ["n", "Hits", "num"]],
+            {"id": "qf", "title": "Q-Feeds matches", "type": "table", "needs": "qfeeds", "drill": {"base": {"source": "qfeeds"}, "by": {"ip": "src"}}, "cols": [["src", "Source", "ip"], ["dst", "Destination", "ip"], ["dir", "Dir"], ["port", "Port"], ["n", "Hits", "num"]],
              "sql": f"SELECT host(src_ip) src, host(dst_ip) dst, direction dir, dst_port port, count(*) n FROM events WHERE source = 'qfeeds' AND {W} GROUP BY 1, 2, 3, 4 ORDER BY 5 DESC LIMIT 25"},
-            {"id": "decisions", "title": "Active CrowdSec decisions", "type": "table", "drill": {"base": {"source": ""}, "by": {"ip": "value"}}, "cols": [["value", "Value"], ["type", "Type"], ["reason", "Reason"], ["origin", "Origin"], ["expiration", "Expires"]],
-             "sql": "SELECT coalesce(d->>'scope_value', d->>'value') value, coalesce(d->>'action', d->>'type') type, coalesce(d->>'reason', d->>'scenario') reason, coalesce(d->>'origin', d->>'source') origin, coalesce(d->>'expiration', d->>'duration') expiration "
+            {"id": "decisions", "title": "Active CrowdSec decisions", "type": "table", "needs": "crowdsec", "drill": {"base": {"source": ""}, "by": {"ip": "value"}}, "cols": [["value", "Value"], ["type", "Type"], ["reason", "Reason"], ["origin", "Origin"], ["expiration", "Expires"]],
+             "sql": "SELECT regexp_replace(coalesce(d->>'scope_value', d->>'value'), '^[A-Za-z_]*[g-zG-Z_][A-Za-z_]*:', '') value, coalesce(d->>'action', d->>'type') type, coalesce(d->>'reason', d->>'scenario') reason, coalesce(d->>'origin', d->>'source') origin, coalesce(d->>'expiration', d->>'duration') expiration "
                     "FROM snapshots, jsonb_array_elements(CASE WHEN jsonb_typeof(data) = 'array' THEN data ELSE '[]'::jsonb END) d WHERE key = 'crowdsec_decisions' AND $1::float8 > 0 LIMIT 200"},
             log_panel("source IN ('suricata', 'crowdsec', 'qfeeds')"),
         ]},
@@ -393,7 +435,9 @@ def step_for(hours: float) -> int:
     return max(60, int(hours * 3600 / 60))
 
 
-async def run_dashboard(name: str, hours: float) -> dict[str, Any]:
+async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
+    """``off``: optional sources (suricata, crowdsec, qfeeds) that are switched off and have no data in the period -
+    their panels ("needs") and stat tiles ("needs_cols") are left out."""
     spec = DASHBOARDS[name]
     secs, step = hours * 3600, step_for(hours)
 
@@ -404,11 +448,13 @@ async def run_dashboard(name: str, hours: float) -> dict[str, Any]:
         try:
             async with db.pool().acquire() as conn:
                 out["rows"] = db.records(await conn.fetch(sql, *args))
+            if hide := {c for c, src in (panel.get("needs_cols") or {}).items() if src in off}:
+                out["rows"] = [{k: v for k, v in r.items() if k not in hide} for r in out["rows"]]
             if panel["type"] == "table" and out["rows"]:
                 out["order"] = sql_order(sql, list(out["rows"][0]))
         except Exception as exc:  # noqa: BLE001 - one broken panel must not break the page
             out["rows"], out["error"] = [], str(exc)
         return out
 
-    panels = await asyncio.gather(*(run(p) for p in spec["panels"]))
+    panels = await asyncio.gather(*(run(p) for p in spec["panels"] if p.get("needs") not in off))
     return {"name": name, "title": spec["title"], "source": spec.get("source"), "step": step, "panels": panels}

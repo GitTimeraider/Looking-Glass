@@ -142,6 +142,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "FROM events WHERE ts > now() - make_interval(secs => $1)", secs)
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
         decisions = await db.get_snapshot("crowdsec_decisions")
+        blocklists = await db.get_snapshot("blocklists") or {}
+        blocklist_n = ((blocklists.get("crowdsec") or {}) if isinstance(blocklists, dict) else {}).get("size")
         devices = await pool.fetchval("SELECT count(*) FROM devices WHERE last_seen > now() - interval '1 day'")
         report = await build_report(hours)
         # optional sources: hide their overview cards when their pull is off and they have no data in the period
@@ -152,7 +154,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return {
             "sources": enabled,
             "kpi": {**db.jsonable(dict(kpi)), "open_alerts": {r["severity"]: r["n"] for r in alerts},
-                    "crowdsec_decisions": len(decisions) if isinstance(decisions, list) else None, "devices": devices},
+                    "crowdsec_decisions": len(decisions) if isinstance(decisions, list) else None,
+                    "crowdsec_blocklist": blocklist_n, "devices": devices},
             "timeline": await timeline(hours),
             "report": report,
             "system": await db.get_snapshot("system"),
@@ -765,7 +768,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def dash_data(name: str, hours: float = Query(24, gt=0, le=24 * 90)):
         if name not in DASHBOARDS:
             raise HTTPException(404)
-        return await run_dashboard(name, hours)
+        # an optional source whose pull is off and that has no data in the period: its tiles and panels are hidden
+        pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull}
+        has = {r["s"] for r in await db.pool().fetch(
+            "SELECT s FROM unnest($1::text[]) s WHERE EXISTS (SELECT 1 FROM events WHERE source = s "
+            "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
+        off = {k for k, on in pulls.items() if not (on and settings.opnsense_enabled) and k not in has}
+        return await run_dashboard(name, hours, off)
 
     @app.get("/api/unifi")
     async def unifi_data():
