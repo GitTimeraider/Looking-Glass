@@ -679,7 +679,8 @@ class Poller:
             tables = {t: (v or {}).get("count") for t, v in sizes.items() if filterlog.alias_matches(t, patterns)}
             found = []
             for text, counters in rules.items():
-                if any(filterlog.alias_matches(t, patterns) for t in re.findall(r"<([^>]+)>", text)):
+                # pfctl -vv prints a table as <name:addresses> (<name:*> when unused)
+                if any(filterlog.alias_matches(t, patterns) for t in re.findall(r"<([^>:]+)(?::[^>]*)?>", text)):
                     m = re.search(r'label "([^"]+)"', text)
                     c = counters if isinstance(counters, dict) else {}
                     found.append({"rid": m[1] if m else None, "rule": text[:300], "packets": c.get("packets"),

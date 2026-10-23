@@ -558,9 +558,9 @@ def test_blocklists_poll_finds_rules_by_alias():
             if self.rules_status:
                 raise ApiError(self.rules_status, "forbidden")
             return {"rules": {"filter rules": {
-                '@5(1) block drop in log quick inet from <crowdsec_blocklists> to any label "aaa"': {"evaluations": 900, "packets": 120},
-                '@6(2) block drop out log quick inet from any to <crowdsec_blocklists> label "bbb"': {"evaluations": 50, "packets": 3},
-                '@7(3) block drop in quick inet from <__qfeeds_malware_ip> to any label "ccc"': {"packets": 40},
+                '@5(1) block drop in log quick inet from <crowdsec_blocklists:15000> to any label "aaa"': {"evaluations": 900, "packets": 120},
+                '@6(2) block drop out log quick inet from any to <crowdsec_blocklists:*> label "bbb"': {"evaluations": 50, "packets": 3},
+                '@7(3) block drop in quick inet from <__qfeeds_malware_ip:4000> to any label "ccc"': {"packets": 40},
                 '@8(4) pass in quick on igb1 inet from <lan_hosts> to any label "ddd"': {"packets": 9999}}}}
 
     async def body(pool):
