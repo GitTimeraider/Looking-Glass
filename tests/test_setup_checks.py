@@ -90,6 +90,10 @@ def test_crowdsec_check_names_the_missing_step():
         res = await setup_checks.run(Settings(opnsense_url="http://x", opnsense_api_key="k", opnsense_api_secret="s"))
         return {c["id"]: c for c in res["checks"]}["crowdsec"]
 
+    def snap(**kw):
+        return {"crowdsec": {"name": "CrowdSec", "aliases": ["crowdsec_blocklists", "crowdsec6_blocklists"], "tables": {},
+                             "size": 0, "rules": [], "rids": [], "packets": 0, "errors": {}, **kw}}
+
     async def main():
         await db.connect(DSN)
         try:
@@ -97,26 +101,34 @@ def test_crowdsec_check_names_the_missing_step():
             await pool.execute("TRUNCATE events")
             await db.set_snapshot("poller_status", {"system": {"ok": True}, "crowdsec": {"ok": True}})
             await db.set_snapshot("rule_labels", {"a" * 32: "Allow LAN"})
-            await db.set_snapshot("crowdsec_status", {"alerts": 0, "decisions": 0, "blocklists": {"ipv4": 0, "ipv6": 0}})
-            c = await crowdsec(pool)  # plugin rules not active, tables empty
+            await db.set_snapshot("crowdsec_status", {"alerts": 0, "decisions": 0})
+            await db.set_snapshot("blocklists", snap(tables={"crowdsec_blocklists": 0}))
+            c = await crowdsec(pool)  # no rule uses the aliases, tables empty
             assert c["status"] == "action" and "Create blocklist rules" in c["todo"][0] and "empty" in c["todo"][1]
             assert "0 alerts" in c["summary"]
-            await db.set_snapshot("rule_labels", {"a" * 32: "Allow LAN", "b" * 32: "CrowdSec (IPv4) in"})
-            await db.set_snapshot("crowdsec_status", {"alerts": 0, "decisions": 0, "blocklists": {"error": 403}})
+            rule = {"rid": "b" * 32, "rule": "block drop in log quick inet from <crowdsec_blocklists> to any", "packets": 7, "block": True}
+            await db.set_snapshot("blocklists", snap(size=None, rules=[rule], packets=7, errors={"sizes": 403}))
             c = await crowdsec(pool)
             assert c["todo"] == [f"{setup_checks.PRIV}: add 'Firewall: Alias: Edit' to the API user, so the blocklist size can be read."]
-            await db.set_snapshot("crowdsec_status", {"alerts": 2, "decisions": 1, "blocklists": {"ipv4": 18000, "ipv6": 900}})
+            assert "1 rule(s) use crowdsec_blocklists, crowdsec6_blocklists, 7 packets blocked" in c["summary"]
+            await db.set_snapshot("blocklists", snap(errors={"rules": 403}, size=18900, packets=None,
+                                                     tables={"crowdsec_blocklists": 18000, "crowdsec6_blocklists": 900}))
+            c = await crowdsec(pool)  # rule list not readable and no plugin rule by name
+            assert "Diagnostics: Firewall statistics" in c["todo"][0]
+            await db.set_snapshot("crowdsec_status", {"alerts": 2, "decisions": 1})
+            await db.set_snapshot("blocklists", snap(size=18900, rules=[rule], packets=7,
+                                                     tables={"crowdsec_blocklists": 18000, "crowdsec6_blocklists": 900}))
             now = datetime.now(timezone.utc)
             await db.copy_events([event(now, "firewall", host="setup-test", severity=6, action="block", src_ip="45.9.9.9",
                                         data={"label": ""})])
-            c = await crowdsec(pool)  # rules + full tables, but no CrowdSec block in the log
+            c = await crowdsec(pool)  # rules + full tables, but no logged block
             assert "Enable log for rules" in c["todo"][0] and "no rule name" in c["todo"][1] and "18,900 addresses" in c["summary"]
             await db.copy_events([event(now, "firewall", host="setup-test", severity=6, action="block", src_ip="45.9.9.8",
-                                        data={"label": "CrowdSec (IPv4) in"})])
+                                        data={"label": "My own rule", "blocklist": "CrowdSec"})])
             c = await crowdsec(pool)
-            assert c["status"] == "ok" and not c["todo"] and "1 blocks by the CrowdSec rules" in c["summary"]
+            assert c["status"] == "ok" and not c["todo"] and "1 blocks by these rules" in c["summary"]
         finally:
             await db.pool().execute("DELETE FROM events WHERE host = 'setup-test'")
-            await db.pool().execute("DELETE FROM snapshots WHERE key IN ('poller_status', 'rule_labels', 'crowdsec_status')")
+            await db.pool().execute("DELETE FROM snapshots WHERE key IN ('poller_status', 'rule_labels', 'crowdsec_status', 'blocklists')")
             await db.close()
     asyncio.run(main())

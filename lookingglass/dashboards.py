@@ -23,9 +23,12 @@ PRIV = ("(src_ip << '10.0.0.0/8' OR src_ip << '172.16.0.0/12' OR src_ip << '192.
         "OR src_ip << 'fc00::/7' OR src_ip << '100.64.0.0/10')")
 
 
-# firewall log lines of the rules the CrowdSec plugin creates ("CrowdSec (IPv4) in", ... - they block the community
-# blocklist; logged only with Services › CrowdSec › Settings › "Enable log for rules")
-CS_FW = "(source = 'firewall' AND data->>'label' LIKE 'CrowdSec (%')"
+# firewall log lines of the rules that use the CrowdSec aliases (Settings › OPNsense › Blocklist aliases, marked
+# data.blocklist by the poller) - the plugin's own rules log only with Services › CrowdSec › Settings › "Enable log for
+# rules". The rule names catch lines stored before the marking existed.
+CS_FW = "(source = 'firewall' AND (lower(data->>'blocklist') = 'crowdsec' OR data->>'label' LIKE 'CrowdSec (%'))"
+# one blocklist of that setting from the poller's snapshot (lower-case name)
+BL = "(SELECT data->'{0}' FROM snapshots WHERE key = 'blocklists')"
 
 
 def log_panel(where: str, title: str = "Live log", limit: int = 150) -> dict[str, Any]:
@@ -146,15 +149,16 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                 f"count(*) FILTER (WHERE source = 'crowdsec' AND action = 'alert') AS \"CrowdSec alerts\", "
                 f"count(*) FILTER (WHERE source = 'crowdsec' AND action IN ('ban', 'captcha')) AS \"CrowdSec decisions\", "
                 f"count(*) FILTER (WHERE {CS_FW}) AS \"CrowdSec firewall blocks\", "
-                "(SELECT (data->>'ipv4')::bigint + coalesce((data->>'ipv6')::bigint, 0) FROM snapshots "
-                "WHERE key = 'crowdsec_blocklists') AS \"CrowdSec blocklist IPs\", "
+                f"({BL.format('crowdsec')}->>'size')::bigint AS \"CrowdSec blocklist IPs\", "
+                f"({BL.format('crowdsec')}->>'packets')::bigint AS \"CrowdSec blocked packets (since rules loaded)\", "
                 f"count(*) FILTER (WHERE source = 'qfeeds') AS \"Q-Feeds hits\", "
                 f"count(*) FILTER (WHERE source = 'qfeeds' AND {PRIV}) AS \"Outbound threat-intel hits\", "
                 f"(SELECT count(*) FROM alerts WHERE status = 'open' AND severity IN ('high', 'critical')) AS \"Open high/critical alerts\" "
                 f"FROM events WHERE (source IN ('suricata', 'crowdsec', 'qfeeds') OR {CS_FW}) AND {W}",
              "drill": {"tiles": {"IDS events": {"source": "suricata"}, "CrowdSec alerts": {"source": "crowdsec", "action": "alert"},
                                  "CrowdSec decisions": {"source": "crowdsec", "action": "ban,captcha"},
-                                 "CrowdSec firewall blocks": {"source": "firewall", "q": "CrowdSec ("}, "CrowdSec blocklist IPs": None,
+                                 "CrowdSec firewall blocks": {"source": "firewall", "d_blocklist": "CrowdSec"}, "CrowdSec blocklist IPs": None,
+                                 "CrowdSec blocked packets (since rules loaded)": None,
                                  "Q-Feeds hits": {"source": "qfeeds"},
                                  "Outbound threat-intel hits": {"source": "qfeeds"}, "Open high/critical alerts": {"url": "/alerts"}}}},
             {"id": "src", "title": "Threat events by source", "type": "timeseries", "span": 2, "drill": {"series": "source"},
@@ -174,12 +178,22 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
              "drill": {"base": {"source": "crowdsec"}},
              "sql": f"SELECT coalesce(data->>'scenario', data->>'reason', '?') scenario, count(DISTINCT src_ip) ips, count(*) n, data->>'scenario' o_d_scenario, data->>'reason' o_d_reason FROM events WHERE source = 'crowdsec' AND {W} GROUP BY 1, 4, 5 ORDER BY 3 DESC LIMIT 25"},
             {"id": "csfw", "title": "Blocked by the CrowdSec blocklist", "type": "table",
-             "drill": {"base": {"source": "firewall", "q": "CrowdSec ("}, "by": {"ip": "ip"}},
+             "drill": {"base": {"source": "firewall", "d_blocklist": "CrowdSec"}, "by": {"ip": "ip"}},
              "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["dir", "Dir"], ["n", "Blocks", "num"], ["last", "Last", "ago"]],
-             "sql": f"SELECT host(CASE WHEN data->>'label' LIKE '%out' THEN dst_ip ELSE src_ip END) ip, "
-                    f"max(CASE WHEN data->>'label' LIKE '%out' THEN dst_country ELSE src_country END) country, "
-                    f"CASE WHEN data->>'label' LIKE '%out' THEN 'out' ELSE 'in' END dir, count(*) n, max(ts) last "
+             "sql": f"SELECT host(CASE WHEN direction = 'out' THEN dst_ip ELSE src_ip END) ip, "
+                    f"max(CASE WHEN direction = 'out' THEN dst_country ELSE src_country END) country, "
+                    f"coalesce(direction, '?') dir, count(*) n, max(ts) last "
                     f"FROM events WHERE {CS_FW} AND {W} GROUP BY 1, 3 ORDER BY 4 DESC LIMIT 25"},
+            {"id": "blocklists", "title": "Blocklists (Settings › OPNsense › Blocklist aliases)", "type": "table", "span": 2,
+             "drill": {"base": {"source": "firewall"}, "by": {"d_blocklist": "name"}},
+             "cols": [["name", "Blocklist"], ["aliases", "Aliases"], ["size", "Addresses", "num"], ["rules", "Rules", "num"],
+                      ["packets", "Blocked packets", "num"], ["logged", "Logged blocks", "num"]],
+             "sql": "SELECT b.value->>'name' name, (SELECT string_agg(a, ', ') FROM jsonb_array_elements_text(b.value->'aliases') a) aliases, "
+                    "(b.value->>'size')::bigint size, jsonb_array_length(coalesce(b.value->'rules', '[]')) rules, "
+                    "(b.value->>'packets')::bigint packets, (SELECT count(*) FROM events e WHERE e.source = 'firewall' "
+                    "AND e.data->>'blocklist' = b.value->>'name' AND e.ts > now() - make_interval(secs => $1)) logged "
+                    "FROM snapshots s, jsonb_each(CASE WHEN jsonb_typeof(s.data) = 'object' THEN s.data ELSE '{}'::jsonb END) b "
+                    "WHERE s.key = 'blocklists' ORDER BY 1"},
             {"id": "attackers", "title": "Top attackers across all sources", "type": "table", "drill": {"base": {"source": ""}, "by": {"ip": "ip"}},
              "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["sources", "Seen by"], ["n", "Events", "num"], ["last", "Last", "ago"]],
              "sql": f"SELECT host(src_ip) ip, max(src_country) country, array_agg(DISTINCT source) sources, count(*) n, max(ts) last FROM events WHERE {W} AND src_ip IS NOT NULL AND NOT {PRIV} AND (source IN ('suricata', 'crowdsec', 'qfeeds') OR action IN ('block', 'login_failed', 'waf_block')) GROUP BY 1 ORDER BY 4 DESC LIMIT 25"},

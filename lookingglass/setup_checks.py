@@ -435,44 +435,63 @@ async def run(settings: Settings) -> dict[str, Any]:
 
 
 async def _crowdsec_check(check: Any, own_events: int, own_last: Any) -> None:
-    """CrowdSec step by step: the plugin's API (CrowdSec's own detections), its firewall rules, the blocklist tables
-    they block with (filled by the firewall bouncer, mostly with the community blocklist) and the logged blocks."""
+    """CrowdSec step by step: the plugin's API (CrowdSec's own detections), the firewall rules that use the CrowdSec
+    aliases (Settings › OPNsense › Blocklist aliases), the addresses in those tables (filled by the firewall bouncer,
+    mostly with the community blocklist), the packets the rules blocked and the logged blocks."""
     st = await db.get_snapshot("crowdsec_status") or {}
-    bl = st.get("blocklists") or {}
+    bls = await db.get_snapshot("blocklists")
+    bl = (bls.get("crowdsec") if isinstance(bls, dict) else None) or {}
+    errors = bl.get("errors") or {}
     labels = await db.get_snapshot("rule_labels") or {}
-    cs_rules = sorted({d for d in (labels.values() if isinstance(labels, dict) else []) if str(d).startswith("CrowdSec (")})
+    # rules found by alias; without the rule list (no privilege): the plugin's rules by name
+    rules = [r.get("rule", "") for r in bl.get("rules") or []]
+    named = sorted({d for d in (labels.values() if isinstance(labels, dict) else []) if str(d).startswith("CrowdSec (")})
     fw = await db.pool().fetchrow(
-        "SELECT count(*) n, count(*) FILTER (WHERE data->>'label' LIKE 'CrowdSec (%') cs, "
+        "SELECT count(*) n, count(*) FILTER (WHERE lower(data->>'blocklist') = 'crowdsec' OR data->>'label' LIKE 'CrowdSec (%') cs, "
         "count(*) FILTER (WHERE action IN ('block', 'drop') AND coalesce(data->>'label', '') IN ('', 'block rule')) unnamed "
         "FROM events WHERE source = 'firewall' AND ts > now() - interval '24 hours'")
-    size = None if bl.get("error") or ("ipv4" not in bl and "ipv6" not in bl) else (bl.get("ipv4") or 0) + (bl.get("ipv6") or 0)
+    size, packets, aliases = bl.get("size"), bl.get("packets"), ", ".join(bl.get("aliases") or [])
+    if bls is None:
+        rules_txt = "not read yet"
+    elif not bl:
+        rules_txt = "no line named CrowdSec under Settings › OPNsense › Blocklist aliases"
+    elif "rules" in errors:
+        rules_txt = (", ".join(named) if named else "none of the plugin's 'CrowdSec (...)' rules by name") + \
+            f" (the rule list itself is not readable: HTTP {errors['rules']})"
+    else:
+        rules_txt = f"{len(rules)} rule(s) use {aliases}" + (f", {packets:,} packets blocked since the rules were loaded"
+                                                             if isinstance(packets, int) else "")
     lines = [f"CrowdSec's own detections (API): {st.get('alerts', '?')} alerts, {st.get('decisions', '?')} active decisions "
              "- the scenarios list in OPNsense is what CrowdSec watches for, these are what it actually caught.",
-             "Firewall rules: " + (", ".join(cs_rules) if cs_rules else "none of the plugin's 'CrowdSec (...)' rules is active"
-                                    if labels else "rule names not read yet"),
-             "Blocklist tables: " + (f"{size:,} addresses" if size is not None else
-                                     f"not readable (HTTP {bl['error']})" if bl.get("error") else "not found"),
-             f"Firewall log, 24 hours: {fw['cs']:,} blocks by the CrowdSec rules (of {fw['n']:,} firewall lines)"]
+             "Firewall rules: " + rules_txt,
+             "Blocklist tables: " + (f"{size:,} addresses" if isinstance(size, int) else
+                                     f"not readable (HTTP {errors['sizes']})" if "sizes" in errors else "not read yet"),
+             f"Firewall log, 24 hours: {fw['cs']:,} blocks by these rules (of {fw['n']:,} firewall lines)"]
     todo: list[str] = []
-    if labels and not cs_rules:
-        todo.append("OPNsense: Services › CrowdSec › Settings - turn on 'Enable Remediation Component (IPS)' and 'Create "
-                    "blocklist rules', Apply. Without them nothing is blocked (rules you made yourself with the aliases "
-                    "are not counted as CrowdSec here).")
-    if bl.get("error") == 403:
+    if bl and "rules" not in errors and not rules and not named:
+        todo.append(f"No active firewall rule uses {aliases}: OPNsense › Services › CrowdSec › Settings - turn on 'Enable "
+                    "Remediation Component (IPS)' and 'Create blocklist rules', Apply. If the plugin renamed its aliases: "
+                    "Settings › OPNsense › Blocklist aliases.")
+    if errors.get("rules") == 403:
+        todo.append(f"{PRIV}: add 'Diagnostics: Firewall statistics' to the API user, so the rules using the aliases and "
+                    "their blocked packets can be read.")
+    if errors.get("sizes") == 403:
         todo.append(f"{PRIV}: add 'Firewall: Alias: Edit' to the API user, so the blocklist size can be read.")
-    elif size == 0:
+    elif size == 0 and bl.get("tables"):
         todo.append("The blocklist tables are empty, so the rules block nothing: OPNsense › Services › CrowdSec › "
                     "Overview › Bouncers must list the firewall bouncer as valid with a recent 'Last API pull'. A new "
                     "installation gets the community blocklist only some time after it registered.")
-    elif bl and "ipv4" not in bl and "ipv6" not in bl and not bl.get("error"):
-        todo.append("OPNsense has no crowdsec_blocklists / crowdsec6_blocklists table: the firewall bouncer is not "
-                    "running (Services › CrowdSec › Settings › 'Enable Remediation Component (IPS)').")
-    if cs_rules and size and not fw["cs"]:
+    elif bl and "sizes" not in errors and not bl.get("tables"):
+        todo.append(f"OPNsense has no pf table matching {aliases}: the firewall bouncer is not running (Services › "
+                    "CrowdSec › Settings › 'Enable Remediation Component (IPS)'), or the aliases were renamed - then "
+                    "Settings › OPNsense › Blocklist aliases.")
+    if (rules or named) and size and not fw["cs"]:
         if not fw["n"]:
             todo.append("No firewall log arrives at all: set up the firewall log (syslog or 'Pull firewall log via API').")
         else:
-            todo.append("No blocks by the CrowdSec rules were logged: Services › CrowdSec › Settings › 'Enable log for rules', "
-                        "Apply. Then check Firewall › Log Files › Live View for lines from 'CrowdSec (IPv4) in'.")
+            todo.append("No blocks by these rules were logged (the packet counter above counts them anyway): Services › "
+                        "CrowdSec › Settings › 'Enable log for rules', Apply - rules of your own: their 'Log' option. Then "
+                        "check Firewall › Log Files › Live View.")
             if fw["unnamed"]:
                 todo.append(f"{fw['unnamed']:,} blocked lines in 24 hours have no rule name: the rule names are read from "
                             f"the API every 10 minutes - if this stays, add 'Diagnostics: Firewall sessions' to the API user ({PRIV}).")
