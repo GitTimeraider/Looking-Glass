@@ -27,6 +27,13 @@ def test_crowdsec_decision_opnsense_fields():
     ev = crowdsec_decision_from_api({"id": 9, "source": "crowdsec", "scope_value": "45.9.9.9", "reason": "crowdsecurity/ssh-bf",
                                      "action": "ban", "expiration": "3h"})
     assert ev["src_ip"] == "45.9.9.9" and ev["action"] == "ban" and ev["data"]["origin"] == "crowdsec"
+    # what the plugin really sends (DecisionsController: scope_value = "<scope>:<value>")
+    for sv, ip, scope in (("Ip:45.9.9.9", "45.9.9.9", "Ip"), ("Ip:2001:db8::9", "2001:db8::9", "Ip"),
+                          ("Range:198.51.100.0/24", "198.51.100.0", "Range"), ("Country:CN", None, "Country"),
+                          ("2001:db8::7", "2001:db8::7", None)):
+        ev = crowdsec_decision_from_api({"id": 1, "source": "cscli", "scope_value": sv, "action": "ban"})
+        assert ev.get("src_ip") == ip and ev["data"].get("scope") == scope, sv
+        assert ev["data"]["value"] == (sv.split(":", 1)[1] if scope else sv)
 
 
 def test_crowdsec_alert_keeps_scenario():
@@ -34,6 +41,8 @@ def test_crowdsec_alert_keeps_scenario():
     ev = crowdsec_alert_from_api({"id": 7, "value": "Ip:45.9.9.9", "reason": "crowdsecurity/ssh-bf", "country": "NL",
                                   "decisions": "ban:1", "created": "2026-10-19T10:00:00Z"})
     assert ev["data"]["scenario"] == "crowdsecurity/ssh-bf" and ev["src_ip"] == "45.9.9.9"
+    v6 = crowdsec_alert_from_api({"id": 8, "value": "Ip:2001:db8::5", "reason": "crowdsecurity/http-probing"})
+    assert v6["src_ip"] == "2001:db8::5"
 
 
 def test_auth_and_vpn_lines():

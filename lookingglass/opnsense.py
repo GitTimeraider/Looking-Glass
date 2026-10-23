@@ -647,6 +647,21 @@ class Poller:
             ev = crowdsec_decision_from_api(row)
             if ev:
                 self.writer.put(ev)
+        # cscli (and so the API above) lists only CrowdSec's own decisions: the community blocklist (CAPI, usually
+        # by far the most) only lives in the pf tables the plugin's firewall rules use - their size is read here
+        out: dict[str, Any] = {}
+        try:
+            sizes = ((await self.api.get("firewall/alias/get_table_size")) or {}).get("details") or {}
+            for key, table in (("ipv4", "crowdsec_blocklists"), ("ipv6", "crowdsec6_blocklists")):
+                t = sizes.get(table)
+                if isinstance(t, dict):
+                    out[key] = t.get("count")
+                    out[f"{key}_updated"] = t.get("updated")
+        except ApiError as exc:
+            if exc.status not in (400, 403, 404):
+                raise
+            out["error"] = exc.status
+        await db.set_snapshot("crowdsec_blocklists", out)
 
     async def poll_qfeeds(self) -> None:
         # Q-Feeds has no event store: every call re-reads the firewall log files on OPNsense, oldest line of a file

@@ -201,7 +201,7 @@ function render(d) {
     kpi("Login failures", LG.num(k.login_failed), k.login_failed ? "warn" : "") +
     (on.suricata ? kpi("IDS events", LG.num(k.ids), k.ids ? "warn" : "") : "") +
     (on.unbound ? kpi("DNS queries", LG.num(k.dns)) : "") +
-    (on.crowdsec ? kpi("CrowdSec bans", k.crowdsec_decisions ?? "–") : "") +
+    (on.crowdsec ? kpi("CrowdSec bans", `${k.crowdsec_decisions ?? "–"}${k.crowdsec_blocklist != null ? ` <span class="small">+ ${LG.num(k.crowdsec_blocklist)} on the blocklist</span>` : ""}`) : "") +
     kpi("Devices (24h)", LG.num(k.devices));
   document.getElementById("updated").textContent = "updated " + LG.clock();
 

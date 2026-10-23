@@ -120,14 +120,29 @@ def parse_crowdsec(ts: datetime, host: str | None, program: str | None, message:
                  message=text[:4000], data={k: v for k, v in fields.items() if k != "msg"} or None)
 
 
+_CS_SCOPE = re.compile(r"^([A-Za-z_]*[g-zG-Z_][A-Za-z_]*):(.*)$")  # "Ip:1.2.3.4", "Range:1.2.3.0/24" - not an IPv6 address
+
+
+def crowdsec_scope_value(value: Any) -> tuple[str | None, str]:
+    """OPNsense joins scope and value: 'Ip:1.2.3.4' / 'Range:2001:db8::/48' / 'Country:NL' -> (scope, value)."""
+    v = str(value or "").strip()
+    m = _CS_SCOPE.match(v)
+    return (m[1], m[2].strip()) if m else (None, v)
+
+
+def _crowdsec_ip(scope: str | None, value: str) -> str | None:
+    if scope and scope.lower() not in ("ip", "range"):
+        return None
+    return ip_or_none(value.split("/")[0]) if value else None
+
+
 def crowdsec_alert_from_api(row: dict[str, Any]) -> dict[str, Any] | None:
     """Row of ``/api/crowdsec/alerts/search`` (OPNsense: id, value, reason, country, as, decisions, created)."""
     ts = parse_iso(str(row.get("created_at") or row.get("created") or row.get("start_at") or "")) or datetime.now(timezone.utc)
     src = row.get("source") or {}
     ip = src.get("ip") if isinstance(src, dict) else None
     if not ip:
-        value = row.get("value") or row.get("source_value") or ""
-        ip = value.split(":")[-1] if value else None
+        ip = _crowdsec_ip(*crowdsec_scope_value(row.get("value") or row.get("source_value")))
     scenario = row.get("scenario") or row.get("reason")
     return event(ts, "crowdsec", program="crowdsec", severity=4, action="alert", src_ip=ip,
                  message=f'{scenario} from {ip} ({row.get("events_count", "?")} events) decisions: {row.get("decisions", "")}',
@@ -142,10 +157,11 @@ def crowdsec_decision_from_api(row: dict[str, Any]) -> dict[str, Any] | None:
     """Row of ``/api/crowdsec/decisions/search`` (OPNsense: id, source (origin), scope_value, reason, action,
     country, as, events_count, expiration, alert_id)."""
     ts = parse_iso(str(row.get("created_at") or row.get("created") or "")) or datetime.now(timezone.utc)
-    value = str(row.get("scope_value") or row.get("value") or "")
-    row = {**row, "value": value, "origin": row.get("origin") or row.get("source"), "type": row.get("type") or row.get("action")}
+    scope, value = crowdsec_scope_value(row.get("scope_value") or row.get("value"))
+    row = {**row, "value": value, "scope": row.get("scope") or scope, "origin": row.get("origin") or row.get("source"),
+           "type": row.get("type") or row.get("action")}
     return event(ts, "crowdsec", program="crowdsec", severity=4, action=str(row.get("type") or "ban").lower(),
-                 src_ip=ip_or_none(value.split("/")[0]) if value else None,
+                 src_ip=_crowdsec_ip(row["scope"], value),
                  message=f'decision {row.get("type", "ban")} on {row.get("scope", "Ip")} {value} ({row.get("reason") or row.get("scenario", "")}), '
                          f'origin {row.get("origin", "")}, expires {row.get("expiration") or row.get("duration", "")}',
                  data={k: row.get(k) for k in ("id", "scope", "value", "reason", "scenario", "origin", "duration", "expiration", "country", "as",

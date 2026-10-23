@@ -142,6 +142,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "FROM events WHERE ts > now() - make_interval(secs => $1)", secs)
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
         decisions = await db.get_snapshot("crowdsec_decisions")
+        blocklist = await db.get_snapshot("crowdsec_blocklists") or {}
+        blocklist_n = sum(v for k, v in blocklist.items() if k in ("ipv4", "ipv6") and isinstance(v, int)) \
+            if isinstance(blocklist, dict) and ("ipv4" in blocklist or "ipv6" in blocklist) else None
         devices = await pool.fetchval("SELECT count(*) FROM devices WHERE last_seen > now() - interval '1 day'")
         report = await build_report(hours)
         # optional sources: hide their overview cards when their pull is off and they have no data in the period
@@ -152,7 +155,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return {
             "sources": enabled,
             "kpi": {**db.jsonable(dict(kpi)), "open_alerts": {r["severity"]: r["n"] for r in alerts},
-                    "crowdsec_decisions": len(decisions) if isinstance(decisions, list) else None, "devices": devices},
+                    "crowdsec_decisions": len(decisions) if isinstance(decisions, list) else None,
+                    "crowdsec_blocklist": blocklist_n, "devices": devices},
             "timeline": await timeline(hours),
             "report": report,
             "system": await db.get_snapshot("system"),

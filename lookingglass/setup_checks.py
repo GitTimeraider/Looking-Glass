@@ -213,7 +213,9 @@ async def run(settings: Settings) -> dict[str, Any]:
 
     # ------------------------------------------------- CrowdSec / Q-Feeds ---
     for key, name, job, pulled, page, hint in (
-            ("crowdsec", "CrowdSec", "crowdsec", settings.crowdsec_pull, "Services: CrowdSec", ""),
+            ("crowdsec", "CrowdSec", "crowdsec", settings.crowdsec_pull, "Services: CrowdSec",
+             " CrowdSec only lists its own detections here; the community blocklist blocks in the firewall - "
+             "to see those blocks: Services › CrowdSec › Settings › 'Enable log for rules'."),
             ("qfeeds", "Q-Feeds", "qfeeds", settings.qfeeds_pull, "Q-Feeds",
              " Events only exist for logged firewall rules that use the Q-Feeds aliases.")):
         j = _job(poller, job)
