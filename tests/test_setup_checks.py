@@ -80,3 +80,43 @@ def test_runs_with_every_integration_configured():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_crowdsec_check_names_the_missing_step():
+    from datetime import datetime, timezone
+
+    async def crowdsec(pool):
+        res = await setup_checks.run(Settings(opnsense_url="http://x", opnsense_api_key="k", opnsense_api_secret="s"))
+        return {c["id"]: c for c in res["checks"]}["crowdsec"]
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events")
+            await db.set_snapshot("poller_status", {"system": {"ok": True}, "crowdsec": {"ok": True}})
+            await db.set_snapshot("rule_labels", {"a" * 32: "Allow LAN"})
+            await db.set_snapshot("crowdsec_status", {"alerts": 0, "decisions": 0, "blocklists": {"ipv4": 0, "ipv6": 0}})
+            c = await crowdsec(pool)  # plugin rules not active, tables empty
+            assert c["status"] == "action" and "Create blocklist rules" in c["todo"][0] and "empty" in c["todo"][1]
+            assert "0 alerts" in c["summary"]
+            await db.set_snapshot("rule_labels", {"a" * 32: "Allow LAN", "b" * 32: "CrowdSec (IPv4) in"})
+            await db.set_snapshot("crowdsec_status", {"alerts": 0, "decisions": 0, "blocklists": {"error": 403}})
+            c = await crowdsec(pool)
+            assert c["todo"] == [f"{setup_checks.PRIV}: add 'Firewall: Alias: Edit' to the API user, so the blocklist size can be read."]
+            await db.set_snapshot("crowdsec_status", {"alerts": 2, "decisions": 1, "blocklists": {"ipv4": 18000, "ipv6": 900}})
+            now = datetime.now(timezone.utc)
+            await db.copy_events([event(now, "firewall", host="setup-test", severity=6, action="block", src_ip="45.9.9.9",
+                                        data={"label": ""})])
+            c = await crowdsec(pool)  # rules + full tables, but no CrowdSec block in the log
+            assert "Enable log for rules" in c["todo"][0] and "no rule name" in c["todo"][1] and "18,900 addresses" in c["summary"]
+            await db.copy_events([event(now, "firewall", host="setup-test", severity=6, action="block", src_ip="45.9.9.8",
+                                        data={"label": "CrowdSec (IPv4) in"})])
+            c = await crowdsec(pool)
+            assert c["status"] == "ok" and not c["todo"] and "1 blocks by the CrowdSec rules" in c["summary"]
+        finally:
+            await db.pool().execute("DELETE FROM events WHERE host = 'setup-test'")
+            await db.pool().execute("DELETE FROM snapshots WHERE key IN ('poller_status', 'rule_labels', 'crowdsec_status')")
+            await db.close()
+    asyncio.run(main())

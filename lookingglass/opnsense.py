@@ -662,6 +662,8 @@ class Poller:
                 raise
             out["error"] = exc.status
         await db.set_snapshot("crowdsec_blocklists", out)
+        # for Setup & Status: what the API answered this time (the decisions snapshot above is the list itself)
+        await db.set_snapshot("crowdsec_status", {"alerts": len(alerts), "decisions": len(decisions), "blocklists": out})
 
     async def poll_qfeeds(self) -> None:
         # Q-Feeds has no event store: every call re-reads the firewall log files on OPNsense, oldest line of a file
