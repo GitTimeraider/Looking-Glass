@@ -28,7 +28,7 @@ RULES: dict[str, list[tuple[str, str]]] = {
     "Logins & VPN": [("brute_force", "Brute force"), ("success_after_failures", "Login after failed attempts"),
                      ("admin_login", "Login (admin GUI / SSH / API / VPN)"), ("config_change", "Configuration change")],
     "Web server (nginx)": [("web_attack", "Web attack pattern"), ("web_scanner", "Web scanning (many 4xx)")],
-    "IDS / CrowdSec / Q-Feeds / Zenarmor": [("ids", "Suricata IDS"), ("crowdsec", "CrowdSec"),
+    "Suricata / CrowdSec / Q-Feeds / Zenarmor": [("ids", "Suricata"), ("crowdsec", "CrowdSec"),
                                             ("threat_intel_outbound", "Device contacted a threat-intel address"),
                                             ("threat_intel_inbound", "Threat-intel address probing you"),
                                             ("zenarmor_threat", "Zenarmor threat")],

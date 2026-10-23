@@ -85,7 +85,7 @@ async def run(settings: Settings) -> dict[str, Any]:
     # ------------------------------------------------------------- basics ---
     sysjob = _job(poller, "system")
     if not settings.opnsense_enabled:
-        check("api", "OPNsense API", "action", [], "Not configured - system state, DNS statistics, VPN, nginx, IDS, "
+        check("api", "OPNsense API", "action", [], "Not configured - system state, DNS statistics, VPN, nginx, Suricata, "
               "CrowdSec and Q-Feeds all come from the API.",
               ["Looking Glass › Settings › OPNsense: enter URL, API key and secret, Test connection, Save."], link="/settings#opnsense")
     elif sysjob.get("ok"):
@@ -196,20 +196,20 @@ async def run(settings: Settings) -> dict[str, Any]:
     ids_api, ids_sys = n("suricata:api"), n("suricata:syslog")
     ij = _job(poller, "ids")
     if ids_api and ids_sys:
-        check("ids", "Intrusion detection (Suricata)", "duplicate", ["API", "syslog"], "Alerts arrive via the API and via syslog.",
+        check("ids", "Suricata", "duplicate", ["API", "syslog"], "Alerts arrive via the API and via syslog.",
               ["OPNsense › Services › Intrusion Detection › Administration: untick 'Enable syslog alerts' / 'Enable eve syslog "
                "output' (the API already pulls every alert), or switch off Looking Glass › Settings › OPNsense › Pull Suricata IDS alerts."],
               count=ids_api, last_seen=last("suricata"), link="/dash/threats")
     elif ij.get("ok") and settings.ids_pull:
-        check("ids", "Intrusion detection (Suricata)", "ok", ["API"], "Alerts pulled via the API." + ("" if ids_api else " No alerts in 24 hours."),
+        check("ids", "Suricata", "ok", ["API"], "Alerts pulled via the API." + ("" if ids_api else " No alerts in 24 hours."),
               avoid=["'Enable syslog alerts' in Intrusion Detection (would duplicate)."], count=ids_api, last_seen=last("suricata"), link="/dash/threats")
     elif ids_sys:
-        check("ids", "Intrusion detection (Suricata)", "ok", ["syslog"], "Alerts via syslog.", count=ids_sys, last_seen=last("suricata"))
+        check("ids", "Suricata", "ok", ["syslog"], "Alerts via syslog.", count=ids_sys, last_seen=last("suricata"))
     elif ij.get("forbidden"):
-        check("ids", "Intrusion detection (Suricata)", "action", [], "The API user may not read IDS alerts.",
+        check("ids", "Suricata", "action", [], "The API user may not read Suricata alerts.",
               [f"{PRIV}: add 'Services: Intrusion Detection' (or 'GUI - All pages')."])
     else:
-        check("ids", "Intrusion detection (Suricata)", "optional", [], "Intrusion Detection not enabled on OPNsense (or the pull is off).")
+        check("ids", "Suricata", "optional", [], "Intrusion Detection not enabled on OPNsense (or the pull is off).")
 
     # ------------------------------------------------- CrowdSec / Q-Feeds ---
     j = _job(poller, "crowdsec")

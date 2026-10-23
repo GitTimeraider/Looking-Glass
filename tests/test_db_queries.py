@@ -43,3 +43,36 @@ def test_add_metrics_skips_bad_rows_instead_of_failing():
         finally:
             await db.close()
     asyncio.run(main())
+
+
+def test_threats_dashboard_crowdsec_and_switched_off_sources():
+    from datetime import datetime, timezone
+    from lookingglass.parsers.common import event
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events")
+            now = datetime.now(timezone.utc)
+            await db.copy_events([
+                event(now, "firewall", severity=6, action="block", src_ip="45.9.9.9", data={"label": "x", "blocklist": "CrowdSec"}),
+                event(now, "qfeeds", severity=4, action="block", src_ip="45.9.9.8")])
+            await db.set_snapshot("crowdsec_decisions", [{"id": 1}, {"id": 2}])  # active now, whatever their age
+            res = await run_dashboard("threats", 24)
+            by = {p["id"]: p for p in res["panels"]}
+            kpi = by["kpi"]["rows"][0]
+            assert kpi["Suricata events"] == 0 and kpi["CrowdSec active decisions"] == 2 and kpi["CrowdSec firewall blocks"] == 1
+            assert {r["series"] for r in by["src"]["rows"]} == {"crowdsec", "qfeeds"}  # blocks count as CrowdSec
+            assert by["src"]["drill"]["series_drill"]["crowdsec"] == {"source": "firewall", "d_blocklist": "CrowdSec"}
+            assert "Suricata signatures" in {p.get("title") for p in res["panels"]}
+            # Suricata switched off and without data: its tiles and panels are left out, the rest stays
+            res = await run_dashboard("threats", 24, off={"suricata"})
+            by = {p["id"]: p for p in res["panels"]}
+            assert "cls" not in by and "sigs" not in by and "cs" in by
+            assert "Suricata events" not in by["kpi"]["rows"][0] and "CrowdSec alerts" in by["kpi"]["rows"][0]
+        finally:
+            await db.pool().execute("TRUNCATE events")
+            await db.pool().execute("DELETE FROM snapshots WHERE key = 'crowdsec_decisions'")
+            await db.close()
+    asyncio.run(main())

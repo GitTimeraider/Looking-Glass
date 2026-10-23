@@ -24,7 +24,7 @@ const SECTIONS = [
   ["top_passed_inbound", "Allowed inbound from internet", [{k: "dst", l: "Destination"}, {k: "port", l: "Port"}, {k: "proto", l: "Proto"}, {k: "sources", l: "Sources", num: true}, {k: "n", l: "Hits", num: true}]],
   ["auth_failures", "Authentication failures", [{k: "ip", l: "IP"}, {k: "source", l: "Service"}, {k: "users", l: "Users"}, {k: "n", l: "Failures", num: true}]],
   ["auth_success", "Successful logins", [{k: "username", l: "User"}, {k: "ip", l: "From"}, {k: "program", l: "Via"}, {k: "n", l: "#", num: true}]],
-  ["ids_signatures", "IDS signatures", [{k: "signature", l: "Signature"}, {k: "classification", l: "Class"}, {k: "n", l: "Hits", num: true}]],
+  ["ids_signatures", "Suricata signatures", [{k: "signature", l: "Signature"}, {k: "classification", l: "Class"}, {k: "n", l: "Hits", num: true}]],
   ["crowdsec_scenarios", "CrowdSec scenarios", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}]],
   ["qfeeds_hits", "Q-Feeds hits", [{k: "src", l: "Source"}, {k: "dst", l: "Destination"}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}]],
   ["zenarmor_top", "Zenarmor", [{k: "app", l: "App"}, {k: "action", l: "Action"}, {k: "n", l: "Events", num: true}]],

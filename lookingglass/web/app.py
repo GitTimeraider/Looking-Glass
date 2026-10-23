@@ -768,7 +768,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def dash_data(name: str, hours: float = Query(24, gt=0, le=24 * 90)):
         if name not in DASHBOARDS:
             raise HTTPException(404)
-        return await run_dashboard(name, hours)
+        # an optional source whose pull is off and that has no data in the period: its tiles and panels are hidden
+        pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull}
+        has = {r["s"] for r in await db.pool().fetch(
+            "SELECT s FROM unnest($1::text[]) s WHERE EXISTS (SELECT 1 FROM events WHERE source = s "
+            "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
+        off = {k for k, on in pulls.items() if not (on and settings.opnsense_enabled) and k not in has}
+        return await run_dashboard(name, hours, off)
 
     @app.get("/api/unifi")
     async def unifi_data():
