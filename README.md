@@ -410,7 +410,7 @@ These steps were checked against the current OPNsense documentation and source (
    add **block rules that use the Q-Feeds aliases with logging enabled**, e.g. on LAN: *block, destination = Q-Feeds
    alias, Log ✓* and on WAN: *block, source = Q-Feeds alias, Log ✓* (**Firewall › Rules**). The domain feeds are
    applied through Unbound's blocklist (*Register domain feeds* in **Security › Q-Feeds Connect**).
-8. **CrowdSec** needs nothing extra – alerts and decisions are read through the API.
+8. **CrowdSec** needs nothing extra – alerts and decisions are read through the API. These are only CrowdSec's own detections; the community blocklist (usually by far the most bans) blocks in the firewall. To see those blocks, enable *Services › CrowdSec › Settings › Enable log for rules*; the blocklist size needs the API user's *Firewall: Alias: Edit* privilege.
 
 Check **Setup & Status** in Looking Glass: every source should show a recent "last message" and every API job "ok"
 (jobs for plugins you don't have show `n/a`).
