@@ -586,3 +586,26 @@ def test_blocklists_poll_finds_rules_by_alias():
         assert filterlog.BLOCKLIST_RULES == {"aaa": "CrowdSec", "bbb": "CrowdSec", "ccc": "Q-Feeds"}
         filterlog.BLOCKLIST_RULES.clear()
     run(body)
+
+
+@needs_db
+def test_api_pulled_alert_remembers_when_its_events_happened():
+    from lookingglass.parsers.security import crowdsec_alert_from_api
+
+    async def body(pool):
+        # CrowdSec saw it two days ago, Looking Glass pulls it only now: the alert is new, its event is old
+        seen = NOW - timedelta(days=2)
+        ev = crowdsec_alert_from_api({"id": 41, "value": "Ip:217.138.199.210", "reason": "firewallservices/pf-scan-multi_ports",
+                                      "created": seen.isoformat()})
+        await db.insert_events_dedup([ev])
+        await DetectionEngine(Settings()).crowdsec_alerts()
+        a = await pool.fetchrow("SELECT created_at, data FROM alerts WHERE rule = 'crowdsec'")
+        assert a["created_at"] > NOW - timedelta(minutes=5)
+        assert a["data"]["events_from"] == a["data"]["events_to"] == seen.strftime("%Y-%m-%dT%H:%M:%S.") + f"{seen.microsecond // 1000:03d}Z"
+        # alerts from before: the span is filled in from their events when the schema is applied
+        await pool.execute("UPDATE alerts SET data = data - 'events_from' - 'events_to'")
+        await db.close()
+        await db.connect(DSN)
+        data = await db.pool().fetchval("SELECT data FROM alerts WHERE rule = 'crowdsec'")
+        assert data["events_from"] == seen.strftime("%Y-%m-%dT%H:%M:%S.") + f"{seen.microsecond // 1000:03d}Z"
+    run(body)

@@ -272,3 +272,14 @@ ALTER TABLE alerts ADD COLUMN IF NOT EXISTS close_reason TEXT;  -- 'false_positi
 -- AI analysis of a report runs in the background: running | done | failed (+ the reason)
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS ai_state TEXT;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS ai_error TEXT;
+
+-- alerts on API-pulled events (CrowdSec, Suricata, Q-Feeds) remember the time span of those events (they carry the
+-- tool's own time, possibly long before the alert): alerts from before that get it from their events once
+UPDATE alerts a SET data = coalesce(a.data, '{}'::jsonb) || jsonb_build_object(
+    'events_from', to_char(s.f AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'events_to', to_char(s.t AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+FROM (SELECT a2.id, min(e.ts) f, max(e.ts) t FROM alerts a2 JOIN events e ON e.src_ip = a2.src_ip
+        AND e.source = CASE a2.rule WHEN 'crowdsec' THEN 'crowdsec' WHEN 'ids' THEN 'suricata' ELSE 'qfeeds' END
+      WHERE a2.rule IN ('crowdsec', 'ids', 'threat_intel_outbound', 'threat_intel_inbound')
+        AND NOT coalesce(a2.data ? 'events_from', false) GROUP BY a2.id) s
+WHERE a.id = s.id;

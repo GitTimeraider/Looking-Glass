@@ -7,6 +7,7 @@ import math
 import re
 import time
 from collections import Counter, defaultdict
+from datetime import timezone
 from typing import Any
 
 from . import alert_filters, db
@@ -188,14 +189,17 @@ def corroborate(r: Rating, ev: dict[str, Any], max_steps: int = 2) -> Rating:
 
 async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint: str, description: str = "",
                       src_ip: str | None = None, dst_ip: str | None = None, data: dict | None = None,
-                      count: int = 1, mode: str = "add", events: dict[str, Any] | None = None) -> None:
+                      count: int = 1, mode: str = "add", events: dict[str, Any] | None = None,
+                      span: tuple[Any, Any] | None = None) -> None:
     """Create an alert or update the matching open one (dedupe by fingerprint within 24h).
 
     ``severity``: a level, or a Rating whose reasons are added to the description. A Rating of a windowed rule is
     re-evaluated on every run (it covers the last 24 hours), so its level replaces the stored one; plain levels and
     sticky Ratings only raise it.
     ``events``: Event-search filters that show the events behind the alert (default: the source IP);
-    the alerts page links to them for the alert's time span. The device name of ``src_ip`` is added."""
+    the alerts page links to them for the alert's time span. The device name of ``src_ip`` is added.
+    ``span``: (first, last) time of the events behind it, when they can lie outside the alert's own time span - events
+    pulled from an API carry the time the tool saw them, which can be long before Looking Glass raised the alert."""
     pool = db.pool()
     data = dict(data or {})
     rated = isinstance(severity, Rating)
@@ -237,8 +241,16 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
         status = "closed"  # "create as closed": kept for reference, never shown as open
         data["filter"] = {"id": flt["id"], "name": flt.get("name")}
     row = await pool.fetchrow(
-        "SELECT id, severity, status, data ? 'filter' OR data ? 'auto_closed' AS by_filter FROM alerts WHERE fingerprint = $1 "
+        "SELECT id, severity, status, data ? 'filter' OR data ? 'auto_closed' AS by_filter, "
+        "data->>'events_from' AS ev_from, data->>'events_to' AS ev_to FROM alerts WHERE fingerprint = $1 "
         "AND last_seen > now() - interval '24 hours' ORDER BY id DESC LIMIT 1", fingerprint)
+    if span and all(span):
+        # widened over every sighting: the update below replaces data
+        # UTC with milliseconds ("...T13:10:34.123Z"): every browser parses it, and it sorts as text
+        first, last = (t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{t.microsecond // 1000:03d}Z"
+                       if hasattr(t, "astimezone") else str(t) for t in span)
+        data["events_from"] = min(first, row["ev_from"]) if row and row["ev_from"] else first
+        data["events_to"] = max(last, row["ev_to"]) if row and row["ev_to"] else last
     if row and row["status"] == "closed" and status != "closed":
         # You closed it: it stays closed while it keeps happening (it only collects the new sightings), unless it gets
         # WORSE than when you closed it. After 24 quiet hours it can come back as a new alert. A mute filter that closed
@@ -680,6 +692,7 @@ class DetectionEngine:
         last, current = await self._watermark("ids")
         rows = await db.pool().fetch(
             "SELECT src_ip, dst_ip, message, min(severity) AS sev, count(*) AS hits, max(data->>'classification') AS cls, "
+            "min(ts) AS first, max(ts) AS last, "
             "bool_and(action IN ('drop', 'blocked')) AS all_blocked "
             "FROM events WHERE id > $1 AND id <= $2 AND source = 'suricata' AND action IS NOT NULL "
             "GROUP BY src_ip, dst_ip, message", last, current)
@@ -696,14 +709,16 @@ class DetectionEngine:
             await raise_alert("ids", rating, f"Suricata: {r['message']}", f"ids:{r['src_ip']}:{r['message']}",
                               events={"source": "suricata", "ip": str(r["src_ip"]) if r["src_ip"] else None, "q": r["message"][:80]},
                               src_ip=str(r["src_ip"]) if r["src_ip"] else None, dst_ip=str(r["dst_ip"]) if r["dst_ip"] else None,
-                              count=r["hits"], description=f"Suricata signature '{r['message']}' ({r['cls'] or 'n/a'}) "
+                              count=r["hits"], span=(r["first"], r["last"]),
+                              description=f"Suricata signature '{r['message']}' ({r['cls'] or 'n/a'}) "
                                                            f"{r['src_ip']} -> {r['dst_ip']}, {r['hits']} hit(s).")
         await self._commit("ids", current)
 
     async def crowdsec_alerts(self) -> None:
         last, current = await self._watermark("crowdsec")
         rows = await db.pool().fetch(
-            "SELECT src_ip, coalesce(data->>'scenario', data->>'reason', 'unknown') AS scenario, count(*) AS hits "
+            "SELECT src_ip, coalesce(data->>'scenario', data->>'reason', 'unknown') AS scenario, count(*) AS hits, "
+            "min(ts) AS first, max(ts) AS last "
             "FROM events WHERE id > $1 AND id <= $2 AND source = 'crowdsec' AND action IN ('alert', 'ban', 'captcha') "
             "GROUP BY 1, 2", last, current)
         for r in rows:
@@ -714,15 +729,18 @@ class DetectionEngine:
             await raise_alert("crowdsec", rating,
                               f"CrowdSec: {r['scenario']} from {ip}{' (INTERNAL)' if internal else ''}",
                               f"crowdsec:{ip}:{r['scenario']}", src_ip=ip, events={"source": "crowdsec", "ip": ip}, count=r["hits"],
+                              span=(r["first"], r["last"]),
                               description=f"CrowdSec detected behaviour '{r['scenario']}' from {ip}.")
         await self._commit("crowdsec", current)
 
     async def qfeeds_hits(self) -> None:
         last, current = await self._watermark("qfeeds")
         rows = await db.pool().fetch(
-            "SELECT src_ip, dst_ip, dst_port, count(*) AS hits FROM events WHERE id > $1 AND id <= $2 AND source = 'qfeeds' "
+            "SELECT src_ip, dst_ip, dst_port, count(*) AS hits, min(ts) AS first, max(ts) AS last FROM events "
+            "WHERE id > $1 AND id <= $2 AND source = 'qfeeds' "
             "GROUP BY 1, 2, 3", last, current)
         inbound: dict[str, int] = defaultdict(int)
+        spans: dict[str, tuple[Any, Any]] = {}
         for r in rows:
             src, dst = (str(r["src_ip"]) if r["src_ip"] else None), (str(r["dst_ip"]) if r["dst_ip"] else None)
             if src and self.internal(src):
@@ -734,17 +752,20 @@ class DetectionEngine:
                 await raise_alert(
                     "threat_intel_outbound", rating, f"Internal host {src} contacted threat-intel listed IP {dst}",
                     f"qf_out:{src}:{dst}", src_ip=src, events={"source": "qfeeds", "ip": src}, dst_ip=dst, count=r["hits"],
+                    span=(r["first"], r["last"]),
                     description=f"Q-Feeds blocked traffic from internal {src} to known malicious {dst}:{r['dst_port']}. "
                                 "The internal host may be compromised (C2 / malware beacon). Investigate it.")
             elif src:
                 inbound[src] += r["hits"]
+                f, t = spans.get(src, (r["first"], r["last"]))
+                spans[src] = (min(f, r["first"]), max(t, r["last"]))
         for src, hits in inbound.items():
             if hits >= 20:
                 await raise_alert("threat_intel_inbound", Rating("info", "known-bad internet address probing you, already "
                                                                          "blocked by Q-Feeds", sticky=True),
                                   f"Threat-intel listed IP {src} is probing you",
                                   f"qf_in:{src}", src_ip=src, events={"source": "qfeeds", "ip": src}, count=hits,
-                                  description=f"{hits} connection attempts from {src} (Q-Feeds listed) were blocked.")
+                                  span=spans.get(src), description=f"{hits} connection attempts from {src} (Q-Feeds listed) were blocked.")
         await self._commit("qfeeds", current)
 
     async def zenarmor_threats(self) -> None:
