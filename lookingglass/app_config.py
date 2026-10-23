@@ -61,6 +61,13 @@ FIELDS: list[Field] = [
           "auto = only when no filterlog arrives via syslog.", choices=("auto", "always", "never")),
     Field("unbound_query_pull", "opnsense", "Pull Unbound DNS queries", "bool", "Needs Reporting › Settings › Unbound DNS statistics."),
     Field("crowdsec_pull", "opnsense", "Pull CrowdSec alerts & decisions", "bool"),
+    Field("blocklist_aliases", "opnsense", "Blocklist aliases", "text", "The firewall aliases (pf tables) of blocking "
+          "tools, one tool per line: Name: alias, alias - * matches any characters. For each line Looking Glass finds the "
+          "rules that use these aliases (the tool's own and yours), counts the addresses in them and the packets the "
+          "rules blocked, and marks their firewall log lines. The line named CrowdSec feeds the CrowdSec tiles. Change "
+          "it when a plugin renames its aliases. Needs the privileges 'Firewall: Alias: Edit' (sizes) and "
+          "'Diagnostics: Firewall statistics' (rules).",
+          placeholder="CrowdSec: crowdsec_blocklists, crowdsec6_blocklists\nQ-Feeds: __qfeeds_*"),
     Field("qfeeds_pull", "opnsense", "Pull Q-Feeds events", "bool"),
     Field("ids_pull", "opnsense", "Pull Suricata IDS alerts", "bool"),
     Field("nginx_pull", "opnsense", "Pull nginx access / error logs", "bool",
@@ -295,6 +302,12 @@ def _coerce(f: Field, value: Any) -> Any:
             ZoneInfo(v)
         except Exception as exc:  # noqa: BLE001
             raise SettingsError(f"{f.label}: unknown time zone '{v}'") from exc
+    if f.key == "blocklist_aliases" and v:
+        from .parsers.filterlog import parse_blocklist_aliases
+        try:
+            parse_blocklist_aliases(v)
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: {exc}") from exc
     if f.key == "intel_sources" and v:
         from .intel import parse_sources
         try:

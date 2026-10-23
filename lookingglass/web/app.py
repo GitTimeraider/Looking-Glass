@@ -142,9 +142,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "FROM events WHERE ts > now() - make_interval(secs => $1)", secs)
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
         decisions = await db.get_snapshot("crowdsec_decisions")
-        blocklist = await db.get_snapshot("crowdsec_blocklists") or {}
-        blocklist_n = sum(v for k, v in blocklist.items() if k in ("ipv4", "ipv6") and isinstance(v, int)) \
-            if isinstance(blocklist, dict) and ("ipv4" in blocklist or "ipv6" in blocklist) else None
+        blocklists = await db.get_snapshot("blocklists") or {}
+        blocklist_n = ((blocklists.get("crowdsec") or {}) if isinstance(blocklists, dict) else {}).get("size")
         devices = await pool.fetchval("SELECT count(*) FROM devices WHERE last_seen > now() - interval '1 day'")
         report = await build_report(hours)
         # optional sources: hide their overview cards when their pull is off and they have no data in the period
