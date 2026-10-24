@@ -9,6 +9,8 @@
   <input name="ip" placeholder="any IP (source or destination)" title="IP or CIDR, several: comma separated">
   <input name="src" placeholder="source IP" title="Source IP or CIDR, several: comma separated">
   <input name="dst" placeholder="destination IP" title="Destination IP or CIDR, several: comma separated">
+  <input name="sport" placeholder="source port" title="Port or range, several: comma separated - e.g. 53, 1024-2048" size="11">
+  <input name="dport" placeholder="destination port" title="Port or range, several: comma separated - e.g. 22, 80, 8000-8100" size="13">
   <input name="action" placeholder="action (block, login_failed, …)">
   <input name="q" placeholder="text / domain / user" style="flex:1">
   <select name="min_severity">
@@ -73,6 +75,7 @@ showRange();
 for (const [k, v] of Object.entries(qs)) {
   if (k === "start" || k === "end" || (k === "hours" && (qs.start || qs.end))) continue;
   if (k === "source" && v && ![...form.elements.source.options].some(o => o.value === v)) form.elements.source.add(new Option(v.replaceAll(",", " + "), v));
+  if (k === "port" && !qs.dport) { form.elements.dport.value = v; continue; }  // dashboard links: port = destination port
   if (form.elements[k]) form.elements[k].value = v;
   else if (k !== "limit" && k !== "offset") extra[k] = v;
 }

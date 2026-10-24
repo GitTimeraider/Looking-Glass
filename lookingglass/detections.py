@@ -7,10 +7,10 @@ import math
 import re
 import time
 from collections import Counter, defaultdict
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import alert_filters, db
+from . import alert_filters, db, event_filter
 from .parsers.common import real_name
 from .config import Settings
 from .ingest import STATS
@@ -187,6 +187,27 @@ def corroborate(r: Rating, ev: dict[str, Any], max_steps: int = 2) -> Rating:
     return r
 
 
+async def alert_ports(filters: dict[str, Any] | None, since: datetime) -> dict[str, Any] | None:
+    """The most frequent source / destination ports of the events behind an alert (the same filters and time span its
+    Events button uses), for the alert list. Only for alerts tied to an address - the IP index keeps it cheap."""
+    if not filters or not any(filters.get(k) for k in ("ip", "src", "dst")):
+        return None
+    try:
+        where, args = event_filter.build({**filters, "start": since.isoformat()})
+    except ValueError:
+        return None
+    r = await db.pool().fetchrow(
+        f"WITH ev AS (SELECT src_port, dst_port FROM events WHERE {' AND '.join(where)} ORDER BY ts DESC LIMIT 5000) "
+        "SELECT (SELECT array_agg(p ORDER BY n DESC, p) FROM (SELECT src_port p, count(*) n FROM ev WHERE src_port IS NOT NULL "
+        "GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5) a) src, (SELECT count(DISTINCT src_port) FROM ev) src_n, "
+        "(SELECT array_agg(p ORDER BY n DESC, p) FROM (SELECT dst_port p, count(*) n FROM ev WHERE dst_port IS NOT NULL "
+        "GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5) b) dst, (SELECT count(DISTINCT dst_port) FROM ev) dst_n", *args)
+    if not r or not (r["src_n"] or r["dst_n"]):
+        return None
+    return {"src": list(r["src"] or []), "src_n": r["src_n"], "dst": list(r["dst"] or []), "dst_n": r["dst_n"],
+            "at": datetime.now(timezone.utc).isoformat()}
+
+
 async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint: str, description: str = "",
                       src_ip: str | None = None, dst_ip: str | None = None, data: dict | None = None,
                       count: int = 1, mode: str = "add", events: dict[str, Any] | None = None,
@@ -242,7 +263,8 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
         data["filter"] = {"id": flt["id"], "name": flt.get("name")}
     row = await pool.fetchrow(
         "SELECT id, severity, status, data ? 'filter' OR data ? 'auto_closed' AS by_filter, "
-        "data->>'events_from' AS ev_from, data->>'events_to' AS ev_to FROM alerts WHERE fingerprint = $1 "
+        "data->>'events_from' AS ev_from, data->>'events_to' AS ev_to, data->'ports' AS ports, created_at "
+        "FROM alerts WHERE fingerprint = $1 "
         "AND last_seen > now() - interval '24 hours' ORDER BY id DESC LIMIT 1", fingerprint)
     if span and all(span):
         # widened over every sighting: the update below replaces data
@@ -251,6 +273,18 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
                        if hasattr(t, "astimezone") else str(t) for t in span)
         data["events_from"] = min(first, row["ev_from"]) if row and row["ev_from"] else first
         data["events_to"] = max(last, row["ev_to"]) if row and row["ev_to"] else last
+    # ports of its events (refreshed at most every 10 minutes - the update below replaces data)
+    old_ports = row["ports"] if row else None
+    if old_ports and old_ports.get("at", "") > (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat():
+        data["ports"] = old_ports
+    else:
+        since = min(t for t in (row["created_at"] if row else datetime.now(timezone.utc),
+                                datetime.fromisoformat(data["events_from"].replace("Z", "+00:00")) if data.get("events_from") else None)
+                    if t is not None) - timedelta(minutes=15)
+        if ports := await alert_ports(data.get("events"), since):
+            data["ports"] = ports
+        elif old_ports:
+            data["ports"] = old_ports
     if row and row["status"] == "closed" and status != "closed":
         # You closed it: it stays closed while it keeps happening (it only collects the new sightings), unless it gets
         # WORSE than when you closed it. After 24 quiet hours it can come back as a new alert. A mute filter that closed
