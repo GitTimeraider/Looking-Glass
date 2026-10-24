@@ -189,6 +189,9 @@ CREATE TABLE IF NOT EXISTS alert_filters (
 ALTER TABLE alert_filters ADD COLUMN IF NOT EXISTS match_mode TEXT NOT NULL DEFAULT 'all';  -- conditions: all (AND) / any (OR)
 ALTER TABLE alert_filters ADD COLUMN IF NOT EXISTS text_mode TEXT NOT NULL DEFAULT 'any';   -- text terms: any (OR) / all (AND)
 ALTER TABLE alert_filters ADD COLUMN IF NOT EXISTS set_severity TEXT;  -- action 'severity': the severity alerts get
+-- ports and ranges ("22, 8000-8100"): every port of the alert's events on that side must be in the list
+ALTER TABLE alert_filters ADD COLUMN IF NOT EXISTS src_ports TEXT;
+ALTER TABLE alert_filters ADD COLUMN IF NOT EXISTS dst_ports TEXT;
 
 -- email notification rules (Settings › Email & notifications)
 CREATE TABLE IF NOT EXISTS notification_rules (

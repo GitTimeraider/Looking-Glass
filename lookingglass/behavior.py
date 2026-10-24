@@ -527,7 +527,8 @@ class Behavior:
                 f = alert_filters.clean(payload)
                 await db.pool().execute(
                     "INSERT INTO alert_filters (name, enabled, max_severity, rules, contains, networks, action, match_mode, "
-                    "text_mode, set_severity) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)", *f.values())
+                    "text_mode, set_severity, src_ports, dst_ports) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                    *f.values())
                 log.info("feedback: created rule %s", payload["name"])
             if out:
                 alert_filters.invalidate()
