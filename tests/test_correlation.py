@@ -213,3 +213,32 @@ def test_config_change_says_what_and_who():
         finally:
             await db.close()
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_blocked_traffic_is_never_critical():
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events, alerts")
+            await db.copy_events([
+                # Suricata also flagged 192.168.1.6 - corroboration would push the blocked malware hit to critical
+                ev("suricata", 5, action="alert", src_ip="192.168.1.6", dst_ip="198.51.100.1", message="ET MALWARE x"),
+                ev("zenarmor", 1, action="block", src_ip="192.168.1.6", domain="c2.example", data={"security": "Malware"}),
+                ev("zenarmor", 1, action="conn", src_ip="192.168.1.7", domain="p.example", data={"security": "Phishing"}),
+                # ordinary categories / app names: no malware
+                ev("zenarmor", 1, action="block", src_ip="192.168.1.8", domain="coins.example", data={"security": "Cryptocurrency"}),
+                ev("zenarmor", 1, action="block", src_ip="192.168.1.9", domain="ec2.example",
+                   data={"security": "", "zen": {"app": "Amazon EC2", "app_category": "Cloud"}})])
+            await db.kv_set("wm:zenarmor", 0)
+            await DetectionEngine(Settings()).zenarmor_threats()
+            a = {r["ip"]: r for r in await alerts(pool, "zenarmor_threat")}
+            assert a["192.168.1.6"]["severity"] == "high" and "Zenarmor blocked it" in " ".join(a["192.168.1.6"]["data"]["severity_why"])
+            assert a["192.168.1.7"]["severity"] == "critical"  # NOT blocked: still critical
+            assert "192.168.1.8" not in a and "192.168.1.9" not in a  # policy blocks, skipped by default
+            await pool.execute("TRUNCATE events, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())

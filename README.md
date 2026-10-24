@@ -199,7 +199,9 @@ decide it for every rule:
    malicious address) is worse than from the internet: it means a device of yours misbehaves.
 3. **Do other sources confirm it?** When the same IP also has IDS alerts, threat-intel (Q-Feeds) hits, Zenarmor threat
    events or other open alerts in the last 24 hours, the alert goes up one or two steps. Alerts built from the same
-   events (e.g. a brute force and the login after it) don't count as confirmation for each other.
+   events (e.g. a brute force and the login after it) don't count as confirmation for each other. Traffic that was
+   **blocked** (by Zenarmor, Q-Feeds or Suricata in IPS mode) stays at **high** at most, however much confirms it:
+   critical is for what got through.
 4. **How reliable is the signal?** Size is not severity: a scan of 400 ports is still a scan.
 
 | Situation | Severity |

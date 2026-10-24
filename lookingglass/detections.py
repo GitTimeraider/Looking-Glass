@@ -129,6 +129,13 @@ class Rating:
         self.why.append(f"↓ {reason}")
         return self
 
+    def cap(self, level: str, reason: str) -> "Rating":
+        """At most ``level`` - e.g. traffic that was blocked is never critical, however much else points at the device."""
+        if SEVERITIES.index(self.severity) > SEVERITIES.index(level):
+            self.severity = level
+            self.why.append(f"≤ {level}: {reason}")
+        return self
+
     def note(self, reason: str) -> "Rating":
         """Context that does not change the level."""
         self.why.append(reason)
@@ -137,6 +144,11 @@ class Rating:
     def text(self) -> str:
         return f"Severity {self.severity}: " + "; ".join(self.why) + "."
 
+
+# Zenarmor verdicts / categories that mean the device itself is probably infected - whole words, so an ordinary
+# "Cryptocurrency" category block or the app "Amazon EC2" do not count
+ZEN_BAD = re.compile(r"\b(malware|botnets?|phishing|ransom\w*|command\s*(and|&)\s*control|c2|c&c|"
+                     r"crypto[\s-]?min\w*|cryptojack\w*|coin[\s-]?min\w*)\b", re.I)
 
 # alerts built from the same events must not confirm each other
 RULE_FAMILIES = [{"brute_force", "success_after_failures", "admin_login", "password_spray", "distributed_brute_force",
@@ -741,6 +753,8 @@ class DetectionEngine:
                 ev = await evidence(src, "ids")
                 ev["ids"] = 0  # that is this alert
                 corroborate(rating, ev, 1)
+            if r["all_blocked"]:
+                rating.cap("high", "Suricata dropped it")
             await raise_alert("ids", rating, f"Suricata: {r['message']}", f"ids:{r['src_ip']}:{r['message']}",
                               events={"source": "suricata", "ip": str(r["src_ip"]) if r["src_ip"] else None, "q": r["message"][:80]},
                               src_ip=str(r["src_ip"]) if r["src_ip"] else None, dst_ip=str(r["dst_ip"]) if r["dst_ip"] else None,
@@ -784,6 +798,7 @@ class DetectionEngine:
                 ev = await evidence(src, "threat_intel_outbound")
                 ev["qfeeds"] = 0  # that is this alert
                 corroborate(rating, ev, 1)
+                rating.cap("high", "Q-Feeds blocked it")
                 await raise_alert(
                     "threat_intel_outbound", rating, f"Internal host {src} contacted threat-intel listed IP {dst}",
                     f"qf_out:{src}:{dst}", src_ip=src, events={"source": "qfeeds", "ip": src}, dst_ip=dst, count=r["hits"],
@@ -819,7 +834,8 @@ class DetectionEngine:
             what = zen_describe({k: r[k] for k in ("app", "app_category", "web_category", "policy") if r[k]})
             threat = r["threat"] or r["app_category"] or r["web_category"] or r["app"] or "threat alert"
             src = str(r["src_ip"]) if r["src_ip"] else None
-            bad = any(w in threat.lower() for w in ("malware", "botnet", "phishing", "command", "c2", "ransom", "crypto"))
+            # only Zenarmor's own verdict / categories, never the app name ("Amazon EC2" is no C2 server)
+            bad = bool(ZEN_BAD.search(" ".join(x for x in (r["threat"], r["app_category"], r["web_category"]) if x)))
             if r["blocked"] and (mode == "never" or (mode == "threats" and not bad)):
                 continue  # blocked by policy (or all blocks, if chosen): Zenarmor did its job, nothing to look into
             if bad:
@@ -832,6 +848,8 @@ class DetectionEngine:
                 ev = await evidence(src, "zenarmor_threat")
                 ev["zen"] = 0  # that is this alert
                 corroborate(rating, ev, 1)
+            if r["blocked"]:
+                rating.cap("high", "Zenarmor blocked it")
             label = threat if not r["app"] or r["app"] in threat else f"{r['app']}, {threat}"
             await raise_alert("zenarmor_threat", rating,
                               f"Zenarmor{' blocked' if r['blocked'] else ''}: {src} → {r['target']} ({label[:60]})",
