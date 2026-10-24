@@ -107,6 +107,13 @@ async function unmute(id) {
   await LG.api(`/api/alert-filters/${id}`, { method: "DELETE" });
   load();
 }
+/* the most frequent ports of the events behind the alert (detections.alert_ports): "22, 443 +3 more" */
+function portList(a, side) {
+  const p = (a.data || {}).ports || {}, list = p[side] || [], n = p[side + "_n"] || list.length;
+  if (!list.length) return "";
+  const more = n - list.length;
+  return list.map(v => LG.esc(String(v))).join(", ") + (more > 0 ? ` <span class="muted">+${LG.num(more)} more</span>` : "");
+}
 /* one alert: a compact summary line (click to open) and the full details below it */
 const expanded = new Set();
 function statusPills(a) {
@@ -120,7 +127,9 @@ function details(a) {
     ${d ? `<div class="al-desc small">${LG.esc(d)}</div>` : ""}
     <div class="kv al-kv">
       <div>Source</div><div>${a.src_name ? `<b>${LG.esc(a.src_name)}</b> ` : ""}${a.src_ip ? LG.ip(a.src_ip) : `<span class="muted">–</span>`}${device(a)}</div>
+      ${portList(a, "src") ? `<div>Source ports</div><div class="mono small">${portList(a, "src")}</div>` : ""}
       ${a.dst_ip ? `<div>Destination</div><div>${LG.ip(a.dst_ip)}</div>` : ""}
+      ${portList(a, "dst") ? `<div>Destination ports</div><div class="mono small">${portList(a, "dst")}</div>` : ""}
       <div>Rule</div><div class="mono small al-rule">${LG.esc(a.rule)}</div>
       <div>Count</div><div>${LG.num(a.count)}</div>
       <div>First seen</div><div>${LG.esc(LG.time(a.created_at))}</div>
@@ -132,8 +141,9 @@ function details(a) {
   </div>`;
 }
 function item(a) {
-  const src = a.src_name || a.src_ip;
-  const meta = [src ? LG.esc(src) : "", LG.esc(a.rule), `<span title="first ${LG.esc(LG.time(a.created_at))}">${LG.ago(a.last_seen)}</span>`].filter(Boolean).join(" · ");
+  const src = a.src_name || a.src_ip, dp = ((a.data || {}).ports || {});
+  const port = (dp.dst || []).length === 1 && dp.dst_n === 1 ? `port ${LG.esc(String(dp.dst[0]))}` : "";
+  const meta = [src ? LG.esc(src) : "", port, LG.esc(a.rule), `<span title="first ${LG.esc(LG.time(a.created_at))}">${LG.ago(a.last_seen)}</span>`].filter(Boolean).join(" · ");
   const open = expanded.has(a.id);
   return `<div class="al sev-${LG.esc(a.severity)}${open ? " open" : ""}" id="a${a.id}">
     <div class="al-head">
