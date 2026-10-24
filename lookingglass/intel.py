@@ -378,7 +378,7 @@ class Intel:
                                                                 "malware, or an unwanted browser / app miner)", sticky=True),
                                                  await evidence(ip, "crypto_mining"), 1),
                     f"Crypto mining: {ip} → {domain}", f"mining:{ip}", src_ip=ip, events={"ip": ip, "q": domain},
-                    count=r["n"], description=f"{ip} looked up / connected to the mining pool {domain}. If this is your "
+                    count=r["n"], blocked=r["blocked"] and "the lookup was blocked", description=f"{ip} looked up / connected to the mining pool {domain}. If this is your "
                                               "own miner: add the domain under Settings › Threat intel & traps › Never "
                                               "flag.")
                 continue
@@ -391,6 +391,7 @@ class Intel:
                     "threat_feed", corroborate(rating, await evidence(ip, "threat_feed"), 1),
                     f"{ip} looked up a known malicious domain: {domain}", f"feed:{ip}:{listed}", src_ip=ip,
                     events={"ip": ip, "q": domain}, count=r["n"], data={"feed": feed, "indicator": listed, "info": info},
+                    blocked=r["blocked"] and "the lookup was blocked",
                     description=f"{domain} is listed by {FEEDS[feed]['label']} ({info or 'malicious'}). The device may be "
                                 "infected, or a malicious link / ad was opened. False positive? Settings › Threat intel & "
                                 "traps › Never flag these domains / IPs.")
@@ -419,7 +420,7 @@ class Intel:
                         await raise_alert("tor", corroborate(rating, await evidence(src, "tor"), 1),
                                           f"{src} {'connects' if r['passed'] else 'tries to connect'} to the Tor network ({dst})"
                                           + ("" if r["passed"] else " - blocked"), f"tor:{src}", src_ip=src, dst_ip=dst,
-                                          events={"ip": src}, count=r["n"],
+                                          events={"ip": src}, count=r["n"], blocked=not r["passed"] and f"the connection was {how}",
                                           description=f"{src} contacted Tor relay {dst}: {how}. "
                                                       "Allowed on purpose? Settings › Threat intel & traps › Devices allowed "
                                                       "to use Tor.")
@@ -432,6 +433,7 @@ class Intel:
                         f"{src} → known malicious address {dst}:{r['port'] or '?'}" + ("" if r["passed"] else " (blocked)"),
                         f"feed:{src}:{dst}", src_ip=src,
                         dst_ip=dst, events={"ip": src}, count=r["n"], data={"feed": feed, "indicator": dst, "info": info},
+                        blocked=not r["passed"] and f"the connection was {how}",
                         description=f"{dst} is listed by {FEEDS[feed]['label']} ({info or 'malicious'}); the connection was "
                                     f"{how}. A device talking to a command & control server is very likely infected: "
                                     "isolate it and check it.")

@@ -213,3 +213,81 @@ def test_config_change_says_what_and_who():
         finally:
             await db.close()
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_blocked_traffic_is_never_critical():
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events, alerts")
+            await db.copy_events([
+                # Suricata also flagged 192.168.1.6 - corroboration would push the blocked malware hit to critical
+                ev("suricata", 5, action="alert", src_ip="192.168.1.6", dst_ip="198.51.100.1", message="ET MALWARE x"),
+                ev("zenarmor", 1, action="block", src_ip="192.168.1.6", domain="c2.example", data={"security": "Malware"}),
+                ev("zenarmor", 1, action="conn", src_ip="192.168.1.7", domain="p.example", data={"security": "Phishing"}),
+                # ordinary categories / app names: no malware
+                ev("zenarmor", 1, action="block", src_ip="192.168.1.8", domain="coins.example", data={"security": "Cryptocurrency"}),
+                ev("zenarmor", 1, action="block", src_ip="192.168.1.9", domain="ec2.example",
+                   data={"security": "", "zen": {"app": "Amazon EC2", "app_category": "Cloud"}})])
+            await db.kv_set("wm:zenarmor", 0)
+            await DetectionEngine(Settings()).zenarmor_threats()
+            a = {r["ip"]: r for r in await alerts(pool, "zenarmor_threat")}
+            assert a["192.168.1.6"]["severity"] == "high" and "Zenarmor blocked it" in " ".join(a["192.168.1.6"]["data"]["severity_why"])
+            assert a["192.168.1.7"]["severity"] == "critical"  # NOT blocked: still critical
+            assert "192.168.1.8" not in a and "192.168.1.9" not in a  # policy blocks, skipped by default
+            await pool.execute("TRUNCATE events, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_no_blocked_traffic_is_critical():
+    from lookingglass import alert_filters
+    from lookingglass.detections import Rating, raise_alert
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events, alerts, alert_filters, devices")
+            alert_filters.invalidate()
+
+            async def sev(fp):
+                return await pool.fetchval("SELECT severity FROM alerts WHERE fingerprint = $1", fp)
+            await raise_alert("threat_feed", Rating("medium", "listed").up("confirmed", 2), "x", "f:1", src_ip="192.168.1.20",
+                              blocked="the connection was blocked")
+            await raise_alert("threat_feed", "critical", "x", "f:2", src_ip="192.168.1.21", blocked=True)
+            await raise_alert("threat_feed", Rating("critical", "got through", sticky=True), "x", "f:3", src_ip="192.168.1.22")
+            assert (await sev("f:1"), await sev("f:2"), await sev("f:3")) == ("high", "high", "critical")
+            why = (await pool.fetchval("SELECT data FROM alerts WHERE fingerprint = 'f:1'"))["severity_why"]
+            assert why[-1] == "≤ high: the connection was blocked"
+            # stored as critical before the cap existed: back to high on the next sighting (sticky ratings keep the max)
+            await pool.execute("UPDATE alerts SET severity = 'critical' WHERE fingerprint = 'f:1'")
+            await raise_alert("threat_feed", Rating("high", "listed", sticky=True), "x", "f:1", src_ip="192.168.1.20", blocked=True)
+            assert await sev("f:1") == "high"
+            # your own severity rule still decides
+            await pool.execute("INSERT INTO alert_filters (name, rules, action, set_severity) VALUES ('mine', '{dns_malicious_blocked}', 'severity', 'critical')")
+            alert_filters.invalidate()
+            await raise_alert("dns_malicious_blocked", "medium", "x", "d:1", src_ip="192.168.1.23", blocked=True)
+            assert await sev("d:1") == "critical"
+            # an internal attack chain built only from blocked alerts: high, not critical
+            await pool.execute("TRUNCATE alerts, alert_filters")
+            alert_filters.invalidate()
+            for rule in ("threat_intel_outbound", "internal_blocked_outbound", "port_scan"):
+                await raise_alert(rule, "medium", rule, f"c:{rule}", src_ip="192.168.1.30", blocked=True)
+            await DetectionEngine(Settings()).attack_chains()
+            a = (await alerts(pool, "attack_chain"))[0]
+            assert a["severity"] == "high" and a["data"]["stages"] == ["Threat sign", "Command & control", "Spreading / theft"]
+            # one step got through: critical again
+            await raise_alert("beaconing", "low", "beacon", "c:beacon", src_ip="192.168.1.30")
+            await DetectionEngine(Settings()).attack_chains()
+            assert (await alerts(pool, "attack_chain"))[0]["severity"] == "critical"
+            await pool.execute("TRUNCATE events, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
