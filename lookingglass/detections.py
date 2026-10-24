@@ -223,7 +223,7 @@ async def alert_ports(filters: dict[str, Any] | None, since: datetime) -> dict[s
 async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint: str, description: str = "",
                       src_ip: str | None = None, dst_ip: str | None = None, data: dict | None = None,
                       count: int = 1, mode: str = "add", events: dict[str, Any] | None = None,
-                      span: tuple[Any, Any] | None = None) -> None:
+                      span: tuple[Any, Any] | None = None, blocked: bool | str = False) -> None:
     """Create an alert or update the matching open one (dedupe by fingerprint within 24h).
 
     ``severity``: a level, or a Rating whose reasons are added to the description. A Rating of a windowed rule is
@@ -232,9 +232,18 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
     ``events``: Event-search filters that show the events behind the alert (default: the source IP);
     the alerts page links to them for the alert's time span. The device name of ``src_ip`` is added.
     ``span``: (first, last) time of the events behind it, when they can lie outside the alert's own time span - events
-    pulled from an API carry the time the tool saw them, which can be long before Looking Glass raised the alert."""
+    pulled from an API carry the time the tool saw them, which can be long before Looking Glass raised the alert.
+    ``blocked``: the traffic behind it was blocked (True, or the reason: "Zenarmor blocked it") - never critical then,
+    however much confirms it; only your own severity rules (Settings › Alert filters) can still set critical."""
     pool = db.pool()
     data = dict(data or {})
+    if blocked:
+        reason = blocked if isinstance(blocked, str) else "the traffic was blocked"
+        data["blocked"] = True  # attack chains of blocked alerts only are capped too
+        if isinstance(severity, Rating):
+            severity.cap("high", reason)
+        elif severity == "critical":
+            severity = "high"
     rated = isinstance(severity, Rating)
     keep_max = not rated or severity.sticky
     if rated:
@@ -313,6 +322,8 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
         log.info("ALERT re-opened [%s] %s", severity, title)
     if row:
         sev = max(row["severity"], severity, key=SEVERITIES.index) if keep_max else severity
+        if blocked and sev == "critical" and "severity_override" not in data:  # stored before the cap existed
+            sev = "high"
         count_sql = "count + $2" if mode == "add" else "GREATEST(count, $2)"
         await pool.execute(
             f"UPDATE alerts SET last_seen = now(), count = {count_sql}, severity = $3, description = $4, data = $5, "
@@ -512,6 +523,7 @@ class DetectionEngine:
             await raise_alert(
                 "port_scan", sev, f"{'Internal' if internal else 'External'} port scan from {ip} ({r['ports']} ports)",
                 f"port_scan:{ip}", src_ip=ip, events={"source": "firewall", "ip": ip, "action": "block"}, count=r["hits"], mode="max",
+                blocked="the firewall blocked the scanned ports",
                 description=f"{ip} hit {r['ports']} distinct blocked ports on {r['hosts']} host(s) in 10 minutes "
                             f"({r['hits']} packets). Sample ports: {list(r['port_list'] or [])[:30]}."
                             + (" Source is INTERNAL - possible compromised host / lateral movement." if internal else ""),
@@ -527,7 +539,7 @@ class DetectionEngine:
             await raise_alert(
                 "host_sweep", await self.rate_scan(ip, self.internal(ip), "host_sweep"),
                 f"Host sweep from {ip} on port {r['dst_port']} ({r['hosts']} hosts)", f"host_sweep:{ip}:{r['dst_port']}", events={"source": "firewall", "ip": ip, "port": r["dst_port"]},
-                src_ip=ip, count=r["hits"], mode="max",
+                src_ip=ip, count=r["hits"], mode="max", blocked="the firewall blocked the sweep",
                 description=f"{ip} tried port {r['dst_port']} on {r['hosts']} different hosts within 10 minutes.")
 
     async def rate_scan(self, ip: str, internal: bool, rule: str) -> Rating:
@@ -562,7 +574,7 @@ class DetectionEngine:
             await raise_alert(
                 "internal_blocked_outbound", rating, f"Internal host {ip} blocked towards {r['dsts']} destinations",
                 f"int_blocked:{ip}", src_ip=ip, events={"source": "firewall", "ip": ip, "action": "block"}, count=r["hits"], mode="max",
-                description=f"Internal host {ip} was blocked {r['hits']} times towards {r['dsts']} destinations in 10 "
+                blocked="the firewall blocked it", description=f"Internal host {ip} was blocked {r['hits']} times towards {r['dsts']} destinations in 10 "
                             f"minutes (ports {list(r['ports'] or [])[:20]}). Could be malware beaconing, a misconfigured "
                             "device or a blocked policy.")
 
@@ -587,6 +599,7 @@ class DetectionEngine:
                 "suspicious_outbound_port", rating,
                 f"{src} → {dst}:{r['dst_port']} ({SUSPICIOUS_OUT_PORTS[r['dst_port']]}) {'ALLOWED' if passed else 'blocked'}",
                 f"susp_port:{src}:{r['dst_port']}", src_ip=src, events={"source": "firewall", "ip": src, "port": r["dst_port"]}, dst_ip=dst, count=r["hits"],
+                blocked=not passed and f"the connection was {how}",
                 description=f"Internal host {src} connected to external {dst} on port {r['dst_port']} "
                             f"({SUSPICIOUS_OUT_PORTS[r['dst_port']]}): {how}.")
         await self._commit("susp_ports", current)
@@ -753,12 +766,10 @@ class DetectionEngine:
                 ev = await evidence(src, "ids")
                 ev["ids"] = 0  # that is this alert
                 corroborate(rating, ev, 1)
-            if r["all_blocked"]:
-                rating.cap("high", "Suricata dropped it")
             await raise_alert("ids", rating, f"Suricata: {r['message']}", f"ids:{r['src_ip']}:{r['message']}",
                               events={"source": "suricata", "ip": str(r["src_ip"]) if r["src_ip"] else None, "q": r["message"][:80]},
                               src_ip=str(r["src_ip"]) if r["src_ip"] else None, dst_ip=str(r["dst_ip"]) if r["dst_ip"] else None,
-                              count=r["hits"], span=(r["first"], r["last"]),
+                              count=r["hits"], span=(r["first"], r["last"]), blocked=r["all_blocked"] and "Suricata dropped it",
                               description=f"Suricata signature '{r['message']}' ({r['cls'] or 'n/a'}) "
                                                            f"{r['src_ip']} -> {r['dst_ip']}, {r['hits']} hit(s).")
         await self._commit("ids", current)
@@ -798,11 +809,10 @@ class DetectionEngine:
                 ev = await evidence(src, "threat_intel_outbound")
                 ev["qfeeds"] = 0  # that is this alert
                 corroborate(rating, ev, 1)
-                rating.cap("high", "Q-Feeds blocked it")
                 await raise_alert(
                     "threat_intel_outbound", rating, f"Internal host {src} contacted threat-intel listed IP {dst}",
                     f"qf_out:{src}:{dst}", src_ip=src, events={"source": "qfeeds", "ip": src}, dst_ip=dst, count=r["hits"],
-                    span=(r["first"], r["last"]),
+                    span=(r["first"], r["last"]), blocked="Q-Feeds blocked it",
                     description=f"Q-Feeds blocked traffic from internal {src} to known malicious {dst}:{r['dst_port']}. "
                                 "The internal host may be compromised (C2 / malware beacon). Investigate it.")
             elif src:
@@ -815,7 +825,7 @@ class DetectionEngine:
                                                                          "blocked by Q-Feeds", sticky=True),
                                   f"Threat-intel listed IP {src} is probing you",
                                   f"qf_in:{src}", src_ip=src, events={"source": "qfeeds", "ip": src}, count=hits,
-                                  span=spans.get(src), description=f"{hits} connection attempts from {src} (Q-Feeds listed) were blocked.")
+                                  span=spans.get(src), blocked="Q-Feeds blocked it", description=f"{hits} connection attempts from {src} (Q-Feeds listed) were blocked.")
         await self._commit("qfeeds", current)
 
     async def zenarmor_threats(self) -> None:
@@ -848,12 +858,11 @@ class DetectionEngine:
                 ev = await evidence(src, "zenarmor_threat")
                 ev["zen"] = 0  # that is this alert
                 corroborate(rating, ev, 1)
-            if r["blocked"]:
-                rating.cap("high", "Zenarmor blocked it")
             label = threat if not r["app"] or r["app"] in threat else f"{r['app']}, {threat}"
             await raise_alert("zenarmor_threat", rating,
                               f"Zenarmor{' blocked' if r['blocked'] else ''}: {src} → {r['target']} ({label[:60]})",
                               f"zen:{src}:{r['target']}", src_ip=src, events={"source": "zenarmor", "ip": src}, count=r["hits"],
+                              blocked=r["blocked"] and "Zenarmor blocked it",
                               data={k: r[k] for k in ("app", "app_category", "web_category", "policy") if r[k]},
                               description=f"Zenarmor flagged traffic from {src} to {r['target']} as '{threat}' "
                                           f"({'blocked' if r['blocked'] else 'NOT blocked'})."
@@ -939,7 +948,7 @@ class DetectionEngine:
                                                            "link or ad, or malware")
             corroborate(rating, await evidence(ip, "dns_malicious_blocked"), 1)
             await raise_alert("dns_malicious_blocked", rating, f"{label} tried to resolve {len(domains)} malicious domain(s)",
-                              f"dns_bad:{client}", src_ip=ip, count=len(domains), mode="max",
+                              f"dns_bad:{client}", src_ip=ip, count=len(domains), mode="max", blocked="the lookups were blocked",
                               events={"source": "unbound", "ip": ip, "action": "block,drop"},
                               description=f"Blocked by a security blocklist: {', '.join(sorted(domains)[:15])}"
                                           + ("" if ip else f" {no_client}"))
@@ -1176,6 +1185,7 @@ class DetectionEngine:
                 await raise_alert(
                     "beaconing", rating, f"Possible beaconing: {src} → {what} every {every}", f"beacon:{src}:{r['dst']}",
                     src_ip=src, dst_ip=r["dst"] if kind == "conn" else None, count=r["n"], mode="max",
+                    blocked=kind == "conn" and not v["passed"] and "every attempt was blocked",
                     events={"ip": src, "q": r["dst"]} if kind == "dns" else {"ip": src},
                     description=f"{src} contacted {what} {r['n']} times in 6 hours at very regular intervals (every {every})"
                                 + (f"; {how}" if how else "") + ". "
@@ -1207,6 +1217,7 @@ class DetectionEngine:
             await raise_alert(
                 "lateral_movement", rating, f"Possible lateral movement: {src} → {internal_dsts} internal hosts ({services})",
                 f"lateral:{src}", src_ip=src, events={"ip": src}, count=r["hits"], mode="max",
+                blocked=not r["passed"] and "every connection was blocked",
                 description=f"{src} contacted {services} on {internal_dsts} internal hosts within 15 minutes "
                             f"({r['passed']} allowed). Is this a backup / management tool? Otherwise isolate the device.")
 
@@ -1240,7 +1251,8 @@ class DetectionEngine:
         spreading - a compromised device."""
         rows = await db.pool().fetch(
             "SELECT host(coalesce(src_ip, dst_ip)) AS ip, array_agg(DISTINCT rule) AS rules, min(created_at) AS first, "
-            "array_agg(id ORDER BY id) AS ids FROM alerts WHERE status <> 'closed' AND last_seen > now() - interval '24 hours' "
+            "array_agg(id ORDER BY id) AS ids, bool_and(coalesce((data->>'blocked')::boolean, false)) AS all_blocked "
+            "FROM alerts WHERE status <> 'closed' AND last_seen > now() - interval '24 hours' "
             "AND coalesce(src_ip, dst_ip) IS NOT NULL AND rule <> 'attack_chain' GROUP BY 1")
         for r in rows:
             ip, rules = r["ip"], set(r["rules"])
@@ -1265,6 +1277,7 @@ class DetectionEngine:
                 "attack_chain", Rating(sev, why, sticky=True),
                 f"{'Attack chain from' if not internal else 'Possibly compromised device'} {ip}: {' → '.join(stages)}",
                 f"chain:{ip}", src_ip=ip, events={"ip": ip}, data={"alerts": r["ids"], "stages": stages},
+                blocked=r["all_blocked"] and "every step of it was blocked",
                 description=f"Related open alerts in the last 24 hours: {story}. Look at them together (Alerts page, filter "
                             f"on {ip}); " + ("block the address and check the accessed account / service." if not internal
                                              else "isolate the device (UniFi › Block, or an OPNsense rule) and check it."))
