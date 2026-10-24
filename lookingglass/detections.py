@@ -245,22 +245,6 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
             description = (description + "\n\n" if description else "") + (
                 f"Connected to: {dev['conn_where']}{signal} (UniFi). To cut it off quickly: UniFi Network › Client Devices › "
                 f"{name or dev.get('mac')} › Block, or an OPNsense firewall rule for {src_ip}.")
-    # your own severity rules (Settings › Alert filters › "Change the severity") come first; mute filters see the result
-    if ov := await alert_filters.check(rule, severity, title, description, src_ip, dst_ip, kind="severity"):
-        if ov["set_severity"] != severity:
-            label = ov.get("name") or f"filter #{ov['id']}"
-            data["severity_override"] = {"from": severity, "to": ov["set_severity"], "filter": {"id": ov["id"], "name": ov.get("name")}}
-            data["severity_why"] = list(data.get("severity_why") or []) + [f"→ set to {ov['set_severity']} by your rule “{label}” (was {severity})"]
-            description += f"\n\nSeverity set to {ov['set_severity']} by your alert rule “{label}” (was {severity})."
-            severity = ov["set_severity"]
-            keep_max = False  # your choice replaces the stored level, also downwards
-    status = "open"
-    if flt := await alert_filters.check(rule, severity, title, description, src_ip, dst_ip):
-        if flt["action"] == "suppress":
-            log.debug("alert '%s' stopped by filter %s", title, flt["id"])
-            return
-        status = "closed"  # "create as closed": kept for reference, never shown as open
-        data["filter"] = {"id": flt["id"], "name": flt.get("name")}
     row = await pool.fetchrow(
         "SELECT id, severity, status, data ? 'filter' OR data ? 'auto_closed' AS by_filter, "
         "data->>'events_from' AS ev_from, data->>'events_to' AS ev_to, data->'ports' AS ports, created_at "
@@ -273,7 +257,7 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
                        if hasattr(t, "astimezone") else str(t) for t in span)
         data["events_from"] = min(first, row["ev_from"]) if row and row["ev_from"] else first
         data["events_to"] = max(last, row["ev_to"]) if row and row["ev_to"] else last
-    # ports of its events (refreshed at most every 10 minutes - the update below replaces data)
+    # ports of its events (refreshed at most every 10 minutes - the update below replaces data); filters can match them
     old_ports = row["ports"] if row else None
     if old_ports and old_ports.get("at", "") > (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat():
         data["ports"] = old_ports
@@ -285,6 +269,23 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
             data["ports"] = ports
         elif old_ports:
             data["ports"] = old_ports
+    # your own severity rules (Settings › Alert filters › "Change the severity") come first; mute filters see the result
+    if ov := await alert_filters.check(rule, severity, title, description, src_ip, dst_ip, kind="severity",
+                                    ports=data.get("ports")):
+        if ov["set_severity"] != severity:
+            label = ov.get("name") or f"filter #{ov['id']}"
+            data["severity_override"] = {"from": severity, "to": ov["set_severity"], "filter": {"id": ov["id"], "name": ov.get("name")}}
+            data["severity_why"] = list(data.get("severity_why") or []) + [f"→ set to {ov['set_severity']} by your rule “{label}” (was {severity})"]
+            description += f"\n\nSeverity set to {ov['set_severity']} by your alert rule “{label}” (was {severity})."
+            severity = ov["set_severity"]
+            keep_max = False  # your choice replaces the stored level, also downwards
+    status = "open"
+    if flt := await alert_filters.check(rule, severity, title, description, src_ip, dst_ip, ports=data.get("ports")):
+        if flt["action"] == "suppress":
+            log.debug("alert '%s' stopped by filter %s", title, flt["id"])
+            return
+        status = "closed"  # "create as closed": kept for reference, never shown as open
+        data["filter"] = {"id": flt["id"], "name": flt.get("name")}
     if row and row["status"] == "closed" and status != "closed":
         # You closed it: it stays closed while it keeps happening (it only collects the new sightings), unless it gets
         # WORSE than when you closed it. After 24 quiet hours it can come back as a new alert. A mute filter that closed

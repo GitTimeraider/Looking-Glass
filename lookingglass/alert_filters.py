@@ -1,4 +1,4 @@
-"""Alert filters: stop (or auto-close) alerts by severity, rule, text and IP / network.
+"""Alert filters: stop (or auto-close) alerts by severity, rule, text, IP / network and source / destination ports.
 
 Logic:
 * inside one condition it is always OR: any ticked rule, any listed IP / network; the text condition has its own
@@ -7,6 +7,9 @@ Logic:
 * between filters: OR - an alert is stopped when any enabled filter matches, so "(A and B) or C" is two filters.
 Empty conditions are ignored; a filter without any condition is refused. Filters are cached and re-read after every
 change made in the web UI.
+Ports: an alert's ports are those of the events behind it (detections.alert_ports). A port condition matches only
+when ALL of them are in the list - a mute for port 22 never hides an alert that also hit 3389 - and never for an alert
+without known ports.
 """
 from __future__ import annotations
 
@@ -14,7 +17,7 @@ import ipaddress
 import time
 from typing import Any
 
-from . import db
+from . import db, event_filter
 
 SEVERITIES = ["info", "low", "medium", "high", "critical"]
 ACTIONS = ("suppress", "close", "severity")  # severity = change it to set_severity (applied before muting)
@@ -81,6 +84,7 @@ def clean(payload: dict[str, Any]) -> dict[str, Any]:
     if match_mode not in MODES or text_mode not in MODES:
         raise ValueError("unknown match mode")
     nets = parse_nets(payload.get("networks"))
+    src_ports, dst_ports = port_text(payload.get("src_ports"), "Source ports"), port_text(payload.get("dst_ports"), "Destination ports")
     action = payload.get("action") or "suppress"
     if action not in ACTIONS:
         raise ValueError("unknown action")
@@ -89,12 +93,32 @@ def clean(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Choose the severity these alerts should get.")
     if action != "severity":
         set_sev = None
-    if not (max_sev or rules or contains or nets):
+    if not (max_sev or rules or contains or nets or src_ports or dst_ports):
         raise ValueError("Fill in at least one condition - an empty filter would stop every alert.")
     return {"name": str(payload.get("name") or "").strip()[:100] or None, "enabled": bool(payload.get("enabled", True)),
             "max_severity": max_sev, "rules": rules, "contains": contains,
             "networks": ", ".join(str(n) for n in nets) or None, "action": action, "match_mode": match_mode,
-            "text_mode": text_mode, "set_severity": set_sev}
+            "text_mode": text_mode, "set_severity": set_sev, "src_ports": src_ports, "dst_ports": dst_ports}
+
+
+def port_text(value: Any, label: str) -> str | None:
+    """'22 80,8000-8100' -> '22, 80, 8000-8100' (validated), '' -> None"""
+    single, ranges = event_filter.ports(str(value or ""), label)
+    return ", ".join([str(p) for p in single] + [f"{a}-{b}" for a, b in ranges]) or None
+
+
+def ports_match(spec: str, alert_ports: dict[str, Any] | None, side: str) -> bool:
+    """Every known port of the alert on ``side`` ("src" / "dst") is in ``spec`` - and all of them are known (the alert
+    keeps the 5 most frequent ones and how many there are)."""
+    p = alert_ports if isinstance(alert_ports, dict) else {}
+    have = [x for x in p.get(side) or [] if isinstance(x, int)]
+    if not have or (p.get(f"{side}_n") or len(have)) > len(have):
+        return False
+    try:
+        single, ranges = event_filter.ports(spec, "ports")
+    except ValueError:
+        return False
+    return all(x in single or any(a <= x <= b for a, b in ranges) for x in have)
 
 
 def terms(value: Any) -> list[str]:
@@ -116,7 +140,7 @@ def parse_nets(value: Any) -> list[ipaddress._BaseNetwork]:
 
 
 def matches(f: dict[str, Any], rule: str, severity: str, title: str, description: str,
-            src_ip: str | None, dst_ip: str | None) -> bool:
+            src_ip: str | None, dst_ip: str | None, ports: dict[str, Any] | None = None) -> bool:
     results: list[bool] = []  # one per filled-in condition
     if severity not in SEVERITIES:  # an alert stored with an unknown severity: compared as info
         severity = "info"
@@ -139,6 +163,9 @@ def matches(f: dict[str, Any], rule: str, severity: str, title: str, description
             except ValueError:
                 pass
         results.append(any(ip in n for ip in ips for n in nets if ip.version == n.version))
+    for side in ("src", "dst"):
+        if f.get(f"{side}_ports"):
+            results.append(ports_match(f[f"{side}_ports"], ports, side))
     if not results:
         return False
     return any(results) if f.get("match_mode") == "any" else all(results)
@@ -160,7 +187,7 @@ async def _filters() -> list[dict[str, Any]]:
 
 
 async def check(rule: str, severity: str, title: str, description: str, src_ip: str | None,
-                dst_ip: str | None, kind: str = "mute") -> dict[str, Any] | None:
+                dst_ip: str | None, kind: str = "mute", ports: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """The first enabled filter of ``kind`` ("mute": suppress / close, "severity": change it) matching this alert
     (its hit counter is updated), or None."""
     try:
@@ -170,7 +197,7 @@ async def check(rule: str, severity: str, title: str, description: str, src_ip: 
     for f in filters:
         if (f["action"] == "severity") != (kind == "severity"):
             continue
-        if matches(f, rule, severity, title, description, src_ip, dst_ip):
+        if matches(f, rule, severity, title, description, src_ip, dst_ip, ports):
             await db.pool().execute("UPDATE alert_filters SET hits = hits + 1, last_hit = now() WHERE id = $1", f["id"])
             return f
     return None

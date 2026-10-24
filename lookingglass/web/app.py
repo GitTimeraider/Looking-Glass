@@ -227,7 +227,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             a["muted_by"], a["override_active"] = None, False
             try:
                 f = next((f for f in filters if alert_filters.matches(f, a["rule"], a["severity"], a["title"], a.get("description") or "",
-                                                                     a.get("src_ip"), a.get("dst_ip"))), None)
+                                                                     a.get("src_ip"), a.get("dst_ip"),
+                                                                     dict_or_empty(a.get("data")).get("ports"))), None)
                 a["muted_by"] = {"id": f["id"], "name": f.get("name") or f"filter #{f['id']}", "action": f["action"]} if f else None
                 ov = dict_or_empty(a.get("data")).get("severity_override")
                 a["override_active"] = isinstance(ov, dict) and dict_or_empty(ov.get("filter")).get("id") in active_ids
@@ -299,7 +300,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         f = _clean_filter(payload)
         row = await db.pool().fetchrow(
             "INSERT INTO alert_filters (name, enabled, max_severity, rules, contains, networks, action, match_mode, text_mode, "
-            "set_severity) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *", *f.values())
+            "set_severity, src_ports, dst_ports) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *", *f.values())
         af.invalidate()
         return _filter_out(row)
 
@@ -308,7 +309,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         f = _clean_filter(payload)
         row = await db.pool().fetchrow(
             "UPDATE alert_filters SET name = $2, enabled = $3, max_severity = $4, rules = $5, contains = $6, networks = $7, "
-            "action = $8, match_mode = $9, text_mode = $10, set_severity = $11 WHERE id = $1 RETURNING *", fid, *f.values())
+            "action = $8, match_mode = $9, text_mode = $10, set_severity = $11, src_ports = $12, dst_ports = $13 "
+            "WHERE id = $1 RETURNING *", fid, *f.values())
         if not row:
             raise HTTPException(404)
         af.invalidate()
@@ -328,9 +330,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def _matching_alerts(f: dict[str, Any], statuses: tuple[str, ...]) -> list[dict[str, Any]]:
         rows = await db.pool().fetch(
             "SELECT id, rule, severity, title, coalesce(description, '') description, host(src_ip) src_ip, host(dst_ip) dst_ip, "
-            "status, last_seen FROM alerts WHERE last_seen > now() - interval '30 days' AND status = ANY($1::text[]) "
-            "ORDER BY last_seen DESC LIMIT 20000", list(statuses))
-        return [dict(r) for r in rows if af.matches(f, r["rule"], r["severity"], r["title"], r["description"], r["src_ip"], r["dst_ip"])]
+            "status, last_seen, data->'ports' AS ports FROM alerts WHERE last_seen > now() - interval '30 days' "
+            "AND status = ANY($1::text[]) ORDER BY last_seen DESC LIMIT 20000", list(statuses))
+        return [dict(r) for r in rows if af.matches(f, r["rule"], r["severity"], r["title"], r["description"], r["src_ip"],
+                                                    r["dst_ip"], r["ports"])]
 
     @app.post("/api/alert-filters/preview")
     async def preview_filter(payload: dict = Body(...)):
