@@ -86,8 +86,11 @@ those under *Settings › Data & detection › DNS: domains to ignore* (subdomai
 *Settings › Alert filters* (or **Mute similar…** on any alert, which pre-fills one) stops alerts you don't want:
 
 * Conditions: **severity** (e.g. "low and below"), **rules / sources** (tick one or more), **text** in the title or
-  description (several terms: comma separated, *any* or *all* of them) and **IP addresses / networks** (source or
-  destination).
+  description (several terms: comma separated, *any* or *all* of them), **IP addresses / networks** (source or
+  destination) and **source / destination ports** (ports and ranges, `22, 8000-8100`). A port condition matches only
+  when *every* port of the alert's events on that side is in the list - muting port 22 never hides an alert that also
+  hit 3389 - and never for an alert without known ports. **Mute similar…** pre-fills the destination port when the
+  alert has exactly one.
 * **AND / OR**: per filter choose *all conditions must match* or *any one is enough*. Inside one condition it is always
   "or" (any ticked rule, any listed IP), and filters together work as "or" - so "(A and B) or C" is two filters.
 * Action: **don't create** the alert, **create it as closed** (kept under Alerts › Closed for reference), or

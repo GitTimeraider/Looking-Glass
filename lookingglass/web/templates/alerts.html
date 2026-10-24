@@ -81,7 +81,9 @@ const desc = a => (a.description || "").replace(/(^|\n\n)Severity (info|low|medi
 // alert filter pre-filled from this alert: same rule, same source IP (when there is one)
 const muteUrl = (a, action) => {
   const cfg = (a.data || {}).config;  // config change: mute only changes of this part (e.g. "Nginx"), from any IP
+  const dp = (a.data || {}).ports || {};  // one destination port (e.g. a block on 22): offered as a condition
   return "/settings?" + new URLSearchParams({ mute: 1, rule: a.rule, ...(a.src_ip && !cfg ? { ip: a.src_ip } : {}),
+    ...((dp.dst || []).length === 1 && dp.dst_n === 1 ? { dport: dp.dst[0] } : {}),
     ...(cfg && cfg.label ? { text: cfg.label } : {}), ...(action ? { action, to: a.severity } : {}),
     name: `${action ? "Severity of" : "Mute"} ${a.rule}${cfg && cfg.label ? " " + cfg.label : a.src_ip ? " from " + a.src_ip : ""}` }) + "#filters";
 };

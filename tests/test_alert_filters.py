@@ -112,3 +112,47 @@ def test_invalidate_reloads_right_after_boot(monkeypatch):
     asyncio.run(af._filters())
     assert len(loads) == 2
     af.invalidate()
+
+
+def test_port_conditions():
+    one = {"dst": [22], "dst_n": 1, "src": [40001, 40002], "src_n": 2}
+    two = {"dst": [22, 3389], "dst_n": 2}
+    top5 = {"dst": [22, 23, 25, 80, 443], "dst_n": 9}  # 4 more ports the alert did not keep
+    f = af.clean({"dst_ports": " 22 8000-8100,3389"})
+    assert f["dst_ports"] == "22, 3389, 8000-8100"
+    assert af.matches(f, **A, ports=one) and af.matches(f, **A, ports=two)
+    assert not af.matches(af.clean({"dst_ports": "22"}), **A, ports=two)    # 3389 too: not hidden by a port-22 mute
+    assert not af.matches(af.clean({"dst_ports": "1-1000"}), **A, ports=top5)  # unknown ports: never muted
+    assert not af.matches(f, **A) and not af.matches(f, **A, ports={})       # no known ports
+    assert af.matches(af.clean({"src_ports": "40000-40010", "dst_ports": "22"}), **A, ports=one)
+    assert af.matches(af.clean({"rules": ["brute_force"], "dst_ports": "22", "match_mode": "any"}), **A, ports=one)
+    with pytest.raises(ValueError, match="Destination ports: 'ssh'"):
+        af.clean({"dst_ports": "ssh"})
+    assert af.clean({"dst_ports": "22"})["src_ports"] is None  # a port alone is a condition (not an empty filter)
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_port_filter_mutes_only_alerts_with_those_ports():
+    from datetime import datetime, timezone
+
+    from lookingglass.detections import raise_alert
+    from lookingglass.parsers.common import event
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE alerts, alert_filters, events")
+            now = datetime.now(timezone.utc)
+            await db.copy_events([event(now, "firewall", severity=6, action="block", src_ip=ip, dst_ip="192.168.1.2", dst_port=p)
+                                  for ip, p in (("45.9.9.1", 22), ("45.9.9.1", 22), ("45.9.9.2", 22), ("45.9.9.2", 3389))])
+            await pool.execute("INSERT INTO alert_filters (name, rules, dst_ports, action) VALUES ('ssh noise', '{port_scan}', '22', 'suppress')")
+            af.invalidate()
+            for ip in ("45.9.9.1", "45.9.9.2"):
+                await raise_alert("port_scan", "low", f"Scan from {ip}", f"ps:{ip}", src_ip=ip, events={"source": "firewall", "ip": ip})
+            assert [r["fingerprint"] for r in await pool.fetch("SELECT fingerprint FROM alerts")] == ["ps:45.9.9.2"]
+        finally:
+            await db.pool().execute("TRUNCATE alerts, alert_filters, events")
+            af.invalidate()
+            await db.close()
+    asyncio.run(main())
