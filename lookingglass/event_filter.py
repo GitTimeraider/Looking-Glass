@@ -20,9 +20,11 @@ SIMPLE = {"program": "program", "host": "host", "domain": "domain", "user": "use
 
 
 def ports(value: str, label: str) -> tuple[list[int], list[tuple[int, int]]]:
-    """'22, 80 8000-8100' -> ([22, 80], [(8000, 8100)])"""
+    """'22, 80 8000-8100' -> ([22, 80], [(8000, 8100)]); en / em dashes and spaces around the dash are accepted
+    ("19294–19344", "8000 - 8100": ranges copied from documentation)."""
     single, ranges = [], []
-    for part in re.split(r"[,\s]+", value.strip()):
+    value = re.sub(r"\s*[-\u2010-\u2015\u2212]\s*", "-", value.strip())
+    for part in re.split(r"[,;\s]+", value):
         if not part:
             continue
         m = re.fullmatch(r"(\d{1,5})(?:-(\d{1,5}))?", part)

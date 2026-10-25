@@ -13,6 +13,10 @@ DSN = os.environ.get("TEST_DATABASE_URL")
 def test_ports_and_ranges():
     assert event_filter.ports("22, 80 8000-8100", "x") == ([22, 80], [(8000, 8100)])
     assert event_filter.ports("443-443", "x") == ([443], [])
+    # ranges copied from documentation: en / em dash, minus sign, spaces around the dash
+    for text in ("19294–19344", "19294—19344", "19294−19344", "19294 - 19344", "19294 –19344"):
+        assert event_filter.ports(text, "x") == ([], [(19294, 19344)])
+    assert event_filter.ports("22; 80 – 90", "x") == ([22], [(80, 90)])
     for bad in ("http", "70000", "90-80", "1-2-3"):
         with pytest.raises(ValueError, match="Destination port"):
             event_filter.build({"dport": bad})

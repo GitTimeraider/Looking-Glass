@@ -445,6 +445,36 @@ def test_blocked_beaconing_still_counts():
     run(body)
 
 
+@needs_db
+def test_address_beaconing_ports_are_those_of_the_flow():
+    """A Discord voice call: one long UDP flow logged every ~60 s. The alert's ports are those of that flow only (not the
+    device's other traffic), so a filter "Beaconing + this device + ports 19294–19344" mutes it."""
+    from lookingglass import alert_filters as af
+
+    async def body(pool):
+        evs = [event(NOW - timedelta(seconds=61 * i), "firewall", severity=6, action="pass", src_ip="192.168.3.3",
+                     dst_ip="104.29.155.171", src_port=50000, dst_port=19341, proto="udp") for i in range(40)]
+        evs += [event(NOW - timedelta(seconds=37 * i + 5), "firewall", severity=6, action="pass", src_ip="192.168.3.3",
+                      dst_ip=f"151.101.{i}.1", src_port=40000 + i, dst_port=443, proto="tcp") for i in range(30)]
+        await db.copy_events(evs)
+        await DetectionEngine(Settings()).beaconing()
+        b = await rules(pool, "beaconing")
+        assert len(b) == 1 and "104.29.155.171" in b[0]["title"]
+        assert b[0]["data"]["events"] == {"src": "192.168.3.3", "dst": "104.29.155.171"}
+        assert b[0]["data"]["ports"]["dst"] == [19341] and "Alert filters" in b[0]["description"]
+        await pool.execute("TRUNCATE alerts")
+        await pool.execute("INSERT INTO alert_filters (name, rules, networks, dst_ports, action) "
+                           "VALUES ('Discord voice', '{beaconing}', '192.168.3.3/32', '19294-19344', 'suppress')")
+        af.invalidate()
+        try:
+            await DetectionEngine(Settings()).beaconing()
+            assert await rules(pool, "beaconing") == []
+        finally:
+            await pool.execute("TRUNCATE alert_filters")
+            af.invalidate()
+    run(body)
+
+
 def test_feed_download_sources():
     from lookingglass.intel import FEEDS
     seen, answers = [], {}
