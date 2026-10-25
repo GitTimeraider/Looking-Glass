@@ -247,6 +247,21 @@ def test_config_change_says_what_and_who():
             a = (await alerts(pool, "config_change"))[0]
             assert a["title"] == "Configuration change on fw: Nginx by admin from 192.168.1.10" and a["ip"] == "192.168.1.10"
             assert a["data"]["config"]["area"] == "nginx"
+            # configd's "trigger config changed event" of the same save says nothing: no second, empty alert
+            trigger = "<37>Oct 20 10:15:01 fw configd.py[7]: [a18da959-fabd-4157-8979-bb5c9f7ae07e] trigger config changed event"
+            t = parse_line(trigger, sender="x", local_tz=timezone.utc)
+            assert t["action"] == "config_change"
+            t["ts"] = e["ts"]
+            await db.copy_events([t])
+            await DetectionEngine(Settings()).config_changes()
+            assert len(await alerts(pool, "config_change")) == 1
+            # without the audit line (not forwarded): still an alert, saying how to get the details
+            await pool.execute("TRUNCATE events, alerts")
+            await db.copy_events([t])
+            await DetectionEngine(Settings()).config_changes()
+            d = await pool.fetchval("SELECT description FROM alerts WHERE rule = 'config_change'")
+            assert "Applications empty (or include 'audit')" in d
+            await pool.execute("TRUNCATE events, alerts")
         finally:
             await db.close()
     asyncio.run(main())
