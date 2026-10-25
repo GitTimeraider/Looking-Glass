@@ -25,6 +25,7 @@ def scan(ip: str, ports: int, now: datetime) -> list[dict]:
 
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
 def test_scan_severity_depends_on_outcome_and_origin_not_size():
+    """Internal scans always alert; internet scans only when the scanner got somewhere."""
     async def main():
         await db.connect(DSN)
         try:
@@ -45,11 +46,10 @@ def test_scan_severity_depends_on_outcome_and_origin_not_size():
             await DetectionEngine(Settings()).port_scan()
             sev = {r["src_ip"]: r["severity"] for r in
                    await pool.fetch("SELECT host(src_ip) src_ip, severity FROM alerts WHERE rule = 'port_scan'")}
-            assert sev["203.0.113.50"] == "low" and sev["203.0.113.51"] == "low"  # 400 ports is still just noise
-            assert sev["203.0.113.52"] == "low" and sev["203.0.113.53"] == "high"
+            # blocked scans from the internet are noise: no alert, whatever the size or an open port it reached
+            assert "203.0.113.50" not in sev and "203.0.113.51" not in sev and "203.0.113.52" not in sev
+            assert sev["203.0.113.53"] == "high"  # but it also logged in
             assert sev["192.168.1.66"] == "medium" and sev["192.168.1.67"] == "high"
-            why = await pool.fetchval("SELECT description FROM alerts WHERE host(src_ip) = '203.0.113.52'")
-            assert "reached an open port" in why and "Severity low" in why
             await pool.execute("TRUNCATE events, alerts")
         finally:
             await db.close()
