@@ -210,7 +210,7 @@ decide it for every rule:
 
 | Situation | Severity |
 |---|---|
-| Port scan / host sweep from the internet (any size) | low - reaching an open port you host is only a note; **high** if the scanner logged in |
+| Port scan / host sweep from the internet (any size) | **no alert** - blocked scans are background noise every public IP gets, also when one reaches an open port you host; **high** if the scanner logged in, **medium** if it also got successful answers from an attack on your web server |
 | Port scan / host sweep from inside | medium, up to high / critical when other sources confirm |
 | Password guessing from the internet / from inside | medium / high |
 | Login succeeded after failures: from the internet / from inside (5+ failures) / from inside (few failures, typos) | critical / high / medium |
