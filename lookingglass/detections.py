@@ -546,7 +546,8 @@ class DetectionEngine:
         for r in rows:
             ip = str(r["src_ip"])
             internal = self.internal(ip)
-            sev = await self.rate_scan(ip, internal, "port_scan")
+            if not (sev := await self.rate_scan(ip, internal, "port_scan")):
+                continue
             await raise_alert(
                 "port_scan", sev, f"{'Internal' if internal else 'External'} port scan from {ip} ({r['ports']} ports)",
                 f"port_scan:{ip}", src_ip=ip, events={"source": "firewall", "ip": ip, "action": "block"}, count=r["hits"], mode="max",
@@ -563,14 +564,18 @@ class DetectionEngine:
             "GROUP BY src_ip, dst_port HAVING count(DISTINCT dst_ip) >= 10")
         for r in rows:
             ip = str(r["src_ip"])
+            if not (sev := await self.rate_scan(ip, self.internal(ip), "host_sweep")):
+                continue
             await raise_alert(
-                "host_sweep", await self.rate_scan(ip, self.internal(ip), "host_sweep"),
+                "host_sweep", sev,
                 f"Host sweep from {ip} on port {r['dst_port']} ({r['hosts']} hosts)", f"host_sweep:{ip}:{r['dst_port']}", events={"source": "firewall", "ip": ip, "port": r["dst_port"]},
                 src_ip=ip, count=r["hits"], mode="max", blocked="the firewall blocked the sweep",
                 description=f"{ip} tried port {r['dst_port']} on {r['hosts']} different hosts within 10 minutes.")
 
-    async def rate_scan(self, ip: str, internal: bool, rule: str) -> Rating:
-        """Scans and sweeps: the number of ports / hosts does not matter, what got through and who scans does."""
+    async def rate_scan(self, ip: str, internal: bool, rule: str) -> Rating | None:
+        """Scans and sweeps: the number of ports / hosts does not matter, what got through and who scans does.
+        None = no alert: a blocked scan from the internet is background noise every public IP gets, unless the scanner
+        also logged in or got successful answers from an attack on your web server."""
         ev = await evidence(ip, rule)
         if internal:
             # a device inside scanning the network: compromised host, malware spreading, or an admin tool / NAS scanner
@@ -584,6 +589,8 @@ class DetectionEngine:
             r.up("and it LOGGED IN successfully", 2)
         elif "web_attack" in ev.get("other_alerts", []) and ev.get("web_ok"):
             r.up("and it also attacked your web server and got successful responses")
+        else:
+            return None
         return r
 
     async def internal_blocked_outbound(self) -> None:
