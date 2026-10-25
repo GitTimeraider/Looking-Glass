@@ -713,8 +713,22 @@ class DetectionEngine:
             cfg = r["cfg"] or {}
             where = r["host"] or "firewall"
             if not cfg:  # a log line without the OPNsense audit details
+                configd = (r["program"] or "").lower().startswith("configd")
+                # every OPNsense save also makes configd log "[uuid] trigger config changed event" - nothing in it says
+                # what or who; the audit line of the same save does, and makes its own alert
+                if configd and await db.pool().fetchval(
+                        "SELECT 1 FROM events WHERE action = 'config_change' AND data ? 'config' AND host IS NOT DISTINCT "
+                        "FROM $1 AND ts BETWEEN $2::timestamptz - interval '2 minutes' "
+                        "AND $2::timestamptz + interval '2 minutes' LIMIT 1",
+                        r["host"], r["ts"]):
+                    continue
+                hint = ("\n\nThis line from OPNsense's configd does not say what was changed or by whom - that is in "
+                        "OPNsense's audit log line of the same save, which did not arrive. OPNsense › System › Settings › "
+                        "Logging › Remote: edit the Looking Glass destination and leave Applications empty (or include "
+                        "'audit'). Until then: System › Configuration › History shows the change.") if configd else ""
                 await raise_alert("config_change", "info", f"Configuration change on {where}", f"config:{r['host']}",
-                                  events={"action": "config_change", "host": r["host"]}, description=r["message"][:1000])
+                                  events={"action": "config_change", "host": r["host"]},
+                                  description=r["message"][:1000] + hint)
                 continue
             # what was changed and by whom go in the title, so an alert filter can match them ("Nginx", "admin", …)
             who = (f" by {r['username']}" if r["username"] else "") + (f" (as {cfg['by']})" if cfg.get("by") else "") + \
