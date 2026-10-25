@@ -150,6 +150,9 @@ class Rating:
 ZEN_BAD = re.compile(r"\b(malware|botnets?|phishing|ransom\w*|command\s*(and|&)\s*control|c2|c&c|"
                      r"crypto[\s-]?min\w*|cryptojack\w*|coin[\s-]?min\w*)\b", re.I)
 
+# blocked threat traffic from one device in 24h that no longer looks like a stray ad / link: malware calling home
+REPEAT_HITS, REPEAT_TARGETS = 20, 5
+
 # alerts built from the same events must not confirm each other
 RULE_FAMILIES = [{"brute_force", "success_after_failures", "admin_login", "password_spray", "distributed_brute_force",
                   "login_new_location"},
@@ -196,6 +199,30 @@ def corroborate(r: Rating, ev: dict[str, Any], max_steps: int = 2) -> Rating:
     sig = threat_signals(ev)
     if sig:
         r.up("also seen by other sources in the last 24h (" + "; ".join(sig) + ")", min(len(sig), max_steps))
+    return r
+
+
+async def blocked_threat_history(src: str, source: str) -> tuple[int, int]:
+    """(attempts, distinct targets) of threat traffic from one device that Zenarmor / Q-Feeds blocked in the last 24h."""
+    pool = db.pool()
+    if source == "qfeeds":
+        r = await pool.fetchrow("SELECT count(*) n, count(DISTINCT dst_ip) t FROM events WHERE source = 'qfeeds' "
+                                "AND src_ip = $1::inet AND ts > now() - interval '24 hours'", src)
+        return r["n"], r["t"]
+    rows = await pool.fetch(
+        "SELECT coalesce(domain, host(dst_ip)) AS target, count(*) AS n, concat_ws(' ', data->>'security', "
+        "data->>'security_tags', data->'zen'->>'app_category', data->'zen'->>'web_category') AS cats FROM events "
+        "WHERE source = 'zenarmor' AND action = 'block' AND src_ip = $1::inet AND ts > now() - interval '24 hours' "
+        "GROUP BY 1, 3", src)
+    bad = [r for r in rows if ZEN_BAD.search(r["cats"] or "")]
+    return sum(r["n"] for r in bad), len({r["target"] for r in bad})
+
+
+def repeated(r: Rating, hits: int, targets: int) -> Rating:
+    """One step up when a device keeps trying blocked threat targets - one attempt is usually an ad or a stray link."""
+    if hits >= REPEAT_HITS or targets >= REPEAT_TARGETS:
+        r.up(f"repeated: {hits} blocked attempt(s) to {targets} threat target(s) in the last 24h - looks like malware "
+             "calling home")
     return r
 
 
@@ -804,17 +831,20 @@ class DetectionEngine:
         for r in rows:
             src, dst = (str(r["src_ip"]) if r["src_ip"] else None), (str(r["dst_ip"]) if r["dst_ip"] else None)
             if src and self.internal(src):
-                rating = Rating("high", "a device inside contacted a known malicious address (blocked by Q-Feeds) - "
-                                        "the device itself may be infected", sticky=True)
+                # blocked: Q-Feeds did its job - only repeated attempts or other signs make the device suspicious
+                rating = Rating("low", "a device inside contacted a known malicious address, blocked by Q-Feeds - "
+                                       "working as intended", sticky=True)
                 ev = await evidence(src, "threat_intel_outbound")
                 ev["qfeeds"] = 0  # that is this alert
-                corroborate(rating, ev, 1)
+                corroborate(rating, ev, 2)
+                repeated(rating, *await blocked_threat_history(src, "qfeeds"))
                 await raise_alert(
                     "threat_intel_outbound", rating, f"Internal host {src} contacted threat-intel listed IP {dst}",
                     f"qf_out:{src}:{dst}", src_ip=src, events={"source": "qfeeds", "ip": src}, dst_ip=dst, count=r["hits"],
                     span=(r["first"], r["last"]), blocked="Q-Feeds blocked it",
                     description=f"Q-Feeds blocked traffic from internal {src} to known malicious {dst}:{r['dst_port']}. "
-                                "The internal host may be compromised (C2 / malware beacon). Investigate it.")
+                                "A single attempt is usually a web page or ad; repeated attempts or other alerts for "
+                                "this device point to malware (C2 beacon) - then investigate it.")
             elif src:
                 inbound[src] += r["hits"]
                 f, t = spans.get(src, (r["first"], r["last"]))
@@ -849,7 +879,9 @@ class DetectionEngine:
             if r["blocked"] and (mode == "never" or (mode == "threats" and not bad)):
                 continue  # blocked by policy (or all blocks, if chosen): Zenarmor did its job, nothing to look into
             if bad:
-                rating = Rating("high", f"'{threat[:40]}' traffic from this device (blocked)", sticky=True) if r["blocked"] else \
+                # blocked: Zenarmor did its job - only repeated attempts or other signs make the device suspicious
+                rating = Rating("low", f"'{threat[:40]}' traffic from this device, blocked by Zenarmor - working as "
+                                       "intended", sticky=True) if r["blocked"] else \
                     Rating("critical", f"'{threat[:40]}' traffic from this device was NOT blocked", sticky=True)
             else:
                 rating = Rating("low", "flagged and blocked by Zenarmor", sticky=True) if r["blocked"] else \
@@ -857,7 +889,9 @@ class DetectionEngine:
             if src and self.internal(src):
                 ev = await evidence(src, "zenarmor_threat")
                 ev["zen"] = 0  # that is this alert
-                corroborate(rating, ev, 1)
+                corroborate(rating, ev, 2 if bad and r["blocked"] else 1)
+                if bad and r["blocked"]:
+                    repeated(rating, *await blocked_threat_history(src, "zenarmor"))
             label = threat if not r["app"] or r["app"] in threat else f"{r['app']}, {threat}"
             await raise_alert("zenarmor_threat", rating,
                               f"Zenarmor{' blocked' if r['blocked'] else ''}: {src} → {r['target']} ({label[:60]})",

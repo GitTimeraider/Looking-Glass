@@ -6,7 +6,7 @@ import pytest
 
 from lookingglass import db
 from lookingglass.config import Settings
-from lookingglass.detections import DetectionEngine, login_target
+from lookingglass.detections import DetectionEngine, login_target, raise_alert
 from lookingglass.parsers import parse_line
 from lookingglass.parsers.common import event
 
@@ -138,9 +138,46 @@ def test_zenarmor_blocked_alert_setting():
                    ev("zenarmor", 1, action="block", src_ip="192.168.1.6", domain="c2.example", data={"security": "Malware"}),
                    ev("zenarmor", 1, action="conn", src_ip="192.168.1.7", domain="p.example", data={"security": "Phishing"})]
             await db.copy_events(evs)
-            assert await run("all") == [("Database", "low"), ("Malware", "high"), ("Phishing", "critical")]
-            assert await run("threats") == [("Malware", "high"), ("Phishing", "critical")]   # the default
+            assert await run("all") == [("Database", "low"), ("Malware", "low"), ("Phishing", "critical")]
+            assert await run("threats") == [("Malware", "low"), ("Phishing", "critical")]    # the default
             assert await run("never") == [("Phishing", "critical")]                           # not blocked: always
+            await pool.execute("TRUNCATE events, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_blocked_threat_traffic_is_low_unless_repeated_or_confirmed():
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events, alerts")
+            evs = [ev("zenarmor", 1, action="block", src_ip="192.168.1.5", domain="ad.example", data={"security": "Malware"}),
+                   ev("qfeeds", 1, action="block", src_ip="192.168.1.8", dst_ip="91.92.1.1", dst_port=443)]
+            # calling home: many blocked attempts / many different threat targets
+            evs += [ev("zenarmor", 2, action="block", src_ip="192.168.1.6", domain="c2.example", data={"security": "Botnet"})
+                    for _ in range(20)]
+            evs += [ev("zenarmor", 2, action="block", src_ip="192.168.1.7", domain=f"m{i}.example",
+                       data={"security": "Malware"}) for i in range(5)]
+            evs += [ev("qfeeds", 2, action="block", src_ip="192.168.1.9", dst_ip=f"91.92.1.{i}", dst_port=443) for i in range(5)]
+            # confirmed by two other sources
+            evs += [ev("suricata", 2, src_ip="192.168.1.10"),
+                    ev("zenarmor", 1, action="block", src_ip="192.168.1.10", domain="x.example", data={"security": "Phishing"})]
+            await db.copy_events(evs)
+            await raise_alert("dns_tunneling", "medium", "x", "t:1", src_ip="192.168.1.10")
+            for rule in ("zenarmor", "qfeeds"):
+                await db.kv_set(f"wm:{rule}", 0)
+            await DetectionEngine(Settings()).zenarmor_threats()
+            await DetectionEngine(Settings()).qfeeds_hits()
+            sev = {r["ip"]: r["severity"] for r in await pool.fetch(
+                "SELECT host(src_ip) ip, severity FROM alerts WHERE rule IN ('zenarmor_threat', 'threat_intel_outbound')")}
+            assert sev == {"192.168.1.5": "low", "192.168.1.8": "low", "192.168.1.6": "medium", "192.168.1.7": "medium",
+                           "192.168.1.9": "medium", "192.168.1.10": "high"}
+            why = await pool.fetchval("SELECT description FROM alerts WHERE host(src_ip) = '192.168.1.6'")
+            assert "working as intended" in why and "repeated: 20 blocked attempt(s)" in why
             await pool.execute("TRUNCATE events, alerts")
         finally:
             await db.close()
@@ -172,7 +209,7 @@ def test_zenarmor_alerts_name_app_category_and_policy():
             assert a["192.168.30.5"]["title"] == "Zenarmor blocked: 192.168.30.5 → 155.133.230.1 (MySQL, Database)"
             assert "app MySQL (Database) · policy 2" in a["192.168.30.5"]["description"]
             assert "Zenarmor › Policies" in a["192.168.30.5"]["description"] and a["192.168.30.5"]["severity"] == "low"
-            assert a["192.168.30.6"]["severity"] == "high" and "Phishing" in a["192.168.30.6"]["title"]
+            assert a["192.168.30.6"]["severity"] == "low" and "Phishing" in a["192.168.30.6"]["title"]  # blocked once
             # default (threats only): the policy block is skipped, the phishing lookup still alerts
             await pool.execute("TRUNCATE alerts")
             await db.kv_set("wm:zenarmor", 0)
@@ -223,9 +260,12 @@ def test_blocked_traffic_is_never_critical():
             pool = db.pool()
             await pool.execute("TRUNCATE events, alerts")
             await db.copy_events([
-                # Suricata also flagged 192.168.1.6 - corroboration would push the blocked malware hit to critical
+                # Suricata and Q-Feeds also flagged 192.168.1.6 and it keeps trying - that would push the blocked malware
+                # hit to critical
                 ev("suricata", 5, action="alert", src_ip="192.168.1.6", dst_ip="198.51.100.1", message="ET MALWARE x"),
-                ev("zenarmor", 1, action="block", src_ip="192.168.1.6", domain="c2.example", data={"security": "Malware"}),
+                ev("qfeeds", 5, action="block", src_ip="192.168.1.6", dst_ip="198.51.100.1"),
+                *[ev("zenarmor", 1, action="block", src_ip="192.168.1.6", domain="c2.example", data={"security": "Malware"})
+                  for _ in range(20)],
                 ev("zenarmor", 1, action="conn", src_ip="192.168.1.7", domain="p.example", data={"security": "Phishing"}),
                 # ordinary categories / app names: no malware
                 ev("zenarmor", 1, action="block", src_ip="192.168.1.8", domain="coins.example", data={"security": "Cryptocurrency"}),
