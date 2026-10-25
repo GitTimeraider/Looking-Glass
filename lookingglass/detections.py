@@ -1234,11 +1234,16 @@ class DetectionEngine:
                     "beaconing", rating, f"Possible beaconing: {src} → {what} every {every}", f"beacon:{src}:{r['dst']}",
                     src_ip=src, dst_ip=r["dst"] if kind == "conn" else None, count=r["n"], mode="max",
                     blocked=kind == "conn" and not v["passed"] and "every attempt was blocked",
-                    events={"ip": src, "q": r["dst"]} if kind == "dns" else {"ip": src},
+                    # an address: only the traffic to it, so the alert's ports (and port filters) are those of this flow
+                    events={"ip": src, "q": r["dst"]} if kind == "dns" else {"src": src, "dst": r["dst"]},
                     description=f"{src} contacted {what} {r['n']} times in 6 hours at very regular intervals (every {every})"
                                 + (f"; {how}" if how else "") + ". "
-                                "Check which program on the device does this; if it is a known service, add it to "
-                                "Settings › Data & detection › DNS: domains to ignore or mute it.")
+                                "Check which program on the device does this; if it is a known service, "
+                                + ("add it to Settings › Data & detection › DNS: domains to ignore or mute it."
+                                   if kind == "dns" else
+                                   "mute it in Settings › Alert filters (rule Beaconing, this device's IP and the "
+                                   "destination ports, e.g. 19294-19344 for Discord voice). A long UDP session (voice, "
+                                   "game) also looks regular: the firewall logs an open flow about every 60 s."))
 
     async def lateral_movement(self) -> None:
         """One device reaching admin / file-sharing services on many other internal devices: how ransomware and worms

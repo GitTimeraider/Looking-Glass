@@ -90,7 +90,9 @@ those under *Settings › Data & detection › DNS: domains to ignore* (subdomai
   destination) and **source / destination ports** (ports and ranges, `22, 8000-8100`). A port condition matches only
   when *every* port of the alert's events on that side is in the list - muting port 22 never hides an alert that also
   hit 3389 - and never for an alert without known ports. **Mute similar…** pre-fills the destination port when the
-  alert has exactly one.
+  alert has exactly one. Ranges copied from documentation with an en dash (`19294–19344`) are accepted too. Example,
+  Discord voice calls flagged as beaconing: rule *Beaconing* + IP *192.168.3.3* + destination ports *19294-19344*, all
+  conditions must match (the ports of an address-beaconing alert are those of the traffic to that address only).
 * **AND / OR**: per filter choose *all conditions must match* or *any one is enough*. Inside one condition it is always
   "or" (any ticked rule, any listed IP), and filters together work as "or" - so "(A and B) or C" is two filters.
 * Action: **don't create** the alert, **create it as closed** (kept under Alerts › Closed for reference), or

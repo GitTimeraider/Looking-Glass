@@ -128,6 +128,7 @@ def test_port_conditions():
     assert af.matches(af.clean({"rules": ["brute_force"], "dst_ports": "22", "match_mode": "any"}), **A, ports=one)
     with pytest.raises(ValueError, match="Destination ports: 'ssh'"):
         af.clean({"dst_ports": "ssh"})
+    assert af.clean({"dst_ports": "19294–19344"})["dst_ports"] == "19294-19344"  # en dash (copied from docs)
     assert af.clean({"dst_ports": "22"})["src_ports"] is None  # a port alone is a condition (not an empty filter)
 
 
