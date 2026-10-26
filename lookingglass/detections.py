@@ -150,8 +150,10 @@ class Rating:
 ZEN_BAD = re.compile(r"\b(malware|botnets?|phishing|ransom\w*|command\s*(and|&)\s*control|c2|c&c|"
                      r"crypto[\s-]?min\w*|cryptojack\w*|coin[\s-]?min\w*)\b", re.I)
 
-# blocked threat traffic from one device in 24h that no longer looks like a stray ad / link: malware calling home
-REPEAT_HITS, REPEAT_TARGETS = 20, 5
+# blocked threat traffic from one device in 24h that no longer looks like a stray ad / link: malware calling home.
+# Counted in separate 10-minute periods and different sites (registered domains): one page load fires many DNS /
+# QUIC / TLS retries to several subdomains (file1., file2. …) within seconds - that is one visit, not persistence.
+REPEAT_PERIODS, REPEAT_TARGETS = 6, 5
 
 # alerts built from the same events must not confirm each other
 RULE_FAMILIES = [{"brute_force", "success_after_failures", "admin_login", "password_spray", "distributed_brute_force",
@@ -202,27 +204,33 @@ def corroborate(r: Rating, ev: dict[str, Any], max_steps: int = 2) -> Rating:
     return r
 
 
-async def blocked_threat_history(src: str, source: str) -> tuple[int, int]:
-    """(attempts, distinct targets) of threat traffic from one device that Zenarmor / Q-Feeds blocked in the last 24h."""
+async def blocked_threat_history(src: str, source: str) -> tuple[int, int, int]:
+    """(attempts, distinct 10-minute periods, distinct targets) of threat traffic from one device that Zenarmor /
+    Q-Feeds blocked in the last 24h; targets are sites (registered domains) or addresses."""
     pool = db.pool()
     if source == "qfeeds":
-        r = await pool.fetchrow("SELECT count(*) n, count(DISTINCT dst_ip) t FROM events WHERE source = 'qfeeds' "
+        r = await pool.fetchrow("SELECT count(*) n, count(DISTINCT date_bin('10 minutes', ts, 'epoch')) p, "
+                                "count(DISTINCT dst_ip) t FROM events WHERE source = 'qfeeds' "
                                 "AND src_ip = $1::inet AND ts > now() - interval '24 hours'", src)
-        return r["n"], r["t"]
+        return r["n"], r["p"], r["t"]
     rows = await pool.fetch(
-        "SELECT coalesce(domain, host(dst_ip)) AS target, count(*) AS n, concat_ws(' ', data->>'security', "
-        "data->>'security_tags', data->'zen'->>'app_category', data->'zen'->>'web_category') AS cats FROM events "
+        "SELECT domain, host(dst_ip) AS ip, date_bin('10 minutes', ts, 'epoch') AS period, count(*) AS n, "
+        "concat_ws(' ', data->>'security', data->>'security_tags', data->'zen'->>'app_category', "
+        "data->'zen'->>'web_category') AS cats FROM events "
         "WHERE source = 'zenarmor' AND action = 'block' AND src_ip = $1::inet AND ts > now() - interval '24 hours' "
-        "GROUP BY 1, 3", src)
+        "GROUP BY 1, 2, 3, 5", src)
     bad = [r for r in rows if ZEN_BAD.search(r["cats"] or "")]
-    return sum(r["n"] for r in bad), len({r["target"] for r in bad})
+    return (sum(r["n"] for r in bad), len({r["period"] for r in bad}),
+            len({registered_domain(r["domain"]) if r["domain"] else r["ip"] for r in bad}))
 
 
-def repeated(r: Rating, hits: int, targets: int) -> Rating:
-    """One step up when a device keeps trying blocked threat targets - one attempt is usually an ad or a stray link."""
-    if hits >= REPEAT_HITS or targets >= REPEAT_TARGETS:
-        r.up(f"repeated: {hits} blocked attempt(s) to {targets} threat target(s) in the last 24h - looks like malware "
-             "calling home")
+def repeated(r: Rating, hits: int, periods: int, targets: int) -> Rating:
+    """One step up when a device keeps coming back to blocked threat sites - one visit is usually an ad or a stray link,
+    however many retries and subdomains it fires."""
+    if periods >= REPEAT_PERIODS or targets >= REPEAT_TARGETS:
+        why = f"in {periods} separate 10-minute periods" if periods >= REPEAT_PERIODS else f"to {targets} different sites"
+        r.up(f"repeated: blocked threat traffic {why} in the last 24h ({hits} attempt(s), {targets} site(s)) - "
+             "can be malware calling home; check which program on the device does it")
     return r
 
 

@@ -158,8 +158,11 @@ def test_blocked_threat_traffic_is_low_unless_repeated_or_confirmed():
             evs = [ev("zenarmor", 1, action="block", src_ip="192.168.1.5", domain="ad.example", data={"security": "Malware"}),
                    ev("qfeeds", 1, action="block", src_ip="192.168.1.8", dst_ip="91.92.1.1", dst_port=443)]
             # calling home: many blocked attempts / many different threat targets
-            evs += [ev("zenarmor", 2, action="block", src_ip="192.168.1.6", domain="c2.example", data={"security": "Botnet"})
-                    for _ in range(20)]
+            evs += [ev("zenarmor", 2 + 30 * i, action="block", src_ip="192.168.1.6", domain="c2.example",
+                       data={"security": "Botnet"}) for i in range(6)]  # every 30 minutes for 3 hours
+            # one visit to a phishing page: many retries to 4 subdomains within a minute - not repeated
+            evs += [ev("zenarmor", 1, action="block", src_ip="192.168.1.11", domain=f"file{i % 4}.acgnngca.com",
+                       data={"security": '["Phishing"]'}) for i in range(54)]
             evs += [ev("zenarmor", 2, action="block", src_ip="192.168.1.7", domain=f"m{i}.example",
                        data={"security": "Malware"}) for i in range(5)]
             evs += [ev("qfeeds", 2, action="block", src_ip="192.168.1.9", dst_ip=f"91.92.1.{i}", dst_port=443) for i in range(5)]
@@ -175,9 +178,11 @@ def test_blocked_threat_traffic_is_low_unless_repeated_or_confirmed():
             sev = {r["ip"]: r["severity"] for r in await pool.fetch(
                 "SELECT host(src_ip) ip, severity FROM alerts WHERE rule IN ('zenarmor_threat', 'threat_intel_outbound')")}
             assert sev == {"192.168.1.5": "low", "192.168.1.8": "low", "192.168.1.6": "medium", "192.168.1.7": "medium",
-                           "192.168.1.9": "medium", "192.168.1.10": "high"}
+                           "192.168.1.9": "medium", "192.168.1.10": "high", "192.168.1.11": "low"}
             why = await pool.fetchval("SELECT description FROM alerts WHERE host(src_ip) = '192.168.1.6'")
-            assert "working as intended" in why and "repeated: 20 blocked attempt(s)" in why
+            assert "working as intended" in why and "in 6 separate 10-minute periods" in why
+            why = await pool.fetchval("SELECT description FROM alerts WHERE host(src_ip) = '192.168.1.11' LIMIT 1")
+            assert "repeated" not in why
             await pool.execute("TRUNCATE events, alerts")
         finally:
             await db.close()
@@ -279,8 +284,8 @@ def test_blocked_traffic_is_never_critical():
                 # hit to critical
                 ev("suricata", 5, action="alert", src_ip="192.168.1.6", dst_ip="198.51.100.1", message="ET MALWARE x"),
                 ev("qfeeds", 5, action="block", src_ip="192.168.1.6", dst_ip="198.51.100.1"),
-                *[ev("zenarmor", 1, action="block", src_ip="192.168.1.6", domain="c2.example", data={"security": "Malware"})
-                  for _ in range(20)],
+                *[ev("zenarmor", 1 + 30 * i, action="block", src_ip="192.168.1.6", domain="c2.example",
+                     data={"security": "Malware"}) for i in range(6)],
                 ev("zenarmor", 1, action="conn", src_ip="192.168.1.7", domain="p.example", data={"security": "Phishing"}),
                 # ordinary categories / app names: no malware
                 ev("zenarmor", 1, action="block", src_ip="192.168.1.8", domain="coins.example", data={"security": "Cryptocurrency"}),
