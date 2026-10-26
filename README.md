@@ -675,6 +675,10 @@ How UniFi and OPNsense data are combined:
   Every client Zenarmor sees is added, also those without a MAC address - **WireGuard peers** and networks routed
   behind another router: they are listed under their IP ("no MAC"), named by Zenarmor, online when Zenarmor sees
   their traffic. A device with a MAC that already has that IP is not listed twice.
+  Offline: a device with a MAC once it leaves the ARP table; one without a MAC after 20 minutes without traffic.
+  Devices stay on the list until you **delete** them (Devices page, next to *edit*; what was learned about them goes
+  too) or *Settings › Data & detection › Remove devices not seen for (days)* removes them (default 0 = never; trusted
+  devices, devices you named and devices with notes are kept).
 * **Unraid** – see above.
 * **Settings › Data & detection › Delete collected data** – wipe logs/events, alerts, graphs, reports, AI conversations
   and optionally the device list to start over. Settings, credentials, accounts/MFA, Unraid servers and the encryption
