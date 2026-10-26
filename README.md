@@ -667,7 +667,7 @@ How UniFi and OPNsense data are combined:
   fingerprints): online state, name,
   IP, MAC, vendor, interface, lease, first/last seen, events/blocks/DNS queries/alerts per device; mark devices as
   trusted, rename them, add notes.
-  Names come from, best first: a name you typed (never replaced; clear it to go back to automatic) → OPNsense's own interfaces (the ARP table marks their addresses *permanent*): "OPNsense (LAN)", or "OPNsense (LAN, VLAN_IoT)" when VLANs share the port's MAC → a dnsmasq
+  Names come from, best first: a name you typed (never replaced; clear it to go back to automatic) → OPNsense's own interfaces (the ARP table marks their addresses *permanent*): one device per interface, "OPNsense (LAN)", "OPNsense (VLAN_IoT)" - also when VLANs share the port's MAC; alerts, counts and learned behaviour follow each interface's own addresses → a dnsmasq
   *Hosts* entry for the MAC or IP (*Services > Dnsmasq DNS & DHCP > Hosts*) → the host name the device sent with its
   DHCP request → the name Unbound shows for the IP → the ARP table / Zenarmor (the host name Zenarmor learned, else the name of its entry under *Zenarmor › Devices*; an IP address or a bare OS / vendor label such as "Steam OS" is not used as a name). The placeholders dnsmasq (`*`) and the
   ARP table (`-`, `?`) use for "no name" are ignored. A device that still has no name sends none and has no Hosts
@@ -682,8 +682,10 @@ How UniFi and OPNsense data are combined:
 * **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range; filters that come
   from a dashboard click (program, host, domain, user, port, protocol, interface, country, time span, any data field)
   show as removable chips. Click an event for all its fields.
-* **Reports** – 24h / 7d / 30d reports, optionally with an AI-written analysis; print to PDF or download JSON.
-  Enable *Daily AI report* under *Settings › AI analyst* to get one automatically every morning.
+* **Reports** – 24h / 7d / 30d reports, optionally with an AI-written analysis; print to PDF, download JSON or
+  **Email** it. *Settings › Reports*: a *Scheduled report* every N days (1 = daily, 7 = weekly; it covers those days) at
+  the hour you choose, optionally mailed to the addresses under *Email the report to* (with the mail server from
+  *Settings › Email & notifications*).
 * **AI Analyst** – chat with the model (any OpenAI-compatible endpoint; with Claude it uses Anthropic's
   [OpenAI SDK compatibility layer](https://platform.claude.com/docs/en/api/openai-sdk)). It can run read-only SQL against the log database, search events, profile an
   IP, read alerts, OPNsense + Unraid status and traffic statistics, and answers with evidence and remediation steps.
@@ -695,7 +697,7 @@ How UniFi and OPNsense data are combined:
 **In the web UI (Settings, stored in the database, secrets encrypted, applied live):** OPNsense URL / API key /
 secret / TLS verification / custom CA / poll interval / per-source pulls · UniFi URL / API key / username / password /
 site / TLS verification / poll interval / events · AI base URL / API key / model / limits /
-daily report · Zenarmor stream username / password / allowed senders · syslog allowed senders, extra internal
+scheduled report (every N days, hour, mail recipients) · Zenarmor stream username / password / allowed senders · syslog allowed senders, extra internal
 networks, time zone · retention, detection interval, GeoIP path · Unraid servers (URL, API key, Docker API).
 
 **In the setup wizard (first start, stored encrypted in `/data/database.conf`):** database host / port / name /

@@ -111,14 +111,37 @@ def own_address(r: dict[str, Any]) -> bool:
     return r.get("permanent") in (True, 1, "1", "true") or str(r.get("expires", "")).lower() == "permanent"
 
 
-def interface_device(mac: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
-    """OPNsense itself, for one MAC: named after its interface(s). VLANs on one port share the port's MAC, so one MAC
-    can carry several interfaces: "OPNsense (LAN, VLAN_IoT)"."""
-    names = list(dict.fromkeys(str(r.get("intf_description") or r.get("intf") or "?") for r in entries))
-    ips = [ip for ip in (ip_or_none(r.get("ip")) for r in entries) if ip]
-    return {"mac": mac, "ip": ips[0] if ips else None, "ips": ips, "hostname": f"OPNsense ({', '.join(names)})",
-            "name_source": "opnsense", "vendor": entries[0].get("manufacturer") or None, "interface": ", ".join(names),
-            "online": True}
+def interface_key(r: dict[str, Any]) -> str:
+    """Device key of one OPNsense interface ("if:vlan0.20"): VLANs share the port's MAC, so the MAC can't tell them apart."""
+    return "if:" + str(r.get("intf") or r.get("intf_description") or r.get("mac") or "?").lower()
+
+
+def interface_device(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """OPNsense itself, for one interface (its ARP entries): "OPNsense (VLAN_IoT)", keyed by the interface, with the
+    port's MAC as hardware address and every address of the interface."""
+    first = entries[0]
+    name = str(first.get("intf_description") or first.get("intf") or "?")
+    ips = list(dict.fromkeys(ip for ip in (ip_or_none(r.get("ip")) for r in entries) if ip))
+    return {"mac": interface_key(first), "hwaddr": str(first.get("mac") or "").lower() or None,
+            "ip": ips[0] if ips else None, "ips": ips, "hostname": f"OPNsense ({name})", "name_source": "opnsense",
+            "vendor": first.get("manufacturer") or None, "interface": name, "online": True}
+
+
+def main_interface(keys: list[str]) -> str:
+    """Of the interfaces sharing one MAC, the port itself (igc1) rather than a VLAN on it (vlan0.20, igc1.20)."""
+    return next((k for k in keys if "." not in k and not k.startswith("if:vlan")), keys[0])
+
+
+async def absorb_into_interfaces(own_devices: list[dict[str, Any]]) -> None:
+    """Each interface device takes over the entries of its addresses (Zenarmor 'no MAC' entries); the port also takes
+    over the device an older version kept under the MAC for all interfaces of the port."""
+    from .detections import absorb_ip_devices
+    by_mac: dict[str, list[str]] = {}
+    for d in own_devices:
+        by_mac.setdefault(d["hwaddr"], []).append(d["mac"])
+    main = {main_interface(keys) for keys in by_mac.values()}
+    for d in own_devices:
+        await absorb_ip_devices(d["mac"], d["ips"], [d["hwaddr"]] if d["mac"] in main and d["hwaddr"] else [])
 
 
 class Poller:
@@ -341,24 +364,23 @@ class Poller:
                                           data={"from": old, "to": mac}))
         self._arp_prev = current
         devices = []
-        own: dict[str, list[dict[str, Any]]] = {}  # MAC -> OPNsense's own interface addresses with it
+        own: dict[str, list[dict[str, Any]]] = {}  # interface key -> OPNsense's own addresses on it
         for r in rows:
             mac = (r.get("mac") or "").lower()
             if not mac or mac == "(incomplete)" or r.get("expired"):
                 continue
             if own_address(r):
-                own.setdefault(mac, []).append(r)
+                own.setdefault(interface_key(r), []).append(r)
                 continue
             devices.append(self._named({"mac": mac, "ip": ip_or_none(r.get("ip")), "hostname": r.get("hostname") or None,
                                         "vendor": r.get("manufacturer") or None,
                                         "interface": r.get("intf_description") or r.get("intf"), "online": True}))
-        own_devices = [interface_device(mac, entries) for mac, entries in own.items()]
+        own_devices = [interface_device(entries) for entries in own.values()]
         devices += own_devices
         # local import to avoid a cycle
-        from .detections import absorb_ip_devices, track_devices
+        from .detections import track_devices
         await track_devices(devices, origin="arp", mark_online=True)
-        for d in own_devices:
-            await absorb_ip_devices(d["mac"], d["ips"])
+        await absorb_into_interfaces(own_devices)
 
     async def poll_exposure(self) -> None:
         """Port forwards and firewall rules: alert when something new is opened to the internet (or changed). The port

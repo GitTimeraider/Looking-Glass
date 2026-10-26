@@ -26,7 +26,7 @@ from ..ai import Analyst, request_log
 from ..config import Settings
 from ..ingest import STATS
 from ..dashboards import DASHBOARDS, run_dashboard
-from ..reports import build_report, run_ai_summary, timeline
+from ..reports import build_report, report_mail, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
 from ..parsers.common import real_name
 from ..unraid import test_connection as unraid_test
@@ -601,6 +601,25 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         _background(run_ai_summary(analyst, report_id))
         return {"ok": True, "state": "running"}
 
+    @app.post("/api/reports/{report_id}/mail")
+    async def mail_report(report_id: int, payload: dict = Body(default={})):
+        """Mail a report now - to the given addresses, else Settings › Reports › Email the report to, else the sender."""
+        if not settings.smtp_enabled:
+            raise HTTPException(400, "No mail server set up (Settings › Email & notifications)")
+        try:
+            to = (notify.recipients(payload.get("to")) or notify.recipients(settings.report_mail_to)
+                  or notify.recipients(settings.smtp_from))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        mail = await report_mail(report_id, settings.mail_link_url or settings.public_url)
+        if not mail:
+            raise HTTPException(404, "no such report")
+        try:
+            await notify.send(settings, to, *mail)
+        except notify.MailError as exc:
+            raise HTTPException(502, f"Sending failed: {exc}") from exc
+        return {"ok": True, "to": to}
+
     @app.get("/api/reports/{report_id}")
     async def get_report(report_id: int):
         row = await db.pool().fetchrow("SELECT * FROM reports WHERE id = $1", report_id)
@@ -769,7 +788,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     @app.get("/api/devices")
     async def devices(hours: float = Query(24, gt=0)):
         rows = await db.pool().fetch(
-            "SELECT d.mac, host(d.ip) ip, d.hostname, d.name_source, d.vendor, d.interface, d.sources, d.lease_type, d.lease_expires, "
+            "SELECT d.mac, d.hwaddr, host(d.ip) ip, d.hostname, d.name_source, d.vendor, d.interface, d.sources, d.lease_type, d.lease_expires, "
             "d.online, d.trusted, d.notes, d.first_seen, d.last_seen, d.conn_type, d.conn_where, d.conn_signal, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = ANY(d.all_ips) AND e.ts > now() - make_interval(secs => $1)) events, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = ANY(d.all_ips) AND e.action = 'block' AND e.ts > now() - make_interval(secs => $1)) blocked, "

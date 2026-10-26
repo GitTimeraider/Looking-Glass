@@ -140,6 +140,8 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_signal INTEGER;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_seen TIMESTAMPTZ;
 -- every address of a device with several (OPNsense: one MAC for a port and its VLANs); ip is the main one
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS ips INET[];
+-- the hardware address of a device not keyed by it (OPNsense interface "if:vlan0.20": VLANs share the port's MAC)
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS hwaddr TEXT;
 -- dnsmasq writes "*" and the ARP table "-" / "?" when a device has no name: these are no names
 UPDATE devices SET hostname = NULL, name_source = NULL, name_rank = 0
  WHERE hostname IS NOT NULL AND name_rank < 100 AND lower(btrim(hostname)) IN ('', '*', '-', '?', 'unknown', '<unknown>', '(unknown)');
