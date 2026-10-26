@@ -501,6 +501,16 @@ def zen_device_name(d: dict[str, Any], ip: Any) -> str | None:
     return None
 
 
+def real_mac(value: Any) -> str | None:
+    """A device's MAC address ("AA-BB-.." -> "aa:bb:.."), or None for a missing one and the placeholders a tunnel
+    client (WireGuard) gets instead: 00:00:00:00:00:00, ff:ff:ff:ff:ff:ff, a multicast address, "-", "unknown"."""
+    mac = str(value or "").strip().lower().replace("-", ":")
+    if not re.fullmatch(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", mac) or mac in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff") \
+            or int(mac[:2], 16) & 1:
+        return None
+    return mac
+
+
 async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
     """Zenarmor records carry the client MAC, hostname and a device fingerprint (name/vendor/OS). A MAC is looked at
     again after 10 minutes - right away while no record of it carried a name yet. A client without a MAC (WireGuard
@@ -511,9 +521,11 @@ async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
         d = e.get("data") if e.get("source") == "zenarmor" else None
         if not isinstance(d, dict):
             continue
-        mac = str(d.get("src_hwaddr") or "").lower()
-        if len(mac) != 17:
-            if mac or not e.get("src_ip") or not is_internal_ip(e["src_ip"]):
+        # a tunnel interface (WireGuard wg0, OpenVPN ovpns1 / tun0) carries no client MAC, whatever the record says
+        tunnel = re.match(r"(wg|tun|ovpn|ipsec|enc)\d", str(d.get("interface") or "").lower())
+        mac = None if tunnel else real_mac(d.get("src_hwaddr"))
+        if not mac:
+            if not e.get("src_ip") or not is_internal_ip(e["src_ip"]):
                 continue
             mac = ipless_key(e["src_ip"])
         if mac in found and found[mac]["hostname"]:
@@ -529,7 +541,10 @@ async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
     ipless = [str(dev["ip"]) for key, dev in found.items() if key.startswith("ip:")]
     if ipless:
         taken = {r["ip"] for r in await db.pool().fetch(
-            "SELECT DISTINCT host(ip) ip FROM devices WHERE ip = ANY($1::inet[]) AND mac NOT LIKE 'ip:%'", ipless)}
+            # a device with a MAC known from ARP / DHCP / UniFi; one only Zenarmor reported may be a tunnel client
+            # merged under a bogus MAC by an older version
+            "SELECT DISTINCT host(ip) ip FROM devices WHERE ip = ANY($1::inet[]) AND mac NOT LIKE 'ip:%' "
+            "AND NOT (sources <@ ARRAY['zenarmor'])", ipless)}
         found = {k: v for k, v in found.items() if not (k.startswith("ip:") and str(v["ip"]) in taken)}
     for mac, dev in found.items():
         _zen_seen[mac] = (now, bool(dev["hostname"]))
