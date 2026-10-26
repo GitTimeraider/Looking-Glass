@@ -214,8 +214,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         # device by now); only alerts created before the device had a name get its current name
         ips = list({a["src_ip"] for a in out if a.get("src_ip") and not a["src_name"]})
         names = {r["ip"]: r["hostname"] for r in await db.pool().fetch(
-            "SELECT DISTINCT ON (ip) host(ip) ip, hostname FROM devices WHERE ip = ANY($1::inet[]) AND hostname IS NOT NULL "
-            "ORDER BY ip, last_seen DESC", ips)} if ips else {}
+            "SELECT DISTINCT ON (x) host(x) ip, hostname FROM devices, unnest(coalesce(ips, '{}'::inet[]) || ip) x "
+            "WHERE x = ANY($1::inet[]) AND hostname IS NOT NULL ORDER BY x, mac LIKE 'ip:%', last_seen DESC", ips)} if ips else {}
         # which enabled alert filter (mute) matches each alert - the alerts page offers "Unmute" for those
         from .. import alert_filters
 
@@ -771,13 +771,15 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         rows = await db.pool().fetch(
             "SELECT d.mac, host(d.ip) ip, d.hostname, d.name_source, d.vendor, d.interface, d.sources, d.lease_type, d.lease_expires, "
             "d.online, d.trusted, d.notes, d.first_seen, d.last_seen, d.conn_type, d.conn_where, d.conn_signal, "
-            "(SELECT count(*) FROM events e WHERE e.src_ip = d.ip AND e.ts > now() - make_interval(secs => $1)) events, "
-            "(SELECT count(*) FROM events e WHERE e.src_ip = d.ip AND e.action = 'block' AND e.ts > now() - make_interval(secs => $1)) blocked, "
-            "(SELECT count(*) FROM events e WHERE e.src_ip = d.ip AND e.source = 'unbound' AND e.ts > now() - make_interval(secs => $1)) dns, "
-            "(SELECT count(*) FROM alerts a WHERE (a.src_ip = d.ip OR a.dst_ip = d.ip) AND a.status = 'open') alerts, "
+            "(SELECT count(*) FROM events e WHERE e.src_ip = ANY(d.all_ips) AND e.ts > now() - make_interval(secs => $1)) events, "
+            "(SELECT count(*) FROM events e WHERE e.src_ip = ANY(d.all_ips) AND e.action = 'block' AND e.ts > now() - make_interval(secs => $1)) blocked, "
+            "(SELECT count(*) FROM events e WHERE e.src_ip = ANY(d.all_ips) AND e.source = 'unbound' AND e.ts > now() - make_interval(secs => $1)) dns, "
+            "(SELECT count(*) FROM alerts a WHERE (a.src_ip = ANY(d.all_ips) OR a.dst_ip = ANY(d.all_ips)) AND a.status = 'open') alerts, "
             "(SELECT round(r.score::numeric, 0) FROM risk_scores r WHERE r.entity = host(d.ip)) risk, "
-            "(SELECT count(*) FROM device_profile p WHERE p.key = d.mac) learned "
-            "FROM devices d ORDER BY d.online DESC, d.last_seen DESC LIMIT 3000", hours * 3600)
+            "(SELECT count(*) FROM device_profile p WHERE p.key = d.mac) learned, "
+            "(SELECT array_agg(host(x)) FROM unnest(d.ips) x WHERE x IS DISTINCT FROM d.ip) other_ips "
+            "FROM (SELECT *, coalesce(nullif(ips, '{}'), ARRAY[ip]) all_ips FROM devices) d "
+            "ORDER BY d.online DESC, d.last_seen DESC LIMIT 3000", hours * 3600)
         return db.records(rows)
 
     @app.get("/api/devices/{mac}/profile")

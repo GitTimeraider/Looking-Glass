@@ -116,7 +116,7 @@ def interface_device(mac: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
     can carry several interfaces: "OPNsense (LAN, VLAN_IoT)"."""
     names = list(dict.fromkeys(str(r.get("intf_description") or r.get("intf") or "?") for r in entries))
     ips = [ip for ip in (ip_or_none(r.get("ip")) for r in entries) if ip]
-    return {"mac": mac, "ip": ips[0] if ips else None, "hostname": f"OPNsense ({', '.join(names)})",
+    return {"mac": mac, "ip": ips[0] if ips else None, "ips": ips, "hostname": f"OPNsense ({', '.join(names)})",
             "name_source": "opnsense", "vendor": entries[0].get("manufacturer") or None, "interface": ", ".join(names),
             "online": True}
 
@@ -352,9 +352,13 @@ class Poller:
             devices.append(self._named({"mac": mac, "ip": ip_or_none(r.get("ip")), "hostname": r.get("hostname") or None,
                                         "vendor": r.get("manufacturer") or None,
                                         "interface": r.get("intf_description") or r.get("intf"), "online": True}))
-        devices += [interface_device(mac, entries) for mac, entries in own.items()]
-        from .detections import track_devices  # local import to avoid a cycle
+        own_devices = [interface_device(mac, entries) for mac, entries in own.items()]
+        devices += own_devices
+        # local import to avoid a cycle
+        from .detections import absorb_ip_devices, track_devices
         await track_devices(devices, origin="arp", mark_online=True)
+        for d in own_devices:
+            await absorb_ip_devices(d["mac"], d["ips"])
 
     async def poll_exposure(self) -> None:
         """Port forwards and firewall rules: alert when something new is opened to the internet (or changed). The port
