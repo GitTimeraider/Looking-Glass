@@ -219,7 +219,7 @@ decide it for every rule:
 | Web scanning (many 4xx) from the internet / from inside | low / medium |
 | IDS | Suricata's priority (1 = critical … 4 = low), one step down when IPS mode dropped it, up when confirmed |
 | CrowdSec decision for an internet IP / for an internal IP | low (it is handled) / high |
-| Internal device contacted a threat-intel address (blocked by Q-Feeds) / internet address of a threat list probes you | low - medium / high when other sources confirm it or the device keeps trying (20+ attempts or 5+ targets in 24h) / info |
+| Internal device contacted a threat-intel address (blocked by Q-Feeds) / internet address of a threat list probes you | low - medium / high when other sources confirm it or the device keeps coming back (blocked threat traffic in 6+ separate 10-minute periods, or to 5+ different sites, in 24h - retries and subdomains of one page visit count once) / info |
 | Zenarmor malware / C2 / phishing: blocked / NOT blocked; other categories: blocked / not blocked | low (up to high like Q-Feeds above) / critical; low / medium (blocked ones per *Settings › Zenarmor › Alert on traffic Zenarmor blocked*: threats only by default, all or never) |
 | DNS tunneling, DGA names, NXDOMAIN storm | high, medium, low - each up when confirmed |
 | Malicious domain looked up (blocked): 1-2 domains / 3+ | medium / high, up when confirmed |
@@ -667,7 +667,7 @@ How UniFi and OPNsense data are combined:
   trusted, rename them, add notes.
   Names come from, best first: a name you typed (never replaced; clear it to go back to automatic) → a dnsmasq
   *Hosts* entry for the MAC or IP (*Services > Dnsmasq DNS & DHCP > Hosts*) → the host name the device sent with its
-  DHCP request → the name Unbound shows for the IP → the ARP table / Zenarmor. The placeholders dnsmasq (`*`) and the
+  DHCP request → the name Unbound shows for the IP → the ARP table / Zenarmor (the host name Zenarmor learned, else the name of its entry under *Zenarmor › Devices*; an IP address or a bare OS / vendor label such as "Steam OS" is not used as a name). The placeholders dnsmasq (`*`) and the
   ARP table (`-`, `?`) use for "no name" are ignored. A device that still has no name sends none and has no Hosts
   entry: add one in OPNsense (host name + its MAC) or name it on the Devices page.
 * **Unraid** – see above.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import math
 import re
@@ -150,8 +151,10 @@ class Rating:
 ZEN_BAD = re.compile(r"\b(malware|botnets?|phishing|ransom\w*|command\s*(and|&)\s*control|c2|c&c|"
                      r"crypto[\s-]?min\w*|cryptojack\w*|coin[\s-]?min\w*)\b", re.I)
 
-# blocked threat traffic from one device in 24h that no longer looks like a stray ad / link: malware calling home
-REPEAT_HITS, REPEAT_TARGETS = 20, 5
+# blocked threat traffic from one device in 24h that no longer looks like a stray ad / link: malware calling home.
+# Counted in separate 10-minute periods and different sites (registered domains): one page load fires many DNS /
+# QUIC / TLS retries to several subdomains (file1., file2. …) within seconds - that is one visit, not persistence.
+REPEAT_PERIODS, REPEAT_TARGETS = 6, 5
 
 # alerts built from the same events must not confirm each other
 RULE_FAMILIES = [{"brute_force", "success_after_failures", "admin_login", "password_spray", "distributed_brute_force",
@@ -202,27 +205,33 @@ def corroborate(r: Rating, ev: dict[str, Any], max_steps: int = 2) -> Rating:
     return r
 
 
-async def blocked_threat_history(src: str, source: str) -> tuple[int, int]:
-    """(attempts, distinct targets) of threat traffic from one device that Zenarmor / Q-Feeds blocked in the last 24h."""
+async def blocked_threat_history(src: str, source: str) -> tuple[int, int, int]:
+    """(attempts, distinct 10-minute periods, distinct targets) of threat traffic from one device that Zenarmor /
+    Q-Feeds blocked in the last 24h; targets are sites (registered domains) or addresses."""
     pool = db.pool()
     if source == "qfeeds":
-        r = await pool.fetchrow("SELECT count(*) n, count(DISTINCT dst_ip) t FROM events WHERE source = 'qfeeds' "
+        r = await pool.fetchrow("SELECT count(*) n, count(DISTINCT date_bin('10 minutes', ts, 'epoch')) p, "
+                                "count(DISTINCT dst_ip) t FROM events WHERE source = 'qfeeds' "
                                 "AND src_ip = $1::inet AND ts > now() - interval '24 hours'", src)
-        return r["n"], r["t"]
+        return r["n"], r["p"], r["t"]
     rows = await pool.fetch(
-        "SELECT coalesce(domain, host(dst_ip)) AS target, count(*) AS n, concat_ws(' ', data->>'security', "
-        "data->>'security_tags', data->'zen'->>'app_category', data->'zen'->>'web_category') AS cats FROM events "
+        "SELECT domain, host(dst_ip) AS ip, date_bin('10 minutes', ts, 'epoch') AS period, count(*) AS n, "
+        "concat_ws(' ', data->>'security', data->>'security_tags', data->'zen'->>'app_category', "
+        "data->'zen'->>'web_category') AS cats FROM events "
         "WHERE source = 'zenarmor' AND action = 'block' AND src_ip = $1::inet AND ts > now() - interval '24 hours' "
-        "GROUP BY 1, 3", src)
+        "GROUP BY 1, 2, 3, 5", src)
     bad = [r for r in rows if ZEN_BAD.search(r["cats"] or "")]
-    return sum(r["n"] for r in bad), len({r["target"] for r in bad})
+    return (sum(r["n"] for r in bad), len({r["period"] for r in bad}),
+            len({registered_domain(r["domain"]) if r["domain"] else r["ip"] for r in bad}))
 
 
-def repeated(r: Rating, hits: int, targets: int) -> Rating:
-    """One step up when a device keeps trying blocked threat targets - one attempt is usually an ad or a stray link."""
-    if hits >= REPEAT_HITS or targets >= REPEAT_TARGETS:
-        r.up(f"repeated: {hits} blocked attempt(s) to {targets} threat target(s) in the last 24h - looks like malware "
-             "calling home")
+def repeated(r: Rating, hits: int, periods: int, targets: int) -> Rating:
+    """One step up when a device keeps coming back to blocked threat sites - one visit is usually an ad or a stray link,
+    however many retries and subdomains it fires."""
+    if periods >= REPEAT_PERIODS or targets >= REPEAT_TARGETS:
+        why = f"in {periods} separate 10-minute periods" if periods >= REPEAT_PERIODS else f"to {targets} different sites"
+        r.up(f"repeated: blocked threat traffic {why} in the last 24h ({hits} attempt(s), {targets} site(s)) - "
+             "can be malware calling home; check which program on the device does it")
     return r
 
 
@@ -353,9 +362,10 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
             sev = "high"
         count_sql = "count + $2" if mode == "add" else "GREATEST(count, $2)"
         await pool.execute(
+            # the title too: it can say what changed ("Zenarmor blocked: …" once the block record arrived)
             f"UPDATE alerts SET last_seen = now(), count = {count_sql}, severity = $3, description = $4, data = $5, "
-            f"status = CASE WHEN $6 = 'closed' THEN 'closed' ELSE status END WHERE id = $1",
-            row["id"], count, sev, description, data, status)
+            f"status = CASE WHEN $6 = 'closed' THEN 'closed' ELSE status END, title = $7 WHERE id = $1",
+            row["id"], count, sev, description, data, status, title)
         return
     await pool.execute(
         "INSERT INTO alerts (rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data, status) "
@@ -460,11 +470,29 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
                 src_ip=d.get("ip"), data={k: v for k, v in d.items() if v is not None})
 
 
-_zen_seen: dict[str, float] = {}
+_zen_seen: dict[str, tuple[float, bool]] = {}  # MAC -> (when, had a name)
+
+
+def zen_device_name(d: dict[str, Any], ip: Any) -> str | None:
+    """The name Zenarmor knows for a client: the host name it learned (DHCP / DNS), else the name of its device entry
+    (Zenarmor › Devices). Not an IP address, nor a bare fingerprint label that only repeats the OS / vendor / type."""
+    dev = d.get("device") if isinstance(d.get("device"), dict) else {}
+    generic = {str(dev.get(k) or "").strip().lower() for k in ("os", "vendor", "category")} - {""}
+    for name in (d.get("src_hostname"), dev.get("name")):
+        name = real_name(name)
+        if not name or name == str(ip or "") or name.lower() in generic:
+            continue
+        try:
+            ipaddress.ip_address(name)
+            continue
+        except ValueError:
+            return name
+    return None
 
 
 async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
-    """Zenarmor records carry the client MAC, hostname and a device fingerprint (name/vendor/OS)."""
+    """Zenarmor records carry the client MAC, hostname and a device fingerprint (name/vendor/OS). A MAC is looked at
+    again after 10 minutes - right away while no record of it carried a name yet."""
     now = time.time()
     found: dict[str, dict[str, Any]] = {}
     for e in events:
@@ -472,14 +500,18 @@ async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
         if not isinstance(d, dict):
             continue
         mac = str(d.get("src_hwaddr") or "").lower()
-        if len(mac) != 17 or mac in found or now - _zen_seen.get(mac, 0) < 600:
+        if len(mac) != 17 or (mac in found and found[mac]["hostname"]):
+            continue
+        name = zen_device_name(d, e.get("src_ip"))
+        when, named = _zen_seen.get(mac, (0, False))
+        if now - when < 600 and (named or not name):
             continue
         dev = d.get("device") if isinstance(d.get("device"), dict) else {}
         vendor = " / ".join(x for x in (dev.get("vendor"), dev.get("os")) if x) or None
-        found[mac] = {"mac": mac, "ip": e.get("src_ip"), "hostname": dev.get("name") or d.get("src_hostname"),
-                      "vendor": vendor, "interface": d.get("interface"), "online": True}
-    for mac in found:
-        _zen_seen[mac] = now
+        found[mac] = {"mac": mac, "ip": e.get("src_ip"), "hostname": name, "vendor": vendor,
+                      "interface": d.get("interface"), "online": True}
+    for mac, dev in found.items():
+        _zen_seen[mac] = (now, bool(dev["hostname"]))
     await track_devices(list(found.values()), origin="zenarmor")
 
 
@@ -895,35 +927,50 @@ class DetectionEngine:
             what = zen_describe({k: r[k] for k in ("app", "app_category", "web_category", "policy") if r[k]})
             threat = r["threat"] or r["app_category"] or r["web_category"] or r["app"] or "threat alert"
             src = str(r["src_ip"]) if r["src_ip"] else None
+            fingerprint = f"zen:{src}:{r['target']}"
+            # Zenarmor writes a threat as an "alert" record (without the blocked flag) and the blocked DNS / TLS / flow
+            # record, which can arrive in different batches: judge "blocked" on all records of this device and target in
+            # the last 24h. NOT blocked = no block at all, or flagged DNS / TLS / flow records that got through.
+            seen = await db.pool().fetchrow(
+                "SELECT bool_or(action = 'block') AS blocked, bool_or(action <> 'block' AND coalesce(data->>'family', '') <> 'alert' "
+                "AND coalesce(data->>'security', data->>'security_tags', '') <> '') AS passed FROM events "
+                "WHERE source = 'zenarmor' AND src_ip IS NOT DISTINCT FROM $1::inet AND coalesce(domain, host(dst_ip)) = $2 "
+                "AND ts > now() - interval '24 hours'", src, r["target"])
+            blocked = bool(r["blocked"] or seen["blocked"]) and not seen["passed"]
+            partly = bool(r["blocked"] or seen["blocked"]) and bool(seen["passed"])
             # only Zenarmor's own verdict / categories, never the app name ("Amazon EC2" is no C2 server)
             bad = bool(ZEN_BAD.search(" ".join(x for x in (r["threat"], r["app_category"], r["web_category"]) if x)))
-            if r["blocked"] and (mode == "never" or (mode == "threats" and not bad)):
+            if blocked and (mode == "never" or (mode == "threats" and not bad)) and not await db.pool().fetchval(
+                    "SELECT 1 FROM alerts WHERE fingerprint = $1 AND status <> 'closed' "
+                    "AND last_seen > now() - interval '24 hours'", fingerprint):
                 continue  # blocked by policy (or all blocks, if chosen): Zenarmor did its job, nothing to look into
+            # not sticky: re-rated from the 24h verdict, so an alert raised before the block record arrived drops back
+            got = "some of it was NOT blocked" if partly else "was NOT blocked"
             if bad:
                 # blocked: Zenarmor did its job - only repeated attempts or other signs make the device suspicious
                 rating = Rating("low", f"'{threat[:40]}' traffic from this device, blocked by Zenarmor - working as "
-                                       "intended", sticky=True) if r["blocked"] else \
-                    Rating("critical", f"'{threat[:40]}' traffic from this device was NOT blocked", sticky=True)
+                                       "intended") if blocked else \
+                    Rating("critical", f"'{threat[:40]}' traffic from this device {got}")
             else:
-                rating = Rating("low", "flagged and blocked by Zenarmor", sticky=True) if r["blocked"] else \
-                    Rating("medium", "flagged by Zenarmor but NOT blocked", sticky=True)
+                rating = Rating("low", "flagged and blocked by Zenarmor") if blocked else \
+                    Rating("medium", f"flagged by Zenarmor, {got}")
             if src and self.internal(src):
                 ev = await evidence(src, "zenarmor_threat")
                 ev["zen"] = 0  # that is this alert
-                corroborate(rating, ev, 2 if bad and r["blocked"] else 1)
-                if bad and r["blocked"]:
+                corroborate(rating, ev, 2 if bad and blocked else 1)
+                if bad and blocked:
                     repeated(rating, *await blocked_threat_history(src, "zenarmor"))
             label = threat if not r["app"] or r["app"] in threat else f"{r['app']}, {threat}"
+            state = "blocked" if blocked else "partly blocked" if partly else "NOT blocked"
             await raise_alert("zenarmor_threat", rating,
-                              f"Zenarmor{' blocked' if r['blocked'] else ''}: {src} → {r['target']} ({label[:60]})",
-                              f"zen:{src}:{r['target']}", src_ip=src, events={"source": "zenarmor", "ip": src}, count=r["hits"],
-                              blocked=r["blocked"] and "Zenarmor blocked it",
+                              f"Zenarmor{' blocked' if blocked else ''}: {src} → {r['target']} ({label[:60]})",
+                              fingerprint, src_ip=src, events={"source": "zenarmor", "ip": src}, count=r["hits"],
+                              blocked=blocked and "Zenarmor blocked it",
                               data={k: r[k] for k in ("app", "app_category", "web_category", "policy") if r[k]},
-                              description=f"Zenarmor flagged traffic from {src} to {r['target']} as '{threat}' "
-                                          f"({'blocked' if r['blocked'] else 'NOT blocked'})."
+                              description=f"Zenarmor flagged traffic from {src} to {r['target']} as '{threat}' ({state})."
                                           + (f" Details: {what}." if what else "")
                                           + (f" Blocked by Zenarmor policy {r['policy']} (Zenarmor › Policies) - change the "
-                                             "policy there if this traffic should be allowed." if r["blocked"] and r["policy"] else ""))
+                                             "policy there if this traffic should be allowed." if blocked and r["policy"] else ""))
         await self._commit("zenarmor", current)
 
     # --------------------------------------------------------- DNS rules ---

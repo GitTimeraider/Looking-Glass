@@ -158,8 +158,11 @@ def test_blocked_threat_traffic_is_low_unless_repeated_or_confirmed():
             evs = [ev("zenarmor", 1, action="block", src_ip="192.168.1.5", domain="ad.example", data={"security": "Malware"}),
                    ev("qfeeds", 1, action="block", src_ip="192.168.1.8", dst_ip="91.92.1.1", dst_port=443)]
             # calling home: many blocked attempts / many different threat targets
-            evs += [ev("zenarmor", 2, action="block", src_ip="192.168.1.6", domain="c2.example", data={"security": "Botnet"})
-                    for _ in range(20)]
+            evs += [ev("zenarmor", 2 + 30 * i, action="block", src_ip="192.168.1.6", domain="c2.example",
+                       data={"security": "Botnet"}) for i in range(6)]  # every 30 minutes for 3 hours
+            # one visit to a phishing page: many retries to 4 subdomains within a minute - not repeated
+            evs += [ev("zenarmor", 1, action="block", src_ip="192.168.1.11", domain=f"file{i % 4}.acgnngca.com",
+                       data={"security": '["Phishing"]'}) for i in range(54)]
             evs += [ev("zenarmor", 2, action="block", src_ip="192.168.1.7", domain=f"m{i}.example",
                        data={"security": "Malware"}) for i in range(5)]
             evs += [ev("qfeeds", 2, action="block", src_ip="192.168.1.9", dst_ip=f"91.92.1.{i}", dst_port=443) for i in range(5)]
@@ -175,9 +178,11 @@ def test_blocked_threat_traffic_is_low_unless_repeated_or_confirmed():
             sev = {r["ip"]: r["severity"] for r in await pool.fetch(
                 "SELECT host(src_ip) ip, severity FROM alerts WHERE rule IN ('zenarmor_threat', 'threat_intel_outbound')")}
             assert sev == {"192.168.1.5": "low", "192.168.1.8": "low", "192.168.1.6": "medium", "192.168.1.7": "medium",
-                           "192.168.1.9": "medium", "192.168.1.10": "high"}
+                           "192.168.1.9": "medium", "192.168.1.10": "high", "192.168.1.11": "low"}
             why = await pool.fetchval("SELECT description FROM alerts WHERE host(src_ip) = '192.168.1.6'")
-            assert "working as intended" in why and "repeated: 20 blocked attempt(s)" in why
+            assert "working as intended" in why and "in 6 separate 10-minute periods" in why
+            why = await pool.fetchval("SELECT description FROM alerts WHERE host(src_ip) = '192.168.1.11' LIMIT 1")
+            assert "repeated" not in why
             await pool.execute("TRUNCATE events, alerts")
         finally:
             await db.close()
@@ -215,6 +220,45 @@ def test_zenarmor_alerts_name_app_category_and_policy():
             await db.kv_set("wm:zenarmor", 0)
             await DetectionEngine(Settings()).zenarmor_threats()
             assert [r["ip"] for r in await pool.fetch("SELECT host(src_ip) ip FROM alerts")] == ["192.168.30.6"]
+            await pool.execute("TRUNCATE events, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_zenarmor_alert_record_before_its_block_is_not_critical():
+    """Zenarmor's threat "alert" record has no blocked flag; the blocked DNS record can come in a later batch. The alert
+    must end up as blocked (low), not stay critical."""
+    from lookingglass.parsers.security import zenarmor_record
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events, alerts")
+            t = NOW - timedelta(minutes=2)
+            src, dom = {"ip_src_saddr": "10.0.3.3"}, "file.acgnngca.com"
+            await db.copy_events([zenarmor_record("alert", {**src, "dst_hostname": dom, "alert_category": "Phishing"}, t)])
+            await db.kv_set("wm:zenarmor", 0)
+            await DetectionEngine(Settings()).zenarmor_threats()
+            assert await pool.fetchval("SELECT severity FROM alerts") == "critical"  # nothing says it was blocked (yet)
+            await db.copy_events([zenarmor_record("dns", {**src, "query": dom, "is_blocked": 1, "alert_category": "Phishing"}, t)
+                                  for _ in range(3)])
+            await DetectionEngine(Settings()).zenarmor_threats()
+            a = await pool.fetchrow("SELECT title, severity, description FROM alerts WHERE rule = 'zenarmor_threat'")
+            assert a["severity"] == "low" and a["title"].startswith("Zenarmor blocked:")
+            assert "NOT blocked" not in a["description"] and "(blocked)" in a["description"]
+            # a later alert record alone: the block of the last 24h still counts
+            await db.copy_events([zenarmor_record("alert", {**src, "dst_hostname": dom, "alert_category": "Phishing"}, NOW)])
+            await DetectionEngine(Settings()).zenarmor_threats()
+            assert await pool.fetchval("SELECT severity FROM alerts") == "low"
+            # flagged traffic that got through: critical again
+            await db.copy_events([zenarmor_record("tls", {**src, "server_name": dom, "alert_category": "Phishing"}, NOW)])
+            await DetectionEngine(Settings()).zenarmor_threats()
+            a = await pool.fetchrow("SELECT severity, description FROM alerts")
+            assert a["severity"] == "critical" and "some of it was NOT blocked" in a["description"]
             await pool.execute("TRUNCATE events, alerts")
         finally:
             await db.close()
@@ -279,8 +323,8 @@ def test_blocked_traffic_is_never_critical():
                 # hit to critical
                 ev("suricata", 5, action="alert", src_ip="192.168.1.6", dst_ip="198.51.100.1", message="ET MALWARE x"),
                 ev("qfeeds", 5, action="block", src_ip="192.168.1.6", dst_ip="198.51.100.1"),
-                *[ev("zenarmor", 1, action="block", src_ip="192.168.1.6", domain="c2.example", data={"security": "Malware"})
-                  for _ in range(20)],
+                *[ev("zenarmor", 1 + 30 * i, action="block", src_ip="192.168.1.6", domain="c2.example",
+                     data={"security": "Malware"}) for i in range(6)],
                 ev("zenarmor", 1, action="conn", src_ip="192.168.1.7", domain="p.example", data={"security": "Phishing"}),
                 # ordinary categories / app names: no malware
                 ev("zenarmor", 1, action="block", src_ip="192.168.1.8", domain="coins.example", data={"security": "Cryptocurrency"}),
@@ -342,6 +386,51 @@ def test_no_blocked_traffic_is_critical():
             await DetectionEngine(Settings()).attack_chains()
             assert (await alerts(pool, "attack_chain"))[0]["severity"] == "critical"
             await pool.execute("TRUNCATE events, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
+
+
+def test_zenarmor_device_name_skips_ips_and_fingerprint_labels():
+    from lookingglass.detections import zen_device_name
+
+    steam = {"name": "Steam OS", "os": "Steam OS", "vendor": "ASUSTek", "category": "Computer"}
+    assert zen_device_name({"src_hostname": "Desktop-PB", "device": steam}, "192.168.3.3") == "Desktop-PB"
+    assert zen_device_name({"src_hostname": "192.168.3.3", "device": steam}, "192.168.3.3") is None  # IP / OS label
+    assert zen_device_name({"src_hostname": "10.0.3.9", "device": {"name": "Living room TV", "os": "Tizen"}},
+                           "10.0.3.3") == "Living room TV"
+    assert zen_device_name({"src_hostname": "*", "device": {}}, None) is None
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_zenarmor_device_listener_names_devices_without_a_better_source():
+    from lookingglass import detections
+    from lookingglass.detections import track_devices, zenarmor_device_listener
+
+    def rec(mac, ip, **kw):
+        return {"source": "zenarmor", "src_ip": ip, "data": {"src_hwaddr": mac, **kw}}
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE devices")
+            detections._zen_seen.clear()
+            await track_devices([{"mac": "aa:00:00:00:00:09", "ip": "10.0.3.9", "hostname": "tv-dhcp"}], origin="dhcp")
+            # first record without a name, the next one (same batch) has it; the IP as host name is ignored
+            await zenarmor_device_listener([
+                rec("aa:00:00:00:00:03", "10.0.3.3", src_hostname="10.0.3.3", device={"os": "Android"}),
+                rec("aa:00:00:00:00:03", "10.0.3.3", device={"name": "Pixel-7", "os": "Android"}),
+                rec("aa:00:00:00:00:09", "10.0.3.9", src_hostname="zen-tv")])
+            # a name arriving later is still picked up (no 10-minute wait while there was none)
+            await zenarmor_device_listener([rec("aa:00:00:00:00:04", "10.0.3.4", src_hostname="10.0.3.4")])
+            await zenarmor_device_listener([rec("aa:00:00:00:00:04", "10.0.3.4", src_hostname="laptop-jo")])
+            names = {r["mac"]: (r["hostname"], r["name_source"]) for r in await pool.fetch("SELECT mac, hostname, name_source FROM devices")}
+            assert names["aa:00:00:00:00:03"] == ("Pixel-7", "zenarmor")
+            assert names["aa:00:00:00:00:04"] == ("laptop-jo", "zenarmor")
+            assert names["aa:00:00:00:00:09"] == ("tv-dhcp", "dhcp")  # a better source wins
+            await pool.execute("TRUNCATE devices")
         finally:
             await db.close()
 
