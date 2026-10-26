@@ -106,6 +106,21 @@ def _num(value: Any) -> float | None:
         return None
 
 
+def own_address(r: dict[str, Any]) -> bool:
+    """An ARP entry of OPNsense's own interface address: the table marks those permanent."""
+    return r.get("permanent") in (True, 1, "1", "true") or str(r.get("expires", "")).lower() == "permanent"
+
+
+def interface_device(mac: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """OPNsense itself, for one MAC: named after its interface(s). VLANs on one port share the port's MAC, so one MAC
+    can carry several interfaces: "OPNsense (LAN, VLAN_IoT)"."""
+    names = list(dict.fromkeys(str(r.get("intf_description") or r.get("intf") or "?") for r in entries))
+    ips = [ip for ip in (ip_or_none(r.get("ip")) for r in entries) if ip]
+    return {"mac": mac, "ip": ips[0] if ips else None, "hostname": f"OPNsense ({', '.join(names)})",
+            "name_source": "opnsense", "vendor": entries[0].get("manufacturer") or None, "interface": ", ".join(names),
+            "online": True}
+
+
 class Poller:
     """Runs a set of periodic jobs against the OPNsense API."""
 
@@ -326,13 +341,18 @@ class Poller:
                                           data={"from": old, "to": mac}))
         self._arp_prev = current
         devices = []
+        own: dict[str, list[dict[str, Any]]] = {}  # MAC -> OPNsense's own interface addresses with it
         for r in rows:
             mac = (r.get("mac") or "").lower()
             if not mac or mac == "(incomplete)" or r.get("expired"):
                 continue
+            if own_address(r):
+                own.setdefault(mac, []).append(r)
+                continue
             devices.append(self._named({"mac": mac, "ip": ip_or_none(r.get("ip")), "hostname": r.get("hostname") or None,
                                         "vendor": r.get("manufacturer") or None,
                                         "interface": r.get("intf_description") or r.get("intf"), "online": True}))
+        devices += [interface_device(mac, entries) for mac, entries in own.items()]
         from .detections import track_devices  # local import to avoid a cycle
         await track_devices(devices, origin="arp", mark_online=True)
 
