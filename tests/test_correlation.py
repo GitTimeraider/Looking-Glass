@@ -484,3 +484,40 @@ def test_real_mac_skips_placeholders():
     assert real_mac("E8-9C-25-6E-46-D1") == "e8:9c:25:6e:46:d1"
     for bad in (None, "", "-", "unknown", "00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff", "01:00:5e:00:00:01", "e8:9c:25"):
         assert real_mac(bad) is None
+
+
+def test_opnsense_own_interfaces_are_named_after_the_interface():
+    from lookingglass.opnsense import interface_device, own_address
+
+    lan = {"mac": "a8:b8:e0:00:00:01", "ip": "192.168.1.1", "intf": "igc1", "intf_description": "LAN", "permanent": True,
+           "manufacturer": "Intel"}
+    iot = {**lan, "ip": "192.168.20.1", "intf": "vlan0.20", "intf_description": "VLAN_IoT", "permanent": False,
+           "expires": "permanent"}
+    assert own_address(lan) and own_address(iot)
+    assert not own_address({"mac": "aa:00:00:00:00:01", "ip": "192.168.1.5", "expires": 1199, "permanent": False})
+    d = interface_device("a8:b8:e0:00:00:01", [lan, iot])  # VLANs share the port's MAC
+    assert d["hostname"] == "OPNsense (LAN, VLAN_IoT)" and d["name_source"] == "opnsense" and d["ip"] == "192.168.1.1"
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_opnsense_interface_name_replaces_a_guessed_one():
+    from lookingglass.detections import track_devices
+    from lookingglass.opnsense import interface_device
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE devices")
+            mac = "a8:b8:e0:00:00:01"
+            await track_devices([{"mac": mac, "ip": "192.168.1.1", "hostname": "router.lan", "name_source": "dns"}], origin="arp")
+            await track_devices([interface_device(mac, [{"ip": "192.168.1.1", "intf_description": "LAN"}])], origin="arp")
+            assert await pool.fetchval("SELECT hostname FROM devices WHERE mac = $1", mac) == "OPNsense (LAN)"
+            await pool.execute("UPDATE devices SET hostname = 'Firewall', name_source = 'manual', name_rank = 100")
+            await track_devices([interface_device(mac, [{"ip": "192.168.1.1", "intf_description": "LAN"}])], origin="arp")
+            assert await pool.fetchval("SELECT hostname FROM devices WHERE mac = $1", mac) == "Firewall"  # yours wins
+            await pool.execute("TRUNCATE devices")
+        finally:
+            await db.close()
+
+    asyncio.run(main())

@@ -74,7 +74,7 @@ INTERNAL_CHAIN = [("Threat sign", {"threat_intel_outbound", "zenarmor_threat", "
                                          "large_upload", "canary", "arp_spoofing", "volume_spike"})]
 
 # a name from a better source replaces one from a worse source, never the other way round
-NAME_RANK = {"manual": 100, "unifi-alias": 70, "dnsmasq-static": 60, "unifi": 45, "dhcp": 50, "dns": 30, "zenarmor": 25, "arp": 20}
+NAME_RANK = {"manual": 100, "opnsense": 90, "unifi-alias": 70, "dnsmasq-static": 60, "unifi": 45, "dhcp": 50, "dns": 30, "zenarmor": 25, "arp": 20}
 
 
 def name_rank(source: str) -> int:
