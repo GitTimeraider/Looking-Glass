@@ -211,7 +211,8 @@ async def tool_ip_profile(ip: str, hours: float = 168) -> Any:
                               "ORDER BY last_seen DESC LIMIT 20", ip)
     country = await pool.fetchval("SELECT coalesce(src_country, dst_country) FROM events WHERE (src_ip = $1::inet AND src_country IS NOT NULL) "
                                   "OR (dst_ip = $1::inet AND dst_country IS NOT NULL) LIMIT 1", ip)
-    device = await pool.fetchrow("SELECT * FROM devices WHERE ip = $1::inet", ip)
+    device = await pool.fetchrow("SELECT * FROM devices WHERE ip = $1::inet OR $1::inet = ANY(ips) "
+                                 "ORDER BY mac LIKE 'ip:%', last_seen DESC LIMIT 1", ip)
     return {"ip": ip, "country": country, "device": dict(device) if device else None, "activity": db.records(by_source),
             "top_ports_as_source": db.records(ports), "top_peers": db.records(peers), "dns_queries": db.records(domains),
             "alerts": db.records(alerts)}
