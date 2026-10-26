@@ -5,10 +5,10 @@
   the container's data volume and are never shown again after saving (leave a secret field empty to keep the current value).
   Changes apply immediately - no restart needed.</p>
 <div class="tabs" id="tabs">
-  <button data-t="opnsense" class="on">OPNsense</button><button data-t="unifi">UniFi</button><button data-t="ai">AI analyst</button><button data-t="zenarmor">Zenarmor</button>
+  <button data-t="opnsense" class="on">OPNsense</button><button data-t="unifi">UniFi</button><button data-t="ai">AI analyst</button><button data-t="reports">Reports</button><button data-t="zenarmor">Zenarmor</button>
   <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button><button data-t="behavior">Behaviour &amp; ML</button><button data-t="intel">Threat intel &amp; traps</button><button data-t="filters">Alert filters</button><button data-t="email">Email &amp; notifications</button><button data-t="display">Display</button>
 </div>
-{% for g in ["opnsense", "unifi", "ai", "zenarmor", "ingest", "data", "behavior", "intel", "email", "display"] %}
+{% for g in ["opnsense", "unifi", "ai", "reports", "zenarmor", "ingest", "data", "behavior", "intel", "email", "display"] %}
 <section data-s="{{ g }}" {% if g != "opnsense" %}hidden{% endif %}>
   <div class="card">
     {% if g == "behavior" %}<p class="small muted">Looking Glass learns what is normal for every device and alerts on what is new
@@ -17,6 +17,8 @@
     {% if g == "intel" %}<p class="small muted">Known-bad lists from abuse.ch and the Tor project are downloaded daily and
       compared with DNS lookups, connections and TLS fingerprints. Traps (canaries), ARP spoofing and changes to what is open to the
       internet are watched too. Every part has its own switch and exception list.</p>{% endif %}
+    {% if g == "reports" %}<p class="small muted">A report of the last days written on a schedule: statistics, alerts
+      and - when the AI analyst is set up - its analysis. Reports can also be written by hand on the Reports page.</p>{% endif %}
     {% if g == "email" %}<h3>Mail server (SMTP)</h3>
     <p class="small muted">The account Looking Glass sends notification mails with. Below the mail server you choose what you want to be mailed about.</p>{% endif %}
     <form class="settings-form" data-group="{{ g }}"></form>

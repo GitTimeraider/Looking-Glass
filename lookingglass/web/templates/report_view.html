@@ -7,6 +7,7 @@
 <header class="top">
   <h1 id="title">Report</h1>
   <a class="btn secondary noprint" href="/api/reports/{{ report_id }}/download">Download JSON</a>
+  <button class="secondary noprint" id="mail-report">Email</button>
   <button onclick="window.print()">Print / PDF</button>
 </header>
 <div id="ai-card" class="card" hidden style="margin-bottom:14px"><h3>AI analysis</h3>
@@ -60,6 +61,13 @@ function showAI(r) {
   ai.hidden = !r.ai_summary;
 }
 (async () => {
+  document.getElementById("mail-report").onclick = async () => {
+    // to Settings › Reports › Email the report to (or the sender address)
+    try {
+      const m = await LG.api("/api/reports/{{ report_id }}/mail", { method: "POST", body: {} });
+      alert(`Mailed to ${m.to.join(", ")}`);
+    } catch (e) { alert(e.message || e); }
+  };
   const r = await LG.api("/api/reports/{{ report_id }}");
   const d = r.data;
   document.getElementById("title").textContent = `${r.title} — ${LG.time(r.created_at)}`;

@@ -26,7 +26,7 @@ from ..ai import Analyst, request_log
 from ..config import Settings
 from ..ingest import STATS
 from ..dashboards import DASHBOARDS, run_dashboard
-from ..reports import build_report, run_ai_summary, timeline
+from ..reports import build_report, report_mail, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
 from ..parsers.common import real_name
 from ..unraid import test_connection as unraid_test
@@ -600,6 +600,25 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         await db.pool().execute("UPDATE reports SET ai_state = 'running', ai_error = NULL WHERE id = $1", report_id)
         _background(run_ai_summary(analyst, report_id))
         return {"ok": True, "state": "running"}
+
+    @app.post("/api/reports/{report_id}/mail")
+    async def mail_report(report_id: int, payload: dict = Body(default={})):
+        """Mail a report now - to the given addresses, else Settings › Reports › Email the report to, else the sender."""
+        if not settings.smtp_enabled:
+            raise HTTPException(400, "No mail server set up (Settings › Email & notifications)")
+        try:
+            to = (notify.recipients(payload.get("to")) or notify.recipients(settings.report_mail_to)
+                  or notify.recipients(settings.smtp_from))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        mail = await report_mail(report_id, settings.mail_link_url or settings.public_url)
+        if not mail:
+            raise HTTPException(404, "no such report")
+        try:
+            await notify.send(settings, to, *mail)
+        except notify.MailError as exc:
+            raise HTTPException(502, f"Sending failed: {exc}") from exc
+        return {"ok": True, "to": to}
 
     @app.get("/api/reports/{report_id}")
     async def get_report(report_id: int):

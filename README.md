@@ -682,8 +682,10 @@ How UniFi and OPNsense data are combined:
 * **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range; filters that come
   from a dashboard click (program, host, domain, user, port, protocol, interface, country, time span, any data field)
   show as removable chips. Click an event for all its fields.
-* **Reports** – 24h / 7d / 30d reports, optionally with an AI-written analysis; print to PDF or download JSON.
-  Enable *Daily AI report* under *Settings › AI analyst* to get one automatically every morning.
+* **Reports** – 24h / 7d / 30d reports, optionally with an AI-written analysis; print to PDF, download JSON or
+  **Email** it. *Settings › Reports*: a *Scheduled report* every N days (1 = daily, 7 = weekly; it covers those days) at
+  the hour you choose, optionally mailed to the addresses under *Email the report to* (with the mail server from
+  *Settings › Email & notifications*).
 * **AI Analyst** – chat with the model (any OpenAI-compatible endpoint; with Claude it uses Anthropic's
   [OpenAI SDK compatibility layer](https://platform.claude.com/docs/en/api/openai-sdk)). It can run read-only SQL against the log database, search events, profile an
   IP, read alerts, OPNsense + Unraid status and traffic statistics, and answers with evidence and remediation steps.
