@@ -554,7 +554,7 @@ The **Unraid** page then shows:
 * **Array, pools & disks**: the array and each pool separately (e.g. a ZFS SSD pool), with capacity, file system,
   member disks, spinning / spun-down state, temperature, errors, parity check, shares and SMART. Charts show
   spinning disks and usage per array/pool.
-* **Docker**: containers, state, updates, CPU/memory.
+* **Docker**: containers, state, updates, CPU/memory. Container CPU is the share of the whole CPU (all threads), like the server's own CPU graph - not `docker stats`' 100 % per thread.
 * **Logs**: container logs and the Unraid syslog, searchable.
 * **Notifications**.
 

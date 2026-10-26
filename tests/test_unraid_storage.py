@@ -134,3 +134,46 @@ def test_container_down_waits_after_boot_and_closes_when_running_again():
             await db.close()
 
     asyncio.run(main())
+
+
+def test_container_cpu_is_a_share_of_the_whole_cpu(monkeypatch):
+    """docker stats counts 100 % per thread; Looking Glass shows the share of the whole CPU, like the server's graph:
+    one busy thread on an 8-thread server is 12.5 %."""
+    import asyncio
+
+    import httpx
+
+    from lookingglass import db, unraid
+
+    def poller(threads):
+        p = object.__new__(unraid.UnraidServerPoller)
+        p.sid, p.threads, p.status, p.last_run, p.got = 1, threads, {"sections": {}}, {}, []
+
+        async def store(stats):
+            p.got = stats
+        p.store_docker_stats = store
+        return p
+
+    # Docker engine API: 1 s of CPU time out of 8 s of system time (8 threads × 1 s)
+    stats = {"cpu_stats": {"cpu_usage": {"total_usage": 2_000_000_000}, "system_cpu_usage": 16_000_000_000, "online_cpus": 8},
+             "precpu_stats": {"cpu_usage": {"total_usage": 1_000_000_000}, "system_cpu_usage": 8_000_000_000},
+             "memory_stats": {"usage": 100}}
+
+    def handler(req):
+        return httpx.Response(200, json=[{"Id": "abc", "Names": ["/plex"]}] if req.url.path == "/containers/json" else stats)
+    p = poller(0)
+    p.client = type("C", (), {"docker": httpx.AsyncClient(base_url="http://d", transport=httpx.MockTransport(handler))})()
+    asyncio.run(p.poll_docker_stats())
+    assert p.got[0]["cpu_pct"] == 12.5
+
+    # Unraid API (docker stats' numbers): 100 % = one thread, divided by the server's 8 threads
+    async def snapshot(key):
+        return [{"id": "x:abc", "state": "RUNNING", "names": ["/plex"]}]
+    monkeypatch.setattr(db, "get_snapshot", snapshot)
+
+    async def subscribe(q, until, timeout):
+        until([{"dockerContainerStats": {"id": "abc", "cpuPercent": 100.0, "memUsage": "1MiB / 2GiB"}}] * 2)
+    p = poller(8)
+    p.client = type("C", (), {"subscribe": staticmethod(subscribe)})()
+    asyncio.run(p.poll_docker_stats_api())
+    assert p.got[0]["cpu_pct"] == 12.5
