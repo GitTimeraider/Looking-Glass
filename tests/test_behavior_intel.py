@@ -10,7 +10,8 @@ from lookingglass import db
 from lookingglass.behavior import Behavior, Matcher
 from lookingglass.config import Settings
 from lookingglass.detections import DetectionEngine
-from lookingglass.intel import (Intel, describe_rule, dns_redirects, exposure_changes, opens_inbound, parse_canaries, parse_feed)
+from lookingglass.intel import (Intel, describe_rule, dns_redirects, exposure_changes, nat_redirects, opens_inbound, parse_canaries,
+                               parse_feed)
 from lookingglass.mlforest import SubspaceForest
 from lookingglass.parsers.common import event
 
@@ -103,6 +104,17 @@ def test_dns_redirects():
     assert dns_redirects([{**rdr, "enabled": "0"}, {**rdr, "disabled": "1"}, {**rdr, "nordr": "1"},
                           {**rdr, "destination_port": "443"}, {**rdr, "target": "9.9.9.9"}]) == []
     assert dns_redirects(None) == []
+
+
+def test_nat_redirects_any_port():
+    # OPNsense shows well-known ports by name; the target is an interface address ("VLAN_IoT address")
+    iot = {"interface": "VLAN_IoT", "protocol": "TCP/UDP", "destination_net": "!RFC1918_Networks", "target": "vlan_iotip"}
+    got = nat_redirects([{**iot, "destination_port": "domain", "local-port": "domain"},
+                         {**iot, "destination_port": "ntp", "local-port": "ntp"},
+                         {**iot, "destination_port": "8000:8100"},
+                         {**iot, "destination_port": "MyAlias"},             # alias: ports unknown
+                         {**iot, "destination_port": "123", "target": "162.159.200.1"}])  # to the internet
+    assert [(lo, hi) for lo, hi, _ in got] == [(53, 53), (123, 123), (8000, 8100)]
 
 
 # ------------------------------------------------------------------- DB ---
@@ -638,4 +650,42 @@ def test_api_pulled_alert_remembers_when_its_events_happened():
         await db.connect(DSN)
         data = await db.pool().fetchval("SELECT data FROM alerts WHERE rule = 'crowdsec'")
         assert data["events_from"] == seen.strftime("%Y-%m-%dT%H:%M:%S.") + f"{seen.microsecond // 1000:03d}Z"
+    run(body)
+
+
+@needs_db
+def test_tor_relay_behind_a_dns_ntp_redirect_is_not_raised():
+    """A LaMetric asks a pool NTP server that is also a Tor relay; the NAT port forward answers it locally. Zenarmor /
+    the firewall still log the relay as destination."""
+    async def body(pool):
+        await pool.execute("INSERT INTO intel_indicators (kind, value, feed, info) VALUES ('ip', '37.48.81.43', 'tor_relay', 'Tor relay')")
+        await db.kv_set("intel:version", 2)
+        t = NOW - timedelta(minutes=1)
+        evs = [event(t, "zenarmor", severity=6, action="conn", src_ip="192.168.20.12", dst_ip="37.48.81.43", dst_port=p,
+                     proto="udp") for p in (53, 123)]
+        evs.append(event(t, "firewall", severity=6, action="pass", direction="in", src_ip="192.168.20.12",
+                         dst_ip="37.48.81.43", dst_port=123, proto="udp"))
+        evs.append(event(t, "firewall", severity=6, action="pass", src_ip="192.168.20.13", dst_ip="37.48.81.43",
+                         dst_port=9001, proto="tcp"))  # a real Tor connection
+        await db.copy_events(evs)
+        iot = {"interface": "VLAN_IoT", "protocol": "TCP/UDP", "destination_net": "!RFC1918_Networks", "target": "vlan_iotip"}
+        await db.set_snapshot("nat_rules", [{**iot, "destination_port": "domain"}, {**iot, "destination_port": "ntp"}])
+        await DetectionEngine(Settings()).threat_intel()
+        assert [a["ip"] for a in await rules(pool, "tor")] == ["192.168.20.13"]
+        # redirect unknown (no API privilege): raised, with a hint how to let Looking Glass know
+        await pool.execute("DELETE FROM alerts")
+        await db.set_snapshot("nat_rules", [])
+        await db.kv_set("wm:intel", 0)
+        await DetectionEngine(Settings()).threat_intel()
+        tor = {a["ip"]: a for a in await rules(pool, "tor")}
+        assert "Firewall: NAT: Port Forward" in tor["192.168.20.12"]["description"]
+        assert "Firewall: NAT: Port Forward" not in tor["192.168.20.13"]["description"]
+        # the redirect's own log line ('rdr') is enough too
+        await pool.execute("DELETE FROM alerts")
+        await db.copy_events([event(t, "firewall", severity=6, action="rdr", src_ip="192.168.20.12", dst_ip="37.48.81.43",
+                                    dst_port=p) for p in (53, 123)])
+        await db.kv_set("wm:intel", 0)
+        await DetectionEngine(Settings()).threat_intel()
+        assert [a["ip"] for a in await rules(pool, "tor")] == ["192.168.20.13"]
+        await db.set_snapshot("nat_rules", [])
     run(body)
