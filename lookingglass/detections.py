@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import math
 import re
@@ -469,11 +470,29 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
                 src_ip=d.get("ip"), data={k: v for k, v in d.items() if v is not None})
 
 
-_zen_seen: dict[str, float] = {}
+_zen_seen: dict[str, tuple[float, bool]] = {}  # MAC -> (when, had a name)
+
+
+def zen_device_name(d: dict[str, Any], ip: Any) -> str | None:
+    """The name Zenarmor knows for a client: the host name it learned (DHCP / DNS), else the name of its device entry
+    (Zenarmor › Devices). Not an IP address, nor a bare fingerprint label that only repeats the OS / vendor / type."""
+    dev = d.get("device") if isinstance(d.get("device"), dict) else {}
+    generic = {str(dev.get(k) or "").strip().lower() for k in ("os", "vendor", "category")} - {""}
+    for name in (d.get("src_hostname"), dev.get("name")):
+        name = real_name(name)
+        if not name or name == str(ip or "") or name.lower() in generic:
+            continue
+        try:
+            ipaddress.ip_address(name)
+            continue
+        except ValueError:
+            return name
+    return None
 
 
 async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
-    """Zenarmor records carry the client MAC, hostname and a device fingerprint (name/vendor/OS)."""
+    """Zenarmor records carry the client MAC, hostname and a device fingerprint (name/vendor/OS). A MAC is looked at
+    again after 10 minutes - right away while no record of it carried a name yet."""
     now = time.time()
     found: dict[str, dict[str, Any]] = {}
     for e in events:
@@ -481,14 +500,18 @@ async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
         if not isinstance(d, dict):
             continue
         mac = str(d.get("src_hwaddr") or "").lower()
-        if len(mac) != 17 or mac in found or now - _zen_seen.get(mac, 0) < 600:
+        if len(mac) != 17 or (mac in found and found[mac]["hostname"]):
+            continue
+        name = zen_device_name(d, e.get("src_ip"))
+        when, named = _zen_seen.get(mac, (0, False))
+        if now - when < 600 and (named or not name):
             continue
         dev = d.get("device") if isinstance(d.get("device"), dict) else {}
         vendor = " / ".join(x for x in (dev.get("vendor"), dev.get("os")) if x) or None
-        found[mac] = {"mac": mac, "ip": e.get("src_ip"), "hostname": dev.get("name") or d.get("src_hostname"),
-                      "vendor": vendor, "interface": d.get("interface"), "online": True}
-    for mac in found:
-        _zen_seen[mac] = now
+        found[mac] = {"mac": mac, "ip": e.get("src_ip"), "hostname": name, "vendor": vendor,
+                      "interface": d.get("interface"), "online": True}
+    for mac, dev in found.items():
+        _zen_seen[mac] = (now, bool(dev["hostname"]))
     await track_devices(list(found.values()), origin="zenarmor")
 
 

@@ -390,3 +390,48 @@ def test_no_blocked_traffic_is_critical():
             await db.close()
 
     asyncio.run(main())
+
+
+def test_zenarmor_device_name_skips_ips_and_fingerprint_labels():
+    from lookingglass.detections import zen_device_name
+
+    steam = {"name": "Steam OS", "os": "Steam OS", "vendor": "ASUSTek", "category": "Computer"}
+    assert zen_device_name({"src_hostname": "Desktop-PB", "device": steam}, "192.168.3.3") == "Desktop-PB"
+    assert zen_device_name({"src_hostname": "192.168.3.3", "device": steam}, "192.168.3.3") is None  # IP / OS label
+    assert zen_device_name({"src_hostname": "10.0.3.9", "device": {"name": "Living room TV", "os": "Tizen"}},
+                           "10.0.3.3") == "Living room TV"
+    assert zen_device_name({"src_hostname": "*", "device": {}}, None) is None
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_zenarmor_device_listener_names_devices_without_a_better_source():
+    from lookingglass import detections
+    from lookingglass.detections import track_devices, zenarmor_device_listener
+
+    def rec(mac, ip, **kw):
+        return {"source": "zenarmor", "src_ip": ip, "data": {"src_hwaddr": mac, **kw}}
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE devices")
+            detections._zen_seen.clear()
+            await track_devices([{"mac": "aa:00:00:00:00:09", "ip": "10.0.3.9", "hostname": "tv-dhcp"}], origin="dhcp")
+            # first record without a name, the next one (same batch) has it; the IP as host name is ignored
+            await zenarmor_device_listener([
+                rec("aa:00:00:00:00:03", "10.0.3.3", src_hostname="10.0.3.3", device={"os": "Android"}),
+                rec("aa:00:00:00:00:03", "10.0.3.3", device={"name": "Pixel-7", "os": "Android"}),
+                rec("aa:00:00:00:00:09", "10.0.3.9", src_hostname="zen-tv")])
+            # a name arriving later is still picked up (no 10-minute wait while there was none)
+            await zenarmor_device_listener([rec("aa:00:00:00:00:04", "10.0.3.4", src_hostname="10.0.3.4")])
+            await zenarmor_device_listener([rec("aa:00:00:00:00:04", "10.0.3.4", src_hostname="laptop-jo")])
+            names = {r["mac"]: (r["hostname"], r["name_source"]) for r in await pool.fetch("SELECT mac, hostname, name_source FROM devices")}
+            assert names["aa:00:00:00:00:03"] == ("Pixel-7", "zenarmor")
+            assert names["aa:00:00:00:00:04"] == ("laptop-jo", "zenarmor")
+            assert names["aa:00:00:00:00:09"] == ("tv-dhcp", "dhcp")  # a better source wins
+            await pool.execute("TRUNCATE devices")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
