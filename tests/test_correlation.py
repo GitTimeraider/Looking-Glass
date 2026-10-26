@@ -227,6 +227,45 @@ def test_zenarmor_alerts_name_app_category_and_policy():
     asyncio.run(main())
 
 
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_zenarmor_alert_record_before_its_block_is_not_critical():
+    """Zenarmor's threat "alert" record has no blocked flag; the blocked DNS record can come in a later batch. The alert
+    must end up as blocked (low), not stay critical."""
+    from lookingglass.parsers.security import zenarmor_record
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events, alerts")
+            t = NOW - timedelta(minutes=2)
+            src, dom = {"ip_src_saddr": "10.0.3.3"}, "file.acgnngca.com"
+            await db.copy_events([zenarmor_record("alert", {**src, "dst_hostname": dom, "alert_category": "Phishing"}, t)])
+            await db.kv_set("wm:zenarmor", 0)
+            await DetectionEngine(Settings()).zenarmor_threats()
+            assert await pool.fetchval("SELECT severity FROM alerts") == "critical"  # nothing says it was blocked (yet)
+            await db.copy_events([zenarmor_record("dns", {**src, "query": dom, "is_blocked": 1, "alert_category": "Phishing"}, t)
+                                  for _ in range(3)])
+            await DetectionEngine(Settings()).zenarmor_threats()
+            a = await pool.fetchrow("SELECT title, severity, description FROM alerts WHERE rule = 'zenarmor_threat'")
+            assert a["severity"] == "low" and a["title"].startswith("Zenarmor blocked:")
+            assert "NOT blocked" not in a["description"] and "(blocked)" in a["description"]
+            # a later alert record alone: the block of the last 24h still counts
+            await db.copy_events([zenarmor_record("alert", {**src, "dst_hostname": dom, "alert_category": "Phishing"}, NOW)])
+            await DetectionEngine(Settings()).zenarmor_threats()
+            assert await pool.fetchval("SELECT severity FROM alerts") == "low"
+            # flagged traffic that got through: critical again
+            await db.copy_events([zenarmor_record("tls", {**src, "server_name": dom, "alert_category": "Phishing"}, NOW)])
+            await DetectionEngine(Settings()).zenarmor_threats()
+            a = await pool.fetchrow("SELECT severity, description FROM alerts")
+            assert a["severity"] == "critical" and "some of it was NOT blocked" in a["description"]
+            await pool.execute("TRUNCATE events, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
+
+
 def test_config_change_says_what_and_who():
     from lookingglass.parsers.security import config_change
     line = ("<37>Oct 20 10:15:01 fw audit[42]: user admin@192.168.1.10 changed configuration to "

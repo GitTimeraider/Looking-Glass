@@ -361,9 +361,10 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
             sev = "high"
         count_sql = "count + $2" if mode == "add" else "GREATEST(count, $2)"
         await pool.execute(
+            # the title too: it can say what changed ("Zenarmor blocked: …" once the block record arrived)
             f"UPDATE alerts SET last_seen = now(), count = {count_sql}, severity = $3, description = $4, data = $5, "
-            f"status = CASE WHEN $6 = 'closed' THEN 'closed' ELSE status END WHERE id = $1",
-            row["id"], count, sev, description, data, status)
+            f"status = CASE WHEN $6 = 'closed' THEN 'closed' ELSE status END, title = $7 WHERE id = $1",
+            row["id"], count, sev, description, data, status, title)
         return
     await pool.execute(
         "INSERT INTO alerts (rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data, status) "
@@ -903,35 +904,50 @@ class DetectionEngine:
             what = zen_describe({k: r[k] for k in ("app", "app_category", "web_category", "policy") if r[k]})
             threat = r["threat"] or r["app_category"] or r["web_category"] or r["app"] or "threat alert"
             src = str(r["src_ip"]) if r["src_ip"] else None
+            fingerprint = f"zen:{src}:{r['target']}"
+            # Zenarmor writes a threat as an "alert" record (without the blocked flag) and the blocked DNS / TLS / flow
+            # record, which can arrive in different batches: judge "blocked" on all records of this device and target in
+            # the last 24h. NOT blocked = no block at all, or flagged DNS / TLS / flow records that got through.
+            seen = await db.pool().fetchrow(
+                "SELECT bool_or(action = 'block') AS blocked, bool_or(action <> 'block' AND coalesce(data->>'family', '') <> 'alert' "
+                "AND coalesce(data->>'security', data->>'security_tags', '') <> '') AS passed FROM events "
+                "WHERE source = 'zenarmor' AND src_ip IS NOT DISTINCT FROM $1::inet AND coalesce(domain, host(dst_ip)) = $2 "
+                "AND ts > now() - interval '24 hours'", src, r["target"])
+            blocked = bool(r["blocked"] or seen["blocked"]) and not seen["passed"]
+            partly = bool(r["blocked"] or seen["blocked"]) and bool(seen["passed"])
             # only Zenarmor's own verdict / categories, never the app name ("Amazon EC2" is no C2 server)
             bad = bool(ZEN_BAD.search(" ".join(x for x in (r["threat"], r["app_category"], r["web_category"]) if x)))
-            if r["blocked"] and (mode == "never" or (mode == "threats" and not bad)):
+            if blocked and (mode == "never" or (mode == "threats" and not bad)) and not await db.pool().fetchval(
+                    "SELECT 1 FROM alerts WHERE fingerprint = $1 AND status <> 'closed' "
+                    "AND last_seen > now() - interval '24 hours'", fingerprint):
                 continue  # blocked by policy (or all blocks, if chosen): Zenarmor did its job, nothing to look into
+            # not sticky: re-rated from the 24h verdict, so an alert raised before the block record arrived drops back
+            got = "some of it was NOT blocked" if partly else "was NOT blocked"
             if bad:
                 # blocked: Zenarmor did its job - only repeated attempts or other signs make the device suspicious
                 rating = Rating("low", f"'{threat[:40]}' traffic from this device, blocked by Zenarmor - working as "
-                                       "intended", sticky=True) if r["blocked"] else \
-                    Rating("critical", f"'{threat[:40]}' traffic from this device was NOT blocked", sticky=True)
+                                       "intended") if blocked else \
+                    Rating("critical", f"'{threat[:40]}' traffic from this device {got}")
             else:
-                rating = Rating("low", "flagged and blocked by Zenarmor", sticky=True) if r["blocked"] else \
-                    Rating("medium", "flagged by Zenarmor but NOT blocked", sticky=True)
+                rating = Rating("low", "flagged and blocked by Zenarmor") if blocked else \
+                    Rating("medium", f"flagged by Zenarmor, {got}")
             if src and self.internal(src):
                 ev = await evidence(src, "zenarmor_threat")
                 ev["zen"] = 0  # that is this alert
-                corroborate(rating, ev, 2 if bad and r["blocked"] else 1)
-                if bad and r["blocked"]:
+                corroborate(rating, ev, 2 if bad and blocked else 1)
+                if bad and blocked:
                     repeated(rating, *await blocked_threat_history(src, "zenarmor"))
             label = threat if not r["app"] or r["app"] in threat else f"{r['app']}, {threat}"
+            state = "blocked" if blocked else "partly blocked" if partly else "NOT blocked"
             await raise_alert("zenarmor_threat", rating,
-                              f"Zenarmor{' blocked' if r['blocked'] else ''}: {src} → {r['target']} ({label[:60]})",
-                              f"zen:{src}:{r['target']}", src_ip=src, events={"source": "zenarmor", "ip": src}, count=r["hits"],
-                              blocked=r["blocked"] and "Zenarmor blocked it",
+                              f"Zenarmor{' blocked' if blocked else ''}: {src} → {r['target']} ({label[:60]})",
+                              fingerprint, src_ip=src, events={"source": "zenarmor", "ip": src}, count=r["hits"],
+                              blocked=blocked and "Zenarmor blocked it",
                               data={k: r[k] for k in ("app", "app_category", "web_category", "policy") if r[k]},
-                              description=f"Zenarmor flagged traffic from {src} to {r['target']} as '{threat}' "
-                                          f"({'blocked' if r['blocked'] else 'NOT blocked'})."
+                              description=f"Zenarmor flagged traffic from {src} to {r['target']} as '{threat}' ({state})."
                                           + (f" Details: {what}." if what else "")
                                           + (f" Blocked by Zenarmor policy {r['policy']} (Zenarmor › Policies) - change the "
-                                             "policy there if this traffic should be allowed." if r["blocked"] and r["policy"] else ""))
+                                             "policy there if this traffic should be allowed." if blocked and r["policy"] else ""))
         await self._commit("zenarmor", current)
 
     # --------------------------------------------------------- DNS rules ---
