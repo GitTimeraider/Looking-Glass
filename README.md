@@ -670,6 +670,9 @@ How UniFi and OPNsense data are combined:
   DHCP request → the name Unbound shows for the IP → the ARP table / Zenarmor (the host name Zenarmor learned, else the name of its entry under *Zenarmor › Devices*; an IP address or a bare OS / vendor label such as "Steam OS" is not used as a name). The placeholders dnsmasq (`*`) and the
   ARP table (`-`, `?`) use for "no name" are ignored. A device that still has no name sends none and has no Hosts
   entry: add one in OPNsense (host name + its MAC) or name it on the Devices page.
+  Every client Zenarmor sees is added, also those without a MAC address - **WireGuard peers** and networks routed
+  behind another router: they are listed under their IP ("no MAC"), named by Zenarmor, online when Zenarmor sees
+  their traffic. A device with a MAC that already has that IP is not listed twice.
 * **Unraid** – see above.
 * **Settings › Data & detection › Delete collected data** – wipe logs/events, alerts, graphs, reports, AI conversations
   and optionally the device list to start over. Settings, credentials, accounts/MFA, Unraid servers and the encryption

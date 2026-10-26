@@ -66,7 +66,7 @@ function render() {
   LG.table("#list", [
     {k: "online", l: "", f: v => `<span class="dot ${v ? "ok" : ""}" title="${v ? "online" : "offline"}"></span>`},
     {k: "hostname", l: "Name", f: (v, r) => `<b class="cell-clip" title="${LG.esc(v || "")}">${LG.esc(v || "–")}</b>${v && r.name_source ? ` <span class="small muted" title="${LG.esc(NAME_SRC[r.name_source] || r.name_source)}">${LG.esc(r.name_source === "manual" ? "✎" : r.name_source)}</span>` : ""}${r.notes ? `<div class="small muted cell-clip" title="${LG.esc(r.notes)}">${LG.esc(r.notes)}</div>` : ""}`},
-    {k: "ip", l: "IP / MAC", f: (v, r) => `${LG.ip(v)}<div class="muted">${LG.mac(r.mac)}</div>`},
+    {k: "ip", l: "IP / MAC", f: (v, r) => `${LG.ip(v)}<div class="muted">${r.mac.startsWith("ip:") ? "no MAC (VPN / routed)" : LG.mac(r.mac)}</div>`},
     {k: "vendor", l: "Vendor / interface", f: (v, r) => `${v ? `<span class="cell-clip" title="${LG.esc(v)}">${LG.esc(v)}</span>` : ""}${r.interface ? `<div class="small muted">${LG.esc(r.interface)}</div>` : ""}`},
     {k: "conn_where", l: "Connected to", f: (v, r) => v ? `<span class="cell-clip" title="${LG.esc(v)}">${LG.esc(v)}</span>${r.conn_signal ? `<div class="small muted">${r.conn_signal} dBm</div>` : ""}` : ""},
     {k: "lease_type", l: "Lease / seen via", f: (v, r) => `${LG.esc(v || "")}${r.lease_expires ? `<div class="small muted">${LG.esc(r.lease_expires)}</div>` : ""}<div>${(r.sources || []).map(s => `<span class="pill">${LG.esc(s)}</span>`).join("")}</div>`},

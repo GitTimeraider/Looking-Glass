@@ -435,3 +435,37 @@ def test_zenarmor_device_listener_names_devices_without_a_better_source():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_macless_zenarmor_clients_become_devices():
+    """WireGuard clients (no MAC) seen by Zenarmor are listed under their IP."""
+    from lookingglass import detections
+    from lookingglass.detections import track_devices, zenarmor_device_listener
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE devices, alerts")
+            detections._zen_seen.clear()
+            await track_devices([{"mac": "aa:00:00:00:00:01", "ip": "192.168.1.5"}], origin="arp")  # not the first run
+            # a WireGuard client, one with a MAC device already on that IP, an internet address
+            await zenarmor_device_listener([
+                {"source": "zenarmor", "src_ip": "10.10.0.2", "data": {"src_hostname": "pixel-jo", "interface": "wg1"}},
+                {"source": "zenarmor", "src_ip": "192.168.1.5", "data": {}},
+                {"source": "zenarmor", "src_ip": "203.0.113.5", "data": {}}])
+            # the ARP table never lists it: it keeps its state
+            await track_devices([{"mac": "aa:00:00:00:00:01", "ip": "192.168.1.5"}], origin="arp", mark_online=True)
+            d = {r["mac"]: dict(r) for r in await pool.fetch(
+                "SELECT mac, host(ip) ip, hostname, name_source, online, interface FROM devices")}
+            assert set(d) == {"aa:00:00:00:00:01", "ip:10.10.0.2"}
+            assert d["ip:10.10.0.2"] == {"mac": "ip:10.10.0.2", "ip": "10.10.0.2", "hostname": "pixel-jo",
+                                         "name_source": "zenarmor", "online": True, "interface": "wg1"}
+            assert [r["title"] for r in await pool.fetch("SELECT title FROM alerts WHERE rule = 'new_device'")] == \
+                ["New device on network: ip:10.10.0.2 (pixel-jo)"]
+            await pool.execute("TRUNCATE devices, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
