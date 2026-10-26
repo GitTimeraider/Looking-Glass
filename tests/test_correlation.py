@@ -586,3 +586,45 @@ def test_opnsense_interfaces_are_separate_and_absorb_their_entries():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_device_upkeep_offline_and_removal():
+    from lookingglass.detections import device_upkeep, track_devices
+    from lookingglass.web.app import create_app
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE devices, device_profile, device_hourly")
+            await track_devices([{"mac": m, "ip": f"192.168.1.{i}", "online": True} for i, m in enumerate(
+                ["aa:00:00:00:00:01", "aa:00:00:00:00:02", "aa:00:00:00:00:03", "aa:00:00:00:00:04", "aa:00:00:00:00:05",
+                 "ip:10.0.3.3", "ip:10.0.3.4", "if:igc1"], 1)], origin="arp")
+            old = "now() - interval '40 days'"
+            await pool.execute(f"UPDATE devices SET last_seen = {old} WHERE mac <> 'aa:00:00:00:00:05' AND mac <> 'ip:10.0.3.4'")
+            await pool.execute("UPDATE devices SET last_seen = now() - interval '30 minutes' WHERE mac = 'ip:10.0.3.4'")
+            await pool.execute("UPDATE devices SET trusted = true WHERE mac = 'aa:00:00:00:00:02'")
+            await pool.execute("UPDATE devices SET hostname = 'Mine', name_source = 'manual', name_rank = 100 WHERE mac = 'aa:00:00:00:00:03'")
+            await pool.execute("UPDATE devices SET notes = 'spare laptop' WHERE mac = 'aa:00:00:00:00:04'")
+            await pool.execute("INSERT INTO device_profile (key, kind, value) VALUES ('aa:00:00:00:00:01', 'port', '443')")
+            # 0 = never remove; quiet clients without a MAC go offline
+            assert await device_upkeep(0) == (2, 0)
+            online = {r["mac"]: r["online"] for r in await pool.fetch("SELECT mac, online FROM devices")}
+            assert not online["ip:10.0.3.3"] and not online["ip:10.0.3.4"] and online["aa:00:00:00:00:01"]
+            # 30 days: the unknown old ones go (also what was learned); trusted / named / notes / interfaces / recent stay
+            assert (await device_upkeep(30))[1] == 2
+            left = {r["mac"] for r in await pool.fetch("SELECT mac FROM devices")}
+            assert left == {"aa:00:00:00:00:02", "aa:00:00:00:00:03", "aa:00:00:00:00:04", "aa:00:00:00:00:05",
+                            "ip:10.0.3.4", "if:igc1"}
+            assert await pool.fetchval("SELECT count(*) FROM device_profile") == 0
+            # the Delete button
+            ep = next(r.endpoint for r in create_app(Settings(), None).routes
+                      if getattr(r, "path", "") == "/api/devices/{mac}" and "DELETE" in getattr(r, "methods", set()))
+            await ep("IP:10.0.3.4")
+            assert "ip:10.0.3.4" not in {r["mac"] for r in await pool.fetch("SELECT mac FROM devices")}
+            await pool.execute("TRUNCATE devices, device_profile, device_hourly")
+        finally:
+            await db.close()
+
+    asyncio.run(main())

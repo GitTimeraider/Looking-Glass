@@ -150,6 +150,7 @@ class Settings(BaseSettings):
     report_mail_to: str = ""
     geoip_db: str = "/data/GeoLite2-City.mmdb"
     retention_days: int = 30
+    device_remove_days: int = 0
     metrics_retention_days: int = 90
     detection_interval: int = 60
     unraid_container_grace: int = 10  # minutes

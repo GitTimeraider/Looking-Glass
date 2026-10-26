@@ -883,7 +883,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
 
     @app.delete("/api/devices/{mac}")
     async def delete_device(mac: str):
-        await db.pool().execute("DELETE FROM devices WHERE mac = $1", mac.lower())
+        """Remove a device and what was learned about it; if it shows up again it is a new device."""
+        from ..detections import delete_devices
+        await delete_devices([mac.lower()])
         return {"ok": True}
 
     # ------------------------------------------------------------- unraid ---

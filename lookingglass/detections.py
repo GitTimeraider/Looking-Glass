@@ -527,6 +527,41 @@ async def absorb_ip_devices(mac: str, ips: list[str], old_keys: list[str] | tupl
                           [ipless_key(ip) for ip in ips] + list(old_keys), mac)
 
 
+# a client without a MAC (WireGuard peer) is never in the ARP table: offline when Zenarmor has not seen it for this long
+# (it refreshes a known, named device at most every 10 minutes)
+IPLESS_OFFLINE_MINUTES = 20
+
+
+async def delete_devices(keys: list[str]) -> None:
+    """Remove devices and what was learned about them (a device that comes back starts as a new one)."""
+    if not keys:
+        return
+    async with db.pool().acquire() as con, con.transaction():
+        await con.execute("DELETE FROM device_profile WHERE key = ANY($1::text[])", keys)
+        await con.execute("DELETE FROM device_hourly WHERE key = ANY($1::text[])", keys)
+        await con.execute("DELETE FROM devices WHERE mac = ANY($1::text[])", keys)
+
+
+async def device_upkeep(remove_days: int) -> tuple[int, int]:
+    """Clients without a MAC that went quiet -> offline; with ``remove_days`` > 0, devices not seen for that long are
+    removed - except the ones you marked trusted, named yourself or wrote notes for, and OPNsense's own interfaces.
+    Returns (marked offline, removed)."""
+    pool = db.pool()
+    offline = await pool.execute(
+        "UPDATE devices SET online = false WHERE online AND mac LIKE 'ip:%' "
+        "AND last_seen < now() - make_interval(mins => $1)", IPLESS_OFFLINE_MINUTES)
+    removed: list[str] = []
+    if remove_days > 0:
+        removed = [r["mac"] for r in await pool.fetch(
+            "SELECT mac FROM devices WHERE last_seen < now() - make_interval(days => $1) AND NOT trusted "
+            "AND name_source IS DISTINCT FROM 'manual' AND coalesce(btrim(notes), '') = '' AND mac NOT LIKE 'if:%'",
+            remove_days)]
+        await delete_devices(removed)
+        if removed:
+            log.info("removed %d device(s) not seen for %d days", len(removed), remove_days)
+    return int(offline.split()[-1]), len(removed)
+
+
 def real_mac(value: Any) -> str | None:
     """A device's MAC address ("AA-BB-.." -> "aa:bb:.."), or None for a missing one and the placeholders a tunnel
     client (WireGuard) gets instead: 00:00:00:00:00:00, ff:ff:ff:ff:ff:ff, a multicast address, "-", "unknown"."""
