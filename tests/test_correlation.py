@@ -438,10 +438,10 @@ def test_zenarmor_device_listener_names_devices_without_a_better_source():
 
 
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
-def test_wireguard_peers_and_macless_zenarmor_clients_become_devices():
+def test_macless_zenarmor_clients_become_devices():
+    """WireGuard clients (no MAC) seen by Zenarmor are listed under their IP."""
     from lookingglass import detections
     from lookingglass.detections import track_devices, zenarmor_device_listener
-    from lookingglass.opnsense import wireguard_devices
 
     async def main():
         await db.connect(DSN)
@@ -450,30 +450,20 @@ def test_wireguard_peers_and_macless_zenarmor_clients_become_devices():
             await pool.execute("TRUNCATE devices, alerts")
             detections._zen_seen.clear()
             await track_devices([{"mac": "aa:00:00:00:00:01", "ip": "192.168.1.5"}], origin="arp")  # not the first run
-            await wireguard_devices([
-                {"type": "peer", "name": "Phone-Jo", "if": "wg1", "ifname": "WG_Home", "allowed-ips": "10.10.0.2/32",
-                 "peer-status": "online"},
-                {"type": "peer", "name": "Laptop", "if": "wg1", "allowed-ips": "10.10.0.3/32, fd00::3/128",
-                 "latest-handshake-age": 9000},
-                {"type": "peer", "name": "Office", "if": "wg1", "allowed-ips": "10.20.0.0/24"}])  # site-to-site: left out
-            # Zenarmor: a WireGuard client (no MAC), one with a MAC device already on that IP, an internet address
+            # a WireGuard client, one with a MAC device already on that IP, an internet address
             await zenarmor_device_listener([
-                {"source": "zenarmor", "src_ip": "10.10.0.2", "data": {"src_hostname": "pixel-jo"}},
-                {"source": "zenarmor", "src_ip": "10.10.0.9", "data": {"src_hostname": "tablet"}},
+                {"source": "zenarmor", "src_ip": "10.10.0.2", "data": {"src_hostname": "pixel-jo", "interface": "wg1"}},
                 {"source": "zenarmor", "src_ip": "192.168.1.5", "data": {}},
                 {"source": "zenarmor", "src_ip": "203.0.113.5", "data": {}}])
-            # the ARP table never lists them: they keep their state
+            # the ARP table never lists it: it keeps its state
             await track_devices([{"mac": "aa:00:00:00:00:01", "ip": "192.168.1.5"}], origin="arp", mark_online=True)
             d = {r["mac"]: dict(r) for r in await pool.fetch(
                 "SELECT mac, host(ip) ip, hostname, name_source, online, interface FROM devices")}
-            assert set(d) == {"aa:00:00:00:00:01", "ip:10.10.0.2", "ip:10.10.0.3", "ip:10.10.0.9"}
-            assert d["ip:10.10.0.2"]["hostname"] == "Phone-Jo" and d["ip:10.10.0.2"]["online"]  # your peer name wins
-            assert d["ip:10.10.0.2"]["interface"] == "WireGuard WG_Home"
-            assert d["ip:10.10.0.3"]["hostname"] == "Laptop" and not d["ip:10.10.0.3"]["online"]
-            assert d["ip:10.10.0.9"]["hostname"] == "tablet" and d["ip:10.10.0.9"]["name_source"] == "zenarmor"
-            # configured peers raise no "new device" alert; the unknown client from Zenarmor does
+            assert set(d) == {"aa:00:00:00:00:01", "ip:10.10.0.2"}
+            assert d["ip:10.10.0.2"] == {"mac": "ip:10.10.0.2", "ip": "10.10.0.2", "hostname": "pixel-jo",
+                                         "name_source": "zenarmor", "online": True, "interface": "wg1"}
             assert [r["title"] for r in await pool.fetch("SELECT title FROM alerts WHERE rule = 'new_device'")] == \
-                ["New device on network: ip:10.10.0.9 (tablet)"]
+                ["New device on network: ip:10.10.0.2 (pixel-jo)"]
             await pool.execute("TRUNCATE devices, alerts")
         finally:
             await db.close()

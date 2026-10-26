@@ -106,34 +106,6 @@ def _num(value: Any) -> float | None:
         return None
 
 
-async def wireguard_devices(peers: list[dict[str, Any]]) -> None:
-    """WireGuard peers have no MAC address (and no ARP / DHCP entry): each one with a single tunnel address
-    (allowed IPs 10.10.0.2/32) becomes a device keyed by that IP, named after the peer, online while its last
-    handshake is recent. Peers routing a whole network (site-to-site) are left out."""
-    from .detections import ipless_key, track_devices
-    devices, offline = [], []
-    for p in peers:
-        ip = None
-        for part in str(p.get("allowed-ips") or "").replace(" ", ",").split(","):
-            addr, _, bits = part.strip().partition("/")
-            if ip_or_none(addr) and (not bits or bits in ("32", "128")):
-                ip = ip_or_none(addr)
-                break
-        if not ip:
-            continue
-        status = p.get("peer-status") or ("online" if (p.get("latest-handshake-age") or 1e9) <= 300 else "offline")
-        key = ipless_key(ip)
-        devices.append({"mac": key, "ip": ip, "hostname": p.get("name") or None, "name_source": "wireguard",
-                        "vendor": "WireGuard peer", "interface": f"WireGuard {p.get('ifname') or p.get('if') or ''}".strip(),
-                        "online": status == "online"})
-        if status != "online":
-            offline.append(key)
-    if devices:
-        await track_devices(devices, origin="wireguard", alert_new=False)
-    if offline:
-        await db.pool().execute("UPDATE devices SET online = false WHERE mac = ANY($1::text[])", offline)
-
-
 class Poller:
     """Runs a set of periodic jobs against the OPNsense API."""
 
@@ -640,7 +612,6 @@ class Poller:
                     v = _num(p.get(k))
                     if v is not None:
                         rx_rows.append((f"wg_peer_{direction}_bytes", f"{p.get('if')}:{name}", v))
-            await wireguard_devices(peers)
             out["wireguard"]["online"] = sum(1 for p in peers if p.get("peer-status") == "online")
             await db.add_metrics(rx_rows + [("wg_peers_online", "", float(out["wireguard"]["online"]))])
         except ApiError as exc:
