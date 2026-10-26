@@ -19,6 +19,7 @@ import io
 import ipaddress
 import json
 import logging
+import socket
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -401,13 +402,18 @@ class Intel:
         if ips:
             conns = await pool.fetch(
                 f"SELECT host(src_ip) src, host(dst_ip) dst, max(dst_port) port, count(*) n, {ALLOWED_AGG} passed, "
-                f"{FW_BLOCKED_AGG} fw_blocked, {FW_RULE_AGG} fw_rule FROM events WHERE id > $1 AND id <= $2 "
+                f"{FW_BLOCKED_AGG} fw_blocked, {FW_RULE_AGG} fw_rule, array_agg(DISTINCT dst_port) ports, "
+                "bool_or(source = 'firewall' AND action = 'pass' AND direction = 'out') left_wan "
+                "FROM events WHERE id > $1 AND id <= $2 "
                 "AND source IN ('firewall', 'zenarmor', 'suricata') AND src_ip IS NOT NULL AND dst_ip IS NOT NULL "
                 "GROUP BY 1, 2", last, current)
+            redirect = await self._redirected(conns)
             for r in conns:
                 src, dst = r["src"], r["dst"]
                 how = verdict(r["passed"], r["fw_blocked"], r["fw_rule"])
                 if internal(src) and not internal(dst) and dst in ips and not allow_ip.match(dst, src):
+                    if redirect(r):
+                        continue  # only ports a NAT port forward sends to your own DNS / NTP server: never left
                     bad = {f: i for f, i in ips[dst].items() if not f.startswith("tor")}
                     feed, info = first(bad or ips[dst])
                     if not bad:
@@ -417,13 +423,18 @@ class Intel:
                                         "hides where traffic goes (privacy tools, but also malware and data theft)"
                                         + ("; the connection was ALLOWED" if r["passed"] else f"; the connection was {how}"),
                                         sticky=True)
+                        hint = ""
+                        if {p for p in r["ports"] if p is not None} <= {53, 123}:
+                            hint = (" Only DNS / NTP ports: if a NAT port forward sends those to your own resolver / "
+                                    "time server, give Looking Glass's API user the 'Firewall: NAT: Port Forward' "
+                                    "privilege (or tick 'Log' on the NAT rule) so it knows - then this is not raised.")
                         await raise_alert("tor", corroborate(rating, await evidence(src, "tor"), 1),
                                           f"{src} {'connects' if r['passed'] else 'tries to connect'} to the Tor network ({dst})"
                                           + ("" if r["passed"] else " - blocked"), f"tor:{src}", src_ip=src, dst_ip=dst,
                                           events={"ip": src}, count=r["n"], blocked=not r["passed"] and f"the connection was {how}",
                                           description=f"{src} contacted Tor relay {dst}: {how}. "
                                                       "Allowed on purpose? Settings › Threat intel & traps › Devices allowed "
-                                                      "to use Tor.")
+                                                      "to use Tor." + hint)
                         continue
                     rating = Rating("critical" if r["passed"] else "medium",
                                     f"{FEEDS[feed]['label']}: {info or 'malicious'}"
@@ -463,6 +474,25 @@ class Intel:
         await commit("intel", current)
 
     # ---------------------------------------------------- newly seen domains ---
+    async def _redirected(self, conns: list[Any]):
+        """A test for a group of connection events (src, dst, ports, left_wan): every port is one a NAT port forward
+        sends to a local server (DNS / NTP redirect), and the firewall never logged it leaving towards the internet.
+        Zenarmor sees packets before NAT and the firewall's pass log keeps the original destination, so a redirected
+        NTP query to a pool server that is also a Tor relay still shows that relay. Known redirects: the configured
+        port forwards (OPNsense API) or the redirect's own log lines ('rdr', NAT rule with logging on)."""
+        redirects = nat_redirects(await db.get_snapshot("nat_rules"))
+        seen: set[tuple[str, int]] = set()
+        if conns:
+            seen = {(str(x["src_ip"]), x["dst_port"]) for x in await db.pool().fetch(
+                "SELECT DISTINCT src_ip, dst_port FROM events WHERE source = 'firewall' AND action = 'rdr' "
+                "AND src_ip IS NOT NULL AND dst_port IS NOT NULL AND ts > now() - interval '1 hour'")}
+
+        def test(r: Any) -> bool:
+            ports = list(r["ports"] or [])
+            return bool(ports) and not r["left_wan"] and all(
+                p is not None and ((r["src"], p) in seen or any(lo <= p <= hi for lo, hi, _ in redirects)) for p in ports)
+        return test
+
     async def _new_domains(self, domains: dict[str, str]) -> None:
         pool = db.pool()
         rows = await pool.fetch(
@@ -639,27 +669,52 @@ def describe_rule(r: dict[str, Any]) -> str:
     return " ".join(p for p in parts if p).replace("  ", " ")
 
 
-def dns_redirects(rows: list[dict[str, Any]] | None) -> list[str]:
-    """Active port forwards that send DNS (port 53) to the firewall itself / another inside address - the usual
-    'force all devices through my resolver' NAT rule. One describe_rule() line per rule."""
+# port names OPNsense shows in rules (its well-known service names) for the ports worth redirecting
+PORT_NAMES = {"domain": 53, "dns": 53, "ntp": 123, "http": 80, "https": 443, "smtp": 25, "ssh": 22, "snmp": 161,
+              "syslog": 514, "dot": 853, "domain-s": 853}
+
+
+def _port(value: str) -> int | None:
+    value = value.strip().lower()
+    if value.isdigit():
+        return int(value)
+    if value in PORT_NAMES:
+        return PORT_NAMES[value]
+    try:
+        return socket.getservbyname(value)
+    except OSError:
+        return None  # an alias name: unknown ports
+
+
+def nat_redirects(rows: list[dict[str, Any]] | None) -> list[tuple[int, int, str]]:
+    """Active port forwards that send a port (range) to the firewall itself / another inside address - the usual
+    'force all devices through my resolver / time server' NAT rule: (first port, last port, describe_rule() line)."""
     out = []
     for r in rows or []:
         if not isinstance(r, dict) or str(r.get("enabled", "1")) in ("0", "false") \
                 or str(r.get("disabled", "0")) in ("1", "true") or str(r.get("nordr", "0")) in ("1", "true"):
             continue
         port = str(next((r[k] for k in ("destination_port", "destination.port", "dstport") if r.get(k) not in (None, "")), ""))
-        lo, _, hi = port.lower().replace(":", "-").partition("-")
-        if lo == "domain" or (lo.isdigit() and (int(lo) == 53 or hi.isdigit() and int(lo) <= 53 <= int(hi))):
-            target = str(r.get("target") or "").strip()
-            try:
-                addr = ipaddress.ip_address(target)
-                if not (addr.is_loopback or is_internal_ip(addr)):
-                    continue  # redirected to a DNS server on the internet: still past the own resolver
-            except ValueError:
-                if not target:
-                    continue  # an alias / interface address ("LAN address") counts as local
-            out.append(describe_rule(r))
+        lo, sep, hi = port.replace(":", "-").partition("-")
+        first = _port(lo) if lo else None
+        last = _port(hi) if sep else first
+        if first is None or last is None:
+            continue
+        target = str(r.get("target") or "").strip()
+        try:
+            addr = ipaddress.ip_address(target)
+            if not (addr.is_loopback or is_internal_ip(addr)):
+                continue  # redirected to a server on the internet: still leaves your network
+        except ValueError:
+            if not target:
+                continue  # an alias / interface address ("LAN address") counts as local
+        out.append((first, last, describe_rule(r)))
     return out
+
+
+def dns_redirects(rows: list[dict[str, Any]] | None) -> list[str]:
+    """Active port forwards that send DNS (port 53) to a local resolver. One describe_rule() line per rule."""
+    return [line for lo, hi, line in nat_redirects(rows) if lo <= 53 <= hi]
 
 
 def exposure_changes(prev: dict[str, str], cur: dict[str, str]) -> tuple[list[str], list[str], list[str]]:

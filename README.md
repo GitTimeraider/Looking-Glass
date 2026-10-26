@@ -77,6 +77,8 @@ login after failures, logins from the internet and logins from a new country. Al
 | Unusual upload | 1 GB+ sent to the internet in an hour and 5× more than the device's 7-day average (Zenarmor; T1048) |
 | Attack chain | ties alerts about one address together: outside *recon → attack → access*, or inside *threat sign → command & control → spreading* (plus "new device"); high or critical |
 
+*NAT redirects*: a port forward that sends DNS / NTP (or any port) to your own server, e.g. *VLAN_IoT TCP/UDP to !RFC1918 port domain ⇒ VLAN_IoT address*, answers those packets locally, but Zenarmor (it sees packets before NAT) and the firewall's pass log still show the original destination. DNS bypass, Tor and threat-feed alerts therefore skip traffic on redirected ports that the firewall never logged leaving towards the internet - e.g. an NTP query to a pool server that is also a Tor relay. Looking Glass knows the redirects from the API (privilege *Firewall: NAT: Port Forward*) or from the NAT rule's own log lines (tick *Log* on it).
+
 *DGA domains* are random-looking names such as `kq3v9x7w2m8p4z1r.com`, which malware generates by the thousands
 (Domain Generation Algorithm) to find its control server. Some CDNs and latency probes use random names too: list
 those under *Settings › Data & detection › DNS: domains to ignore* (subdomains included) and the DNS checks skip them.
