@@ -38,6 +38,7 @@ GROUPS = {
     "unifi": "UniFi",
     "email": "Email",
     "ai": "AI analyst",
+    "reports": "Reports",
     "zenarmor": "Zenarmor stream",
     "ingest": "Log ingestion & network",
     "data": "Data & detection",
@@ -115,8 +116,15 @@ FIELDS: list[Field] = [
     Field("ai_stream", "ai", "Stream answers", "bool", "Receive answers word by word. Keeps the connection busy, so "
           "gateways / proxies in front of the model (OpenRouter, LiteLLM, Cloudflare, nginx) don't cut long answers off "
           "with 504 Gateway Timeout. Switched off automatically if the endpoint can't stream."),
-    Field("ai_daily_report", "ai", "Daily AI report", "bool", "Write an AI-analysed 24h report every morning (Reports page)."),
-    Field("ai_daily_report_hour", "ai", "Daily report hour (local time)", "int", "", min=0, max=23),
+    # reports (the setting keys keep their old names: ai_daily_report*)
+    Field("ai_daily_report", "reports", "Scheduled report", "bool", "Write a report on a schedule (Reports page), with "
+          "the AI analysis when the AI analyst is set up."),
+    Field("report_every_days", "reports", "Every … days", "int", "1 = daily, 7 = weekly. The report covers that many "
+          "days.", min=1, max=31),
+    Field("ai_daily_report_hour", "reports", "Hour (local time)", "int", "When the report is written (Time zone under "
+          "Ingestion & network).", min=0, max=23),
+    Field("report_mail_to", "reports", "Email the report to", "list", "Mail addresses, one per line; uses the mail server "
+          "under Email & notifications. Empty = not mailed.", placeholder="you@example.com"),
     # Zenarmor
     Field("zenarmor_es_user", "zenarmor", "Stream username", "str", "Optional basic auth; must match Zenarmor's streaming username."),
     Field("zenarmor_es_password", "zenarmor", "Stream password", "secret", "Must match Zenarmor's streaming password."),
@@ -312,6 +320,12 @@ def _coerce(f: Field, value: Any) -> Any:
         from .intel import parse_sources
         try:
             parse_sources(v)
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: {exc}") from exc
+    if f.key == "report_mail_to" and v:
+        from .notify import recipients
+        try:
+            recipients(v)
         except ValueError as exc:
             raise SettingsError(f"{f.label}: {exc}") from exc
     if f.key == "opnsense_ca_pem" and v and "BEGIN CERTIFICATE" not in v:

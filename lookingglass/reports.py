@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
+from datetime import date
 from typing import Any
 
 from . import db
@@ -93,6 +95,58 @@ async def timeline(hours: float = 24, buckets: int = 48) -> dict[str, Any]:
         "SELECT to_timestamp(floor(extract(epoch FROM ts) / $2) * $2) AS bucket, count(*) n FROM events "
         "WHERE ts > now() - make_interval(secs => $1) AND action IN ('block', 'drop', 'ban') GROUP BY 1 ORDER BY 1", secs, step)
     return {"step": step, "series": db.records(rows), "blocked": db.records(blocked)}
+
+
+def report_due(last: str | None, today: date, every_days: int) -> bool:
+    """A scheduled report is due when the last one ("YYYY-MM-DD", local date) is ``every_days`` or more days ago."""
+    if not last:
+        return True
+    try:
+        return (today - date.fromisoformat(last)).days >= max(1, every_days)
+    except ValueError:
+        return True
+
+
+SEVERITY_COLOURS = {"critical": "#a21caf", "high": "#b91c1c", "medium": "#b45309", "low": "#0e7490", "info": "#475569"}
+
+
+async def report_mail(report_id: int, link: str = "") -> tuple[str, str, str] | None:
+    """(subject, text, html) of a stored report: alerts per severity, the most important alerts, the AI analysis and a
+    link to the report page."""
+    row = await db.pool().fetchrow("SELECT title, period_h, data, ai_summary, ai_state, ai_error FROM reports WHERE id = $1",
+                                   report_id)
+    if not row:
+        return None
+    data = row["data"] or {}
+    url = f"{link.rstrip('/')}/reports/{report_id}" if link else ""
+    by_sev = {r["severity"]: r["n"] for r in data.get("alerts_by_severity") or []}
+    counts = ", ".join(f"{n} {sev}" for sev, n in by_sev.items()) or "no alerts"
+    top = [a for a in data.get("alerts") or [] if a.get("severity") in ("critical", "high", "medium")][:10]
+    blocked = sum(r.get("n", 0) for r in data.get("firewall_actions") or [] if r.get("action") == "block")
+    days = row["period_h"] / 24
+    period = f"last {days:g} day{'s' if days != 1 else ''}"
+    ai = row["ai_summary"] or ""
+    ai_note = "" if ai else ("The AI analysis failed: " + (row["ai_error"] or "unknown error") if row["ai_state"] == "failed"
+                             else "No AI analysis (AI analyst not set up).")
+    subject = f"[Looking Glass] {row['title']}: {counts}"[:200]
+    text = (f"{row['title']} ({period})\n\nAlerts: {counts}\nFirewall blocks: {blocked}\n"
+            + ("".join(f"\n[{a['severity'].upper()}] {a['title']}" for a in top) + "\n" if top else "")
+            + (f"\n{ai}\n" if ai else f"\n{ai_note}\n")
+            + (f"\nFull report: {url}\n" if url else "")
+            + "\nChange or stop these mails: Looking Glass › Settings › Reports.\n")
+    rows = "".join(
+        f'<tr><td style="padding:4px 8px;vertical-align:top"><span style="background:{SEVERITY_COLOURS[a["severity"]]};'
+        f'color:#fff;border-radius:9px;padding:1px 8px;font-size:12px;font-weight:600">{a["severity"].upper()}</span></td>'
+        f'<td style="padding:4px 8px">{html.escape(a["title"])}</td></tr>' for a in top)
+    body = (f'<div style="font-family:system-ui,Segoe UI,sans-serif;font-size:14px"><h2 style="margin:0 0 4px">'
+            f'{html.escape(row["title"])}</h2><p style="color:#555;margin:0 0 12px">{period}</p>'
+            f'<p>Alerts: <b>{html.escape(counts)}</b> · Firewall blocks: <b>{blocked}</b></p>'
+            + (f'<table style="border-collapse:collapse">{rows}</table>' if rows else "")
+            + (f'<h3>AI analysis</h3><div style="white-space:pre-wrap">{html.escape(ai)}</div>' if ai
+               else f'<p style="color:#555">{html.escape(ai_note)}</p>')
+            + (f'<p><a href="{html.escape(url)}">Full report</a></p>' if url else "")
+            + '<p style="color:#777;font-size:12px">Change or stop these mails: Looking Glass › Settings › Reports.</p></div>')
+    return subject, text, body
 
 
 async def run_ai_summary(analyst, report_id: int) -> None:

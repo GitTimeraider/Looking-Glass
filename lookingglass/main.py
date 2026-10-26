@@ -17,7 +17,7 @@ from .detections import DetectionEngine, dhcp_listener, zenarmor_device_listener
 from .enrich import Enricher
 from .ingest import EventWriter, SyslogServer
 from .opnsense import Poller
-from .reports import build_report, run_ai_summary
+from .reports import build_report, report_due, report_mail, run_ai_summary
 from .unifi import UnifiPoller
 from .unraid import UnraidManager
 from .web.app import create_app
@@ -101,6 +101,8 @@ async def unifi_supervisor(settings, writer: EventWriter) -> None:
 
 
 async def daily_ai_report(settings, analyst: Analyst) -> None:
+    """The scheduled report: every ``report_every_days`` days at the set hour, covering those days; mailed when
+    recipients are set."""
     while True:
         await asyncio.sleep(300)
         if not settings.ai_daily_report:
@@ -113,19 +115,29 @@ async def daily_ai_report(settings, analyst: Analyst) -> None:
         if now.hour != settings.ai_daily_report_hour:
             continue
         key = now.strftime("%Y-%m-%d")
-        if await db.kv_get("daily_report") == key:
+        every = max(1, settings.report_every_days)
+        if not report_due(await db.kv_get("daily_report"), now.date(), every):
             continue
         await db.kv_set("daily_report", key)
+        title = f"Daily security report {key}" if every == 1 else f"Security report {key} ({every} days)"
         try:
-            data = await build_report(24)
-            rid = await db.pool().fetchval("INSERT INTO reports (period_h, title, data) VALUES (24, $1, $2) RETURNING id",
-                                           f"Daily security report {key}", data)
+            data = await build_report(24 * every)
+            rid = await db.pool().fetchval("INSERT INTO reports (period_h, title, data) VALUES ($1, $2, $3) RETURNING id",
+                                           24 * every, title, data)
             if settings.ai_enabled:
-                request_log.info("daily report %s: starting the AI analysis", key)
+                request_log.info("scheduled report %s: starting the AI analysis", key)
                 await run_ai_summary(analyst, rid)  # a failure is stored with the report (Retry on its page)
-            log.info("daily report %s created", key)
+            log.info("scheduled report %s created", key)
         except Exception:  # noqa: BLE001
-            log.exception("daily report failed")
+            log.exception("scheduled report failed")
+            continue
+        if settings.report_mail_to and settings.smtp_enabled:
+            try:
+                subject, text, body = await report_mail(rid, settings.mail_link_url or settings.public_url)
+                await notify.send(settings, notify.recipients(settings.report_mail_to), subject, text, body)
+                log.info("scheduled report %s mailed", key)
+            except Exception:  # noqa: BLE001
+                log.exception("mailing the scheduled report failed")
 
 
 async def run_wizard(settings, need_db: bool, need_admin: bool, stop: asyncio.Event) -> bool:
