@@ -95,7 +95,10 @@ class Behavior:
         return Matcher(self.s.behavior_exclude)
 
     async def ip_to_mac(self) -> dict[str, dict[str, Any]]:
-        rows = await db.pool().fetch("SELECT host(ip) ip, mac, vendor, hostname FROM devices WHERE ip IS NOT NULL")
+        # every address of a device (OPNsense: a port and its VLANs); a device with a MAC wins over an ip: entry
+        rows = await db.pool().fetch(
+            "SELECT host(x) ip, mac, vendor, hostname FROM devices, unnest(coalesce(ips, '{}'::inet[]) || ip) x "
+            "WHERE x IS NOT NULL ORDER BY mac NOT LIKE 'ip:%', last_seen")
         return {r["ip"]: dict(r) for r in rows}
 
     @staticmethod

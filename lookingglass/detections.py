@@ -87,8 +87,8 @@ async def device_info(ip: str | None) -> dict[str, Any] | None:
         return None
     try:
         row = await db.pool().fetchrow(
-            "SELECT mac, hostname, vendor, notes, conn_type, conn_where, conn_signal FROM devices WHERE ip = $1::inet "
-            "ORDER BY last_seen DESC LIMIT 1", ip)
+            "SELECT mac, hostname, vendor, notes, conn_type, conn_where, conn_signal FROM devices "
+            "WHERE ip = $1::inet OR $1::inet = ANY(ips) ORDER BY mac LIKE 'ip:%', last_seen DESC LIMIT 1", ip)
     except Exception:  # noqa: BLE001 - invalid ip text etc.
         return None
     if not row:
@@ -443,10 +443,10 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
         source = (d.get("name_source") or origin) if d["hostname"] else None
         new = await pool.fetchval(
             "INSERT INTO devices (mac, ip, hostname, vendor, interface, sources, lease_type, lease_expires, online, "
-            "name_source, name_rank, conn_type, conn_where, conn_signal, conn_seen) "
+            "name_source, name_rank, conn_type, conn_where, conn_signal, conn_seen, ips) "
             "VALUES ($1, $2, $3, $4, $5, ARRAY[$6::text], $7, $8, $9, $10, $11, $12, $13, $14, "
-            "CASE WHEN $12::text IS NOT NULL THEN now() END) "
-            "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(EXCLUDED.ip, devices.ip), "
+            "CASE WHEN $12::text IS NOT NULL THEN now() END, $15::inet[]) "
+            "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(EXCLUDED.ip, devices.ip), ips = COALESCE(EXCLUDED.ips, devices.ips), "
             "hostname = CASE WHEN EXCLUDED.hostname IS NOT NULL AND EXCLUDED.name_rank >= devices.name_rank "
             "THEN EXCLUDED.hostname ELSE devices.hostname END, "
             "name_source = CASE WHEN EXCLUDED.hostname IS NOT NULL AND EXCLUDED.name_rank >= devices.name_rank "
@@ -464,7 +464,8 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
             "online = devices.online OR EXCLUDED.online, last_seen = now() "
             "RETURNING (xmax = 0)", d["mac"], d.get("ip"), d.get("hostname") or None, d.get("vendor") or None,
             d.get("interface") or None, origin, d.get("lease_type"), d.get("lease_expires"), bool(d.get("online")),
-            source, name_rank(source) if source else 0, d.get("conn_type"), d.get("conn_where"), d.get("conn_signal"))
+            source, name_rank(source) if source else 0, d.get("conn_type"), d.get("conn_where"), d.get("conn_signal"),
+            d.get("ips"))
         if new and not first_run:
             ipless = d["mac"].startswith("ip:")
             await raise_alert(
@@ -499,6 +500,28 @@ def zen_device_name(d: dict[str, Any], ip: Any) -> str | None:
         except ValueError:
             return name
     return None
+
+
+async def absorb_ip_devices(mac: str, ips: list[str]) -> None:
+    """``ips`` belong to the device ``mac`` (OPNsense's interfaces): entries listed under one of them (``ip:`` keys from
+    Zenarmor) are merged into it - their learned behaviour (profile, hourly features) moves along - and removed."""
+    keys = [k for ip in ips for k in (ipless_key(ip), ip)]
+    if not keys:
+        return
+    async with db.pool().acquire() as con, con.transaction():
+        await con.execute(
+            "INSERT INTO device_profile (key, kind, value, first_seen, last_seen, hits) "
+            "SELECT $1, kind, value, min(first_seen), max(last_seen), sum(hits) FROM device_profile "
+            "WHERE key = ANY($2::text[]) GROUP BY kind, value "
+            "ON CONFLICT (key, kind, value) DO UPDATE SET first_seen = LEAST(device_profile.first_seen, EXCLUDED.first_seen), "
+            "last_seen = GREATEST(device_profile.last_seen, EXCLUDED.last_seen), hits = device_profile.hits + EXCLUDED.hits",
+            mac, keys)
+        await con.execute("DELETE FROM device_profile WHERE key = ANY($1::text[])", keys)
+        await con.execute(
+            "INSERT INTO device_hourly (key, hour, ip, features) SELECT DISTINCT ON (hour) $1, hour, ip, features "
+            "FROM device_hourly WHERE key = ANY($2::text[]) ORDER BY hour ON CONFLICT (key, hour) DO NOTHING", mac, keys)
+        await con.execute("DELETE FROM device_hourly WHERE key = ANY($1::text[])", keys)
+        await con.execute("DELETE FROM devices WHERE mac = ANY($1::text[])", [ipless_key(ip) for ip in ips])
 
 
 def real_mac(value: Any) -> str | None:
@@ -543,8 +566,9 @@ async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
         taken = {r["ip"] for r in await db.pool().fetch(
             # a device with a MAC known from ARP / DHCP / UniFi; one only Zenarmor reported may be a tunnel client
             # merged under a bogus MAC by an older version
-            "SELECT DISTINCT host(ip) ip FROM devices WHERE ip = ANY($1::inet[]) AND mac NOT LIKE 'ip:%' "
-            "AND NOT (sources <@ ARRAY['zenarmor'])", ipless)}
+            # OPNsense's own interfaces (all their addresses) too: traffic the firewall sends itself
+            "SELECT DISTINCT host(x) ip FROM devices, unnest(coalesce(ips, '{}'::inet[]) || ip) x "
+            "WHERE x = ANY($1::inet[]) AND mac NOT LIKE 'ip:%' AND NOT (sources <@ ARRAY['zenarmor'])", ipless)}
         found = {k: v for k, v in found.items() if not (k.startswith("ip:") and str(v["ip"]) in taken)}
     for mac, dev in found.items():
         _zen_seen[mac] = (now, bool(dev["hostname"]))
