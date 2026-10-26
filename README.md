@@ -697,7 +697,7 @@ How UniFi and OPNsense data are combined:
 **In the web UI (Settings, stored in the database, secrets encrypted, applied live):** OPNsense URL / API key /
 secret / TLS verification / custom CA / poll interval / per-source pulls · UniFi URL / API key / username / password /
 site / TLS verification / poll interval / events · AI base URL / API key / model / limits /
-daily report · Zenarmor stream username / password / allowed senders · syslog allowed senders, extra internal
+scheduled report (every N days, hour, mail recipients) · Zenarmor stream username / password / allowed senders · syslog allowed senders, extra internal
 networks, time zone · retention, detection interval, GeoIP path · Unraid servers (URL, API key, Docker API).
 
 **In the setup wizard (first start, stored encrypted in `/data/database.conf`):** database host / port / name /
