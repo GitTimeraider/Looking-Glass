@@ -199,7 +199,7 @@ function dockerView(d) {
   const ctrs = (D("docker") || []).map(c => { const name = (c.names || [])[0]?.replace(/^\//, "") || ""; return { ...c, name, st: sByName[name] }; });
   document.getElementById("dk-kpis").innerHTML = k("Containers", ctrs.length) + k("Running", ctrs.filter(c => c.state === "RUNNING").length, "ok") +
     k("Stopped", ctrs.filter(c => c.state !== "RUNNING").length, ctrs.some(c => c.state === "EXITED" && c.autoStart) ? "bad" : "") +
-    (stats.length ? k("Total CPU %", stats.reduce((a, s) => a + s.cpu_pct, 0).toFixed(1)) + k("Total memory", LG.bytes(stats.reduce((a, s) => a + s.mem_bytes, 0))) : "");
+    (stats.length ? k("CPU used by containers", stats.reduce((a, s) => a + s.cpu_pct, 0).toFixed(1) + "%") + k("Total memory", LG.bytes(stats.reduce((a, s) => a + s.mem_bytes, 0))) : "");
   const dsec = (st.sections || {}).docker_stats, dapi = (st.sections || {}).docker_api;
   document.getElementById("dk-note").innerHTML = [dapi && !dapi.ok ? `${LG.esc(dapi.error)} – using the Unraid API instead.` : "",
     dsec && !dsec.ok ? `CPU / memory per container unavailable: ${LG.esc(dsec.error || "")}. It needs Unraid API 4.29 or newer (Unraid 7.2+ or the Unraid Connect plugin), or a working Docker API endpoint under Settings › Unraid servers.` : ""].filter(Boolean).join("<br>");
@@ -209,7 +209,7 @@ function dockerView(d) {
     {k: "state", l: "State", s: true, f: (v, r) => `<span class="state-${LG.esc(v)}">${LG.esc(v)}</span> <span class="small muted">${LG.esc(r.status)}</span>`},
     {k: "autoStart", l: "Autostart", f: v => v ? "yes" : ""},
     {k: "ports", l: "Ports", f: v => (v || []).filter(p => p.publicPort).map(p => `<span class="pill">${p.publicPort}→${p.privatePort}/${LG.esc(p.type || "").toLowerCase()}</span>`).join("")},
-    {k: "st", l: "CPU", num: true, s: r => r.st ? r.st.cpu_pct : null, f: v => v ? v.cpu_pct.toFixed(1) + "%" : ""},
+    {k: "st", l: "CPU", num: true, s: r => r.st ? r.st.cpu_pct : null, f: v => v ? `<span title="Share of the whole CPU (all threads)">${v.cpu_pct.toFixed(v.cpu_pct < 10 ? 2 : 1)}%</span>` : ""},
     {k: "st", l: "Memory", num: true, s: r => r.st ? r.st.mem_bytes : null, f: v => v ? LG.bytes(v.mem_bytes) + (v.mem_pct ? `<span class="small muted"> ${v.mem_pct.toFixed(1)}%</span>` : "") : ""},
     {k: "name", l: "", f: v => `<a href="#" data-logs="${LG.esc(v)}">logs</a>`},
     {k: "webUiUrl", l: "", f: v => v ? `<a href="${LG.esc(v)}" target="_blank" rel="noopener">web UI</a>` : ""}], ctrs, "No container data");
