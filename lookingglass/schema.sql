@@ -141,6 +141,9 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_seen TIMESTAMPTZ;
 -- dnsmasq writes "*" and the ARP table "-" / "?" when a device has no name: these are no names
 UPDATE devices SET hostname = NULL, name_source = NULL, name_rank = 0
  WHERE hostname IS NOT NULL AND name_rank < 100 AND lower(btrim(hostname)) IN ('', '*', '-', '?', 'unknown', '<unknown>', '(unknown)');
+-- tunnel clients (WireGuard) that Zenarmor reported with a placeholder MAC were merged into one bogus device; they
+-- are listed under their IP now (ip: keys)
+DELETE FROM devices WHERE mac IN ('00:00:00:00:00:00', 'ff:ff:ff:ff:ff:ff');
 -- Zenarmor reports the IP as host name when it knows none: no name either
 UPDATE devices SET hostname = NULL, name_source = NULL, name_rank = 0
  WHERE name_source = 'zenarmor' AND hostname ~ '^[0-9.]+$|^[0-9a-fA-F:]*:[0-9a-fA-F:]*$';

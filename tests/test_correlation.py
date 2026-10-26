@@ -450,22 +450,37 @@ def test_macless_zenarmor_clients_become_devices():
             await pool.execute("TRUNCATE devices, alerts")
             detections._zen_seen.clear()
             await track_devices([{"mac": "aa:00:00:00:00:01", "ip": "192.168.1.5"}], origin="arp")  # not the first run
-            # a WireGuard client, one with a MAC device already on that IP, an internet address
+            # WireGuard clients (no MAC, or a placeholder one), one with a MAC device already on that IP, an internet address
             await zenarmor_device_listener([
                 {"source": "zenarmor", "src_ip": "10.10.0.2", "data": {"src_hostname": "pixel-jo", "interface": "wg1"}},
+                {"source": "zenarmor", "src_ip": "10.0.3.3", "data": {"src_hwaddr": "00:00:00:00:00:00",
+                                                                      "device": {"name": "Wireguard Phone"}}},
+                {"source": "zenarmor", "src_ip": "10.0.3.4", "data": {"src_hwaddr": "-", "src_hostname": "tablet"}},
+                # the firewall's own interface MAC on a WireGuard interface: still no client MAC
+                {"source": "zenarmor", "src_ip": "10.0.3.5", "data": {"src_hwaddr": "a8:b8:e0:01:02:03", "interface": "wg0",
+                                                                      "src_hostname": "laptop"}},
                 {"source": "zenarmor", "src_ip": "192.168.1.5", "data": {}},
                 {"source": "zenarmor", "src_ip": "203.0.113.5", "data": {}}])
             # the ARP table never lists it: it keeps its state
             await track_devices([{"mac": "aa:00:00:00:00:01", "ip": "192.168.1.5"}], origin="arp", mark_online=True)
             d = {r["mac"]: dict(r) for r in await pool.fetch(
                 "SELECT mac, host(ip) ip, hostname, name_source, online, interface FROM devices")}
-            assert set(d) == {"aa:00:00:00:00:01", "ip:10.10.0.2"}
+            assert set(d) == {"aa:00:00:00:00:01", "ip:10.10.0.2", "ip:10.0.3.3", "ip:10.0.3.4", "ip:10.0.3.5"}
+            assert d["ip:10.0.3.3"]["hostname"] == "Wireguard Phone" and d["ip:10.0.3.4"]["hostname"] == "tablet"
             assert d["ip:10.10.0.2"] == {"mac": "ip:10.10.0.2", "ip": "10.10.0.2", "hostname": "pixel-jo",
                                          "name_source": "zenarmor", "online": True, "interface": "wg1"}
-            assert [r["title"] for r in await pool.fetch("SELECT title FROM alerts WHERE rule = 'new_device'")] == \
-                ["New device on network: ip:10.10.0.2 (pixel-jo)"]
+            assert "New device on network: ip:10.10.0.2 (pixel-jo)" in \
+                [r["title"] for r in await pool.fetch("SELECT title FROM alerts WHERE rule = 'new_device'")]
             await pool.execute("TRUNCATE devices, alerts")
         finally:
             await db.close()
 
     asyncio.run(main())
+
+
+def test_real_mac_skips_placeholders():
+    from lookingglass.detections import real_mac
+
+    assert real_mac("E8-9C-25-6E-46-D1") == "e8:9c:25:6e:46:d1"
+    for bad in (None, "", "-", "unknown", "00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff", "01:00:5e:00:00:01", "e8:9c:25"):
+        assert real_mac(bad) is None
