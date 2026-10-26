@@ -198,6 +198,7 @@ class UnraidServerPoller:
         self.seen_notifications: set[str] = set()
         self.log_cursors: dict[str, str] = {}
         self.syslog_line = 0
+        self.threads = 0  # CPU threads of the server: container CPU % is shown as a share of all of them
         self.last_run: dict[str, float] = {}
         self.awake_history: list[bool] = []  # "every sleep-capable disk spins" for the last array readings
         self.api_version: str | None = None
@@ -293,6 +294,9 @@ class UnraidServerPoller:
             boot = parse_iso(up) if isinstance(up, str) else None
             self.boot_at = boot.timestamp() if boot and boot.timestamp() <= time.time() + 300 else None
             self.api_version = (((d.get("info") or {}).get("versions") or {}).get("core") or {}).get("api")
+            threads = _num(((d.get("info") or {}).get("cpu") or {}).get("threads"))
+            if threads and not self.threads:
+                self.threads = int(threads)
 
     async def poll_misc(self) -> None:
         for key in ("vms", "shares"):
@@ -375,6 +379,8 @@ class UnraidServerPoller:
         cpu, mem = m.get("cpu") or {}, m.get("memory") or {}
         if _num(cpu.get("percentTotal")) is not None:
             rows.append(("unraid_cpu_pct", sid, round(_num(cpu["percentTotal"]), 2)))
+        if cpu.get("cpus"):
+            self.threads = len(cpu["cpus"])  # one entry per thread
         for i, c in enumerate(cpu.get("cpus") or []):
             if _num(c.get("percentTotal")) is not None:
                 rows.append(("unraid_core_pct", f"{sid}:{i}", round(_num(c["percentTotal"]), 2)))
@@ -725,8 +731,9 @@ class UnraidServerPoller:
             cpu, pre = s.get("cpu_stats") or {}, s.get("precpu_stats") or {}
             cpu_delta = (cpu.get("cpu_usage") or {}).get("total_usage", 0) - (pre.get("cpu_usage") or {}).get("total_usage", 0)
             sys_delta = (cpu.get("system_cpu_usage") or 0) - (pre.get("system_cpu_usage") or 0)
-            ncpu = cpu.get("online_cpus") or len((cpu.get("cpu_usage") or {}).get("percpu_usage") or []) or 1
-            cpu_pct = cpu_delta / sys_delta * ncpu * 100 if sys_delta > 0 and cpu_delta >= 0 else 0.0
+            # share of the whole CPU (system_cpu_usage counts all threads): 100 % = every thread busy, so the
+            # containers add up to at most 100 % like the server's own CPU graph (docker stats: 100 % = one thread)
+            cpu_pct = cpu_delta / sys_delta * 100 if sys_delta > 0 and cpu_delta >= 0 else 0.0
             mem = s.get("memory_stats") or {}
             mem_used = (mem.get("usage") or 0) - ((mem.get("stats") or {}).get("inactive_file") or (mem.get("stats") or {}).get("cache") or 0)
             nets = s.get("networks") or {}
@@ -773,6 +780,8 @@ class UnraidServerPoller:
         except (OSError, asyncio.TimeoutError, websockets.WebSocketException) as exc:
             self.status["sections"]["docker_stats"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
             return
+        # the API reports docker stats' CPU % (100 % = one thread): as a share of the whole CPU like the server's graph
+        threads = self.threads or 1
         stats = []
         for cid, c in running.items():
             samples = seen.get(cid)
@@ -782,7 +791,7 @@ class UnraidServerPoller:
             net_rx, net_tx = _io_pair(st.get("netIO"))
             blk_r, blk_w = _io_pair(st.get("blockIO"))
             stats.append({"name": (c.get("names") or ["?"])[0].lstrip("/"), "image": c.get("image"), "state": c.get("state"),
-                          "status": c.get("status"), "cpu_pct": round(_num(st.get("cpuPercent")) or 0.0, 2),
+                          "status": c.get("status"), "cpu_pct": round((_num(st.get("cpuPercent")) or 0.0) / threads, 2),
                           "mem_bytes": _size(str(st.get("memUsage") or "").split("/")[0]) or 0,
                           "mem_limit": _size((str(st.get("memUsage") or "").split("/") + [""])[1]),
                           "mem_pct": round(_num(st.get("memPercent")) or 0.0, 2),
