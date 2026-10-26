@@ -667,7 +667,7 @@ How UniFi and OPNsense data are combined:
   trusted, rename them, add notes.
   Names come from, best first: a name you typed (never replaced; clear it to go back to automatic) → a dnsmasq
   *Hosts* entry for the MAC or IP (*Services > Dnsmasq DNS & DHCP > Hosts*) → the host name the device sent with its
-  DHCP request → the name Unbound shows for the IP → the ARP table / Zenarmor. The placeholders dnsmasq (`*`) and the
+  DHCP request → the name Unbound shows for the IP → the ARP table / Zenarmor (the host name Zenarmor learned, else the name of its entry under *Zenarmor › Devices*; an IP address or a bare OS / vendor label such as "Steam OS" is not used as a name). The placeholders dnsmasq (`*`) and the
   ARP table (`-`, `?`) use for "no name" are ignored. A device that still has no name sends none and has no Hosts
   entry: add one in OPNsense (host name + its MAC) or name it on the Devices page.
 * **Unraid** – see above.
