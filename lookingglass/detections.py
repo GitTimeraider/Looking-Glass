@@ -74,7 +74,7 @@ INTERNAL_CHAIN = [("Threat sign", {"threat_intel_outbound", "zenarmor_threat", "
                                          "large_upload", "canary", "arp_spoofing", "volume_spike"})]
 
 # a name from a better source replaces one from a worse source, never the other way round
-NAME_RANK = {"manual": 100, "unifi-alias": 70, "dnsmasq-static": 60, "unifi": 45, "dhcp": 50, "dns": 30, "zenarmor": 25, "arp": 20}
+NAME_RANK = {"manual": 100, "unifi-alias": 70, "dnsmasq-static": 60, "wireguard": 60, "unifi": 45, "dhcp": 50, "dns": 30, "zenarmor": 25, "arp": 20}
 
 
 def name_rank(source: str) -> int:
@@ -419,14 +419,23 @@ def registered_domain(domain: str) -> str:
     return ".".join(parts[-2:])
 
 
-async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online: bool = False) -> None:
+def ipless_key(ip: Any) -> str:
+    """Device key for a client without a MAC address (WireGuard peer, a routed network behind another router)."""
+    return f"ip:{ip}"
+
+
+async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online: bool = False,
+                        alert_new: bool = True) -> None:
     """Upsert devices (from ARP, DHCP leases or DHCP logs) and alert on MAC addresses never seen before.
 
-    ``mark_online``: the list is a complete snapshot of present devices (ARP table) -> others become offline.
+    ``mark_online``: the list is a complete snapshot of present devices (ARP table) -> others become offline; devices
+    without a MAC (``ip:`` keys) are never in the ARP table and keep their state.
+    ``alert_new``: False for devices you configured yourself (WireGuard peers) - no "new device" alert.
     """
     pool = db.pool()
     if mark_online:
-        await pool.execute("UPDATE devices SET online = false WHERE online AND NOT (mac = ANY($1::text[]))",
+        await pool.execute("UPDATE devices SET online = false WHERE online AND NOT (mac = ANY($1::text[])) "
+                           "AND mac NOT LIKE 'ip:%'",
                            [d["mac"] for d in devices])
     if not devices:
         return
@@ -458,7 +467,7 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
             "RETURNING (xmax = 0)", d["mac"], d.get("ip"), d.get("hostname") or None, d.get("vendor") or None,
             d.get("interface") or None, origin, d.get("lease_type"), d.get("lease_expires"), bool(d.get("online")),
             source, name_rank(source) if source else 0, d.get("conn_type"), d.get("conn_where"), d.get("conn_signal"))
-        if new and not first_run:
+        if new and not first_run and alert_new:
             await raise_alert(
                 "new_device", Rating("low", "an unknown MAC address appeared - usually a new phone, guest or randomised "
                                             "Wi-Fi address; mark it trusted on the Devices page when you know it", sticky=True),
@@ -492,7 +501,8 @@ def zen_device_name(d: dict[str, Any], ip: Any) -> str | None:
 
 async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
     """Zenarmor records carry the client MAC, hostname and a device fingerprint (name/vendor/OS). A MAC is looked at
-    again after 10 minutes - right away while no record of it carried a name yet."""
+    again after 10 minutes - right away while no record of it carried a name yet. A client without a MAC (WireGuard
+    peer, routed network) is kept under its IP (``ip:`` key), unless a device with a MAC already has that IP."""
     now = time.time()
     found: dict[str, dict[str, Any]] = {}
     for e in events:
@@ -500,7 +510,11 @@ async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
         if not isinstance(d, dict):
             continue
         mac = str(d.get("src_hwaddr") or "").lower()
-        if len(mac) != 17 or (mac in found and found[mac]["hostname"]):
+        if len(mac) != 17:
+            if mac or not e.get("src_ip") or not is_internal_ip(e["src_ip"]):
+                continue
+            mac = ipless_key(e["src_ip"])
+        if mac in found and found[mac]["hostname"]:
             continue
         name = zen_device_name(d, e.get("src_ip"))
         when, named = _zen_seen.get(mac, (0, False))
@@ -510,6 +524,11 @@ async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
         vendor = " / ".join(x for x in (dev.get("vendor"), dev.get("os")) if x) or None
         found[mac] = {"mac": mac, "ip": e.get("src_ip"), "hostname": name, "vendor": vendor,
                       "interface": d.get("interface"), "online": True}
+    ipless = [str(dev["ip"]) for key, dev in found.items() if key.startswith("ip:")]
+    if ipless:
+        taken = {r["ip"] for r in await db.pool().fetch(
+            "SELECT DISTINCT host(ip) ip FROM devices WHERE ip = ANY($1::inet[]) AND mac NOT LIKE 'ip:%'", ipless)}
+        found = {k: v for k, v in found.items() if not (k.startswith("ip:") and str(v["ip"]) in taken)}
     for mac, dev in found.items():
         _zen_seen[mac] = (now, bool(dev["hostname"]))
     await track_devices(list(found.values()), origin="zenarmor")

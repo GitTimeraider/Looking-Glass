@@ -662,7 +662,7 @@ How UniFi and OPNsense data are combined:
 * **UniFi network › Wi-Fi & clients** – connects, roams, device offline and rogue events over time, clients per SSID /
   AP, weakest signal, most roaming, top traffic, device events and clients with security events (see above).
 * **Devices** – everything connected to OPNsense (ARP + DHCP leases from dnsmasq / Kea / ISC + Zenarmor device
-  fingerprints): online state, name,
+  fingerprints + WireGuard peers): online state, name,
   IP, MAC, vendor, interface, lease, first/last seen, events/blocks/DNS queries/alerts per device; mark devices as
   trusted, rename them, add notes.
   Names come from, best first: a name you typed (never replaced; clear it to go back to automatic) → a dnsmasq
@@ -670,6 +670,10 @@ How UniFi and OPNsense data are combined:
   DHCP request → the name Unbound shows for the IP → the ARP table / Zenarmor (the host name Zenarmor learned, else the name of its entry under *Zenarmor › Devices*; an IP address or a bare OS / vendor label such as "Steam OS" is not used as a name). The placeholders dnsmasq (`*`) and the
   ARP table (`-`, `?`) use for "no name" are ignored. A device that still has no name sends none and has no Hosts
   entry: add one in OPNsense (host name + its MAC) or name it on the Devices page.
+  Clients without a MAC address - **WireGuard peers** and networks routed behind another router - are listed under
+  their IP ("no MAC"). WireGuard peers come from *VPN › WireGuard* (API privilege *VPN: WireGuard*): every peer with
+  one tunnel address (allowed IPs `10.10.0.2/32`) is a device named after the peer, online while its last handshake
+  is recent, without a "new device" alert. Other clients without a MAC come from Zenarmor's records.
 * **Unraid** – see above.
 * **Settings › Data & detection › Delete collected data** – wipe logs/events, alerts, graphs, reports, AI conversations
   and optionally the device list to start over. Settings, credentials, accounts/MFA, Unraid servers and the encryption
