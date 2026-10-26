@@ -769,7 +769,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     @app.get("/api/devices")
     async def devices(hours: float = Query(24, gt=0)):
         rows = await db.pool().fetch(
-            "SELECT d.mac, host(d.ip) ip, d.hostname, d.name_source, d.vendor, d.interface, d.sources, d.lease_type, d.lease_expires, "
+            "SELECT d.mac, d.hwaddr, host(d.ip) ip, d.hostname, d.name_source, d.vendor, d.interface, d.sources, d.lease_type, d.lease_expires, "
             "d.online, d.trusted, d.notes, d.first_seen, d.last_seen, d.conn_type, d.conn_where, d.conn_signal, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = ANY(d.all_ips) AND e.ts > now() - make_interval(secs => $1)) events, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = ANY(d.all_ips) AND e.action = 'block' AND e.ts > now() - make_interval(secs => $1)) blocked, "

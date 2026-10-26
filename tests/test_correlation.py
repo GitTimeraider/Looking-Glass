@@ -487,16 +487,25 @@ def test_real_mac_skips_placeholders():
 
 
 def test_opnsense_own_interfaces_are_named_after_the_interface():
-    from lookingglass.opnsense import interface_device, own_address
+    from lookingglass.opnsense import (
+        interface_device,
+        interface_key,
+        main_interface,
+        own_address,
+    )
 
-    lan = {"mac": "a8:b8:e0:00:00:01", "ip": "192.168.1.1", "intf": "igc1", "intf_description": "LAN", "permanent": True,
+    lan = {"mac": "A8:B8:E0:00:00:01", "ip": "192.168.1.1", "intf": "igc1", "intf_description": "LAN", "permanent": True,
            "manufacturer": "Intel"}
     iot = {**lan, "ip": "192.168.20.1", "intf": "vlan0.20", "intf_description": "VLAN_IoT", "permanent": False,
            "expires": "permanent"}
     assert own_address(lan) and own_address(iot)
     assert not own_address({"mac": "aa:00:00:00:00:01", "ip": "192.168.1.5", "expires": 1199, "permanent": False})
-    d = interface_device("a8:b8:e0:00:00:01", [lan, iot])  # VLANs share the port's MAC
-    assert d["hostname"] == "OPNsense (LAN, VLAN_IoT)" and d["name_source"] == "opnsense" and d["ip"] == "192.168.1.1"
+    # VLANs share the port's MAC: one device per interface
+    d, v = interface_device([lan]), interface_device([iot])
+    assert (d["mac"], d["hwaddr"], d["hostname"], d["ip"]) == ("if:igc1", "a8:b8:e0:00:00:01", "OPNsense (LAN)", "192.168.1.1")
+    assert (v["mac"], v["hostname"], v["ips"]) == ("if:vlan0.20", "OPNsense (VLAN_IoT)", ["192.168.20.1"])
+    assert main_interface([interface_key(iot), interface_key(lan)]) == "if:igc1"
+    assert main_interface(["if:igc1.20", "if:igc1"]) == "if:igc1"
 
 
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
@@ -509,13 +518,14 @@ def test_opnsense_interface_name_replaces_a_guessed_one():
         try:
             pool = db.pool()
             await pool.execute("TRUNCATE devices")
-            mac = "a8:b8:e0:00:00:01"
-            await track_devices([{"mac": mac, "ip": "192.168.1.1", "hostname": "router.lan", "name_source": "dns"}], origin="arp")
-            await track_devices([interface_device(mac, [{"ip": "192.168.1.1", "intf_description": "LAN"}])], origin="arp")
-            assert await pool.fetchval("SELECT hostname FROM devices WHERE mac = $1", mac) == "OPNsense (LAN)"
+            lan = {"mac": "a8:b8:e0:00:00:01", "ip": "192.168.1.1", "intf": "igc1", "intf_description": "LAN"}
+            await track_devices([{"mac": "if:igc1", "ip": "192.168.1.1", "hostname": "router.lan", "name_source": "dns"}],
+                                origin="arp")
+            await track_devices([interface_device([lan])], origin="arp")
+            assert await pool.fetchval("SELECT hostname FROM devices WHERE mac = 'if:igc1'") == "OPNsense (LAN)"
             await pool.execute("UPDATE devices SET hostname = 'Firewall', name_source = 'manual', name_rank = 100")
-            await track_devices([interface_device(mac, [{"ip": "192.168.1.1", "intf_description": "LAN"}])], origin="arp")
-            assert await pool.fetchval("SELECT hostname FROM devices WHERE mac = $1", mac) == "Firewall"  # yours wins
+            await track_devices([interface_device([lan])], origin="arp")
+            assert await pool.fetchval("SELECT hostname FROM devices WHERE mac = 'if:igc1'") == "Firewall"  # yours wins
             await pool.execute("TRUNCATE devices")
         finally:
             await db.close()
@@ -524,18 +534,18 @@ def test_opnsense_interface_name_replaces_a_guessed_one():
 
 
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
-def test_opnsense_interface_absorbs_its_ip_entries():
-    """Zenarmor listed the firewall's own addresses as 'no MAC' devices; the interface device takes them over, with
-    their learned behaviour, and Zenarmor adds none again."""
+def test_opnsense_interfaces_are_separate_and_absorb_their_entries():
+    """The port and its VLAN are separate devices. Each takes over the Zenarmor 'no MAC' entries of its addresses, the
+    port the device an older version kept under the shared MAC - learned behaviour moves along; Zenarmor adds none
+    again, also not under the firewall's MAC."""
     from lookingglass import detections
     from lookingglass.behavior import Behavior
     from lookingglass.detections import (
-        absorb_ip_devices,
         device_info,
         track_devices,
         zenarmor_device_listener,
     )
-    from lookingglass.opnsense import interface_device
+    from lookingglass.opnsense import absorb_into_interfaces, interface_device
 
     async def main():
         await db.connect(DSN)
@@ -545,24 +555,32 @@ def test_opnsense_interface_absorbs_its_ip_entries():
             detections._zen_seen.clear()
             mac = "64:62:66:21:4a:79"
             await track_devices([{"mac": "ip:192.168.2.1", "ip": "192.168.2.1", "hostname": "madsense.madnesss.net"},
-                                 {"mac": "ip:192.168.20.1", "ip": "192.168.20.1"}], origin="zenarmor")
+                                 {"mac": "ip:192.168.20.1", "ip": "192.168.20.1"},
+                                 {"mac": mac, "ip": "192.168.2.1", "ips": ["192.168.2.1", "192.168.20.1"],
+                                  "hostname": "OPNsense (LAN_2_WLAN, VLAN_IoT)", "name_source": "opnsense"}], origin="arp")
             await pool.execute("INSERT INTO device_profile (key, kind, value, hits) VALUES "
-                               "('ip:192.168.2.1', 'port', '53', 5), ('192.168.20.1', 'port', '53', 2), "
-                               "('ip:192.168.20.1', 'country', 'NL', 1)")
-            dev = interface_device(mac, [{"ip": "192.168.2.1", "intf_description": "LAN_2_WLAN", "permanent": True},
-                                         {"ip": "192.168.20.1", "intf_description": "VLAN_IoT", "permanent": True}])
-            await track_devices([dev], origin="arp")
-            await absorb_ip_devices(mac, dev["ips"])
-            rows = await pool.fetch("SELECT mac, host(ip) ip, hostname FROM devices")
-            assert [(r["mac"], r["ip"], r["hostname"]) for r in rows] == [(mac, "192.168.2.1", "OPNsense (LAN_2_WLAN, VLAN_IoT)")]
-            prof = {(r["kind"], r["value"]): r["hits"] for r in await pool.fetch("SELECT kind, value, hits FROM device_profile WHERE key = $1", mac)}
-            assert prof == {("port", "53"): 7, ("country", "NL"): 1}
-            assert await pool.fetchval("SELECT count(*) FROM device_profile WHERE key <> $1", mac) == 0
-            # Zenarmor sees the firewall's VLAN address again: no new entry; lookups by that address find the interface
-            await zenarmor_device_listener([{"source": "zenarmor", "src_ip": "192.168.20.1", "data": {"src_hostname": "x"}}])
-            assert await pool.fetchval("SELECT count(*) FROM devices") == 1
-            assert (await device_info("192.168.20.1"))["mac"] == mac
-            assert (await Behavior(Settings(), lambda ip: True).ip_to_mac())["192.168.20.1"]["mac"] == mac
+                               "('ip:192.168.2.1', 'port', '53', 5), ($1, 'port', '53', 3), ('192.168.20.1', 'port', '53', 2), "
+                               "('ip:192.168.20.1', 'country', 'NL', 1)", mac)
+            base = {"mac": mac, "permanent": True}
+            own = [interface_device([{**base, "ip": "192.168.2.1", "intf": "igc1", "intf_description": "LAN_2_WLAN"}]),
+                   interface_device([{**base, "ip": "192.168.20.1", "intf": "vlan0.20", "intf_description": "VLAN_IoT"}])]
+            await track_devices(own, origin="arp")
+            await absorb_into_interfaces(own)
+            rows = {r["mac"]: (r["ip"], r["hostname"], r["hwaddr"]) for r in
+                    await pool.fetch("SELECT mac, host(ip) ip, hostname, hwaddr FROM devices")}
+            assert rows == {"if:igc1": ("192.168.2.1", "OPNsense (LAN_2_WLAN)", mac),
+                            "if:vlan0.20": ("192.168.20.1", "OPNsense (VLAN_IoT)", mac)}
+            prof = {(r["key"], r["kind"], r["value"]): r["hits"] for r in
+                    await pool.fetch("SELECT key, kind, value, hits FROM device_profile")}
+            assert prof == {("if:igc1", "port", "53"): 8, ("if:vlan0.20", "port", "53"): 2,
+                            ("if:vlan0.20", "country", "NL"): 1}
+            # Zenarmor sees the firewall again (no MAC, and with its MAC): no new entry
+            await zenarmor_device_listener([
+                {"source": "zenarmor", "src_ip": "192.168.20.1", "data": {"src_hostname": "x"}},
+                {"source": "zenarmor", "src_ip": "192.168.2.1", "data": {"src_hwaddr": mac, "src_hostname": "y"}}])
+            assert await pool.fetchval("SELECT count(*) FROM devices") == 2
+            assert (await device_info("192.168.20.1"))["hostname"] == "OPNsense (VLAN_IoT)"
+            assert (await Behavior(Settings(), lambda ip: True).ip_to_mac())["192.168.20.1"]["mac"] == "if:vlan0.20"
             await pool.execute("TRUNCATE devices, device_profile, device_hourly")
         finally:
             await db.close()

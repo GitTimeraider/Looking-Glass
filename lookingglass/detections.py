@@ -443,10 +443,11 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
         source = (d.get("name_source") or origin) if d["hostname"] else None
         new = await pool.fetchval(
             "INSERT INTO devices (mac, ip, hostname, vendor, interface, sources, lease_type, lease_expires, online, "
-            "name_source, name_rank, conn_type, conn_where, conn_signal, conn_seen, ips) "
+            "name_source, name_rank, conn_type, conn_where, conn_signal, conn_seen, ips, hwaddr) "
             "VALUES ($1, $2, $3, $4, $5, ARRAY[$6::text], $7, $8, $9, $10, $11, $12, $13, $14, "
-            "CASE WHEN $12::text IS NOT NULL THEN now() END, $15::inet[]) "
+            "CASE WHEN $12::text IS NOT NULL THEN now() END, $15::inet[], $16) "
             "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(EXCLUDED.ip, devices.ip), ips = COALESCE(EXCLUDED.ips, devices.ips), "
+            "hwaddr = COALESCE(EXCLUDED.hwaddr, devices.hwaddr), "
             "hostname = CASE WHEN EXCLUDED.hostname IS NOT NULL AND EXCLUDED.name_rank >= devices.name_rank "
             "THEN EXCLUDED.hostname ELSE devices.hostname END, "
             "name_source = CASE WHEN EXCLUDED.hostname IS NOT NULL AND EXCLUDED.name_rank >= devices.name_rank "
@@ -465,7 +466,7 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
             "RETURNING (xmax = 0)", d["mac"], d.get("ip"), d.get("hostname") or None, d.get("vendor") or None,
             d.get("interface") or None, origin, d.get("lease_type"), d.get("lease_expires"), bool(d.get("online")),
             source, name_rank(source) if source else 0, d.get("conn_type"), d.get("conn_where"), d.get("conn_signal"),
-            d.get("ips"))
+            d.get("ips"), d.get("hwaddr"))
         if new and not first_run:
             ipless = d["mac"].startswith("ip:")
             await raise_alert(
@@ -502,10 +503,11 @@ def zen_device_name(d: dict[str, Any], ip: Any) -> str | None:
     return None
 
 
-async def absorb_ip_devices(mac: str, ips: list[str]) -> None:
-    """``ips`` belong to the device ``mac`` (OPNsense's interfaces): entries listed under one of them (``ip:`` keys from
-    Zenarmor) are merged into it - their learned behaviour (profile, hourly features) moves along - and removed."""
-    keys = [k for ip in ips for k in (ipless_key(ip), ip)]
+async def absorb_ip_devices(mac: str, ips: list[str], old_keys: list[str] | tuple = ()) -> None:
+    """``ips`` belong to the device ``mac`` (an OPNsense interface): entries listed under one of them (``ip:`` keys from
+    Zenarmor) and the devices ``old_keys`` are merged into it - their learned behaviour (profile, hourly features)
+    moves along - and removed."""
+    keys = [k for ip in ips for k in (ipless_key(ip), ip)] + [k for k in old_keys if k != mac]
     if not keys:
         return
     async with db.pool().acquire() as con, con.transaction():
@@ -521,7 +523,8 @@ async def absorb_ip_devices(mac: str, ips: list[str]) -> None:
             "INSERT INTO device_hourly (key, hour, ip, features) SELECT DISTINCT ON (hour) $1, hour, ip, features "
             "FROM device_hourly WHERE key = ANY($2::text[]) ORDER BY hour ON CONFLICT (key, hour) DO NOTHING", mac, keys)
         await con.execute("DELETE FROM device_hourly WHERE key = ANY($1::text[])", keys)
-        await con.execute("DELETE FROM devices WHERE mac = ANY($1::text[])", [ipless_key(ip) for ip in ips])
+        await con.execute("DELETE FROM devices WHERE mac = ANY($1::text[]) AND mac <> $2",
+                          [ipless_key(ip) for ip in ips] + list(old_keys), mac)
 
 
 def real_mac(value: Any) -> str | None:
@@ -561,6 +564,10 @@ async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
         vendor = " / ".join(x for x in (dev.get("vendor"), dev.get("os")) if x) or None
         found[mac] = {"mac": mac, "ip": e.get("src_ip"), "hostname": name, "vendor": vendor,
                       "interface": d.get("interface"), "online": True}
+    if any(not k.startswith("ip:") for k in found):
+        # the firewall's own MAC (traffic it sends itself): that is an OPNsense interface device, not a new one
+        own = {r["hwaddr"] for r in await db.pool().fetch("SELECT hwaddr FROM devices WHERE mac LIKE 'if:%'")}
+        found = {k: v for k, v in found.items() if k not in own}
     ipless = [str(dev["ip"]) for key, dev in found.items() if key.startswith("ip:")]
     if ipless:
         taken = {r["ip"] for r in await db.pool().fetch(
