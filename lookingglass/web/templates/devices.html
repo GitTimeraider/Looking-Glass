@@ -74,11 +74,16 @@ function render() {
     {k: "risk", l: "Alerts / risk", f: (v, r) => `${r.alerts ? `<a href="/alerts" class="badge high">${r.alerts}</a> ` : ""}${v ? `<span class="badge ${Number(v) >= 60 ? "high" : Number(v) >= 20 ? "medium" : "low"}" title="Risk score">${Math.round(v)}</span>` : ""}`},
     {k: "learned", l: "Learned", f: (v, r) => `<a href="#" data-prof="${LG.esc(r.mac)}" title="What is normal for this device">${v ? `${LG.num(v)} items` : "–"}</a>`},
     {k: "last_seen", l: "Seen", f: (v, r) => `<span class="small">${LG.ago(v)}<div class="muted" title="First seen">since ${LG.time(r.first_seen)}</div></span>`},
-    {k: "trusted", l: "Trusted", f: (v, r) => `<input type="checkbox" data-trust="${LG.esc(r.mac)}" ${v ? "checked" : ""}> <a href="#" data-edit="${LG.esc(r.mac)}">edit</a>`},
+    {k: "trusted", l: "Trusted", f: (v, r) => `<input type="checkbox" data-trust="${LG.esc(r.mac)}" ${v ? "checked" : ""}> <a href="#" data-edit="${LG.esc(r.mac)}">edit</a> <a href="#" class="small muted" data-del="${LG.esc(r.mac)}" title="Remove from the list">delete</a>`},
   ], rows, "No devices yet - they appear from the ARP table / DHCP leases once the OPNsense API is connected.");
   fitList();
   document.querySelectorAll("[data-prof]").forEach(a => a.onclick = e => { e.preventDefault(); profile(a.dataset.prof); });
   document.querySelectorAll("[data-trust]").forEach(c => c.onchange = () => LG.api(`/api/devices/${c.dataset.trust}`, { method: "POST", body: { trusted: c.checked } }));
+  document.querySelectorAll("[data-del]").forEach(a => a.onclick = async e => {
+    e.preventDefault(); const d = devs.find(x => x.mac === a.dataset.del);
+    if (!confirm(`Remove ${d.hostname || d.ip || d.mac} from the device list? What was learned about it is forgotten too; if it shows up again it is a new device.`)) return;
+    await LG.api(`/api/devices/${encodeURIComponent(d.mac)}`, { method: "DELETE" }); load();
+  });
   document.querySelectorAll("[data-edit]").forEach(a => a.onclick = async e => {
     e.preventDefault(); const d = devs.find(x => x.mac === a.dataset.edit);
     const name = prompt(`Your own name for this device - leave empty to use the automatic name${d.name_source !== "manual" && d.hostname ? ` (now: ${d.hostname})` : ""} from DHCP / DNS`,

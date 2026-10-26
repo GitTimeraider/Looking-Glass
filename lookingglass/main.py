@@ -13,7 +13,12 @@ import uvicorn
 from . import __version__, app_config, auth, crypto, db, db_config, notify
 from .ai import Analyst, request_log
 from .config import get_settings
-from .detections import DetectionEngine, dhcp_listener, zenarmor_device_listener
+from .detections import (
+    DetectionEngine,
+    device_upkeep,
+    dhcp_listener,
+    zenarmor_device_listener,
+)
 from .enrich import Enricher
 from .ingest import EventWriter, SyslogServer
 from .opnsense import Poller
@@ -53,6 +58,16 @@ async def housekeeping(settings) -> None:
         except Exception:  # noqa: BLE001
             log.exception("housekeeping failed")
         await asyncio.sleep(3600)
+
+
+async def device_upkeep_loop(settings) -> None:
+    """Every minute: quiet clients without a MAC -> offline, and the device removal of Settings › Data & detection."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            await device_upkeep(settings.device_remove_days)
+        except Exception:  # noqa: BLE001
+            log.exception("device upkeep failed")
 
 
 async def opnsense_supervisor(settings, writer: EventWriter) -> None:
@@ -200,7 +215,8 @@ async def amain() -> None:
 
     tasks = [asyncio.create_task(writer.run(), name="writer"),
              asyncio.create_task(DetectionEngine(settings).run(), name="detections"),
-             asyncio.create_task(housekeeping(settings), name="housekeeping")]
+             asyncio.create_task(housekeeping(settings), name="housekeeping"),
+             asyncio.create_task(device_upkeep_loop(settings), name="device_upkeep")]
     if settings.syslog_enabled:
         await SyslogServer(settings, writer).start()
     tasks.append(asyncio.create_task(opnsense_supervisor(settings, writer), name="opnsense"))
