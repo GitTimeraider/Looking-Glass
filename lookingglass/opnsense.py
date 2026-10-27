@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import ssl
 import logging
@@ -125,6 +126,24 @@ def interface_device(entries: list[dict[str, Any]]) -> dict[str, Any]:
     return {"mac": interface_key(first), "hwaddr": str(first.get("mac") or "").lower() or None,
             "ip": ips[0] if ips else None, "ips": ips, "hostname": f"OPNsense ({name})", "name_source": "opnsense",
             "vendor": first.get("manufacturer") or None, "interface": name, "online": True}
+
+
+def addressless_interfaces(stats: Any, arp_intfs: set[str]) -> list[dict[str, Any]]:
+    """OPNsense itself on interfaces the ARP table has no own entry for - WireGuard (wg1), OpenVPN (ovpns1), PPPoE: their
+    addresses from the interface statistics ("[WireGuard] (wg1) / 10.0.3.1"), as ARP-like entries for
+    ``interface_device``. Otherwise traffic the firewall sends on such an interface looks like a client without a MAC."""
+    entries: dict[str, list[dict[str, Any]]] = {}
+    for key, v in stats.items() if isinstance(stats, dict) else []:
+        name = str(v.get("name") or "") if isinstance(v, dict) else ""
+        ip = ip_or_none(v.get("address")) if name else None
+        if not ip or name.lower() in arp_intfs:
+            continue
+        addr = ipaddress.ip_address(ip)
+        if addr.is_loopback or addr.is_link_local:
+            continue
+        m = re.match(r"\[([^\]]+)\]", str(key))
+        entries.setdefault(name, []).append({"ip": ip, "intf": name, "intf_description": m.group(1) if m else name})
+    return [interface_device(e) for e in entries.values()]
 
 
 def main_interface(keys: list[str]) -> str:
@@ -376,6 +395,8 @@ class Poller:
                                         "vendor": r.get("manufacturer") or None,
                                         "interface": r.get("intf_description") or r.get("intf"), "online": True}))
         own_devices = [interface_device(entries) for entries in own.values()]
+        own_devices += addressless_interfaces(await db.get_snapshot("interfaces"),
+                                              {str(e[0].get("intf") or "").lower() for e in own.values()})
         devices += own_devices
         # local import to avoid a cycle
         from .detections import track_devices
