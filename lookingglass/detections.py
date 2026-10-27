@@ -467,7 +467,7 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
             d.get("interface") or None, origin, d.get("lease_type"), d.get("lease_expires"), bool(d.get("online")),
             source, name_rank(source) if source else 0, d.get("conn_type"), d.get("conn_where"), d.get("conn_signal"),
             d.get("ips"), d.get("hwaddr"))
-        if new and not first_run:
+        if new and not first_run and not d["mac"].startswith("if:"):  # OPNsense itself (a new interface)
             ipless = d["mac"].startswith("ip:")
             await raise_alert(
                 "new_device", Rating("low", ("a client without a MAC address (VPN / WireGuard peer or a routed network) "
