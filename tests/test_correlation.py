@@ -139,7 +139,8 @@ def test_zenarmor_blocked_alert_setting():
                    ev("zenarmor", 1, action="conn", src_ip="192.168.1.7", domain="p.example", data={"security": "Phishing"})]
             await db.copy_events(evs)
             assert await run("all") == [("Database", "low"), ("Malware", "low"), ("Phishing", "critical")]
-            assert await run("threats") == [("Malware", "low"), ("Phishing", "critical")]    # the default
+            assert await run("every_threat") == [("Malware", "low"), ("Phishing", "critical")]
+            assert await run("threats") == [("Phishing", "critical")]  # the default: a single blocked threat is no alert
             assert await run("never") == [("Phishing", "critical")]                           # not blocked: always
             await pool.execute("TRUNCATE events, alerts")
         finally:
@@ -155,6 +156,7 @@ def test_blocked_threat_traffic_is_low_unless_repeated_or_confirmed():
         try:
             pool = db.pool()
             await pool.execute("TRUNCATE events, alerts")
+            # a single blocked ad / link: Zenarmor did its job - no alert (Q-Feeds: low)
             evs = [ev("zenarmor", 1, action="block", src_ip="192.168.1.5", domain="ad.example", data={"security": "Malware"}),
                    ev("qfeeds", 1, action="block", src_ip="192.168.1.8", dst_ip="91.92.1.1", dst_port=443)]
             # calling home: many blocked attempts / many different threat targets
@@ -177,12 +179,10 @@ def test_blocked_threat_traffic_is_low_unless_repeated_or_confirmed():
             await DetectionEngine(Settings()).qfeeds_hits()
             sev = {r["ip"]: r["severity"] for r in await pool.fetch(
                 "SELECT host(src_ip) ip, severity FROM alerts WHERE rule IN ('zenarmor_threat', 'threat_intel_outbound')")}
-            assert sev == {"192.168.1.5": "low", "192.168.1.8": "low", "192.168.1.6": "medium", "192.168.1.7": "medium",
-                           "192.168.1.9": "medium", "192.168.1.10": "high", "192.168.1.11": "low"}
+            assert sev == {"192.168.1.8": "low", "192.168.1.6": "medium", "192.168.1.7": "medium",
+                           "192.168.1.9": "medium", "192.168.1.10": "high"}  # .5 / .11: one blocked visit, no alert
             why = await pool.fetchval("SELECT description FROM alerts WHERE host(src_ip) = '192.168.1.6'")
             assert "working as intended" in why and "in 6 separate 10-minute periods" in why
-            why = await pool.fetchval("SELECT description FROM alerts WHERE host(src_ip) = '192.168.1.11' LIMIT 1")
-            assert "repeated" not in why
             await pool.execute("TRUNCATE events, alerts")
         finally:
             await db.close()
@@ -215,11 +215,16 @@ def test_zenarmor_alerts_name_app_category_and_policy():
             assert "app MySQL (Database) · policy 2" in a["192.168.30.5"]["description"]
             assert "Zenarmor › Policies" in a["192.168.30.5"]["description"] and a["192.168.30.5"]["severity"] == "low"
             assert a["192.168.30.6"]["severity"] == "low" and "Phishing" in a["192.168.30.6"]["title"]  # blocked once
-            # default (threats only): the policy block is skipped, the phishing lookup still alerts
+            # every_threat: the policy block is skipped, the phishing lookup alerts
+            await pool.execute("TRUNCATE alerts")
+            await db.kv_set("wm:zenarmor", 0)
+            await DetectionEngine(Settings(zenarmor_blocked_alerts="every_threat")).zenarmor_threats()
+            assert [r["ip"] for r in await pool.fetch("SELECT host(src_ip) ip FROM alerts")] == ["192.168.30.6"]
+            # default: one blocked phishing lookup is Zenarmor doing its job - no alert
             await pool.execute("TRUNCATE alerts")
             await db.kv_set("wm:zenarmor", 0)
             await DetectionEngine(Settings()).zenarmor_threats()
-            assert [r["ip"] for r in await pool.fetch("SELECT host(src_ip) ip FROM alerts")] == ["192.168.30.6"]
+            assert await pool.fetchval("SELECT count(*) FROM alerts") == 0
             await pool.execute("TRUNCATE events, alerts")
         finally:
             await db.close()

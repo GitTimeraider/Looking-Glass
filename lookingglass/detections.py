@@ -1042,9 +1042,11 @@ class DetectionEngine:
             partly = bool(r["blocked"] or seen["blocked"]) and bool(seen["passed"])
             # only Zenarmor's own verdict / categories, never the app name ("Amazon EC2" is no C2 server)
             bad = bool(ZEN_BAD.search(" ".join(x for x in (r["threat"], r["app_category"], r["web_category"]) if x)))
-            if blocked and (mode == "never" or (mode == "threats" and not bad)) and not await db.pool().fetchval(
-                    "SELECT 1 FROM alerts WHERE fingerprint = $1 AND status <> 'closed' "
-                    "AND last_seen > now() - interval '24 hours'", fingerprint):
+            # an open alert for it is always updated (e.g. re-rated once the block record arrived)
+            is_open = bool(await db.pool().fetchval(
+                "SELECT 1 FROM alerts WHERE fingerprint = $1 AND status <> 'closed' "
+                "AND last_seen > now() - interval '24 hours'", fingerprint))
+            if blocked and not is_open and (mode == "never" or (mode in ("threats", "every_threat") and not bad)):
                 continue  # blocked by policy (or all blocks, if chosen): Zenarmor did its job, nothing to look into
             # not sticky: re-rated from the 24h verdict, so an alert raised before the block record arrived drops back
             got = "some of it was NOT blocked" if partly else "was NOT blocked"
@@ -1062,6 +1064,10 @@ class DetectionEngine:
                 corroborate(rating, ev, 2 if bad and blocked else 1)
                 if bad and blocked:
                     repeated(rating, *await blocked_threat_history(src, "zenarmor"))
+            if blocked and bad and mode == "threats" and rating.severity == "low" and not is_open:
+                # a blocked threat on its own (an ad, a link, one page): Zenarmor did its job. Only an alert when the
+                # device keeps coming back (repeated) or other sources / alerts point at it too (raised above low)
+                continue
             label = threat if not r["app"] or r["app"] in threat else f"{r['app']}, {threat}"
             state = "blocked" if blocked else "partly blocked" if partly else "NOT blocked"
             await raise_alert("zenarmor_threat", rating,
