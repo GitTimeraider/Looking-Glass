@@ -1359,8 +1359,9 @@ class DetectionEngine:
         for kind, (base, popular) in queries.items():
             rows = await db.pool().fetch(
                 f"WITH t AS (SELECT DISTINCT src_ip, dst, date_trunc('second', ts) AS ts FROM ({base} LIMIT 2000000) x), "
-                "d AS (SELECT src_ip, dst, extract(epoch FROM ts - lag(ts) OVER (PARTITION BY src_ip, dst ORDER BY ts)) AS gap FROM t) "
-                "SELECT src_ip, dst, count(*) + 1 AS n, avg(gap) AS mean, stddev_pop(gap) AS sd FROM d WHERE gap IS NOT NULL "
+                "d AS (SELECT src_ip, dst, ts, extract(epoch FROM ts - lag(ts) OVER (PARTITION BY src_ip, dst ORDER BY ts)) AS gap FROM t) "
+                "SELECT src_ip, dst, count(*) + 1 AS n, avg(gap) AS mean, stddev_pop(gap) AS sd, min(ts) AS first, max(ts) AS last "
+                "FROM d WHERE gap IS NOT NULL "
                 "GROUP BY src_ip, dst HAVING count(*) >= 30 AND avg(gap) BETWEEN 60 AND 3600 "
                 "AND stddev_pop(gap) < 0.1 * avg(gap) LIMIT 200")
             rows = [r for r in rows if self.internal(str(r["src_ip"]))
@@ -1395,6 +1396,9 @@ class DetectionEngine:
                 await raise_alert(
                     "beaconing", rating, f"Possible beaconing: {src} → {what} every {every}", f"beacon:{src}:{r['dst']}",
                     src_ip=src, dst_ip=r["dst"] if kind == "conn" else None, count=r["n"], mode="max",
+                    # the rhythm spans 6 hours: without it the ports (and port filters) of an alert first raised after
+                    # the flow ended - a voice call that just stopped - would only see the last 15 minutes, i.e. nothing
+                    span=(r["first"], r["last"]),
                     blocked=kind == "conn" and not v["passed"] and "every attempt was blocked",
                     # an address: only the traffic to it, so the alert's ports (and port filters) are those of this flow
                     events={"ip": src, "q": r["dst"]} if kind == "dns" else {"src": src, "dst": r["dst"]},
