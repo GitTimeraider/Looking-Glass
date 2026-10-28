@@ -715,3 +715,25 @@ def test_tor_relay_behind_a_dns_ntp_redirect_is_not_raised():
         assert [a["ip"] for a in await rules(pool, "tor")] == ["192.168.20.13"]
         await db.set_snapshot("nat_rules", [])
     run(body)
+
+
+@needs_db
+def test_host_sweep_ignores_out_of_state_packets():
+    """A TV waking from standby closes sessions the firewall already forgot: blocked FA / RA / PA / A packets to many
+    servers on 443 are no sweep. SYNs to many hosts are."""
+    async def body(pool):
+        flags = ["FA", "FPA", "RA", "PA", "A"]
+        await db.copy_events([event(NOW - timedelta(seconds=i), "firewall", severity=4, action="block", src_ip="192.168.2.8",
+                                    dst_ip=f"142.251.36.{i}", src_port=40000 + i, dst_port=443, proto="tcp",
+                                    data={"tcpflags": flags[i % 5], "label": "Default deny / state violation rule"})
+                              for i in range(20)])
+        eng = DetectionEngine(Settings())
+        await eng.host_sweep()
+        await eng.port_scan()
+        assert await rules(pool, "host_sweep") == [] and await rules(pool, "port_scan") == []
+        await db.copy_events([event(NOW - timedelta(seconds=i), "firewall", severity=4, action="block", src_ip="192.168.2.9",
+                                    dst_ip=f"192.168.1.{i + 10}", src_port=50000, dst_port=445, proto="tcp",
+                                    data={"tcpflags": "S"}) for i in range(10)])
+        await eng.host_sweep()
+        assert [r["ip"] for r in await rules(pool, "host_sweep")] == ["192.168.2.9"]
+    run(body)

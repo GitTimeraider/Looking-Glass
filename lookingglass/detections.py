@@ -45,6 +45,9 @@ ALLOWED_AGG = (f"(bool_or(source = 'firewall' AND action = 'pass') OR bool_or(so
                f"AND action IN ('pass', 'allow')) OR (bool_or({ZEN_ANSWERED}) AND NOT bool_or(source = 'firewall' "
                "AND action IN ('block', 'drop'))))")
 FW_BLOCKED_AGG = "count(*) FILTER (WHERE source = 'firewall' AND action IN ('block', 'drop'))"
+# a blocked packet that tries to open a connection (or is not TCP); out-of-state packets (ACK / RST: a device closing
+# sessions the firewall already forgot, e.g. after waking from standby) are no scan
+FW_PROBE = "(data->>'tcpflags' IS NULL OR data->>'tcpflags' !~ '[AR]')"
 FW_RULE_AGG = "max(data->>'label') FILTER (WHERE source = 'firewall' AND action IN ('block', 'drop'))"
 
 
@@ -675,7 +678,7 @@ class DetectionEngine:
         rows = await db.pool().fetch(
             "SELECT src_ip, count(DISTINCT dst_port) AS ports, count(DISTINCT dst_ip) AS hosts, count(*) AS hits, "
             "array_agg(DISTINCT dst_port ORDER BY dst_port) FILTER (WHERE dst_port IS NOT NULL) AS port_list "
-            "FROM events WHERE source = 'firewall' AND action = 'block' AND ts > now() - interval '10 minutes' "
+            f"FROM events WHERE source = 'firewall' AND action = 'block' AND ts > now() - interval '10 minutes' AND {FW_PROBE} "
             "AND src_ip IS NOT NULL GROUP BY src_ip HAVING count(DISTINCT dst_port) >= 15")
         for r in rows:
             ip = str(r["src_ip"])
@@ -694,8 +697,8 @@ class DetectionEngine:
     async def host_sweep(self) -> None:
         rows = await db.pool().fetch(
             "SELECT src_ip, dst_port, count(DISTINCT dst_ip) AS hosts, count(*) AS hits FROM events "
-            "WHERE source = 'firewall' AND action = 'block' AND ts > now() - interval '10 minutes' AND src_ip IS NOT NULL "
-            "GROUP BY src_ip, dst_port HAVING count(DISTINCT dst_ip) >= 10")
+            f"WHERE source = 'firewall' AND action = 'block' AND ts > now() - interval '10 minutes' AND {FW_PROBE} "
+            "AND src_ip IS NOT NULL GROUP BY src_ip, dst_port HAVING count(DISTINCT dst_ip) >= 10")
         for r in rows:
             ip = str(r["src_ip"])
             if not (sev := await self.rate_scan(ip, self.internal(ip), "host_sweep")):
