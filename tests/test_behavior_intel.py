@@ -487,6 +487,32 @@ def test_address_beaconing_ports_are_those_of_the_flow():
     run(body)
 
 
+@needs_db
+def test_beaconing_after_the_flow_ended_keeps_its_ports():
+    """The call ended 25 minutes before the detector ran (it still sees the rhythm in its 6-hour window): the alert's
+    ports must come from the flow itself, not only the last 15 minutes, or a port filter would let it through."""
+    from lookingglass import alert_filters as af
+
+    async def body(pool):
+        end = NOW - timedelta(minutes=25)
+        await db.copy_events([event(end - timedelta(seconds=61 * i), "firewall", severity=6, action="pass",
+                                    src_ip="192.168.3.3", dst_ip="104.29.157.21", src_port=50000, dst_port=19318,
+                                    proto="udp") for i in range(40)])
+        await pool.execute("INSERT INTO alert_filters (name, rules, networks, dst_ports, action) "
+                           "VALUES ('Discord voice', '{beaconing}', '192.168.3.3/32', '19294-19344', 'suppress')")
+        af.invalidate()
+        try:
+            await DetectionEngine(Settings()).beaconing()
+            assert await rules(pool, "beaconing") == []
+        finally:
+            await pool.execute("TRUNCATE alert_filters")
+            af.invalidate()
+        await DetectionEngine(Settings()).beaconing()
+        b = await rules(pool, "beaconing")
+        assert len(b) == 1 and b[0]["data"]["ports"]["dst"] == [19318]
+    run(body)
+
+
 def test_feed_download_sources():
     from lookingglass.intel import FEEDS
     seen, answers = [], {}
