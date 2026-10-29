@@ -145,7 +145,7 @@ excludes devices from all of them.
 |---|---|---|
 | **Device profiles** | learns per device (MAC) which countries, ports, domains, TLS programs (JA3/JA4) and hours are normal; alerts on the first use of something new | learning period, quiet period for new devices, one switch per kind |
 | **Predictable devices only** | "new …" alerts only for devices that rarely pick up anything new (cameras, TVs, plugs) - PCs and phones are skipped automatically | *max. new things per day* (0 = all devices) |
-| **Similar devices** | devices of the same vendor form a group: what the others do too is normal, what none of them do weighs heavier | on / off |
+| **Similar devices** | devices of the same vendor form a group: what the others do too is normal, what none of them do weighs heavier - unless other devices on the network do it too (a phone and a PC both using WhatsApp or IMAP) | on / off |
 | **Odd hours** | activity at an hour the device has never been active | on / off |
 | **Traffic spike** | connections, DNS lookups or upload of one hour N× the device's median | factor (0 = off) |
 | **Machine learning** | an Isolation Forest (one per pair of 8 features, pure Python, nothing leaves the server) scores each device-hour against the device's own history; alerts name the features that were off ("connections 9,000, normally ~100") | sensitivity low / medium / high |
@@ -202,7 +202,7 @@ decide it for every rule:
 2. **Where does it come from?** The same behaviour from *inside* your network (a scan, password guessing, contact with a
    malicious address) is worse than from the internet: it means a device of yours misbehaves.
 3. **Do other sources confirm it?** When the same IP also has IDS alerts, threat-intel (Q-Feeds) hits, Zenarmor threat
-   events or other open alerts in the last 24 hours, the alert goes up one or two steps. Alerts built from the same
+   events Zenarmor did *not* block (a blocked ad or link is no sign of anything) or other open alerts in the last 24 hours, the alert goes up one or two steps. Alerts built from the same
    events (e.g. a brute force and the login after it) don't count as confirmation for each other. Traffic that was
    **blocked** - by the firewall, Zenarmor, Q-Feeds, Suricata in IPS mode or a DNS blocklist, in any rule (scans,
    threat feeds, Tor, suspicious ports, beaconing, lateral movement, ...) - stays at **high** at most, however much

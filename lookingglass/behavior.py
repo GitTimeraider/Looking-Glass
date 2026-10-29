@@ -223,7 +223,16 @@ class Behavior:
                     values = [v for v in values if v not in common]
                     if not values:
                         continue  # other devices of this vendor do it too: normal for this kind of device
-                    rating.up(f"none of the other {len(peers)} {vendor} devices does this")
+                    # a vendor (Google, Apple, Samsung) makes phones and speakers alike: only odd when no device on the
+                    # network does it - other devices using it too (another phone with WhatsApp / mail) is no news
+                    others = {r["value"] for r in await pool.fetch(
+                        "SELECT DISTINCT value FROM device_profile WHERE kind = $1 AND value = ANY($2::text[]) "
+                        "AND key <> $3", kind, values, key)}
+                    if set(values) <= others:
+                        rating.note(f"none of the other {len(peers)} {vendor} devices does this, but other devices on "
+                                    "the network do")
+                    else:
+                        rating.up(f"none of the other {len(peers)} {vendor} devices does this, nor any other device")
                 if kind == "port" and any(int(v.split("/")[-1]) in SUSPICIOUS_OUT_PORTS or int(v.split("/")[-1]) in LATERAL_PORTS
                                           for v in values if v.split("/")[-1].isdigit()):
                     rating.up("and it is a port malware / remote access uses")
