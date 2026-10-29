@@ -116,19 +116,32 @@ async function send(text) {
   msgsEl.scrollTop = msgsEl.scrollHeight;
   try {
     const { job } = await LG.api("/api/ai/message", { method: "POST", body: { chat_id: chatId, text } });
-    let r;
+    let r, lost = 0;
+    const thinking = document.getElementById("thinking"), busy = thinking.innerHTML;
     for (;;) {  // the analysis runs on the server; polling keeps every request short for proxies in front
       await new Promise(res => setTimeout(res, 2000));
       try { r = await LG.api(`/api/ai/jobs/${job}`); }
-      catch (e) { if (/^HTTP 50[234]\b/.test(e.message)) continue; throw e; }  // proxy hiccup: just ask again
+      catch (e) {
+        // a network error ("Failed to fetch": Wi-Fi, sleep, a proxy restart) or a proxy hiccup: the analysis keeps
+        // running on the server and saves its answer, so keep asking for a while instead of losing it
+        if ((e instanceof TypeError || /^HTTP 50[234]\b/.test(e.message)) && ++lost < 150) {
+          if (lost === 3) thinking.innerHTML = `<span class="spinner"></span> lost the connection to Looking Glass - retrying (the analysis keeps running)…`;
+          continue;
+        }
+        throw e;
+      }
+      if (lost) { lost = 0; thinking.innerHTML = busy; }
       if (r.done) break;
     }
     chatId = r.chat_id;
     convo = convo.slice(0, -1).concat(r.messages);
     renderMessages(convo); loadChats();
   } catch (e) {
-    document.getElementById("thinking").innerHTML = `⚠️ ${LG.esc(e.message)}`;
+    const lostIt = e instanceof TypeError || /^HTTP 50[234]\b/.test(e.message);
+    document.getElementById("thinking").innerHTML = `⚠️ ${LG.esc(e.message)}` + (lostIt ?
+      " - the analyst may still finish on the server: open the chat from the list in a minute before asking again." : "");
     convo = convo.slice(0, -1);
+    loadChats();
   } finally { btn.disabled = false; }
 }
 document.getElementById("send").onclick = () => send();
