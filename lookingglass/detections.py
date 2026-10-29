@@ -175,7 +175,10 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
             "count(*) FILTER (WHERE source = 'suricata') AS ids, "
             "count(*) FILTER (WHERE source = 'qfeeds') AS qfeeds, "
             "count(*) FILTER (WHERE source = 'crowdsec') AS crowdsec, "
-            "count(*) FILTER (WHERE source = 'zenarmor' AND coalesce(data->>'security', data->>'security_tags', '') <> '') AS zen "
+            # only threat traffic Zenarmor did NOT block: a blocked ad / link is Zenarmor doing its job, no sign of
+            # anything (repeated blocked threats raise their own zenarmor_threat alert, which counts below)
+            "count(*) FILTER (WHERE source = 'zenarmor' AND action IS DISTINCT FROM 'block' "
+            "AND coalesce(data->>'security', data->>'security_tags', '') <> '') AS zen "
             "FROM events WHERE src_ip = $1::inet AND ts > now() - make_interval(hours => $2)", ip, hours)
         others = await pool.fetch(
             "SELECT DISTINCT rule FROM alerts WHERE (src_ip = $1::inet OR dst_ip = $1::inet) AND status <> 'closed' "
@@ -192,7 +195,7 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
 def threat_signals(ev: dict[str, Any]) -> list[str]:
     """Independent signs that a host is compromised / malicious (for corroboration)."""
     sig = [f"{ev[k]} {label}" for k, label in (("ids", "Suricata alert(s)"), ("qfeeds", "threat-intel hit(s)"),
-                                                 ("zen", "Zenarmor threat event(s)")) if ev.get(k)]
+                                                 ("zen", "Zenarmor threat event(s) NOT blocked")) if ev.get(k)]
     if ev.get("other_alerts"):
         sig.append("open alerts: " + ", ".join(ev["other_alerts"][:5]))
     return sig

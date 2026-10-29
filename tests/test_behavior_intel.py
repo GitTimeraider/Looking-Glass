@@ -172,6 +172,18 @@ def test_new_behavior_respects_learning_peers_and_predictability():
         port = next(a for a in alerts if "tcp/22" in a["title"])
         assert port["severity"] == "high"  # low + no peer does it + SSH
         assert "cam1 (192.168.30.11)" in port["title"]
+        # another kind of device on the network does it too (a phone and a PC both fetching mail over IMAPS), and a
+        # blocked Zenarmor threat (an ad) is no corroboration: stays low
+        await pool.execute("INSERT INTO devices (mac, ip, vendor) VALUES ('cc:00:00:00:00:01', '192.168.30.60', 'Dell')")
+        await pool.execute("INSERT INTO device_profile (key, kind, value, first_seen, last_seen, hits) VALUES "
+                           "('cc:00:00:00:00:01', 'port', 'tcp/993', $1, $1, 5)", old)
+        await db.copy_events([event(NOW, "firewall", severity=6, action="pass", src_ip="192.168.30.12", dst_ip="198.51.100.9",
+                                    dst_port=993, proto="tcp", dst_country="NL"),
+                              event(NOW, "zenarmor", severity=4, action="block", src_ip="192.168.30.12", domain="ad.example",
+                                    data={"security": "Malware"})])
+        await Behavior(Settings(), DetectionEngine(Settings()).internal).update_profiles()
+        imap = next(a for a in await rules(pool, "new_behavior") if "tcp/993" in a["title"])
+        assert imap["severity"] == "low" and "other devices on the network do" in imap["description"]
         # a device that is still learning: nothing
         await pool.execute("INSERT INTO devices (mac, ip, vendor) VALUES ('bb:00:00:00:00:01', '192.168.30.50', 'X')")
         await pool.execute("INSERT INTO device_profile (key, kind, value, first_seen) VALUES ('bb:00:00:00:00:01', 'country', 'NL', now())")
