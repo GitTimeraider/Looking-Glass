@@ -513,6 +513,21 @@ def test_opnsense_own_interfaces_are_named_after_the_interface():
     assert main_interface(["if:igc1.20", "if:igc1"]) == "if:igc1"
 
 
+def test_opnsense_tunnel_interfaces_from_interface_statistics():
+    """WireGuard / OpenVPN interfaces have no ARP entries: their addresses come from the interface statistics."""
+    from lookingglass.opnsense import addressless_interfaces
+
+    stats = {"[LAN] (igc1) / 192.168.1.1": {"name": "igc1", "address": "192.168.1.1", "received-bytes": 1},
+             "[WireGuard] (wg1) / Link#9": {"name": "wg1", "address": "Link#9", "received-bytes": 1},
+             "[WireGuard] (wg1) / 10.0.3.1": {"name": "wg1", "address": "10.0.3.1", "received-bytes": 1},
+             "[WireGuard] (wg1) / fe80::1%wg1": {"name": "wg1", "address": "fe80::1", "received-bytes": 1},
+             "[Loopback] (lo0) / 127.0.0.1": {"name": "lo0", "address": "127.0.0.1", "received-bytes": 1}}
+    devs = addressless_interfaces(stats, {"igc1"})
+    assert [(d["mac"], d["hostname"], d["ips"], d["hwaddr"]) for d in devs] == \
+        [("if:wg1", "OPNsense (WireGuard)", ["10.0.3.1"], None)]
+    assert addressless_interfaces(None, set()) == []
+
+
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
 def test_opnsense_interface_name_replaces_a_guessed_one():
     from lookingglass.detections import track_devices

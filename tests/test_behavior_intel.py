@@ -499,6 +499,32 @@ def test_address_beaconing_ports_are_those_of_the_flow():
     run(body)
 
 
+@needs_db
+def test_beaconing_after_the_flow_ended_keeps_its_ports():
+    """The call ended 25 minutes before the detector ran (it still sees the rhythm in its 6-hour window): the alert's
+    ports must come from the flow itself, not only the last 15 minutes, or a port filter would let it through."""
+    from lookingglass import alert_filters as af
+
+    async def body(pool):
+        end = NOW - timedelta(minutes=25)
+        await db.copy_events([event(end - timedelta(seconds=61 * i), "firewall", severity=6, action="pass",
+                                    src_ip="192.168.3.3", dst_ip="104.29.157.21", src_port=50000, dst_port=19318,
+                                    proto="udp") for i in range(40)])
+        await pool.execute("INSERT INTO alert_filters (name, rules, networks, dst_ports, action) "
+                           "VALUES ('Discord voice', '{beaconing}', '192.168.3.3/32', '19294-19344', 'suppress')")
+        af.invalidate()
+        try:
+            await DetectionEngine(Settings()).beaconing()
+            assert await rules(pool, "beaconing") == []
+        finally:
+            await pool.execute("TRUNCATE alert_filters")
+            af.invalidate()
+        await DetectionEngine(Settings()).beaconing()
+        b = await rules(pool, "beaconing")
+        assert len(b) == 1 and b[0]["data"]["ports"]["dst"] == [19318]
+    run(body)
+
+
 def test_feed_download_sources():
     from lookingglass.intel import FEEDS
     seen, answers = [], {}
@@ -700,4 +726,26 @@ def test_tor_relay_behind_a_dns_ntp_redirect_is_not_raised():
         await DetectionEngine(Settings()).threat_intel()
         assert [a["ip"] for a in await rules(pool, "tor")] == ["192.168.20.13"]
         await db.set_snapshot("nat_rules", [])
+    run(body)
+
+
+@needs_db
+def test_host_sweep_ignores_out_of_state_packets():
+    """A TV waking from standby closes sessions the firewall already forgot: blocked FA / RA / PA / A packets to many
+    servers on 443 are no sweep. SYNs to many hosts are."""
+    async def body(pool):
+        flags = ["FA", "FPA", "RA", "PA", "A"]
+        await db.copy_events([event(NOW - timedelta(seconds=i), "firewall", severity=4, action="block", src_ip="192.168.2.8",
+                                    dst_ip=f"142.251.36.{i}", src_port=40000 + i, dst_port=443, proto="tcp",
+                                    data={"tcpflags": flags[i % 5], "label": "Default deny / state violation rule"})
+                              for i in range(20)])
+        eng = DetectionEngine(Settings())
+        await eng.host_sweep()
+        await eng.port_scan()
+        assert await rules(pool, "host_sweep") == [] and await rules(pool, "port_scan") == []
+        await db.copy_events([event(NOW - timedelta(seconds=i), "firewall", severity=4, action="block", src_ip="192.168.2.9",
+                                    dst_ip=f"192.168.1.{i + 10}", src_port=50000, dst_port=445, proto="tcp",
+                                    data={"tcpflags": "S"}) for i in range(10)])
+        await eng.host_sweep()
+        assert [r["ip"] for r in await rules(pool, "host_sweep")] == ["192.168.2.9"]
     run(body)

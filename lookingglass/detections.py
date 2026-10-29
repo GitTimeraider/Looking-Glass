@@ -45,6 +45,9 @@ ALLOWED_AGG = (f"(bool_or(source = 'firewall' AND action = 'pass') OR bool_or(so
                f"AND action IN ('pass', 'allow')) OR (bool_or({ZEN_ANSWERED}) AND NOT bool_or(source = 'firewall' "
                "AND action IN ('block', 'drop'))))")
 FW_BLOCKED_AGG = "count(*) FILTER (WHERE source = 'firewall' AND action IN ('block', 'drop'))"
+# a blocked packet that tries to open a connection (or is not TCP); out-of-state packets (ACK / RST: a device closing
+# sessions the firewall already forgot, e.g. after waking from standby) are no scan
+FW_PROBE = "(data->>'tcpflags' IS NULL OR data->>'tcpflags' !~ '[AR]')"
 FW_RULE_AGG = "max(data->>'label') FILTER (WHERE source = 'firewall' AND action IN ('block', 'drop'))"
 
 
@@ -470,7 +473,7 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
             d.get("interface") or None, origin, d.get("lease_type"), d.get("lease_expires"), bool(d.get("online")),
             source, name_rank(source) if source else 0, d.get("conn_type"), d.get("conn_where"), d.get("conn_signal"),
             d.get("ips"), d.get("hwaddr"))
-        if new and not first_run:
+        if new and not first_run and not d["mac"].startswith("if:"):  # OPNsense itself (a new interface)
             ipless = d["mac"].startswith("ip:")
             await raise_alert(
                 "new_device", Rating("low", ("a client without a MAC address (VPN / WireGuard peer or a routed network) "
@@ -678,7 +681,7 @@ class DetectionEngine:
         rows = await db.pool().fetch(
             "SELECT src_ip, count(DISTINCT dst_port) AS ports, count(DISTINCT dst_ip) AS hosts, count(*) AS hits, "
             "array_agg(DISTINCT dst_port ORDER BY dst_port) FILTER (WHERE dst_port IS NOT NULL) AS port_list "
-            "FROM events WHERE source = 'firewall' AND action = 'block' AND ts > now() - interval '10 minutes' "
+            f"FROM events WHERE source = 'firewall' AND action = 'block' AND ts > now() - interval '10 minutes' AND {FW_PROBE} "
             "AND src_ip IS NOT NULL GROUP BY src_ip HAVING count(DISTINCT dst_port) >= 15")
         for r in rows:
             ip = str(r["src_ip"])
@@ -697,8 +700,8 @@ class DetectionEngine:
     async def host_sweep(self) -> None:
         rows = await db.pool().fetch(
             "SELECT src_ip, dst_port, count(DISTINCT dst_ip) AS hosts, count(*) AS hits FROM events "
-            "WHERE source = 'firewall' AND action = 'block' AND ts > now() - interval '10 minutes' AND src_ip IS NOT NULL "
-            "GROUP BY src_ip, dst_port HAVING count(DISTINCT dst_ip) >= 10")
+            f"WHERE source = 'firewall' AND action = 'block' AND ts > now() - interval '10 minutes' AND {FW_PROBE} "
+            "AND src_ip IS NOT NULL GROUP BY src_ip, dst_port HAVING count(DISTINCT dst_ip) >= 10")
         for r in rows:
             ip = str(r["src_ip"])
             if not (sev := await self.rate_scan(ip, self.internal(ip), "host_sweep")):
@@ -1362,8 +1365,9 @@ class DetectionEngine:
         for kind, (base, popular) in queries.items():
             rows = await db.pool().fetch(
                 f"WITH t AS (SELECT DISTINCT src_ip, dst, date_trunc('second', ts) AS ts FROM ({base} LIMIT 2000000) x), "
-                "d AS (SELECT src_ip, dst, extract(epoch FROM ts - lag(ts) OVER (PARTITION BY src_ip, dst ORDER BY ts)) AS gap FROM t) "
-                "SELECT src_ip, dst, count(*) + 1 AS n, avg(gap) AS mean, stddev_pop(gap) AS sd FROM d WHERE gap IS NOT NULL "
+                "d AS (SELECT src_ip, dst, ts, extract(epoch FROM ts - lag(ts) OVER (PARTITION BY src_ip, dst ORDER BY ts)) AS gap FROM t) "
+                "SELECT src_ip, dst, count(*) + 1 AS n, avg(gap) AS mean, stddev_pop(gap) AS sd, min(ts) AS first, max(ts) AS last "
+                "FROM d WHERE gap IS NOT NULL "
                 "GROUP BY src_ip, dst HAVING count(*) >= 30 AND avg(gap) BETWEEN 60 AND 3600 "
                 "AND stddev_pop(gap) < 0.1 * avg(gap) LIMIT 200")
             rows = [r for r in rows if self.internal(str(r["src_ip"]))
@@ -1398,6 +1402,9 @@ class DetectionEngine:
                 await raise_alert(
                     "beaconing", rating, f"Possible beaconing: {src} → {what} every {every}", f"beacon:{src}:{r['dst']}",
                     src_ip=src, dst_ip=r["dst"] if kind == "conn" else None, count=r["n"], mode="max",
+                    # the rhythm spans 6 hours: without it the ports (and port filters) of an alert first raised after
+                    # the flow ended - a voice call that just stopped - would only see the last 15 minutes, i.e. nothing
+                    span=(r["first"], r["last"]),
                     blocked=kind == "conn" and not v["passed"] and "every attempt was blocked",
                     # an address: only the traffic to it, so the alert's ports (and port filters) are those of this flow
                     events={"ip": src, "q": r["dst"]} if kind == "dns" else {"src": src, "dst": r["dst"]},
