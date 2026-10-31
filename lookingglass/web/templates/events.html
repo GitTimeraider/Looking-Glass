@@ -107,13 +107,15 @@ const KIND_TITLE = { block: "Blocked / denied", allow: "Allowed", info: "Informa
 function render() {
   const el = document.getElementById("results");
   if (!rows.length) { el.innerHTML = `<div class="empty">No events match.</div>`; return; }
-  el.innerHTML = `<div class="table-wrap tall"><table><thead><tr><th>Time</th><th>Source</th><th>Action</th><th>Src</th><th>Dst</th><th>Message</th></tr></thead><tbody>` +
+  // an address cell stays truly empty without an address, so the phone layout can leave out its "→"
+  const addr = (ip, port, cc) => ip || port ? `${LG.ip(ip)}${port ? `<span class="muted">:${port}</span>` : ""} ${LG.flag(cc)}` : "";
+  el.innerHTML = `<div class="table-wrap tall ev-list"><table><thead><tr><th>Time</th><th>Source</th><th>Action</th><th>Src</th><th>Dst</th><th>Message</th></tr></thead><tbody>` +
     rows.map((r, i) => `<tr data-i="${i}" class="ev-${kind(r)}" style="cursor:pointer">
-      <td class="small" style="white-space:nowrap">${LG.time(r.ts)}</td>
-      <td>${LG.src(r.source)}</td>
-      <td style="white-space:nowrap"><span class="ev-dot" title="${KIND_TITLE[kind(r)]}"></span>${LG.esc(r.action || "")}${r.program ? `<div class="small muted">${LG.esc(r.program)}</div>` : ""}</td>
-      <td>${LG.ip(r.src_ip)}${r.src_port ? `<span class="muted">:${r.src_port}</span>` : ""} ${LG.flag(r.src_country)}</td>
-      <td>${LG.ip(r.dst_ip)}${r.dst_port ? `<span class="muted">:${r.dst_port}</span>` : ""} ${LG.flag(r.dst_country)}</td>
+      <td class="small ev-time" style="white-space:nowrap">${LG.time(r.ts)}</td>
+      <td class="ev-src">${LG.src(r.source)}</td>
+      <td class="ev-act" style="white-space:nowrap"><span class="ev-dot" title="${KIND_TITLE[kind(r)]}"></span>${LG.esc(r.action || "")}${r.program ? `<div class="small muted ev-prog">${LG.esc(r.program)}</div>` : ""}</td>
+      <td class="ev-from">${addr(r.src_ip, r.src_port, r.src_country)}</td>
+      <td class="ev-to">${addr(r.dst_ip, r.dst_port, r.dst_country)}</td>
       <td class="msg">${LG.esc(r.message || "")}</td></tr>`).join("") + `</tbody></table></div>`;
   el.querySelectorAll("tr[data-i]").forEach(tr => tr.onclick = () => {
     const next = tr.nextElementSibling;
