@@ -24,6 +24,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .. import __version__, app_config, auth, crypto, db, event_filter
 from ..ai import Analyst, request_log
 from ..config import Settings
+from . import asset_version
 from ..ingest import STATS
 from ..dashboards import DASHBOARDS, run_dashboard
 from ..reports import build_report, report_mail, run_ai_summary, timeline
@@ -36,6 +37,7 @@ from .auth_routes import register as register_auth
 log = logging.getLogger(__name__)
 HERE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(HERE / "templates"))
+templates.env.globals["asset_v"] = asset_version()
 # (key, menu label, menu group): dashboards sit under their product ("opnsense", "unifi"), "tools" covers every source
 DASH_NAV = [(k, v["title"].split(" (")[0], v.get("group", "tools")) for k, v in DASHBOARDS.items()]
 templates.env.globals["dashboards"] = DASH_NAV
