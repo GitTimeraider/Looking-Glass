@@ -99,14 +99,19 @@ function params() {
   for (const [k, v] of Object.entries(extra)) p.set(k, v);
   return p;
 }
+// what an event did, for the colour of its row: blocked (red), allowed (green) or informational (blue)
+const BLOCKED = new Set(["block", "drop", "reject", "deny", "waf_block", "rate_limited", "login_failed", "ban", "captcha"]);
+const ALLOWED = new Set(["pass", "allow", "accept", "login_success", "vpn_connect"]);
+const kind = r => BLOCKED.has(r.action) ? "block" : ALLOWED.has(r.action) ? "allow" : "info";
+const KIND_TITLE = { block: "Blocked / denied", allow: "Allowed", info: "Informational" };
 function render() {
   const el = document.getElementById("results");
   if (!rows.length) { el.innerHTML = `<div class="empty">No events match.</div>`; return; }
   el.innerHTML = `<div class="table-wrap tall"><table><thead><tr><th>Time</th><th>Source</th><th>Action</th><th>Src</th><th>Dst</th><th>Message</th></tr></thead><tbody>` +
-    rows.map((r, i) => `<tr data-i="${i}" style="cursor:pointer">
+    rows.map((r, i) => `<tr data-i="${i}" class="ev-${kind(r)}" style="cursor:pointer">
       <td class="small" style="white-space:nowrap">${LG.time(r.ts)}</td>
       <td>${LG.src(r.source)}</td>
-      <td>${LG.esc(r.action || "")}${r.program ? `<div class="small muted">${LG.esc(r.program)}</div>` : ""}</td>
+      <td style="white-space:nowrap"><span class="ev-dot" title="${KIND_TITLE[kind(r)]}"></span>${LG.esc(r.action || "")}${r.program ? `<div class="small muted">${LG.esc(r.program)}</div>` : ""}</td>
       <td>${LG.ip(r.src_ip)}${r.src_port ? `<span class="muted">:${r.src_port}</span>` : ""} ${LG.flag(r.src_country)}</td>
       <td>${LG.ip(r.dst_ip)}${r.dst_port ? `<span class="muted">:${r.dst_port}</span>` : ""} ${LG.flag(r.dst_country)}</td>
       <td class="msg">${LG.esc(r.message || "")}</td></tr>`).join("") + `</tbody></table></div>`;
