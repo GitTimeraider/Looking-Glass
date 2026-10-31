@@ -145,7 +145,7 @@ function details(a) {
 function item(a) {
   const src = a.src_name || a.src_ip, dp = ((a.data || {}).ports || {});
   const port = (dp.dst || []).length === 1 && dp.dst_n === 1 ? `port ${LG.esc(String(dp.dst[0]))}` : "";
-  const meta = [src ? LG.esc(src) : "", port, LG.esc(a.rule), `<span title="first ${LG.esc(LG.time(a.created_at))}">${LG.ago(a.last_seen)}</span>`].filter(Boolean).join(" · ");
+  const meta = [`<span class="al-id" title="Alert number">#${a.id}</span>`, src ? LG.esc(src) : "", port, LG.esc(a.rule), `<span title="first ${LG.esc(LG.time(a.created_at))}">${LG.ago(a.last_seen)}</span>`].filter(Boolean).join(" · ");
   const open = expanded.has(a.id);
   return `<div class="al sev-${LG.esc(a.severity)}${open ? " open" : ""}" id="a${a.id}">
     <div class="al-head">
