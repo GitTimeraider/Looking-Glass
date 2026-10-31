@@ -7,6 +7,12 @@
 <div class="filters al-tools">
   <label class="al-selall" title="Select every shown alert"><input type="checkbox" id="sel-all"> <span>All</span></label>
   <input id="filter" type="search" placeholder="Filter alerts…">
+  <select id="sort" title="Order of the alerts" aria-label="Order of the alerts">
+    <option value="priority" title="Highest severity first, then latest activity">Priority</option>
+    <option value="number" title="Highest alert number (newest alert) first"># newest</option>
+    <option value="number_asc" title="Lowest alert number (oldest alert) first"># oldest</option>
+    <option value="recent" title="Most recently seen first">Last seen</option>
+  </select>
   <details class="more">
     <summary class="btn secondary" title="More options">⋯</summary>
     <div class="more-menu">
@@ -29,7 +35,17 @@
 {% endblock %}
 {% block scripts %}
 <script>
-let status = "open", alerts = [], seq = 0;
+let status = "open", alerts = [], seq = 0, sort = "priority";
+// sort order: the same in every category, remembered in this browser
+const sortSel = document.getElementById("sort");
+try { sort = localStorage.getItem("lg-alert-sort") || sort; } catch (e) {}
+if (![...sortSel.options].some(o => o.value === sort)) sort = "priority";
+sortSel.value = sort;
+sortSel.onchange = () => {
+  sort = sortSel.value;
+  try { localStorage.setItem("lg-alert-sort", sort); } catch (e) {}
+  load();
+};
 LG.seg(document.getElementById("status"), status, v => {
   status = v; picked.clear(); viewButtons();
   alerts = []; document.getElementById("list").innerHTML = `<div class="empty">Loading…</div>`;
@@ -40,7 +56,7 @@ async function load() {
   const my = ++seq, el = document.getElementById("list");
   let list, counts;
   try {
-    [list, counts] = await Promise.all([LG.api(`/api/alerts?status=${status}`), LG.api("/api/alerts/counts")]);
+    [list, counts] = await Promise.all([LG.api(`/api/alerts?status=${status}&sort=${sort}`), LG.api("/api/alerts/counts")]);
   } catch (e) {
     if (my !== seq) return;
     alerts = [];
