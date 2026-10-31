@@ -21,10 +21,12 @@ from fastapi.templating import Jinja2Templates
 
 from .. import __version__, auth, db, db_config
 from ..config import Settings
+from . import asset_version
 
 log = logging.getLogger("lookingglass.setup")
 HERE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(HERE / "templates"))
+templates.env.globals["asset_v"] = asset_version()
 MAX_ATTEMPTS = 10
 _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I
 

@@ -85,7 +85,7 @@ th.sortable .arrow { font-size: 10px; margin-left: 4px; }
 .sort-toggle { background: none; border: 1px solid var(--border); color: var(--muted); font-size: 11px; padding: 1px 7px; border-radius: 10px; text-transform: none; letter-spacing: 0; font-weight: 400; cursor: pointer; margin-left: 6px; }
 .sort-toggle:hover { color: var(--text); border-color: var(--muted); }
 #containers .table-wrap { max-height: none; } #containers td { padding-top: 5px; padding-bottom: 5px; }
-td.msg { font-family: var(--mono); font-size: 12px; word-break: break-word; }
+td.msg { font-family: var(--mono); font-size: 12px; word-break: break-word; margin: 0; padding: 6px 8px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; }  /* not the chat bubble (.msg) */
 tr.detail td { background: var(--bg); }
 /* event search: row tinted by what the event did (blocked / allowed / informational) */
 tr.ev-block { --ev: var(--bad); } tr.ev-allow { --ev: var(--ok); } tr.ev-info { --ev: var(--accent2); }
@@ -94,6 +94,29 @@ tr[class^="ev-"]:hover td { background: color-mix(in srgb, var(--ev) 14%, var(--
 tr[class^="ev-"] td:first-child { box-shadow: inset 3px 0 0 var(--ev); }
 tr.ev-info td { background: color-mix(in srgb, var(--ev) 3%, transparent); }
 .ev-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ev); margin-right: 6px; vertical-align: 1px; }
+/* phone: one compact block per event - "● action  source  time" / "from → to" / message (2 lines, tap for all) */
+@media (max-width: 760px) {
+  .ev-list thead { display: none; }
+  .ev-list table, .ev-list tbody { display: block; width: 100%; }
+  .ev-list tr[data-i] { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px;
+    padding: 7px 8px 7px 10px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--ev) 7%, transparent);
+    box-shadow: inset 3px 0 0 var(--ev); }
+  .ev-list tr[data-i]::before { content: ""; order: 4; flex-basis: 100%; }  /* line break after "action source time" */
+  .ev-list tr.ev-info { background: color-mix(in srgb, var(--ev) 3%, transparent); }
+  .ev-list tr[data-i] td, .ev-list tr[data-i]:hover td { display: block; padding: 0; border: 0; background: none; box-shadow: none; min-width: 0; }
+  .ev-list .ev-act { order: 1; flex: 1 1 auto; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+  .ev-list .ev-prog { display: none; }  /* still in the details (tap the event) */
+  .ev-list .ev-src { order: 2; }
+  .ev-list .ev-time { order: 3; color: var(--muted); }
+  .ev-list .ev-from { order: 5; font-size: 12.5px; white-space: nowrap; overflow-wrap: normal; overflow: hidden; text-overflow: ellipsis; }
+  .ev-list .ev-to { order: 6; flex: 1 1 0; font-size: 12.5px; white-space: nowrap; overflow-wrap: normal; overflow: hidden; text-overflow: ellipsis; }
+  .ev-list .ev-from *, .ev-list .ev-to * { white-space: nowrap; overflow-wrap: normal; }
+  .ev-list .ev-from:not(:empty) + .ev-to:not(:empty)::before { content: "→ "; color: var(--muted); }
+  .ev-list .ev-from:empty, .ev-list .ev-to:empty { display: none; }
+  .ev-list tr[data-i] td.msg { order: 7; flex-basis: 100%; padding-left: 1px; color: var(--muted); display: -webkit-box !important; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ev-list tr.detail { display: block; }
+  .ev-list tr.detail td { display: block; padding: 6px 8px; }
+}
 .empty { color: var(--muted); padding: 10px 0; font-style: italic; }
 
 .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: #fff; background: var(--info); white-space: nowrap; }
