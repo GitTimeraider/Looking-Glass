@@ -42,6 +42,11 @@ templates.env.globals["asset_v"] = asset_version()
 DASH_NAV = [(k, v["title"].split(" (")[0], v.get("group", "tools")) for k, v in DASHBOARDS.items()]
 templates.env.globals["dashboards"] = DASH_NAV
 
+# alert list orders (?sort=): highest priority first (the default), newest / oldest alert number, latest activity
+_PRIO = "array_position(ARRAY['critical','high','medium','low','info'], severity)"
+ALERT_SORT = {"priority": f"{_PRIO}, last_seen DESC", "number": "id DESC", "number_asc": "id",
+              "recent": f"last_seen DESC, {_PRIO}"}
+
 PAGES = {
     "/": ("dashboard.html", "Overview"),
     "/events": ("events.html", "Events"),
@@ -196,7 +201,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return {"rows": out[:limit], "has_more": len(out) > limit}
 
     @app.get("/api/alerts")
-    async def alerts(status: str = "open", hours: float = Query(24 * 30, gt=0), limit: int = Query(500, le=5000)):
+    async def alerts(status: str = "open", hours: float = Query(24 * 30, gt=0), limit: int = Query(500, le=5000),
+                     sort: str = "priority"):
         args: list[Any] = [hours * 3600, limit]
         cond = ""
         if status != "all":
@@ -205,7 +211,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         rows = await db.pool().fetch(
             f"SELECT id, created_at, last_seen, rule, severity, title, description, host(src_ip) src_ip, host(dst_ip) dst_ip, count, status, close_reason, data "
             f"FROM alerts WHERE last_seen > now() - make_interval(secs => $1) {cond} "
-            f"ORDER BY array_position(ARRAY['critical','high','medium','low','info'], severity), last_seen DESC LIMIT $2", *args)
+            f"ORDER BY {ALERT_SORT.get(sort, ALERT_SORT['priority'])} LIMIT $2", *args)
         out = db.records(rows)
         # one alert with unexpected stored data (an older version, a hand edit ...) must never fail the whole list:
         # it is logged and shown without the extras

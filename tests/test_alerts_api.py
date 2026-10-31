@@ -38,3 +38,32 @@ def test_alert_list_survives_odd_stored_alerts():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_alert_list_sort_orders():
+    """?sort= orders the list by priority (default), alert number (both ways) or latest activity; unknown = priority."""
+    from lookingglass.web.app import create_app
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE alerts, alert_filters")
+            alert_filters.invalidate()
+            # id order: low (seen last), critical, medium (seen first)
+            for fp, sev, ago in (("a", "low", 1), ("b", "critical", 5), ("c", "medium", 10)):
+                await pool.execute("INSERT INTO alerts (rule, severity, title, fingerprint, status, last_seen) VALUES "
+                                   "('r', $1, 't', $2, 'open', now() - make_interval(mins => $3))", sev, fp, ago)
+            ep = next(r.endpoint for r in create_app(Settings(), None).routes if getattr(r, "path", "") == "/api/alerts")
+            sevs = lambda out: [a["severity"] for a in out]  # noqa: E731
+            assert sevs(await ep(status="open", hours=720, limit=500)) == ["critical", "medium", "low"]
+            assert sevs(await ep(status="open", hours=720, limit=500, sort="bogus")) == ["critical", "medium", "low"]
+            assert sevs(await ep(status="open", hours=720, limit=500, sort="number")) == ["medium", "critical", "low"]
+            assert sevs(await ep(status="open", hours=720, limit=500, sort="number_asc")) == ["low", "critical", "medium"]
+            assert sevs(await ep(status="open", hours=720, limit=500, sort="recent")) == ["low", "critical", "medium"]
+            await pool.execute("TRUNCATE alerts, alert_filters")
+        finally:
+            await db.close()
+
+    asyncio.run(main())

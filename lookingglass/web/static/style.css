@@ -383,6 +383,7 @@ details.card > summary { cursor: pointer; }
 /* alerts page: one compact line per alert, details when opened, bulk actions in a bar at the bottom */
 .al-tools { flex-wrap: nowrap; }
 .al-tools input[type=search] { flex: 1; min-width: 0; }
+.al-tools #sort { flex: none; width: auto; }
 .al-selall { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
   background: var(--panel2); cursor: pointer; white-space: nowrap; font-size: 13px; }
 .al-selall input, .al-head input[type=checkbox] { width: 18px; height: 18px; margin: 0; padding: 0; accent-color: var(--accent); cursor: pointer; }
