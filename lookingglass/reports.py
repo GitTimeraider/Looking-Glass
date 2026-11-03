@@ -76,7 +76,7 @@ async def build_report(hours: float = 24) -> dict[str, Any]:
     secs = float(hours) * 3600
 
     async def run(name: str, sql: str) -> tuple[str, list[dict[str, Any]]]:
-        async with db.pool().acquire() as conn:
+        async with db.heavy(), db.pool().acquire() as conn:
             return name, db.records(await conn.fetch(sql, secs))
 
     results = await asyncio.gather(*(run(n, q) for n, q in QUERIES.items()))
@@ -86,15 +86,22 @@ async def build_report(hours: float = 24) -> dict[str, Any]:
 
 
 async def timeline(hours: float = 24, buckets: int = 48) -> dict[str, Any]:
+    """Events per source and blocked events over time (Overview). From 2 days on in whole hours, counted from the
+    hourly counts (rollup.py) - same numbers, a fraction of the work."""
+    from . import rollup
     secs = float(hours) * 3600
     step = max(60, int(secs / buckets))
-    rows = await db.pool().fetch(
-        "SELECT to_timestamp(floor(extract(epoch FROM ts) / $2) * $2) AS bucket, source, count(*) n FROM events "
-        "WHERE ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 1", secs, step)
-    blocked = await db.pool().fetch(
-        "SELECT to_timestamp(floor(extract(epoch FROM ts) / $2) * $2) AS bucket, count(*) n FROM events "
-        "WHERE ts > now() - make_interval(secs => $1) AND action IN ('block', 'drop', 'ban') GROUP BY 1 ORDER BY 1", secs, step)
-    return {"step": step, "series": db.records(rows), "blocked": db.records(blocked)}
+    by_source = ("SELECT to_timestamp(floor(extract(epoch FROM ts) / $2) * $2) AS bucket, source, count(*) n FROM events "
+                 "WHERE ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 1")
+    blocked = ("SELECT to_timestamp(floor(extract(epoch FROM ts) / $2) * $2) AS bucket, count(*) n FROM events "
+               "WHERE ts > now() - make_interval(secs => $1) AND action IN ('block', 'drop', 'ban') GROUP BY 1 ORDER BY 1")
+    async with db.pool().acquire() as conn:
+        if hours >= rollup.MIN_HOURS:
+            step = -(-step // 3600) * 3600
+            rows, blk = await rollup.fetch(conn, by_source, secs, step), await rollup.fetch(conn, blocked, secs, step)
+        else:
+            rows, blk = await conn.fetch(by_source, secs, step), await conn.fetch(blocked, secs, step)
+    return {"step": step, "series": db.records(rows), "blocked": db.records(blk)}
 
 
 def report_due(last: str | None, today: date, every_days: int) -> bool:

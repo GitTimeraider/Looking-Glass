@@ -15,7 +15,7 @@ import asyncio
 import re
 from typing import Any
 
-from . import db
+from . import db, rollup
 
 W = "ts > now() - make_interval(secs => $1)"
 B = "to_timestamp(floor(extract(epoch FROM ts) / $2) * $2)"
@@ -437,7 +437,18 @@ def sql_order(sql: str, columns: list[str]) -> dict[str, Any] | None:
 
 
 def step_for(hours: float) -> int:
-    return max(60, int(hours * 3600 / 60))
+    """Chart bucket size: about 60 bars. From 2 days on whole hours (7 days: 3 h, 30 days: 12 h), so charts can be
+    drawn from the hourly counts."""
+    step = max(60, int(hours * 3600 / 60))
+    return -(-step // 3600) * 3600 if hours >= rollup.MIN_HOURS else step
+
+
+# panels that only count events per source / action / protocol / interface / direction / port / country / severity:
+# over 2+ days they read the hourly counts (rollup.py) - same numbers, a fraction of the work
+ROLLUP_PANELS = {("firewall", "actions"), ("firewall", "proto"), ("firewall", "iface"), ("firewall", "dir"),
+                 ("firewall", "ports"), ("firewall", "countries"), ("firewall", "hour"), ("dns", "q"), ("web", "status"),
+                 ("web", "codes"), ("web", "countries"), ("zenarmor", "blk"), ("auth", "ts"), ("vpn", "vpnev"),
+                 ("unifi", "ts"), ("syslog", "sev")}
 
 
 async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
@@ -448,11 +459,12 @@ async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] 
 
     async def run(panel: dict[str, Any]) -> dict[str, Any]:
         sql = panel["sql"]
+        fast = hours >= rollup.MIN_HOURS and (name, panel["id"]) in ROLLUP_PANELS
         args = [secs, step] if "$2" in sql else [secs]
         out = {k: v for k, v in panel.items() if k != "sql"}
         try:
-            async with db.pool().acquire() as conn:
-                out["rows"] = db.records(await conn.fetch(sql, *args))
+            async with db.heavy(), db.pool().acquire() as conn:
+                out["rows"] = db.records(await (rollup.fetch(conn, sql, *args) if fast else conn.fetch(sql, *args)))
             if hide := {c for c, src in (panel.get("needs_cols") or {}).items() if src in off}:
                 out["rows"] = [{k: v for k, v in r.items() if k not in hide} for r in out["rows"]]
             if panel["type"] == "table" and out["rows"]:

@@ -57,6 +57,9 @@ services:
     container_name: looking-glass-db
     restart: unless-stopped
     shm_size: 512mb                   # Docker's default /dev/shm is 64 MB; parallel queries need more
+    # more memory to keep the log tables cached (the default is 128 MB): fewer disk reads and less CPU for the
+    # dashboards. About a quarter of the RAM you want the database to use; 256MB on a small machine.
+    command: ["postgres", "-c", "shared_buffers=512MB", "-c", "effective_cache_size=2GB"]
     user: postgres                    # start directly as the postgres user, so no capabilities are needed
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
