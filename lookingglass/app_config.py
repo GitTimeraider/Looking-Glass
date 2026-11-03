@@ -137,6 +137,13 @@ FIELDS: list[Field] = [
     Field("ai_privacy_keep", "ai", "Privacy mode: never replace these", "list", "Names that should stay readable "
           "(common words that are also a device or user name). Generic names such as root, admin, nas, router are "
           "never replaced anyway.", placeholder="media-server"),
+    Field("ai_privacy_avoid", "ai", "Privacy mode: never use these networks for fake addresses", "list", "A fake "
+          "address keeps the structure of the real one: devices in the same /24 get fake addresses in the same fake "
+          "/24 (the last number stays), devices in another /24 a different one. The fake networks are picked at "
+          "random and never one of your own networks (devices, OPNsense interfaces, Extra internal networks). List "
+          "networks or ranges here that should never be used for them either; fake addresses already in them are "
+          "replaced. One per line: 10.0.0.0/8, an address, or a range 192.168.0.0-192.168.50.255.",
+          placeholder="10.0.0.0/8\n192.168.0.0-192.168.50.255"),
     # reports (the setting keys keep their old names: ai_daily_report*)
     Field("ai_daily_report", "reports", "Scheduled report", "bool", "Write a report on a schedule (Reports page), with "
           "the AI analysis when the AI analyst is set up."),
@@ -349,6 +356,12 @@ def _coerce(f: Field, value: Any) -> Any:
         from .intel import parse_sources
         try:
             parse_sources(v)
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: {exc}") from exc
+    if f.key == "ai_privacy_avoid" and v:
+        from .privacy import parse_avoid
+        try:
+            parse_avoid(v)
         except ValueError as exc:
             raise SettingsError(f"{f.label}: {exc}") from exc
     if f.key == "report_mail_to" and v:

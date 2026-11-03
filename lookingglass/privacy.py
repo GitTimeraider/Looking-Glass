@@ -167,6 +167,9 @@ class MemoryStore:
         self.rows[(kind, key)] = (real, fake)
         return real, fake
 
+    async def delete(self, kind: str, key: str) -> None:
+        self.rows.pop((kind, key), None)
+
 
 class DbStore:
     async def load(self) -> list[tuple[str, str, str, str]]:
@@ -183,6 +186,10 @@ class DbStore:
             return real, fake
         row = await pool.fetchrow("SELECT real, fake FROM ai_pseudonyms WHERE kind = $1 AND key = $2", kind, key)
         return (row["real"], row["fake"]) if row else None
+
+    async def delete(self, kind: str, key: str) -> None:
+        from . import db
+        await db.pool().execute("DELETE FROM ai_pseudonyms WHERE kind = $1 AND key = $2", kind, key)
 
 
 # --------------------------------------------------------------- mapping ---
@@ -215,19 +222,31 @@ class Mapping:
         key = self.rev.get(kind, {}).get(fake.lower())
         return (key, self.fwd[kind][key][0]) if key is not None else None
 
-    async def allocate(self, kind: str, key: str, real: str, make: Callable[[int], str]) -> str:
+    async def allocate(self, kind: str, key: str, real: str, make: Callable[[int], str],
+                       reject: Callable[[str], bool] | None = None) -> str:
+        """The pseudonym of (kind, key), made with ``make(attempt)`` when it has none yet. ``reject``: candidates
+        that must not be used (your own networks, Settings › AI analyst › never use these networks)."""
         async with self.lock:
             if (hit := self.fake(kind, key)) is not None:
                 return hit
-            for attempt in range(200):
+            for attempt in range(240):
                 fake = make(attempt)
-                if fake.lower() in self.rev.get(kind, {}) or fake.lower() == key:
+                if fake.lower() in self.rev.get(kind, {}) or fake.lower() == key or (reject and reject(fake)):
                     continue
                 got = await self.store.insert(kind, key, real, fake)
                 if got:
                     self._put(kind, key, got[0], got[1])
                     return got[1]
-            raise RuntimeError(f"no free pseudonym for {kind}")
+            raise RuntimeError(f"privacy mode: no free pseudonym for {real} - too many networks excluded under "
+                               "Settings › AI analyst › Privacy mode: never use these networks")
+
+    async def forget(self, kind: str, key: str) -> None:
+        """Drop a pseudonym (it lies in a network that may no longer be used): the next request gets a new one."""
+        async with self.lock:
+            hit = self.fwd.get(kind, {}).pop(key, None)
+            if hit:
+                self.rev.get(kind, {}).pop(hit[1].lower(), None)
+                await self.store.delete(kind, key)
 
 
 _MAPPING: Mapping | None = None
@@ -256,6 +275,7 @@ class Session:
     own4: set[str] = field(default_factory=set)  # own public IPv4 addresses
     own_nets: list[Any] = field(default_factory=list)  # own networks (Extra internal networks)
     own6: set[str] = field(default_factory=set)  # own IPv6 sites (first 48 bits, exploded)
+    avoid: list[Any] = field(default_factory=list)  # networks no pseudonym may lie in (your own + the setting)
     memo: dict[str, str] = field(default_factory=dict)
     tokens: dict[tuple, str | None] = field(default_factory=dict)  # matched text -> its replacement (final)
 
@@ -265,6 +285,26 @@ class Session:
             pats.append(r"(?<![A-Za-z0-9])(?P<name>(?i:" + trie_regex(sorted(self.names)) + r"))(?![A-Za-z0-9])")
         self._hide_re = re.compile("|".join(pats))
         self._reveal_re: tuple[int, re.Pattern] | None = None
+
+    # ---------------------------------------------------------- avoid ---
+    def blocked(self, net: Any) -> bool:
+        """``net`` (a network or an address) lies in / overlaps a network pseudonyms must stay out of."""
+        if isinstance(net, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+            return any(net in a for a in self.avoid if a.version == net.version)
+        return any(net.overlaps(a) for a in self.avoid if a.version == net.version)
+
+    def reject(self, kind: str) -> Callable[[str], bool] | None:
+        """Which candidate pseudonyms of this kind may not be used."""
+        if kind == "net4":  # also never a /24 that is itself one of your real networks
+            return lambda f: f in self.mapping.fwd.get("net4", {}) or self.blocked(ipaddress.ip_network(f + ".0/24"))
+        if kind == "ip4":
+            return lambda f: self.blocked(ipaddress.ip_address(f))
+        if kind == "net6":
+            return lambda f: f in self.mapping.fwd.get("net6", {}) or self.blocked(
+                ipaddress.ip_network(str(ipaddress.IPv6Address(f + "::")) + "/48"))
+        if kind == "ip6":
+            return lambda f: self.blocked(ipaddress.ip_address(f))
+        return None
 
     # ----------------------------------------------------------- hide ---
     def _ip4(self, text: str, prefix: int | None, alloc: Callable) -> str | None:
@@ -385,7 +425,7 @@ class Session:
             for kind, key, real, make in need:
                 if (kind, key) not in seen:
                     seen.add((kind, key))
-                    await self.mapping.allocate(kind, key, real, make)
+                    await self.mapping.allocate(kind, key, real, make, self.reject(kind))
 
         def lookup(kind: str, key: str, real: str, make: Callable) -> str | None:
             return self.mapping.fake(kind, key)
@@ -555,17 +595,17 @@ def _format_mac(hex12: str, like: str) -> str:
     return out.upper() if like.isupper() else out
 
 
+_FAKE4 = {16: lambda: f"192.168.{_rnd(0, 255)}", 8: lambda: f"10.{_rnd(0, 255)}.{_rnd(0, 255)}",
+          12: lambda: f"172.{_rnd(16, 31)}.{_rnd(0, 255)}", 10: lambda: f"100.{_rnd(64, 127)}.{_rnd(0, 255)}"}
+
+
 def _net4_maker(net: ipaddress.IPv4Network) -> Callable[[int], str]:
-    """A fake /24 of the same private class (192.168.x stays 192.168.y)."""
+    """A fake /24 of the same private range (192.168.x stays 192.168.y). When that range is full or excluded, the
+    other private ranges are tried (10.x, 172.16-31.x, 100.64-127.x)."""
+    order = [net.prefixlen] + [p for p in (8, 12, 16, 10) if p != net.prefixlen]
 
     def make(attempt: int) -> str:
-        if net.prefixlen == 16 and attempt < 120:  # 192.168.0.0/16: 256 networks, then fall back to 10.x
-            return f"192.168.{_rnd(0, 255)}"
-        if net.prefixlen == 12:
-            return f"172.{_rnd(16, 31)}.{_rnd(0, 255)}"
-        if net.prefixlen == 10:
-            return f"100.{_rnd(64, 127)}.{_rnd(0, 255)}"
-        return f"10.{_rnd(0, 255)}.{_rnd(0, 255)}"
+        return _FAKE4[order[min(attempt // 60, 3)]]()
 
     return make
 
@@ -578,6 +618,33 @@ def _doc6_maker(_attempt: int) -> str:
     return f"2001:0db8:{secrets.randbelow(65536):04x}"
 
 
+def parse_avoid(text: str) -> list[Any]:
+    """Settings › AI analyst › never use these networks: CIDRs (10.0.0.0/8), single addresses and ranges
+    (192.168.0.0-192.168.50.255), separated by commas / lines. Raises ValueError naming a bad entry."""
+    out: list[Any] = []
+    for part in re.split(r"[,;\n]+", text or ""):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            if "-" in part and "/" not in part:
+                lo, hi = (ipaddress.ip_address(x.strip()) for x in part.split("-", 1))
+                if lo.version != hi.version or lo > hi:
+                    raise ValueError
+                out += list(ipaddress.summarize_address_range(lo, hi))
+            else:
+                out.append(ipaddress.ip_network(part, strict=False))
+        except ValueError as exc:
+            raise ValueError(f"'{part}' is not a network (10.0.0.0/8), an address or a range "
+                             "(192.168.0.0-192.168.50.255)") from exc
+    return out
+
+
+def _site(addr: Any) -> Any:
+    """The network a pseudonym replaces as a whole: the /24 of an IPv4 address, the /48 of an IPv6 one."""
+    return ipaddress.ip_network(f"{addr}/{24 if addr.version == 4 else 48}", strict=False)
+
+
 # ------------------------------------------------------------ dictionary ---
 @dataclass
 class _Dict:
@@ -586,6 +653,7 @@ class _Dict:
     own6: set[str]
     built: float
     key: tuple
+    real_nets: list[Any] = field(default_factory=list)  # your real local networks: no pseudonym may land on one
 
 
 _DICT: _Dict | None = None
@@ -649,7 +717,7 @@ def build_names(settings: Any, hosts: list[str], ssids: list[str], users: list[s
     return out
 
 
-async def _collect(settings: Any) -> tuple[list[str], list[str], list[str], set[str], set[str]]:
+async def _collect(settings: Any) -> tuple[list[str], list[str], list[str], set[str], set[str], list[Any]]:
     from . import db
     pool = db.pool()
     hosts = [r["hostname"] for r in await pool.fetch(
@@ -672,6 +740,7 @@ async def _collect(settings: Any) -> tuple[list[str], list[str], list[str], set[
         if isinstance(r, dict):
             ssids.append(r.get("essid") or "")
     own4, own6 = set(), set()
+    real: set[Any] = set()
     stats = await db.get_snapshot("interfaces") or {}
     for v in stats.values() if isinstance(stats, dict) else []:
         addr = str(v.get("address") or "").split("%")[0].split("/")[0] if isinstance(v, dict) else ""
@@ -679,11 +748,18 @@ async def _collect(settings: Any) -> tuple[list[str], list[str], list[str], set[
             ip = ipaddress.ip_address(addr)
         except ValueError:
             continue
+        if not (ip.is_loopback or ip.is_link_local):
+            real.add(_site(ip))
         if ip.version == 4 and ip.is_global:
             own4.add(str(ip))
         elif ip.version == 6 and ip.is_global:
             own6.add(":".join(ip.exploded.split(":")[:3]))
-    return hosts, ssids, users, own4, own6
+    # every network a device of yours is in: a pseudonym never looks like one of your own networks
+    for r in await pool.fetch("SELECT DISTINCT x FROM devices, unnest(coalesce(ips, '{}'::inet[]) || ip) x WHERE x IS NOT NULL"):
+        ip = ipaddress.ip_address(str(r["x"]).split("/")[0])
+        if not (ip.is_loopback or ip.is_link_local or ip.is_multicast):
+            real.add(_site(ip))
+    return hosts, ssids, users, own4, own6, sorted(real, key=lambda n: (n.version, n))
 
 
 async def session(settings: Any, store_mapping: Mapping | None = None) -> Session:
@@ -697,14 +773,46 @@ async def session(settings: Any, store_mapping: Mapping | None = None) -> Sessio
     key = (getattr(settings, "ai_privacy_names", True), getattr(settings, "ai_privacy_terms", ""),
            getattr(settings, "ai_privacy_keep", ""))
     if _DICT is None or _DICT.key != key or time.monotonic() - _DICT.built > REFRESH:
-        hosts, ssids, users, own4, own6 = await _collect(settings)
-        _DICT = _Dict(build_names(settings, hosts, ssids, users), own4, own6, time.monotonic(), key)
+        hosts, ssids, users, own4, own6, real_nets = await _collect(settings)
+        _DICT = _Dict(build_names(settings, hosts, ssids, users), own4, own6, time.monotonic(), key, real_nets)
     # own addresses ever seen stay own (a WAN address that changed still appears in older logs)
     own4 = _DICT.own4 | set(mp.fwd.get("ip4", {}))
     own6 = _DICT.own6 | {k for k in mp.fwd.get("net6", {}) if not ipaddress.IPv6Address(k + "::") in ULA}
-    nets = [n for n in parse_networks(getattr(settings, "internal_networks", "") or "")
-            if not (n.version == 4 and _class4(n.network_address))]
-    return Session(mp, _DICT.names, own4, nets, own6)
+    internal = list(parse_networks(getattr(settings, "internal_networks", "") or ""))
+    nets = [n for n in internal if not (n.version == 4 and _class4(n.network_address))]
+    try:
+        chosen = parse_avoid(getattr(settings, "ai_privacy_avoid", "") or "")
+    except ValueError:  # validated when saved; a hand edit must not stop the analyst
+        chosen = []
+    # no pseudonym inside: the networks you chose, your own networks (devices, interfaces, extra internal networks)
+    # and every real /24 already seen
+    avoid = chosen + _DICT.real_nets + internal + [ipaddress.ip_network(k + ".0/24") for k in mp.fwd.get("net4", {})]
+    sess = Session(mp, _DICT.names, own4, nets, own6, avoid=avoid)
+    await _drop_blocked(sess)
+    return sess
+
+
+async def _drop_blocked(sess: Session) -> None:
+    """Pseudonyms that lie in a network they may not use (the setting changed, or a real network appeared that was
+    used as a pseudonym) are dropped: the value gets a new one in this request. Conversations keep the real values,
+    so nothing breaks; addresses in a dropped IPv6 site go with it."""
+    mp = sess.mapping
+    for kind in ("net4", "ip4", "net6"):
+        check = sess.reject(kind)
+        for key, (_real, fake) in list(mp.fwd.get(kind, {}).items()):
+            mine = fake in mp.fwd.get(kind, {}) and fake != key  # a pseudonym that is another key's real value
+            if mine or (check and (check(fake) if kind == "ip4" else _outside_ok(sess, kind, fake))):
+                await mp.forget(kind, key)
+                if kind == "net6":
+                    for k in [k for k in mp.fwd.get("ip6", {}) if k.startswith(key + ":")]:
+                        await mp.forget("ip6", k)
+
+
+def _outside_ok(sess: Session, kind: str, fake: str) -> bool:
+    """A network pseudonym lies in a blocked network (its own key in the 'already used' list does not count)."""
+    if kind == "net4":
+        return sess.blocked(ipaddress.ip_network(fake + ".0/24"))
+    return sess.blocked(ipaddress.ip_network(str(ipaddress.IPv6Address(fake + "::")) + "/48"))
 
 
 PROMPT_NOTE = """
