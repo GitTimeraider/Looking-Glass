@@ -4,7 +4,7 @@
 <script src="/static/vendor/purify.min.js"></script>
 {% endblock %}
 {% block body %}
-<header class="top"><h1>AI security analyst</h1><span class="muted small">model: {{ ai_model }}</span></header>
+<header class="top"><h1>AI security analyst</h1><span class="muted small">model: {{ ai_model }}</span>{% if ai_privacy %}<a class="pill small" href="/settings#ai" title="Privacy mode: local addresses and names are replaced by pseudonyms before anything is sent to the AI, and translated back in the answers (Settings › AI analyst)">🔒 Privacy mode</a>{% endif %}</header>
 {% if not ai_enabled %}
 <div class="card">The AI analyst is not configured yet. Enter the API key (and optionally base URL / model) under <a href="/settings#ai">Settings › AI analyst</a>.</div>
 {% else %}

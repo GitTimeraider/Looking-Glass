@@ -144,6 +144,10 @@ class Settings(BaseSettings):
     ai_max_tool_rounds: int = 12
     ai_timeout: int = 300
     ai_stream: bool = True
+    ai_privacy: bool = False
+    ai_privacy_names: bool = True
+    ai_privacy_terms: str = ""
+    ai_privacy_keep: str = ""
     ai_daily_report: bool = False
     ai_daily_report_hour: int = 7
     report_every_days: int = 1

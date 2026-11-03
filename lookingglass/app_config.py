@@ -116,6 +116,23 @@ FIELDS: list[Field] = [
     Field("ai_stream", "ai", "Stream answers", "bool", "Receive answers word by word. Keeps the connection busy, so "
           "gateways / proxies in front of the model (OpenRouter, LiteLLM, Cloudflare, nginx) don't cut long answers off "
           "with 504 Gateway Timeout. Switched off automatically if the endpoint can't stream."),
+    Field("ai_privacy", "ai", "Privacy mode: pseudonymize local data", "bool", "Before anything is sent to the AI, "
+          "local identifiers are replaced by consistent pseudonyms, and translated back in the answer - you keep seeing "
+          "the real values. Replaced: private IP addresses (the network part; the last number stays), your own public / "
+          "WAN addresses and IPv6 prefixes, MAC addresses (the vendor part stays), email addresses and the names below. "
+          "Not replaced: internet addresses, domains, ports, countries and container / program names - the analysis "
+          "needs them. The analysis stays about as good; only meaning carried by a name is lost (a hint such as "
+          "'iphone' or 'camera' is kept). Free text in log lines can still hold a name Looking Glass does not know - "
+          "add those below. For full privacy use a local model (Ollama, LM Studio)."),
+    Field("ai_privacy_names", "ai", "Privacy mode: also replace names", "bool", "Device names and UniFi aliases, "
+          "Wi-Fi names (also neighbouring networks - they can locate you), user names that logged in, Unraid server "
+          "names. Off = only addresses and your own terms below."),
+    Field("ai_privacy_terms", "ai", "Privacy mode: always replace these", "list", "Your own domains (subdomains "
+          "included), family names, a static WAN address, a street ... anything that identifies you. Case does not "
+          "matter.", placeholder="example.com\njansen\nlab.example.net"),
+    Field("ai_privacy_keep", "ai", "Privacy mode: never replace these", "list", "Names that should stay readable "
+          "(common words that are also a device or user name). Generic names such as root, admin, nas, router are "
+          "never replaced anyway.", placeholder="media-server"),
     # reports (the setting keys keep their old names: ai_daily_report*)
     Field("ai_daily_report", "reports", "Scheduled report", "bool", "Write a report on a schedule (Reports page), with "
           "the AI analysis when the AI analyst is set up."),

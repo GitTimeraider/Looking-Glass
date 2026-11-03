@@ -296,3 +296,26 @@ FROM (SELECT a2.id, min(e.ts) f, max(e.ts) t FROM alerts a2 JOIN events e ON e.s
       WHERE a2.rule IN ('crowdsec', 'ids', 'threat_intel_outbound', 'threat_intel_inbound')
         AND NOT coalesce(a2.data ? 'events_from', false) GROUP BY a2.id) s
 WHERE a.id = s.id;
+
+-- AI analyst privacy mode (Settings › AI analyst): the pseudonym of every local identifier sent to the AI, so a device
+-- keeps the same pseudonym in every request, report and conversation. Conversations themselves keep the real values.
+CREATE TABLE IF NOT EXISTS ai_pseudonyms (
+    kind       TEXT NOT NULL,          -- net4 (private /24) | ip4 (own public) | net6 (/48 site) | ip6 | mac | email | name
+    key        TEXT NOT NULL,          -- normalised real value
+    real       TEXT NOT NULL,          -- real value as first seen (shown in the answers)
+    fake       TEXT NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (kind, key)
+);
+
+-- comments on alerts (Alerts page): why one was closed / a false positive, extra context ... also read by the AI analyst.
+-- No foreign key on purpose: TRUNCATE alerts keeps working; the comments are deleted with their alert in the code.
+CREATE TABLE IF NOT EXISTS alert_comments (
+    id         BIGSERIAL PRIMARY KEY,
+    alert_id   BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ,
+    author     TEXT,
+    body       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS alert_comments_alert_idx ON alert_comments (alert_id, created_at);
