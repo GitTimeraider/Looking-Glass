@@ -131,6 +131,7 @@ class Settings(BaseSettings):
     unifi_verify_ssl: bool = False
     unifi_poll_interval: int = 60
     unifi_events: bool = True
+    unifi_offline_grace: int = 10  # minutes
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_security: str = "starttls"

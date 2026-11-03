@@ -376,6 +376,25 @@ class UnifiClient:
 
 
 # ---------------------------------------------------------------- poller ---
+OFFLINE_STATES = ("offline", "heartbeat missed", "isolated", "connection interrupted")
+
+
+def _minutes(seconds: float) -> str:
+    m = int(seconds // 60)
+    return f"{m} minute{'s' if m != 1 else ''}" if m else f"{int(seconds)} seconds"
+
+
+async def close_alerts(rule: str, fingerprints: list[str], why: str) -> None:
+    """Close the open / acknowledged alerts of ``rule`` with these fingerprints: the problem is gone by itself."""
+    rows = await db.pool().fetch(
+        "UPDATE alerts SET status = 'closed', close_reason = 'resolved', data = coalesce(data, '{}') || $3::jsonb, "
+        "description = coalesce(description, '') || $4 WHERE rule = $1 AND fingerprint = ANY($2::text[]) "
+        "AND status <> 'closed' RETURNING title", rule, fingerprints, {"auto_closed": True},
+        f"\n\nClosed automatically: {why}.")
+    for r in rows:
+        log.info("UniFi: %s - alert closed (%s)", r["title"], why)
+
+
 class UnifiPoller:
     def __init__(self, settings: Settings, writer: EventWriter) -> None:
         self.settings = settings
@@ -383,9 +402,16 @@ class UnifiPoller:
         self.client = UnifiClient(settings)
         self.status: dict[str, Any] = {"ok": None, "error": None, "last": None, "mode": None, "version": None, "sections": {}}
         self.last_run: dict[str, float] = {}
-        self.prev_state: dict[str, str] = {}
+        # per device MAC: [down?, since (time.time()), alert raised?] - an offline alert waits for unifi_offline_grace
+        self.dev_down: dict[str, list[Any]] = {}
         self.events_since = time.time() - 3600
         self.failures = 0
+        self.unreachable_since: float | None = None  # first failed poll of the current outage
+        self.unreachable_alerted = False
+
+    def grace(self) -> float:
+        """Seconds a device / the controller must be down before it is alerted (Settings › UniFi)."""
+        return max(0, self.settings.unifi_offline_grace) * 60
 
     def due(self, key: str, interval: float) -> bool:
         if time.time() - self.last_run.get(key, 0) >= interval:
@@ -407,6 +433,7 @@ class UnifiPoller:
                 await self.poll()
                 self.failures = 0
                 self.status.update(ok=True, error=None, last=time.time())
+                await self.controller_back()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - also bad data / database errors: report, never crash-loop
@@ -417,9 +444,8 @@ class UnifiPoller:
                 log.warning("UniFi: %s", exc)
                 if isinstance(exc, UnifiError) and exc.status in (401, 403):
                     self.client.legacy, self.client.v1, self.client.logged_in = False, None, False
-                if self.failures == 3 and isinstance(exc, (UnifiError, httpx.HTTPError, OSError)):
-                    await raise_alert("unifi_unreachable", "medium", "UniFi controller is unreachable", "unifi_down",
-                                      description=str(exc))
+                if isinstance(exc, (UnifiError, httpx.HTTPError, OSError)):
+                    await self.controller_down(str(exc))
             await db.set_snapshot("unifi:status", self.status)
             await asyncio.sleep(max(30, self.settings.unifi_poll_interval) if self.failures < 3 else 300)
 
@@ -509,20 +535,54 @@ class UnifiPoller:
             "conn_where": where(x), "conn_signal": int(x["signal"]) if x.get("signal") is not None else None,
         } for x in clients if x.get("mac")], origin="unifi")
 
-    async def check_devices(self, devices: list[dict[str, Any]]) -> None:
+    async def controller_down(self, error: str, now: float | None = None) -> None:
+        """A failed poll: 'controller unreachable' once it has failed for the grace time (and at least 3 polls in a
+        row) - a reboot of OPNsense or the controller stays quiet."""
+        now = now or time.time()
+        if self.unreachable_since is None:
+            self.unreachable_since = now
+        if not self.unreachable_alerted and self.failures >= 3 and now - self.unreachable_since >= self.grace():
+            self.unreachable_alerted = True
+            await raise_alert("unifi_unreachable", "medium", "UniFi controller is unreachable", "unifi_down",
+                              description=f"No answer for {_minutes(now - self.unreachable_since)}: {error}")
+
+    async def controller_back(self, now: float | None = None) -> None:
+        if self.unreachable_since is None:
+            return
+        down_for = (now or time.time()) - self.unreachable_since
+        self.unreachable_since, self.unreachable_alerted = None, False
+        await close_alerts("unifi_unreachable", ["unifi_down"], f"the controller answers again (it was unreachable for "
+                                                              f"{_minutes(down_for)})")
+
+    async def check_devices(self, devices: list[dict[str, Any]], now: float | None = None) -> None:
+        """'Access point / switch offline' alerts once a device has been down for the grace time (Settings › UniFi):
+        devices that are only gone while OPNsense, the controller or the device itself reboots stay quiet. An open
+        alert closes by itself when the device is back online."""
+        now = now or time.time()
+        grace = self.grace()
+        back: list[str] = []
         for d in devices:
             if not d.get("adopted", True):
                 continue
-            prev = self.prev_state.get(d["mac"])
-            self.prev_state[d["mac"]] = d["state"]
-            if d["state"] in ("offline", "heartbeat missed", "isolated", "connection interrupted") and prev != d["state"]:
+            down = d["state"] in OFFLINE_STATES
+            st = self.dev_down.get(d["mac"])
+            if st is None or st[0] != down:
+                st = self.dev_down[d["mac"]] = [down, now, False]
+            if not down:
+                back.append(d["mac"])
+            elif not st[2] and now - st[1] >= grace:
+                st[2] = True
                 rating = Rating("high", "a switch is down - everything behind it is offline") if d["kind"] == "switch" else \
                     Rating("medium", f"the clients on this {d['kind']} lose their connection (or roam to another AP)")
+                waited = f" for {_minutes(now - st[1])}" if grace else ""
                 await raise_alert("unifi_device_offline", rating, f"UniFi {d['kind']} {d['name']} is {d['state']}",
                                   f"unifi_dev:{d['mac']}", description=f"{d['model']} {d['mac']} ({d.get('ip') or 'no IP'}) "
-                                  f"reports state '{d['state']}'. Clients connected through it lose their connection.",
+                                  f"reports state '{d['state']}'{waited}. Clients connected through it lose their connection.",
                                   data={"device": d["name"], "model": d["model"], "mac": d["mac"]},
                                   events={"source": "unifi", "q": d["name"]})
+        # online devices: close what is still open (also alerts from before a restart of Looking Glass)
+        if back:
+            await close_alerts("unifi_device_offline", [f"unifi_dev:{m}" for m in back], "the device is online again")
 
     async def poll_rogue(self) -> None:
         rogue = await self.section("rogue", self.client.legacy_get("stat/rogueap", {"within": 24}))
