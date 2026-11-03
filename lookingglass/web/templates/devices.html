@@ -114,6 +114,6 @@ async function profile(mac) {
 }
 document.getElementById("prof-close").onclick = () => document.getElementById("prof").close();
 document.getElementById("filter").oninput = render;
-load(); setInterval(load, 120000);
+load(); LG.autoRefresh(load, 120000);
 </script>
 {% endblock %}

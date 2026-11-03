@@ -101,7 +101,7 @@ async function checks() {
   </div>`).join("") || `<div class="empty">No checks.</div>`;
   document.getElementById("updated").textContent = "checked " + LG.clock();
 }
-checks(); setInterval(checks, 60000);
+checks(); LG.autoRefresh(checks, 60000);
 (async () => {
   const s = await LG.api("/api/status");
   const ing = s.ingest, now = Date.now() / 1000;

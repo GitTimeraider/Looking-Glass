@@ -163,6 +163,6 @@ async function charts() {
   LG.lineChart("c-tp", tp, { ...o, fmt: v => LG.bps(v), neg: l => l.endsWith(" up") });
 }
 load().then(() => showTab(tab));
-setInterval(() => { load(); if (tab === "overview") charts(); }, 60000);
+LG.autoRefresh(() => { load(); if (tab === "overview") charts(); }, 60000);
 </script>
 {% endblock %}

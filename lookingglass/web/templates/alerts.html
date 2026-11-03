@@ -355,6 +355,6 @@ document.getElementById("del-closed").onclick = async () => {
 /* the ⋯ menu closes when clicking elsewhere */
 document.addEventListener("click", e => { const m = document.querySelector(".al-tools .more"); if (m.open && !m.contains(e.target)) m.open = false; });
 document.getElementById("filter").oninput = render;
-viewButtons(); load(); suggestions(); setInterval(() => { if (!typing()) load(); }, 60000);
+viewButtons(); load(); suggestions(); LG.autoRefresh(() => { if (!typing()) load(); }, 60000);
 </script>
 {% endblock %}

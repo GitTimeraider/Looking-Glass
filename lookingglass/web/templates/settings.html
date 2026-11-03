@@ -418,7 +418,7 @@ document.getElementById("storage-save").onclick = async () => {
     m.className = "small ok-msg"; m.textContent = "Saved – applies within a minute."; load();
   } catch (e) { m.className = "small err"; m.textContent = e.message; }
 };
-load(); setInterval(refreshStatus, 30000);
+load(); LG.autoRefresh(refreshStatus, 30000);
 
 /* ---------- alert filters ---------- */
 let FLT = { filters: [], rules: {}, labels: {} };

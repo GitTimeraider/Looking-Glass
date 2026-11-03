@@ -557,6 +557,33 @@ already belongs to `PUID:PGID`, so nothing else changes. Running with `docker ru
 `--user <PUID>:<PGID>`; without it the container runs as 10001:10001 and prints a warning that `PUID`/`PGID` are
 ignored.
 
+### Dashboards and database load
+
+Dashboards count a lot of log lines, so Looking Glass keeps that work small:
+
+* **Hourly counts**: charts and counts over 2 days or more (time series, protocols, ports, countries, interfaces …)
+  come from a small table of hourly totals that is updated every minute from the new events only - the same numbers as
+  counting every event, a fraction of the work (30 days: ~16× less). After an update the existing events are counted
+  once in the background, in small slices; until then those panels count the raw events as before.
+* **Refresh**: a page only refreshes while its tab is visible (a tab in the background does nothing, and catches up
+  when you open it again); 24 h views every minute, 7 days every 5 minutes, 30 days every 15 minutes.
+* **Shared results**: tabs, devices and users looking at the same dashboard and period share one result for a short
+  while (30 s for up to a day, 2 / 5 minutes for 7 / 30 days).
+* **No spikes**: at most 3 heavy queries run at once, instead of every panel of a page at the same time.
+* **Database memory**: the compose files start PostgreSQL with `shared_buffers=512MB` (the default 128 MB is too small
+  for the log tables once they hold a few days). **Existing installation?** Add this line to the `db:` service of your
+  `docker-compose.yml` (at the same level as `image:`) and run `docker compose up -d`:
+
+  ```yaml
+      command: ["postgres", "-c", "shared_buffers=512MB", "-c", "effective_cache_size=2GB"]
+  ```
+
+  PostgreSQL as a separate container from an **Unraid template**: Docker tab › the container › *Edit* › *Advanced
+  view* › **Post Arguments**: `-c shared_buffers=512MB -c effective_cache_size=2GB` › *Apply*. Use about a quarter of
+  the memory you want the database to use (256MB on a small machine), and keep its data on an SSD (Unraid: the cache
+  pool / `appdata`). Looking Glass itself sets `jit=off` and `work_mem=16MB` for its own connections, also on an
+  external PostgreSQL.
+
 ## Running hardened (non-root, no capabilities)
 
 The image runs as an unprivileged user (uid/gid **10001**) and needs **no Linux capabilities at all**, so all of

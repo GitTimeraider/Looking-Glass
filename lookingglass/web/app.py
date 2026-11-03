@@ -26,6 +26,8 @@ from ..ai import Analyst, request_log
 from ..config import Settings
 from . import asset_version
 from ..ingest import STATS
+from .. import rollup
+from ..cache import ResultCache, ttl_for
 from ..dashboards import DASHBOARDS, run_dashboard
 from ..reports import build_report, report_mail, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
@@ -138,22 +140,46 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "title": "Report", "path": "/reports", "version": __version__, "report_id": report_id, "ai_enabled": settings.ai_enabled})
 
     # -------------------------------------------------------------- api ---
+    # dashboard / Overview results shared by every tab and user for a short while (cache.py)
+    results = ResultCache()
+    app.state.results = results
+
+    async def overview_counts(hours: float) -> dict[str, Any]:
+        """The part of the Overview that counts events (the expensive part): cached."""
+        secs = hours * 3600
+        # plain counts (from 2 days on from the hourly counts) and the distinct blocked sources apart: in one query
+        # count(DISTINCT) FILTER sorts every event of the period (30 days: seconds instead of a fraction)
+        counts = ("SELECT coalesce(count(*), 0) total, coalesce(count(*) FILTER (WHERE action IN ('block', 'drop', 'ban')), 0) blocked, "
+                  "coalesce(count(*) FILTER (WHERE action = 'login_failed'), 0) login_failed, "
+                  "coalesce(count(*) FILTER (WHERE source = 'unbound'), 0) dns, coalesce(count(*) FILTER (WHERE source = 'suricata'), 0) ids "
+                  "FROM events WHERE ts > now() - make_interval(secs => $1)")
+
+        async def kpi_counts() -> dict[str, Any]:
+            async with db.heavy(), db.pool().acquire() as conn:
+                row = await (rollup.fetch(conn, counts, secs) if hours >= rollup.MIN_HOURS else conn.fetch(counts, secs))
+            return dict(row[0])
+
+        async def blocked_ips() -> int:
+            async with db.heavy(), db.pool().acquire() as conn:
+                return await conn.fetchval(
+                    "SELECT count(*) FROM (SELECT DISTINCT src_ip FROM events WHERE action IN ('block', 'drop') "
+                    "AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1)) x", secs)
+
+        kpi, ips, report, tl = await asyncio.gather(kpi_counts(), blocked_ips(), build_report(hours), timeline(hours))
+        return {"kpi": db.jsonable({**kpi, "blocked_ips": ips}), "report": report, "timeline": tl}
+
     @app.get("/api/overview")
     async def overview(hours: float = Query(24, gt=0, le=24 * 90)):
         pool = db.pool()
-        secs = hours * 3600
-        kpi = await pool.fetchrow(
-            "SELECT count(*) total, count(*) FILTER (WHERE action IN ('block', 'drop', 'ban')) blocked, "
-            "count(DISTINCT src_ip) FILTER (WHERE action IN ('block', 'drop')) blocked_ips, "
-            "count(*) FILTER (WHERE action = 'login_failed') login_failed, "
-            "count(*) FILTER (WHERE source = 'unbound') dns, count(*) FILTER (WHERE source = 'suricata') ids "
-            "FROM events WHERE ts > now() - make_interval(secs => $1)", secs)
+        counted = await results.get(("overview", hours), ttl_for(hours), lambda: overview_counts(hours))
+        kpi = counted["kpi"]
+        # open alerts, devices and the system state are cheap and always current
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
         decisions = await db.get_snapshot("crowdsec_decisions")
         blocklists = await db.get_snapshot("blocklists") or {}
         blocklist_n = ((blocklists.get("crowdsec") or {}) if isinstance(blocklists, dict) else {}).get("size")
         devices = await pool.fetchval("SELECT count(*) FROM devices WHERE last_seen > now() - interval '1 day'")
-        report = await build_report(hours)
+        report = counted["report"]
         # optional sources: hide their overview cards when their pull is off and they have no data in the period
         has = {r["source"] for r in report.get("totals_by_source") or []}
         enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
@@ -161,10 +187,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         enabled = {k: (v and settings.opnsense_enabled) or k in has for k, v in enabled.items()}
         return {
             "sources": enabled,
-            "kpi": {**db.jsonable(dict(kpi)), "open_alerts": {r["severity"]: r["n"] for r in alerts},
+            "kpi": {**kpi, "open_alerts": {r["severity"]: r["n"] for r in alerts},
                     "crowdsec_decisions": len(decisions) if isinstance(decisions, list) else None,
                     "crowdsec_blocklist": blocklist_n, "devices": devices},
-            "timeline": await timeline(hours),
+            "timeline": counted["timeline"],
             "report": report,
             "system": await db.get_snapshot("system"),
             "gateways": await db.get_snapshot("gateways"),
@@ -590,7 +616,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     # ------------------------------------------------- delete collected data ---
     # What can be wiped. Never touched: settings, credentials, accounts / MFA, Unraid servers, encryption key.
     PURGE = {
-        "events": ("events", "Logs / events"),
+        "events": ("events, event_rollup", "Logs / events"),
         "alerts": ("alerts, alert_comments", "Alerts (and your comments on them)"),
         "metrics": ("metrics", "Graphs (metrics history)"),
         "reports": ("reports", "Reports"),
@@ -626,6 +652,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             raise HTTPException(403, "Wrong password.")
         # TRUNCATE without RESTART IDENTITY: event ids keep growing, so the detection rules' watermarks stay valid
         await db.pool().execute(f"TRUNCATE {', '.join(PURGE[p][0] for p in parts)}")
+        results.clear()
         if "ai_chats" in parts:
             from .. import privacy
             privacy.invalidate()
@@ -803,6 +830,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def dash_data(name: str, hours: float = Query(24, gt=0, le=24 * 90)):
         if name not in DASHBOARDS:
             raise HTTPException(404)
+        return await results.get(("dash", name, hours), ttl_for(hours), lambda: dash_compute(name, hours))
+
+    async def dash_compute(name: str, hours: float) -> dict[str, Any]:
         # an optional source whose pull is off and that has no data in the period: its tiles and panels are hidden
         pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull}
         has = {r["s"] for r in await db.pool().fetch(

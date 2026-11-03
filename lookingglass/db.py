@@ -14,6 +14,26 @@ log = logging.getLogger(__name__)
 
 _pool: asyncpg.Pool | None = None
 
+# dashboard / report queries that count many events run at most this many at a time (all panels of a page at once
+# took every CPU core of the database server for a moment); the rest wait their turn - on a 4-8 core server a page
+# loads about as fast
+HEAVY_PARALLEL = 3
+_heavy: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
+
+
+def heavy() -> asyncio.Semaphore:
+    """``async with db.heavy():`` around a query that counts many events. One per event loop (a semaphore belongs to
+    the loop it was first used in)."""
+    global _heavy
+    loop = asyncio.get_running_loop()
+    if _heavy is None or _heavy[0] is not loop:
+        _heavy = (loop, asyncio.Semaphore(HEAVY_PARALLEL))
+    return _heavy[1]
+
+# per connection: JIT compiling costs more CPU than it saves on these aggregate queries (measured: 15-25 % slower
+# with it on 7 / 30 day windows); a bit more memory per sort / hash keeps large GROUP BYs off the disk
+SERVER_SETTINGS = {"jit": "off", "work_mem": "16MB"}
+
 EVENT_COLUMNS = (
     "ts", "source", "host", "program", "severity", "action", "src_ip", "src_port",
     "dst_ip", "dst_port", "proto", "interface", "direction", "username", "domain",
@@ -37,7 +57,7 @@ async def connect(dsn: str | None = None, *, retry: bool = True, **kwargs: Any) 
     while True:
         try:
             _pool = await asyncpg.create_pool(dsn, min_size=2, max_size=15, init=_init_conn, command_timeout=120,
-                                              timeout=15, **kwargs)
+                                              timeout=15, server_settings=SERVER_SETTINGS, **kwargs)
             break
         except (OSError, asyncpg.PostgresError, asyncio.TimeoutError) as exc:
             if not retry:

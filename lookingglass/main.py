@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import uvicorn
 
-from . import __version__, app_config, auth, crypto, db, db_config, notify
+from . import __version__, app_config, auth, crypto, db, db_config, notify, rollup
 from .ai import Analyst, request_log
 from .config import get_settings
 from .detections import (
@@ -52,6 +52,7 @@ async def housekeeping(settings) -> None:
                 if int(status.split()[-1]) < 50000:
                     break
                 await asyncio.sleep(0.5)
+            await rollup.prune(settings.retention_days)
             await pool.execute("DELETE FROM metrics WHERE ts < now() - make_interval(days => $1)", settings.metrics_retention_days)
             await pool.execute("DELETE FROM alerts WHERE status = 'closed' AND last_seen < now() - make_interval(days => $1)",
                                max(settings.retention_days, 90))
@@ -218,6 +219,7 @@ async def amain() -> None:
     tasks = [asyncio.create_task(writer.run(), name="writer"),
              asyncio.create_task(DetectionEngine(settings).run(), name="detections"),
              asyncio.create_task(housekeeping(settings), name="housekeeping"),
+             asyncio.create_task(rollup.loop(), name="event_rollup"),
              asyncio.create_task(device_upkeep_loop(settings), name="device_upkeep")]
     if settings.syslog_enabled:
         await SyslogServer(settings, writer).start()
