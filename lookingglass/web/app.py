@@ -748,6 +748,42 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             raise HTTPException(404)
         return db.jsonable(dict(row))
 
+    @app.get("/api/ai/chats/{chat_id}/sent")
+    async def chat_as_sent(chat_id: int):
+        """A conversation exactly as the AI receives it with the next question (AI Analyst › What the AI sees): system
+        instructions, questions, the AI's tool calls, the data returned to it and its answers - in privacy mode with
+        the pseudonyms, each one paired with the real value it stands for."""
+        from .. import privacy
+        from ..ai import TOOLS
+        row = await db.pool().fetchrow("SELECT messages FROM ai_chats WHERE id = $1", chat_id)
+        if not row:
+            raise HTTPException(404, "This chat does not exist (any more).")
+        priv = await privacy.session(settings) if settings.ai_privacy else None
+
+        async def parts(text: Any) -> list[tuple[str, str | None]]:
+            text = text if isinstance(text, str) else ""
+            return await priv.hide_parts(text) if priv else ([(text, None)] if text else [])
+
+        def args_text(arguments: Any) -> str:
+            # written out the way it is sent (names as they are, not \u escaped)
+            try:
+                return json.dumps(json.loads(arguments or "{}"), ensure_ascii=False)
+            except (TypeError, ValueError):
+                return str(arguments or "")
+
+        out = []
+        for m in row["messages"] if isinstance(row["messages"], list) else []:
+            item: dict[str, Any] = {"role": m.get("role"), "parts": await parts(m.get("content"))}
+            if m.get("tool_calls"):
+                item["tool_calls"] = [{"name": (c.get("function") or {}).get("name"),
+                                       "parts": await parts(args_text((c.get("function") or {}).get("arguments")))}
+                                      for c in m["tool_calls"] if isinstance(c, dict)]
+            out.append(item)
+        return {"privacy": priv is not None, "names": priv.known_names() if priv else {},
+                "model": settings.ai_model, "base_url": settings.ai_base_url,
+                "system": await analyst.system_message(priv is not None),
+                "tools": [t["function"]["name"] for t in TOOLS], "messages": out}
+
     @app.delete("/api/ai/chats/{chat_id}")
     async def delete_chat(chat_id: int):
         await db.pool().execute("DELETE FROM ai_chats WHERE id = $1", chat_id)

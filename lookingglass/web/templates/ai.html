@@ -18,6 +18,10 @@
     <div id="chats"></div>
   </div>
   <div class="card conv">
+    <div class="conv-tools" id="conv-tools" hidden>
+      <button type="button" class="secondary small" id="sent-toggle" aria-pressed="false"
+        title="Show this conversation exactly as the AI receives it: instructions, your questions, its queries, the data it got and its answers{% if ai_privacy %} - with the pseudonyms{% endif %}">{% if ai_privacy %}🔒 {% endif %}What the AI sees</button>
+    </div>
     <div class="presets" id="presets"></div>
     <div class="msgs" id="msgs"></div>
     <div class="composer">
@@ -44,7 +48,60 @@ const msgsEl = document.getElementById("msgs");
 document.getElementById("presets").innerHTML = PRESETS.map(p => `<button class="secondary">${LG.esc(p)}</button>`).join("");
 document.querySelectorAll("#presets button").forEach(b => b.onclick = () => send(b.textContent));
 
+/* ---------- What the AI sees: the conversation as it is sent ---------- */
+let sentView = false;
+const sentBtn = document.getElementById("sent-toggle");
+function convTools() {
+  document.getElementById("conv-tools").hidden = !chatId;
+  sentBtn.setAttribute("aria-pressed", String(sentView));
+  sentBtn.classList.toggle("on", sentView);
+}
+// a piece of text as sent: pseudonyms highlighted, the real value on hover / tap
+const sentText = parts => parts.map(([real, fake]) => fake == null ? LG.esc(real)
+  : `<mark class="pseudo" tabindex="0" data-real="${LG.esc(real)}" data-fake="${LG.esc(fake)}" title="Real value: ${LG.esc(real)} (click to swap)">${LG.esc(fake)}</mark>`).join("");
+const KIND = { host: "device names", ssid: "Wi-Fi names", user: "user names", term: "own terms" };
+async function showSent() {
+  msgsEl.innerHTML = `<div class="empty"><span class="spinner"></span> Loading…</div>`;
+  let d;
+  try { d = await LG.api(`/api/ai/chats/${chatId}/sent`); }
+  catch (e) { msgsEl.innerHTML = `<div class="empty bad">${LG.esc(e.message)}</div>`; return; }
+  if (!sentView) return;
+  const names = Object.entries(d.names || {}).map(([k, n]) => `${n} ${KIND[k] || k}`).join(", ");
+  const note = d.privacy
+    ? `<b>🔒 Privacy mode is on.</b> This is the conversation exactly as the AI receives it with your next question. The
+       <mark class="pseudo">highlighted</mark> values are pseudonyms - hover one to see the real value it stands for, or
+       click / tap it to swap; everything else is sent as shown.${names ? ` Known names that are replaced: ${LG.esc(names)}.` : ""}
+       A real name you can still read below was not recognised: add it under
+       <a href="/settings#ai">Settings › AI analyst › Privacy mode: always replace these</a>.`
+    : `<b>Privacy mode is off:</b> everything below is sent to the AI exactly as shown, with your real addresses and
+       names. Turn it on under <a href="/settings#ai">Settings › AI analyst</a>.`;
+  const role = { user: "You", assistant: "AI", tool: "Data returned to the AI" };
+  const body = d.messages.map(m => {
+    if (m.role === "tool") {
+      const n = m.parts.reduce((a, [r, f]) => a + (f ?? r).length, 0);
+      return `<details class="sent-msg sent-tool"><summary>${role.tool} <span class="muted small">(${LG.num(n)} characters - click to open)</span></summary>
+        <pre class="sent-pre">${sentText(m.parts)}</pre></details>`;
+    }
+    const calls = (m.tool_calls || []).map(c => `<div class="sent-call"><span class="muted small">Asks the database:</span>
+      <code>${LG.esc(c.name || "?")}</code><pre class="sent-pre">${sentText(c.parts)}</pre></div>`).join("");
+    const text = m.parts.length ? `<div class="sent-text">${sentText(m.parts)}</div>` : "";
+    return `<div class="msg sent-msg ${m.role === "user" ? "user" : "assistant"}"><div class="sent-role small muted">${LG.esc(role[m.role] || m.role)}</div>${text}${calls}</div>`;
+  }).join("");
+  msgsEl.innerHTML = `<div class="sent-note small">${note}</div>
+    <details class="sent-msg sent-tool"><summary>Instructions to the AI (system prompt) <span class="muted small">- model ${LG.esc(d.model)} at ${LG.esc(d.base_url)}, tools: ${LG.esc(d.tools.join(", "))}</span></summary>
+      <pre class="sent-pre">${LG.esc(d.system)}</pre></details>${body}`;
+  // click / tap / Enter: swap between the pseudonym and the real value it stands for (phones have no hover)
+  msgsEl.querySelectorAll("mark.pseudo[data-real]").forEach(mk => {
+    const swap = () => { const real = mk.classList.toggle("real"); mk.textContent = real ? mk.dataset.real : mk.dataset.fake; };
+    mk.onclick = swap;
+    mk.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); swap(); } };
+  });
+  msgsEl.scrollTop = 0;
+}
+sentBtn.onclick = () => { sentView = !sentView; convTools(); sentView ? showSent() : renderMessages(convo); };
+
 function renderMessages(msgs) {
+  if (sentView) { sentView = false; convTools(); }  // a new answer / another chat: back to the normal view
   // only the questions and the final answers: the analyst's interim notes and its tool calls (queries) are left out
   msgsEl.innerHTML = msgs.map((m, i) => {
     if (m.role === "user") return `<div class="msg user">${LG.esc(m.content)}</div>`;
@@ -86,7 +143,7 @@ function togglePick(id) { picked.has(id) ? picked.delete(id) : picked.add(id); r
 async function deleteChats(ids) {
   await LG.api("/api/ai/chats/delete", { method: "POST", body: { ids } });
   ids.forEach(id => picked.delete(id));
-  if (ids.includes(chatId)) { chatId = null; convo = []; renderMessages([]); }
+  if (ids.includes(chatId)) { chatId = null; convo = []; renderMessages([]); convTools(); }
   await loadChats();
 }
 document.getElementById("select").onclick = () => {
@@ -103,7 +160,7 @@ document.getElementById("del-sel").onclick = async () => {
 };
 async function openChat(id) {
   const c = await LG.api(`/api/ai/chats/${id}`);
-  chatId = id; convo = c.messages; renderMessages(convo); loadChats();
+  chatId = id; convo = c.messages; renderMessages(convo); convTools(); loadChats();
 }
 async function send(text) {
   text = (text || document.getElementById("input").value).trim();
@@ -135,7 +192,7 @@ async function send(text) {
     }
     chatId = r.chat_id;
     convo = convo.slice(0, -1).concat(r.messages);
-    renderMessages(convo); loadChats();
+    renderMessages(convo); convTools(); loadChats();
   } catch (e) {
     const lostIt = e instanceof TypeError || /^HTTP 50[234]\b/.test(e.message);
     document.getElementById("thinking").innerHTML = `⚠️ ${LG.esc(e.message)}` + (lostIt ?
@@ -146,7 +203,7 @@ async function send(text) {
 }
 document.getElementById("send").onclick = () => send();
 document.getElementById("input").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); };
-document.getElementById("new").onclick = () => { chatId = null; convo = []; renderMessages([]); loadChats(); };
+document.getElementById("new").onclick = () => { chatId = null; convo = []; renderMessages([]); convTools(); loadChats(); };
 loadChats();
 const q = LG.qs().q; if (q) { window.history.replaceState(null, "", "/ai"); send(q); }
 </script>
