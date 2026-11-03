@@ -149,6 +149,7 @@ class Settings(BaseSettings):
     ai_privacy_names: bool = True
     ai_privacy_terms: str = ""
     ai_privacy_keep: str = ""
+    ai_privacy_avoid: str = ""
     ai_daily_report: bool = False
     ai_daily_report_hour: int = 7
     report_every_days: int = 1
