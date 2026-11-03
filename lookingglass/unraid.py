@@ -31,7 +31,7 @@ import websockets
 from . import crypto, db, nut
 from . import unraid_storage as storage
 from .config import Settings
-from .detections import raise_alert
+from .detections import close_alerts, offline_for, raise_alert
 from .ingest import EventWriter
 from .parsers import parse_line
 from .parsers.common import event
@@ -208,6 +208,9 @@ class UnraidServerPoller:
         self.boot_at: float | None = None  # when the server booted (Unraid API: os.uptime)
         self.reachable_since: float | None = None  # first good poll since Looking Glass started / the server came back
         self.ctr_state: dict[str, tuple[str, float]] = {}  # container -> (state, seen in that state since)
+        self.unreachable_since: float | None = None  # first failed poll of the current outage
+        self.unreachable_alerted = False
+        self.open_checked = False  # an 'unreachable' alert left open from before a restart is closed on the first good poll
 
     @property
     def prefs(self) -> dict[str, Any]:
@@ -277,13 +280,35 @@ class UnraidServerPoller:
                 await self.step("docker_stats", self.poll_stats)
             self.failures = 0
             self.status.update(ok=True, error=None, last=time.time())
+            await self.reachable()
         except (httpx.HTTPError, OSError, GraphQLError) as exc:
             self.failures += 1
             self.status.update(ok=False, error=f"{type(exc).__name__}: {exc}", last=time.time())
             log.warning("unraid %s: %s", self.name, exc)
-            if self.failures == 3:
-                await raise_alert("unraid_unreachable", "medium", f"Unraid server {self.name} is unreachable",
-                                  f"unraid_down:{self.sid}", description=str(exc))
+            await self.unreachable(f"{type(exc).__name__}: {exc}")
+
+    async def unreachable(self, error: str, now: float | None = None) -> None:
+        """A failed poll: 'server unreachable' once it has failed for the grace time (Settings › Data & detection)
+        and at least 3 polls in a row - a reboot of the server or of OPNsense in between stays quiet."""
+        now = now or time.time()
+        if self.unreachable_since is None:
+            self.unreachable_since = now
+        grace = max(0, self.settings.unraid_offline_grace) * 60
+        if not self.unreachable_alerted and self.failures >= 3 and now - self.unreachable_since >= grace:
+            self.unreachable_alerted = True
+            await raise_alert("unraid_unreachable", "medium", f"Unraid server {self.name} is unreachable",
+                              f"unraid_down:{self.sid}",
+                              description=f"No answer for {offline_for(now - self.unreachable_since)}: {error}")
+
+    async def reachable(self, now: float | None = None) -> None:
+        """A good poll: an open 'unreachable' alert closes by itself."""
+        if self.unreachable_since is None and self.open_checked:
+            return
+        why = "the server answers again" + (f" (it was unreachable for "
+                                            f"{offline_for((now or time.time()) - self.unreachable_since)})"
+                                            if self.unreachable_since is not None else "")
+        self.unreachable_since, self.unreachable_alerted, self.open_checked = None, False, True
+        await close_alerts("unraid_unreachable", [f"unraid_down:{self.sid}"], why)
 
     # ------------------------------------------------------------ sections ---
     async def poll_info(self) -> None:

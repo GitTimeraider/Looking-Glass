@@ -159,6 +159,7 @@ class Settings(BaseSettings):
     metrics_retention_days: int = 90
     detection_interval: int = 60
     unraid_container_grace: int = 10  # minutes
+    unraid_offline_grace: int = 10  # minutes
 
     # legacy: only imported once into the Unraid server list (Settings -> Integrations)
     unraid_name: str = "Unraid"

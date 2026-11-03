@@ -276,6 +276,10 @@ FIELDS: list[Field] = [
           "alert until the Unraid server has been up this long (after a reboot containers are still starting) and the "
           "container has been stopped this long. An open one closes by itself once the container has been running "
           "again this long.", min=1, max=240),
+    Field("unraid_offline_grace", "data", "Unraid: unreachable alerts wait (minutes)", "int", "No 'Unraid server is "
+          "unreachable' alert until Looking Glass has not reached the server for this long - a reboot of the server or "
+          "of OPNsense in between stays quiet. The alert closes by itself when the server answers again. 0 = alert "
+          "right away (after 3 failed polls).", min=0, max=240),
     Field("geoip_db", "data", "GeoIP database path", "str", "MaxMind GeoLite2-City or -Country .mmdb inside the data volume.",
           placeholder="/data/GeoLite2-City.mmdb"),
 ]

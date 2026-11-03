@@ -380,6 +380,24 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
     log.info("ALERT [%s] %s", severity, title)
 
 
+async def close_alerts(rule: str, fingerprints: list[str], why: str) -> None:
+    """Close the open / acknowledged alerts of ``rule`` with these fingerprints because the problem went away by
+    itself (marked auto_closed: if it happens again, ``raise_alert`` opens the alert again)."""
+    rows = await db.pool().fetch(
+        "UPDATE alerts SET status = 'closed', close_reason = 'resolved', data = coalesce(data, '{}') || $3::jsonb, "
+        "description = coalesce(description, '') || $4 WHERE rule = $1 AND fingerprint = ANY($2::text[]) "
+        "AND status <> 'closed' RETURNING title", rule, fingerprints, {"auto_closed": True},
+        f"\n\nClosed automatically: {why}.")
+    for r in rows:
+        log.info("%s - alert closed (%s)", r["title"], why)
+
+
+def offline_for(seconds: float) -> str:
+    """"12 minutes" / "40 seconds" - how long something was down, for alert texts."""
+    m = int(seconds // 60)
+    return f"{m} minute{'s' if m != 1 else ''}" if m else f"{int(seconds)} seconds"
+
+
 def login_target(source: str, host: str | None, programs: Any = None) -> str:
     """Which system a login went to, for titles: "Tower (webGUI)", "UniFi controller", "OPNsense (sshd)"."""
     prog = next((p for p in programs or [] if p), None)
