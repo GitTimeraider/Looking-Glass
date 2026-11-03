@@ -25,7 +25,7 @@ import httpx
 
 from . import db
 from .config import Settings
-from .detections import Rating, raise_alert, track_devices
+from .detections import Rating, close_alerts, offline_for as _minutes, raise_alert, track_devices
 from .ingest import EventWriter
 from .parsers.common import event, ip_or_none, real_name
 
@@ -377,22 +377,6 @@ class UnifiClient:
 
 # ---------------------------------------------------------------- poller ---
 OFFLINE_STATES = ("offline", "heartbeat missed", "isolated", "connection interrupted")
-
-
-def _minutes(seconds: float) -> str:
-    m = int(seconds // 60)
-    return f"{m} minute{'s' if m != 1 else ''}" if m else f"{int(seconds)} seconds"
-
-
-async def close_alerts(rule: str, fingerprints: list[str], why: str) -> None:
-    """Close the open / acknowledged alerts of ``rule`` with these fingerprints: the problem is gone by itself."""
-    rows = await db.pool().fetch(
-        "UPDATE alerts SET status = 'closed', close_reason = 'resolved', data = coalesce(data, '{}') || $3::jsonb, "
-        "description = coalesce(description, '') || $4 WHERE rule = $1 AND fingerprint = ANY($2::text[]) "
-        "AND status <> 'closed' RETURNING title", rule, fingerprints, {"auto_closed": True},
-        f"\n\nClosed automatically: {why}.")
-    for r in rows:
-        log.info("UniFi: %s - alert closed (%s)", r["title"], why)
 
 
 class UnifiPoller:

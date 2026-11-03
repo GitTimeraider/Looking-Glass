@@ -635,6 +635,14 @@ These become Looking Glass alerts: disk errors or overheating, stopped auto-star
 errors in the Unraid syslog (`zed` device faults, checksum/I/O errors), UPS on battery and Unraid *warning/alert*
 notifications.
 
+Reboots stay quiet (both under *Settings › Data & detection*, default 10 minutes):
+
+* **Unraid: unreachable alerts wait** - "Unraid server … is unreachable" only once Looking Glass has not reached the
+  server for that long, so rebooting the server, or OPNsense in between, raises no alert. It closes by itself when the
+  server answers again (with how long it was unreachable). 0 = after 3 failed polls (about 45 seconds).
+* **Unraid: container alerts wait** - no "container stopped" alert while the server is still starting its containers
+  after a reboot; it closes by itself once the container runs again.
+
 ### Spun-down disks are never woken
 
 Array and pool status (including disk temperatures, which Unraid itself only reads while a disk spins) comes from
