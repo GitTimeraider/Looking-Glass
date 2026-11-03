@@ -150,7 +150,7 @@ document.getElementById("layout-save").onclick = async () => {
   } catch (err) { alert("Saving the layout failed: " + err.message); return; }
   setEditing(false);
 };
-LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours", v); load(); });
+LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours", v); auto.touch(); load(); });
 
 function kpi(label, value, cls = "") { return `<div class="card kpi ${cls}"><div class="v">${value}</div><div class="l">${LG.esc(label)}</div></div>`; }
 const cnt = (v, r) => LG.num(v);
@@ -265,6 +265,6 @@ function render(d) {
   build();
   load();
 })();
-setInterval(() => { if (!editing) load(); }, 60000);
+const auto = LG.autoRefresh(() => { if (!editing) load(); }, () => LG.refreshMs(hours));
 </script>
 {% endblock %}

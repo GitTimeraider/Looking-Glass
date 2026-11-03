@@ -91,6 +91,10 @@ FIELDS: list[Field] = [
           "Devices, clients and health. Events and rogue APs follow every 2 minutes.", min=30, max=3600),
     Field("unifi_events", "unifi", "Collect UniFi events", "bool",
           "Client connects / roams, AP / switch offline, rogue APs - shown in Event search and the UniFi dashboard."),
+    Field("unifi_offline_grace", "unifi", "Offline alerts wait (minutes)", "int", "An 'access point / switch is "
+          "offline' or 'controller unreachable' alert only once it has been down this long - a reboot of OPNsense, the "
+          "controller or the device itself (updates) stays quiet. Such an alert closes by itself when the device / "
+          "controller is back. 0 = alert right away.", min=0, max=240),
     # email
     Field("smtp_host", "email", "SMTP server", "str", "Mail server that sends the notifications, e.g. smtp.gmail.com, "
           "smtp.office365.com, your provider's server or a local relay.", placeholder="smtp.example.com"),
@@ -116,6 +120,23 @@ FIELDS: list[Field] = [
     Field("ai_stream", "ai", "Stream answers", "bool", "Receive answers word by word. Keeps the connection busy, so "
           "gateways / proxies in front of the model (OpenRouter, LiteLLM, Cloudflare, nginx) don't cut long answers off "
           "with 504 Gateway Timeout. Switched off automatically if the endpoint can't stream."),
+    Field("ai_privacy", "ai", "Privacy mode: pseudonymize local data", "bool", "Before anything is sent to the AI, "
+          "local identifiers are replaced by consistent pseudonyms, and translated back in the answer - you keep seeing "
+          "the real values. Replaced: private IP addresses (the network part; the last number stays), your own public / "
+          "WAN addresses and IPv6 prefixes, MAC addresses (the vendor part stays), email addresses and the names below. "
+          "Not replaced: internet addresses, domains, ports, countries and container / program names - the analysis "
+          "needs them. The analysis stays about as good; only meaning carried by a name is lost (a hint such as "
+          "'iphone' or 'camera' is kept). Free text in log lines can still hold a name Looking Glass does not know - "
+          "add those below. For full privacy use a local model (Ollama, LM Studio)."),
+    Field("ai_privacy_names", "ai", "Privacy mode: also replace names", "bool", "Device names and UniFi aliases, "
+          "Wi-Fi names (also neighbouring networks - they can locate you), user names that logged in, Unraid server "
+          "names. Off = only addresses and your own terms below."),
+    Field("ai_privacy_terms", "ai", "Privacy mode: always replace these", "list", "Your own domains (subdomains "
+          "included), family names, a static WAN address, a street ... anything that identifies you. Case does not "
+          "matter.", placeholder="example.com\njansen\nlab.example.net"),
+    Field("ai_privacy_keep", "ai", "Privacy mode: never replace these", "list", "Names that should stay readable "
+          "(common words that are also a device or user name). Generic names such as root, admin, nas, router are "
+          "never replaced anyway.", placeholder="media-server"),
     # reports (the setting keys keep their old names: ai_daily_report*)
     Field("ai_daily_report", "reports", "Scheduled report", "bool", "Write a report on a schedule (Reports page), with "
           "the AI analysis when the AI analyst is set up."),
@@ -255,6 +276,10 @@ FIELDS: list[Field] = [
           "alert until the Unraid server has been up this long (after a reboot containers are still starting) and the "
           "container has been stopped this long. An open one closes by itself once the container has been running "
           "again this long.", min=1, max=240),
+    Field("unraid_offline_grace", "data", "Unraid: unreachable alerts wait (minutes)", "int", "No 'Unraid server is "
+          "unreachable' alert until Looking Glass has not reached the server for this long - a reboot of the server or "
+          "of OPNsense in between stays quiet. The alert closes by itself when the server answers again. 0 = alert "
+          "right away (after 3 failed polls).", min=0, max=240),
     Field("geoip_db", "data", "GeoIP database path", "str", "MaxMind GeoLite2-City or -Country .mmdb inside the data volume.",
           placeholder="/data/GeoLite2-City.mmdb"),
 ]

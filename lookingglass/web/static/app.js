@@ -32,6 +32,21 @@ const LG = {
     return d.toLocaleString(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", ...LG.hc() });
   },
   /** current clock time, e.g. for "updated 14:05:09" */
+  /** Run ``fn`` every ``every`` ms (a number, or a function returning one) - but only while the tab is visible: a tab
+   *  in the background refreshes nothing, and refreshes right away when it is shown again if a refresh was due.
+   *  Returns { touch() }: call it after loading by hand (e.g. another period was picked) to restart the wait. */
+  autoRefresh(fn, every) {
+    let last = Date.now();
+    const ms = () => (typeof every === "function" ? every() : every);
+    const due = () => !document.hidden && Date.now() - last >= ms() - 1000;
+    const run = () => { last = Date.now(); fn(); };
+    setInterval(() => { if (due()) run(); }, 5000);
+    document.addEventListener("visibilitychange", () => { if (due()) run(); });
+    return { touch() { last = Date.now(); } };
+  },
+  /** How often a page showing ``hours`` of data refreshes: every minute up to a day, 5 minutes up to a week, 15 beyond
+   *  (a 30-day chart hardly changes from one minute to the next). */
+  refreshMs(hours) { return hours <= 24 ? 60000 : hours <= 168 ? 300000 : 900000; },
   clock(d) { return (d || new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", ...LG.hc() }); },
   ago(iso) {
     if (!iso) return "never";

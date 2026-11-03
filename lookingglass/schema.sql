@@ -296,3 +296,51 @@ FROM (SELECT a2.id, min(e.ts) f, max(e.ts) t FROM alerts a2 JOIN events e ON e.s
       WHERE a2.rule IN ('crowdsec', 'ids', 'threat_intel_outbound', 'threat_intel_inbound')
         AND NOT coalesce(a2.data ? 'events_from', false) GROUP BY a2.id) s
 WHERE a.id = s.id;
+
+-- AI analyst privacy mode (Settings › AI analyst): the pseudonym of every local identifier sent to the AI, so a device
+-- keeps the same pseudonym in every request, report and conversation. Conversations themselves keep the real values.
+CREATE TABLE IF NOT EXISTS ai_pseudonyms (
+    kind       TEXT NOT NULL,          -- net4 (private /24) | ip4 (own public) | net6 (/48 site) | ip6 | mac | email | name
+    key        TEXT NOT NULL,          -- normalised real value
+    real       TEXT NOT NULL,          -- real value as first seen (shown in the answers)
+    fake       TEXT NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (kind, key)
+);
+
+-- comments on alerts (Alerts page): why one was closed / a false positive, extra context ... also read by the AI analyst.
+-- No foreign key on purpose: TRUNCATE alerts keeps working; the comments are deleted with their alert in the code.
+CREATE TABLE IF NOT EXISTS alert_comments (
+    id         BIGSERIAL PRIMARY KEY,
+    alert_id   BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ,
+    author     TEXT,
+    body       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS alert_comments_alert_idx ON alert_comments (alert_id, created_at);
+
+-- hourly event counts for the dashboards (rollup.py): per hour and source, action, protocol, interface, direction,
+-- destination port, source country and severity. Charts over 2+ days read these instead of every raw event. No NULLs
+-- (PostgreSQL 14 has no NULLS NOT DISTINCT): '' / -1 stand for "none".
+CREATE TABLE IF NOT EXISTS event_rollup (
+    bucket      TIMESTAMPTZ NOT NULL,
+    source      TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    proto       TEXT NOT NULL,
+    interface   TEXT NOT NULL,
+    direction   TEXT NOT NULL,
+    dst_port    INTEGER NOT NULL,
+    src_country TEXT NOT NULL,
+    severity    SMALLINT NOT NULL,
+    n           INTEGER NOT NULL,
+    PRIMARY KEY (bucket, source, action, proto, interface, direction, dst_port, src_country, severity)
+);
+-- upto: every event with id <= upto is counted in event_rollup; seen: the newest id at the previous run (events up to
+-- there are counted next time - one run later, so a batch still being written is never skipped)
+CREATE TABLE IF NOT EXISTS event_rollup_state (
+    one  BOOLEAN PRIMARY KEY DEFAULT true CHECK (one),
+    upto BIGINT NOT NULL DEFAULT 0,
+    seen BIGINT NOT NULL DEFAULT 0
+);
+INSERT INTO event_rollup_state (one) VALUES (true) ON CONFLICT DO NOTHING;

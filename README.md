@@ -136,6 +136,12 @@ and also teaches Looking Glass (repeated ones become a mute / lower suggestion).
 similar…**. **Trusted** on the Devices page marks a device as known: it is never counted as "new device" in attack
 chains (it does not silence real alerts about the device).
 
+**Comments**: open an alert (any status - open, acknowledged or closed) and write why it was closed or a false
+positive, what the device is, or what you already did. *Comment & close* / *Comment & false positive* / *Comment &
+re-open* do both in one click; comments can be edited and deleted, and the filter box searches them too. The **AI
+analyst reads them**: for the alert itself and for earlier alerts of the same rule and address, so it doesn't report
+again what you already explained as expected (unless the data shows it changed).
+
 ### Behaviour & machine learning
 
 *Settings › Behaviour & ML* - every check has its own switch, and **Never analyse these devices** (IPs, CIDRs, MACs)
@@ -192,6 +198,76 @@ The **AI chat** works the same way: the question starts the run on the server an
 every few seconds, so a reverse proxy in front of Looking Glass itself (nginx `proxy_read_timeout`, 60 s by default)
 no longer cuts long answers off.
 
+### AI privacy mode (pseudonyms)
+
+Off by default. When it is on, local identifiers (your private IPs, MAC addresses, device and user names, your WAN
+address …) are replaced by consistent pseudonyms **before anything leaves Looking Glass**, and translated back in what
+the AI returns - its answer and every query it runs. You keep seeing the real values, the tools keep querying the real
+data; only the AI provider sees pseudonyms.
+
+**Turning it on** (Looking Glass web UI › **Settings** › **AI analyst** tab):
+
+1. Tick **Privacy mode: pseudonymize local data**.
+2. Leave **Privacy mode: also replace names** ticked (device, Wi-Fi and user names), unless you only want addresses
+   replaced.
+3. Optional: under **Privacy mode: always replace these** enter, one per line, anything else that identifies you and
+   Looking Glass cannot know - your own domain(s) (subdomains are included), your family name, a static WAN address.
+4. Optional: under **Privacy mode: never replace these** enter names that should stay readable (e.g. a device whose
+   name is also an ordinary word in your logs).
+5. **Save**. It applies from the next question / report on, no restart needed. A **🔒 Privacy mode** badge appears next
+   to the model name on the **AI Analyst** page.
+
+**Where it applies**: everything that is sent to the AI - the AI Analyst chat, **Ask AI** on an alert, and the AI
+analysis of **reports** (written by hand, scheduled, or *Retry AI analysis*; the report's statistics are sent to the AI
+as part of the prompt and are pseudonymized too). Not affected (nothing goes to the AI): the report itself and its
+numbers, report and notification **mails** (they go through your own mail server and keep the real values), and
+*Test connection* (sends only "Reply with OK").
+
+**Example** - what the AI receives for one log line, and what you read in the answer:
+
+| | |
+|---|---|
+| In the database | `Accepted password for john from 192.168.1.20 (Johns-iPhone, aa:bb:cc:11:22:33) via 84.12.33.4` |
+| Sent to the AI | `Accepted password for user-p9rd from 192.168.124.20 (iphone-9hfj, aa:bb:cc:9d:06:7a) via 198.51.100.41` |
+| The AI answers | "*iphone-9hfj* (192.168.124.20) logged in as *user-p9rd* …" |
+| You read | "*Johns-iPhone* (192.168.1.20) logged in as *john* …" |
+
+| Replaced | By |
+|---|---|
+| Private IPv4 (10/8, 172.16/12, 192.168/16, 100.64/10) | another network of the same range, per /24; the last number stays (`.1` is still the gateway), so subnets and CIDR filters keep working |
+| Your own public / WAN addresses (OPNsense interfaces, *Extra internal networks*) | documentation addresses `203.0.113.x`, `198.51.100.x`, `192.0.2.x` |
+| IPv6: unique local `fd…`, your own prefixes, link-local | a fake site prefix (`2001:db8:…` / `fd…`), the subnet id stays, a random interface id (it can contain the MAC) |
+| MAC addresses | the vendor part (first three bytes) stays, the rest is random |
+| Email addresses | `mail-xxxx@example.net` |
+| *Also replace names* (on by default): device names / UniFi aliases, Wi-Fi names (also neighbouring ones - they can locate you), user names that logged in, Unraid server names | tokens such as `iphone-k7q2`, `ssid-iot-m3xa`, `user-p9rd` - a generic word in the name (iphone, camera, tv …) is kept as a hint |
+| *Always replace these*: your domains (with subdomains), family names, a street … | `name-xxxx`, `domain-xxxx.example` |
+
+Not replaced, because the analysis needs them and they don't identify you on their own: internet addresses, domains,
+ports, countries, container / program names, rule names and signatures. Generic names (root, admin, nas, router …) and
+the entries under *Never replace these* stay readable.
+
+Good to know:
+
+* Values are replaced by kind **everywhere** (columns, raw log lines, alert titles, report data, your own question),
+  never per field, so the model always sees one consistent picture. A device keeps its pseudonym in every request,
+  report and conversation (stored in the table `ai_pseudonyms`, a few kB).
+* Conversations and reports are stored with the real values, and only the outgoing request is changed, so turning the
+  mode on or off never breaks an old conversation. Logs and the database don't grow (apart from that small table).
+* Free text in log lines (container logs, file paths, notifications) can still hold a name Looking Glass does not
+  know: add it under *Always replace these*. The AI provider still knows *your account*; for complete privacy use a
+  local model (Ollama, LM Studio).
+* Costs a few milliseconds per request; the analysis stays about as good - only meaning carried by a name is lost.
+* If the pseudonyms cannot be prepared (e.g. the database is unreachable), the request is **not sent** - the mode never
+  falls back to sending the real values.
+* *Settings › Data & detection › Delete collected data › AI analyst conversations* also empties `ai_pseudonyms`; devices simply get new
+  pseudonyms from then on (stored conversations keep working, they hold the real values).
+* **See for yourself what is sent**: open a chat on the **AI Analyst** page and click **What the AI sees** (top right
+  of the conversation). It shows the whole conversation exactly as the AI receives it with your next question - the
+  instructions (system prompt), your questions, the queries the AI ran, the data returned to it and its answers. The
+  pseudonyms are highlighted: hover one to see the real value it stands for, or click / tap it to swap. A real name you
+  can still read there was not recognised - add it under *Always replace these*. With privacy mode off the same view
+  shows that everything is sent as it is. Click the button again for the normal view.
+
 ### How severity is decided
 
 Every alert shows **"Why <severity>"**: the base reason and every step up (↑) or down (↓). The same four questions
@@ -227,7 +303,7 @@ decide it for every rule:
 | Malicious domain looked up (blocked): 1-2 domains / 3+ | medium / high, up when confirmed |
 | Suspicious outbound port (Tor, IRC, RDP, SMB, mining…) blocked / allowed | low / medium, up when confirmed |
 | Gateway down / degraded, security service stopped / other service stopped, logs stopped | high / low, medium / low, medium |
-| UniFi: switch offline / AP offline, foreign AP with your Wi-Fi name (open or strong signal: up), rogue DHCP | high / medium, medium-high, high |
+| UniFi: switch offline / AP offline (after *Offline alerts wait*), foreign AP with your Wi-Fi name (open or strong signal: up), rogue DHCP | high / medium, medium-high, high |
 | New device | low |
 
 Severities of rules that look at a time window (scans, brute force, DNS) are re-evaluated on every run, so they can
@@ -338,7 +414,8 @@ Next logins ask for password + TOTP code or passkey.
 * **AI analyst** tab – your Anthropic API key (<https://console.anthropic.com> › *API keys*). Base URL
   `https://api.anthropic.com/v1/` and model `claude-opus-5-5` are pre-filled; any other OpenAI-compatible service
   (OpenAI, OpenRouter, LiteLLM, Ollama at `http://host:11434/v1/` …) works by changing base URL, model and key.
-  *Test connection* → *Save*.
+  *Test connection* → *Save*. Optional: tick **Privacy mode** so the AI only ever sees pseudonyms instead of your local
+  addresses and names (see [AI privacy mode](#ai-privacy-mode-pseudonyms)).
 * **Ingestion & network** tab – set *Syslog allowed senders* to your OPNsense IP and your *Time zone*.
 * **Display** tab – *Time format*: 24-hour (default, 14:05), 12-hour (2:05 PM) or your browser's default - for the
   web UI, notification mails and the AI analyst (mails and AI write times in your *Time zone*).
@@ -484,6 +561,33 @@ already belongs to `PUID:PGID`, so nothing else changes. Running with `docker ru
 `--user <PUID>:<PGID>`; without it the container runs as 10001:10001 and prints a warning that `PUID`/`PGID` are
 ignored.
 
+### Dashboards and database load
+
+Dashboards count a lot of log lines, so Looking Glass keeps that work small:
+
+* **Hourly counts**: charts and counts over 2 days or more (time series, protocols, ports, countries, interfaces …)
+  come from a small table of hourly totals that is updated every minute from the new events only - the same numbers as
+  counting every event, a fraction of the work (30 days: ~16× less). After an update the existing events are counted
+  once in the background, in small slices; until then those panels count the raw events as before.
+* **Refresh**: a page only refreshes while its tab is visible (a tab in the background does nothing, and catches up
+  when you open it again); 24 h views every minute, 7 days every 5 minutes, 30 days every 15 minutes.
+* **Shared results**: tabs, devices and users looking at the same dashboard and period share one result for a short
+  while (30 s for up to a day, 2 / 5 minutes for 7 / 30 days).
+* **No spikes**: at most 3 heavy queries run at once, instead of every panel of a page at the same time.
+* **Database memory**: the compose files start PostgreSQL with `shared_buffers=512MB` (the default 128 MB is too small
+  for the log tables once they hold a few days). **Existing installation?** Add this line to the `db:` service of your
+  `docker-compose.yml` (at the same level as `image:`) and run `docker compose up -d`:
+
+  ```yaml
+      command: ["postgres", "-c", "shared_buffers=512MB", "-c", "effective_cache_size=2GB"]
+  ```
+
+  PostgreSQL as a separate container from an **Unraid template**: Docker tab › the container › *Edit* › *Advanced
+  view* › **Post Arguments**: `-c shared_buffers=512MB -c effective_cache_size=2GB` › *Apply*. Use about a quarter of
+  the memory you want the database to use (256MB on a small machine), and keep its data on an SSD (Unraid: the cache
+  pool / `appdata`). Looking Glass itself sets `jit=off` and `work_mem=16MB` for its own connections, also on an
+  external PostgreSQL.
+
 ## Running hardened (non-root, no capabilities)
 
 The image runs as an unprivileged user (uid/gid **10001**) and needs **no Linux capabilities at all**, so all of
@@ -562,6 +666,14 @@ These become Looking Glass alerts: disk errors or overheating, stopped auto-star
 errors in the Unraid syslog (`zed` device faults, checksum/I/O errors), UPS on battery and Unraid *warning/alert*
 notifications.
 
+Reboots stay quiet (both under *Settings › Data & detection*, default 10 minutes):
+
+* **Unraid: unreachable alerts wait** - "Unraid server … is unreachable" only once Looking Glass has not reached the
+  server for that long, so rebooting the server, or OPNsense in between, raises no alert. It closes by itself when the
+  server answers again (with how long it was unreachable). 0 = after 3 failed polls (about 45 seconds).
+* **Unraid: container alerts wait** - no "container stopped" alert while the server is still starting its containers
+  after a reboot; it closes by itself once the container runs again.
+
 ### Spun-down disks are never woken
 
 Array and pool status (including disk temperatures, which Unraid itself only reads while a disk spins) comes from
@@ -616,6 +728,12 @@ What you get depends on what the controller accepts:
   uses - no SSID, signal, events or rogue APs. *Setup & status* tells you when this happens.
 
 Polled every 60 seconds (Settings › UniFi › Poll interval), events every 2 minutes, neighbouring APs every 10 minutes.
+
+**Offline alerts wait** (Settings › UniFi › *Offline alerts wait (minutes)*, default 10): an "access point / switch is
+offline" or "UniFi controller is unreachable" alert only appears once it has been down that long, so rebooting OPNsense
+(e.g. for an update), the controller or the device itself stays quiet. Such an alert closes by itself when the device
+or controller is back (with how long it was down), and opens again if it goes down for that long once more. 0 = alert
+right away. The offline / online *events* are always recorded (Event search, UniFi dashboard).
 Don't also send UniFi's *SIEM / Activity Logging (syslog)* to Looking Glass: the API already delivers those events.
 
 How UniFi and OPNsense data are combined:
@@ -694,7 +812,8 @@ How UniFi and OPNsense data are combined:
   [OpenAI SDK compatibility layer](https://platform.claude.com/docs/en/api/openai-sdk)). It can run read-only SQL against the log database, search events, profile an
   IP, read alerts, OPNsense + Unraid status and traffic statistics, and answers with evidence and remediation steps.
   Credentials (users, MFA secrets, API keys) are never accessible to it. Data sent to the AI provider consists of the
-  query results the model asks for (IPs, domains, log lines).
+  query results the model asks for (IPs, domains, log lines) - with **privacy mode** on, local addresses and names
+  in them are pseudonyms (see [AI privacy mode](#ai-privacy-mode-pseudonyms)). It also reads your comments on alerts.
 
 ## Configuration reference
 
@@ -741,6 +860,9 @@ user / password / SSL mode · first account.
   never returned by the UI/API, and are not readable by the AI analyst's SQL tool. The environment holds no API keys.
 * Set *Settings › Ingestion & network › Syslog allowed senders* to your OPNsense IP so nobody else can inject log lines.
 * The AI's SQL tool runs inside read-only transactions with a statement timeout and only accepts `SELECT`.
+* *Settings › AI analyst › Privacy mode* keeps your local addresses, MAC addresses and names away from the AI provider
+  (it sees consistent pseudonyms) - see [AI privacy mode](#ai-privacy-mode-pseudonyms). For no data leaving your network
+  at all, use a local model (Ollama, LM Studio).
 
 ## Sources used
 

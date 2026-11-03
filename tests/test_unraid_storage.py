@@ -177,3 +177,61 @@ def test_container_cpu_is_a_share_of_the_whole_cpu(monkeypatch):
     p.client = type("C", (), {"subscribe": staticmethod(subscribe)})()
     asyncio.run(p.poll_docker_stats_api())
     assert p.got[0]["cpu_pct"] == 12.5
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_unreachable_waits_for_the_grace_time_and_closes_when_back():
+    """A reboot of the server or of OPNsense stays quiet; a longer outage is alerted once and closes by itself."""
+    from lookingglass import alert_filters, db
+    from lookingglass.config import Settings
+    from lookingglass.unraid import UnraidServerPoller
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE alerts, alert_filters")
+            alert_filters.invalidate()
+            p = UnraidServerPoller({"id": 1, "name": "Tower", "url": "http://tower", "api_key": "k", "verify_ssl": False},
+                                   Settings(unraid_offline_grace=10), None)
+            alerts = lambda: pool.fetch("SELECT status, close_reason, description, count FROM alerts")  # noqa: E731
+
+            async def fail(at):
+                p.failures += 1
+                await p.unreachable("ConnectError: no route", now=at)
+
+            t = 1_000_000.0
+            for dt in range(0, 300, 15):  # a 5 minute reboot, polled every 15 s
+                await fail(t + dt)
+            p.failures = 0
+            await p.reachable(now=t + 300)
+            assert await alerts() == []
+            for dt in range(1000, 1700, 15):  # 11+ minutes: one alert
+                await fail(t + dt)
+            rows = await alerts()
+            assert len(rows) == 1 and rows[0]["status"] == "open" and rows[0]["count"] == 1
+            assert "No answer for 10 minutes" in rows[0]["description"]
+            p.failures = 0
+            await p.reachable(now=t + 1800)
+            row = (await alerts())[0]
+            assert row["status"] == "closed" and row["close_reason"] == "resolved"
+            assert "unreachable for 13 minutes" in row["description"]
+            # 0 = after 3 failed polls, as before
+            await pool.execute("TRUNCATE alerts")
+            p = UnraidServerPoller({"id": 1, "name": "Tower", "url": "http://tower", "api_key": "k", "verify_ssl": False},
+                                   Settings(unraid_offline_grace=0), None)
+            for dt in (0, 15):
+                await fail(t + dt)
+            assert await alerts() == []
+            await fail(t + 30)
+            assert [r["status"] for r in await alerts()] == ["open"]
+            # Looking Glass restarted while it was open: the first good poll closes it
+            p = UnraidServerPoller({"id": 1, "name": "Tower", "url": "http://tower", "api_key": "k", "verify_ssl": False},
+                                   Settings(), None)
+            await p.reachable(now=t + 60)
+            assert [r["status"] for r in await alerts()] == ["closed"]
+            await pool.execute("TRUNCATE alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())

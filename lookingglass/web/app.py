@@ -26,6 +26,8 @@ from ..ai import Analyst, request_log
 from ..config import Settings
 from . import asset_version
 from ..ingest import STATS
+from .. import rollup
+from ..cache import ResultCache, ttl_for
 from ..dashboards import DASHBOARDS, run_dashboard
 from ..reports import build_report, report_mail, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
@@ -118,6 +120,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         async def handler(request: Request):
             return templates.TemplateResponse(request, tpl, {
                 "title": title, "path": path, "version": __version__, "ai_enabled": settings.ai_enabled,
+                "ai_privacy": settings.ai_privacy,
                 "ai_model": settings.ai_model, "opnsense": settings.opnsense_enabled,
                 "syslog_port": settings.syslog_udp_port, "user": request.session.get("user"),
                 "dashboards": DASH_NAV,
@@ -137,22 +140,46 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "title": "Report", "path": "/reports", "version": __version__, "report_id": report_id, "ai_enabled": settings.ai_enabled})
 
     # -------------------------------------------------------------- api ---
+    # dashboard / Overview results shared by every tab and user for a short while (cache.py)
+    results = ResultCache()
+    app.state.results = results
+
+    async def overview_counts(hours: float) -> dict[str, Any]:
+        """The part of the Overview that counts events (the expensive part): cached."""
+        secs = hours * 3600
+        # plain counts (from 2 days on from the hourly counts) and the distinct blocked sources apart: in one query
+        # count(DISTINCT) FILTER sorts every event of the period (30 days: seconds instead of a fraction)
+        counts = ("SELECT coalesce(count(*), 0) total, coalesce(count(*) FILTER (WHERE action IN ('block', 'drop', 'ban')), 0) blocked, "
+                  "coalesce(count(*) FILTER (WHERE action = 'login_failed'), 0) login_failed, "
+                  "coalesce(count(*) FILTER (WHERE source = 'unbound'), 0) dns, coalesce(count(*) FILTER (WHERE source = 'suricata'), 0) ids "
+                  "FROM events WHERE ts > now() - make_interval(secs => $1)")
+
+        async def kpi_counts() -> dict[str, Any]:
+            async with db.heavy(), db.pool().acquire() as conn:
+                row = await (rollup.fetch(conn, counts, secs) if hours >= rollup.MIN_HOURS else conn.fetch(counts, secs))
+            return dict(row[0])
+
+        async def blocked_ips() -> int:
+            async with db.heavy(), db.pool().acquire() as conn:
+                return await conn.fetchval(
+                    "SELECT count(*) FROM (SELECT DISTINCT src_ip FROM events WHERE action IN ('block', 'drop') "
+                    "AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1)) x", secs)
+
+        kpi, ips, report, tl = await asyncio.gather(kpi_counts(), blocked_ips(), build_report(hours), timeline(hours))
+        return {"kpi": db.jsonable({**kpi, "blocked_ips": ips}), "report": report, "timeline": tl}
+
     @app.get("/api/overview")
     async def overview(hours: float = Query(24, gt=0, le=24 * 90)):
         pool = db.pool()
-        secs = hours * 3600
-        kpi = await pool.fetchrow(
-            "SELECT count(*) total, count(*) FILTER (WHERE action IN ('block', 'drop', 'ban')) blocked, "
-            "count(DISTINCT src_ip) FILTER (WHERE action IN ('block', 'drop')) blocked_ips, "
-            "count(*) FILTER (WHERE action = 'login_failed') login_failed, "
-            "count(*) FILTER (WHERE source = 'unbound') dns, count(*) FILTER (WHERE source = 'suricata') ids "
-            "FROM events WHERE ts > now() - make_interval(secs => $1)", secs)
+        counted = await results.get(("overview", hours), ttl_for(hours), lambda: overview_counts(hours))
+        kpi = counted["kpi"]
+        # open alerts, devices and the system state are cheap and always current
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
         decisions = await db.get_snapshot("crowdsec_decisions")
         blocklists = await db.get_snapshot("blocklists") or {}
         blocklist_n = ((blocklists.get("crowdsec") or {}) if isinstance(blocklists, dict) else {}).get("size")
         devices = await pool.fetchval("SELECT count(*) FROM devices WHERE last_seen > now() - interval '1 day'")
-        report = await build_report(hours)
+        report = counted["report"]
         # optional sources: hide their overview cards when their pull is off and they have no data in the period
         has = {r["source"] for r in report.get("totals_by_source") or []}
         enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
@@ -160,10 +187,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         enabled = {k: (v and settings.opnsense_enabled) or k in has for k, v in enabled.items()}
         return {
             "sources": enabled,
-            "kpi": {**db.jsonable(dict(kpi)), "open_alerts": {r["severity"]: r["n"] for r in alerts},
+            "kpi": {**kpi, "open_alerts": {r["severity"]: r["n"] for r in alerts},
                     "crowdsec_decisions": len(decisions) if isinstance(decisions, list) else None,
                     "crowdsec_blocklist": blocklist_n, "devices": devices},
-            "timeline": await timeline(hours),
+            "timeline": counted["timeline"],
             "report": report,
             "system": await db.get_snapshot("system"),
             "gateways": await db.get_snapshot("gateways"),
@@ -230,7 +257,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         all_filters = await alert_filters._filters()
         active_ids = {f["id"] for f in all_filters}
         filters = [f for f in all_filters if f["action"] != "severity"]
+        comments: dict[int, list[dict[str, Any]]] = {}
+        if out:
+            for r in await db.pool().fetch("SELECT id, alert_id, created_at, updated_at, author, body FROM alert_comments "
+                                           "WHERE alert_id = ANY($1::bigint[]) ORDER BY created_at, id", [a["id"] for a in out]):
+                comments.setdefault(r["alert_id"], []).append(db.jsonable(dict(r)))
         for a in out:
+            a["comments"] = comments.get(a["id"], [])
             a["src_name"] = a["src_name"] or names.get(a.get("src_ip"))
             a["muted_by"], a["override_active"] = None, False
             try:
@@ -477,13 +510,16 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             where, args = "status = 'closed' AND id = ANY($1::bigint[])", [ids]
         if payload.get("dry_run"):
             return {"count": await db.pool().fetchval(f"SELECT count(*) FROM alerts WHERE {where}", *args)}
-        res = await db.pool().execute(f"DELETE FROM alerts WHERE {where}", *args)
-        n = int(res.split()[-1])
+        async with db.pool().acquire() as conn, conn.transaction():
+            ids = [r["id"] for r in await conn.fetch(f"DELETE FROM alerts WHERE {where} RETURNING id", *args)]
+            await conn.execute("DELETE FROM alert_comments WHERE alert_id = ANY($1::bigint[])", ids)
+        n = len(ids)
         log.info("deleted %d closed alert(s)", n)
         return {"deleted": n}
 
     @app.post("/api/alerts/status")
-    async def set_alert_status(payload: dict = Body(...)):
+    async def set_alert_status(request: Request, payload: dict = Body(...)):
+        """Change the status of alerts; an optional "comment" is added to each of them (e.g. why it was closed)."""
         ids = [int(i) for i in payload.get("ids", [])]
         status = payload.get("status")
         if status not in ("open", "acknowledged", "closed"):
@@ -491,9 +527,56 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         reason = payload.get("reason") if status == "closed" else None
         if reason not in (None, "false_positive", "resolved"):
             raise HTTPException(400, "invalid reason")
-        await db.pool().execute("UPDATE alerts SET status = $1, close_reason = $3 WHERE id = ANY($2::bigint[])",
-                                status, ids, reason)
+        comment = _comment_text(payload.get("comment"), required=False)
+        async with db.pool().acquire() as conn, conn.transaction():
+            await conn.execute("UPDATE alerts SET status = $1, close_reason = $3 WHERE id = ANY($2::bigint[])",
+                               status, ids, reason)
+            if comment:
+                await conn.execute("INSERT INTO alert_comments (alert_id, author, body) SELECT id, $2, $3 FROM alerts "
+                                   "WHERE id = ANY($1::bigint[])", ids, _author(request), comment)
         return {"ok": True, "updated": len(ids)}
+
+    # ----------------------------------------------------- alert comments ---
+    # notes on an alert in any status (why it was closed / a false positive, extra context); the AI analyst reads them
+    COMMENT_MAX = 5000
+
+    def _comment_text(value: Any, required: bool = True) -> str:
+        text = str(value or "").strip()
+        if required and not text:
+            raise HTTPException(400, "The comment is empty.")
+        if len(text) > COMMENT_MAX:
+            raise HTTPException(400, f"A comment can be at most {COMMENT_MAX} characters.")
+        return text
+
+    def _author(request: Request) -> str | None:
+        user = getattr(request.state, "user", None)  # set by the login guard for every API call
+        return user.get("username") if isinstance(user, dict) else None
+
+    @app.post("/api/alerts/{aid}/comments")
+    async def add_alert_comment(aid: int, request: Request, payload: dict = Body(...)):
+        text = _comment_text(payload.get("body"))
+        row = await db.pool().fetchrow(
+            "INSERT INTO alert_comments (alert_id, author, body) SELECT id, $2, $3 FROM alerts WHERE id = $1 "
+            "RETURNING id, alert_id, created_at, updated_at, author, body", aid, _author(request), text)
+        if not row:
+            raise HTTPException(404, f"Alert #{aid} does not exist (any more).")
+        return db.jsonable(dict(row))
+
+    @app.put("/api/alerts/comments/{cid}")
+    async def edit_alert_comment(cid: int, payload: dict = Body(...)):
+        row = await db.pool().fetchrow(
+            "UPDATE alert_comments SET body = $2, updated_at = now() WHERE id = $1 "
+            "RETURNING id, alert_id, created_at, updated_at, author, body", cid, _comment_text(payload.get("body")))
+        if not row:
+            raise HTTPException(404, "That comment does not exist (any more).")
+        return db.jsonable(dict(row))
+
+    @app.delete("/api/alerts/comments/{cid}")
+    async def delete_alert_comment(cid: int):
+        res = await db.pool().execute("DELETE FROM alert_comments WHERE id = $1", cid)
+        if res.endswith(" 0"):
+            raise HTTPException(404, "That comment does not exist (any more).")
+        return {"ok": True}
 
     @app.get("/api/system")
     async def system():
@@ -533,11 +616,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     # ------------------------------------------------- delete collected data ---
     # What can be wiped. Never touched: settings, credentials, accounts / MFA, Unraid servers, encryption key.
     PURGE = {
-        "events": ("events", "Logs / events"),
-        "alerts": ("alerts", "Alerts"),
+        "events": ("events, event_rollup", "Logs / events"),
+        "alerts": ("alerts, alert_comments", "Alerts (and your comments on them)"),
         "metrics": ("metrics", "Graphs (metrics history)"),
         "reports": ("reports", "Reports"),
-        "ai_chats": ("ai_chats", "AI analyst conversations"),
+        "ai_chats": ("ai_chats, ai_pseudonyms", "AI analyst conversations (and the privacy mode pseudonyms)"),
         "devices": ("devices", "Device list (incl. names, notes and trusted marks you set)"),
         "behavior": ("device_profile, device_hourly, hourly_stats, risk_scores, seen_domains",
                      "Learned behaviour (device profiles, hourly baselines, risk scores, seen domains)"),
@@ -569,6 +652,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             raise HTTPException(403, "Wrong password.")
         # TRUNCATE without RESTART IDENTITY: event ids keep growing, so the detection rules' watermarks stay valid
         await db.pool().execute(f"TRUNCATE {', '.join(PURGE[p][0] for p in parts)}")
+        results.clear()
+        if "ai_chats" in parts:
+            from .. import privacy
+            privacy.invalidate()
         log.warning("user %s deleted collected data: %s", user["username"], ", ".join(parts))
         return {"ok": True, "deleted": parts}
 
@@ -661,6 +748,42 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             raise HTTPException(404)
         return db.jsonable(dict(row))
 
+    @app.get("/api/ai/chats/{chat_id}/sent")
+    async def chat_as_sent(chat_id: int):
+        """A conversation exactly as the AI receives it with the next question (AI Analyst › What the AI sees): system
+        instructions, questions, the AI's tool calls, the data returned to it and its answers - in privacy mode with
+        the pseudonyms, each one paired with the real value it stands for."""
+        from .. import privacy
+        from ..ai import TOOLS
+        row = await db.pool().fetchrow("SELECT messages FROM ai_chats WHERE id = $1", chat_id)
+        if not row:
+            raise HTTPException(404, "This chat does not exist (any more).")
+        priv = await privacy.session(settings) if settings.ai_privacy else None
+
+        async def parts(text: Any) -> list[tuple[str, str | None]]:
+            text = text if isinstance(text, str) else ""
+            return await priv.hide_parts(text) if priv else ([(text, None)] if text else [])
+
+        def args_text(arguments: Any) -> str:
+            # written out the way it is sent (names as they are, not \u escaped)
+            try:
+                return json.dumps(json.loads(arguments or "{}"), ensure_ascii=False)
+            except (TypeError, ValueError):
+                return str(arguments or "")
+
+        out = []
+        for m in row["messages"] if isinstance(row["messages"], list) else []:
+            item: dict[str, Any] = {"role": m.get("role"), "parts": await parts(m.get("content"))}
+            if m.get("tool_calls"):
+                item["tool_calls"] = [{"name": (c.get("function") or {}).get("name"),
+                                       "parts": await parts(args_text((c.get("function") or {}).get("arguments")))}
+                                      for c in m["tool_calls"] if isinstance(c, dict)]
+            out.append(item)
+        return {"privacy": priv is not None, "names": priv.known_names() if priv else {},
+                "model": settings.ai_model, "base_url": settings.ai_base_url,
+                "system": await analyst.system_message(priv is not None),
+                "tools": [t["function"]["name"] for t in TOOLS], "messages": out}
+
     @app.delete("/api/ai/chats/{chat_id}")
     async def delete_chat(chat_id: int):
         await db.pool().execute("DELETE FROM ai_chats WHERE id = $1", chat_id)
@@ -743,6 +866,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def dash_data(name: str, hours: float = Query(24, gt=0, le=24 * 90)):
         if name not in DASHBOARDS:
             raise HTTPException(404)
+        return await results.get(("dash", name, hours), ttl_for(hours), lambda: dash_compute(name, hours))
+
+    async def dash_compute(name: str, hours: float) -> dict[str, Any]:
         # an optional source whose pull is off and that has no data in the period: its tiles and panels are hidden
         pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull}
         has = {r["s"] for r in await db.pool().fetch(

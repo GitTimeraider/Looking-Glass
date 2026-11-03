@@ -275,6 +275,6 @@ async function logs() {
 }
 document.getElementById("lg-go").onclick = logs;
 document.getElementById("lg-kind").onchange = logs;
-init(); setInterval(() => { if (servers.length) { load(); if (tab === "logs") logs(); } }, 60000);
+init(); LG.autoRefresh(() => { if (servers.length) { load(); if (tab === "logs") logs(); } }, 60000);
 </script>
 {% endblock %}

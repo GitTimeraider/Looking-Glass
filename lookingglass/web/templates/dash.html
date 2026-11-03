@@ -13,7 +13,7 @@
 <script>
 const NAME = "{{ name }}";
 let hours = Number(localStorage.getItem("lg-hours-" + NAME) || 24);
-LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours-" + NAME, v); load(); });
+LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours-" + NAME, v); auto.touch(); load(); });
 
 const FMT = {
   ip: LG.ip, flag: LG.flag, ago: LG.ago, time: LG.time, sev: LG.sev, src: LG.src, bytes: LG.bytes,
@@ -123,6 +123,6 @@ async function load() {
   } catch (e) { document.getElementById("panels").innerHTML = `<div class="card">Failed to load: ${LG.esc(e.message)}</div>`; built = false; }
 }
 load();
-setInterval(load, 60000);
+const auto = LG.autoRefresh(load, () => LG.refreshMs(hours));
 </script>
 {% endblock %}

@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from . import db
+from . import db, privacy
 from .config import Settings, local_time, time_style
 from .reports import build_report
 
@@ -44,7 +44,8 @@ events(id bigint, ts timestamptz, received_at timestamptz, source text, host tex
              crowdsec {scenario, decisions}; zenarmor {app_name, app_category, security_tags, ...};
              unifi {key (EVT_...), mac (client), ap, ap_from, ap_to, ssid, sw, port, subsystem}
 alerts(id, created_at, last_seen, rule, severity /*info|low|medium|high|critical*/, title, description, src_ip inet,
-       dst_ip inet, count int, status /*open|acknowledged|closed*/, fingerprint, data jsonb)
+       dst_ip inet, count int, status /*open|acknowledged|closed*/, close_reason /*false_positive|resolved*/, fingerprint, data jsonb)
+alert_comments(id, alert_id /*alerts.id*/, created_at, updated_at, author, body)  -- the user's own notes on alerts
 metrics(ts, name, labels, value)  names: memory_used_pct, load1, pf_states, pf_states_pct, disk_used_pct, temperature,
        gateway_delay_ms, gateway_loss_pct, if_rx_bps, if_tx_bps (labels = interface), if_received_errors, ...
 devices(mac, ip, hostname, name_source, vendor, interface, sources text[], lease_type, lease_expires, online, trusted, notes,
@@ -91,6 +92,10 @@ How to work:
   VLAN, signal) and since when. Use that to name the device, judge whether it belongs on that network (e.g. an IoT plug on
   the main SSID, an unknown wired device on a free switch port) and to give exact containment steps (UniFi Network ›
   Client Devices › Block, move it to an isolated SSID / VLAN, disable the switch port, or an OPNsense rule).
+- The user's comments on alerts (alert_comments; included by list_alerts and alert_detail) are first-hand knowledge:
+  why an alert was closed or marked false positive, what a device is, what was already done. Take them into account,
+  also for similar alerts (same rule and / or address) - e.g. don't report something the user explained as expected,
+  unless the data shows it changed.
 - Be concise; use markdown headings, bullet lists and tables.
 
 Current time: {now} UTC = {local}. Timestamps in the data are UTC; when you write times for the user, convert them
@@ -120,8 +125,13 @@ TOOLS: list[dict[str, Any]] = [
         "parameters": {"type": "object", "properties": {"ip": {"type": "string"}, "hours": {"type": "number", "description": "default 168"}},
                        "required": ["ip"]}}},
     {"type": "function", "function": {
+        "name": "alert_detail",
+        "description": "One alert in full: description, data, the user's comments on it, and earlier alerts of the same rule "
+                       "and address (with their status, close reason and comments).",
+        "parameters": {"type": "object", "properties": {"alert_id": {"type": "integer"}}, "required": ["alert_id"]}}},
+    {"type": "function", "function": {
         "name": "list_alerts",
-        "description": "List alerts raised by the detection engine.",
+        "description": "List alerts raised by the detection engine, with the user's comments on them.",
         "parameters": {"type": "object", "properties": {
             "status": {"type": "string", "description": "open, acknowledged, closed or all (default open)"},
             "hours": {"type": "number", "description": "only alerts seen in this window (default 168)"},
@@ -152,10 +162,22 @@ _SECRET = re.compile(r"\b(users|webauthn_credentials|kv|app_settings|unraid_serv
 
 
 def _dump(value: Any, limit: int = 40000) -> str:
-    text = json.dumps(db.jsonable(value), default=str)
+    # ensure_ascii=False: names stay as written ("Jörg", not "J\u00f6rg") - privacy mode recognises them that way
+    text = json.dumps(db.jsonable(value), default=str, ensure_ascii=False)
     if len(text) > limit:
-        text = text[:limit] + f'... [truncated, {len(text)} chars total - narrow the query]'
+        # cut after a complete value (", " separates them), never inside an address or a name
+        cut = text.rfind(", ", limit - 2000, limit)
+        text = text[:cut if cut > 0 else limit] + f'... [truncated, {len(text)} chars total - narrow the query]'
     return text
+
+
+async def _comments(alert_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    out: dict[int, list[dict[str, Any]]] = {}
+    if alert_ids:
+        for r in await db.pool().fetch("SELECT alert_id, created_at, author, body FROM alert_comments "
+                                       "WHERE alert_id = ANY($1::bigint[]) ORDER BY created_at", alert_ids):
+            out.setdefault(r["alert_id"], []).append({"at": r["created_at"], "by": r["author"], "comment": r["body"]})
+    return out
 
 
 async def tool_sql_query(query: str) -> Any:
@@ -225,10 +247,34 @@ async def tool_list_alerts(status: str = "open", hours: float = 168, limit: int 
         args.append(status)
         cond = "AND status = $3"
     rows = await db.pool().fetch(
-        f"SELECT id, created_at, last_seen, rule, severity, title, description, host(src_ip) src, host(dst_ip) dst, count, status "
-        f"FROM alerts WHERE last_seen > now() - make_interval(secs => $1) {cond} "
+        f"SELECT id, created_at, last_seen, rule, severity, title, description, host(src_ip) src, host(dst_ip) dst, count, status, "
+        f"close_reason FROM alerts WHERE last_seen > now() - make_interval(secs => $1) {cond} "
         f"ORDER BY array_position(ARRAY['critical','high','medium','low','info'], severity), last_seen DESC LIMIT $2", *args)
-    return db.records(rows)
+    out = db.records(rows)
+    comments = await _comments([a["id"] for a in out])
+    for a in out:
+        if a["id"] in comments:
+            a["comments"] = comments[a["id"]]
+    return out
+
+
+async def tool_alert_detail(alert_id: int) -> Any:
+    row = await db.pool().fetchrow(
+        "SELECT id, created_at, last_seen, rule, severity, title, description, host(src_ip) src, host(dst_ip) dst, count, "
+        "status, close_reason, data FROM alerts WHERE id = $1", int(alert_id))
+    if not row:
+        return {"error": f"alert #{alert_id} does not exist (deleted, or closed alerts older than the retention)"}
+    alert = db.jsonable(dict(row))
+    similar = db.records(await db.pool().fetch(
+        "SELECT id, created_at, last_seen, severity, title, count, status, close_reason FROM alerts WHERE rule = $1 "
+        "AND id <> $2 AND (src_ip IS NOT DISTINCT FROM $3::inet) ORDER BY last_seen DESC LIMIT 20",
+        row["rule"], row["id"], alert["src"]))
+    comments = await _comments([alert["id"]] + [a["id"] for a in similar])
+    alert["comments"] = comments.get(alert["id"], [])
+    for a in similar:
+        if a["id"] in comments:
+            a["comments"] = comments[a["id"]]
+    return {"alert": alert, "earlier_alerts_same_rule_and_source": similar}
 
 
 async def tool_system_status() -> Any:
@@ -265,7 +311,7 @@ async def tool_unifi_status(client: str | None = None) -> Any:
 
 async def run_tool(name: str, args: dict[str, Any]) -> str:
     fn = {"sql_query": tool_sql_query, "search_events": tool_search_events, "ip_profile": tool_ip_profile,
-          "list_alerts": tool_list_alerts, "system_status": tool_system_status, "unifi_status": tool_unifi_status,
+          "list_alerts": tool_list_alerts, "alert_detail": tool_alert_detail, "system_status": tool_system_status, "unifi_status": tool_unifi_status,
           "traffic_overview": lambda hours=24: build_report(float(hours))}.get(name)
     if fn is None:
         return json.dumps({"error": f"unknown tool {name}"})
@@ -397,9 +443,24 @@ class Analyst:
                 .replace("{style}", time_style(self.settings)).replace("{zone}", self.settings.timezone or "UTC")
                 .replace("{volumes}", volumes))
 
+    async def system_message(self, private: bool) -> str:
+        """The system prompt exactly as it is sent (with the privacy note in privacy mode)."""
+        return await self._system_prompt() + (privacy.PROMPT_NOTE if private else "")
+
     async def _complete(self, client: httpx.AsyncClient, messages: list[dict[str, Any]], tools: bool = True,
-                        step: int = 1) -> dict[str, Any]:
-        """One model call (streamed when possible), retried on overload / gateway errors and timeouts."""
+                        step: int = 1, priv: privacy.Session | None = None) -> dict[str, Any]:
+        """One model call (streamed when possible), retried on overload / gateway errors and timeouts.
+
+        With ``priv`` (privacy mode) the request is pseudonymized as a whole right here, and the answer - text and tool
+        calls - translated back before it is returned: everything else only ever handles the real values."""
+        if priv is not None:
+            # the system prompt holds no network data (and its examples must stay as written)
+            messages = [m if m.get("role") == "system" else await priv.hide_message(m) for m in messages]
+        msg = await self._request(client, messages, tools, step)
+        return priv.reveal_message(msg) if priv is not None else msg
+
+    async def _request(self, client: httpx.AsyncClient, messages: list[dict[str, Any]], tools: bool,
+                       step: int) -> dict[str, Any]:
         body: dict[str, Any] = {"model": self.settings.ai_model, "messages": [_clean_message(m) for m in messages],
                                 "max_tokens": 16000}
         if tools:
@@ -500,12 +561,13 @@ class Analyst:
             raise RuntimeError("AI is not configured: set AI_BASE_URL, AI_API_KEY and AI_MODEL")
         request_log.info("AI analysis started: %s", user_message[:120].replace("\n", " "))
         new: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
-        system = {"role": "system", "content": await self._system_prompt()}
+        priv = await privacy.session(self.settings) if self.settings.ai_privacy else None
+        system = {"role": "system", "content": await self.system_message(priv is not None)}
         base = self.settings.ai_base_url.rstrip("/") + "/"
         headers = {"Authorization": f"Bearer {self.settings.ai_api_key}"}
         async with httpx.AsyncClient(base_url=base, headers=headers, timeout=self.settings.ai_timeout) as client:
             for step in range(1, self.settings.ai_max_tool_rounds + 1):
-                msg = await self._complete(client, [system, *history, *new], step=step)
+                msg = await self._complete(client, [system, *history, *new], step=step, priv=priv)
                 assistant: dict[str, Any] = {"role": "assistant", "content": msg.get("content") or ""}
                 calls = msg.get("tool_calls") or []
                 if calls:
@@ -527,7 +589,7 @@ class Analyst:
             # out of tool rounds: ask for a final answer without tools
             final = await self._complete(client, [system, *history, *new, {"role": "user", "content":
                                          "Tool budget exhausted. Give your final answer now based on what you found."}],
-                                         tools=False, step=self.settings.ai_max_tool_rounds + 1)
+                                         tools=False, step=self.settings.ai_max_tool_rounds + 1, priv=priv)
             new.append({"role": "assistant", "content": final.get("content") or ""})
             return new
 
@@ -535,7 +597,8 @@ class Analyst:
         prompt = (f"Perform a full security review of the last {hours} hours. Check open alerts, blocked and allowed traffic, "
                   "inbound exposure, outbound anomalies from internal hosts, DNS, web server, IDS, CrowdSec, Zenarmor, Q-Feeds, "
                   "authentication and system health. Report: 1) executive summary, 2) findings ranked by severity with evidence, "
-                  "3) recommended actions, 4) blind spots (missing log sources).")
+                  "3) recommended actions, 4) blind spots (missing log sources). Take the user's comments on alerts into "
+                  "account (list_alerts / alert_detail).")
         if data:
             # the report's numbers up front: the model only needs tools to dig into what stands out (fewer, shorter
             # requests - long agent runs are what gateways time out on)

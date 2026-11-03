@@ -131,6 +131,7 @@ class Settings(BaseSettings):
     unifi_verify_ssl: bool = False
     unifi_poll_interval: int = 60
     unifi_events: bool = True
+    unifi_offline_grace: int = 10  # minutes
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_security: str = "starttls"
@@ -144,6 +145,10 @@ class Settings(BaseSettings):
     ai_max_tool_rounds: int = 12
     ai_timeout: int = 300
     ai_stream: bool = True
+    ai_privacy: bool = False
+    ai_privacy_names: bool = True
+    ai_privacy_terms: str = ""
+    ai_privacy_keep: str = ""
     ai_daily_report: bool = False
     ai_daily_report_hour: int = 7
     report_every_days: int = 1
@@ -154,6 +159,7 @@ class Settings(BaseSettings):
     metrics_retention_days: int = 90
     detection_interval: int = 60
     unraid_container_grace: int = 10  # minutes
+    unraid_offline_grace: int = 10  # minutes
 
     # legacy: only imported once into the Unraid server list (Settings -> Integrations)
     unraid_name: str = "Unraid"

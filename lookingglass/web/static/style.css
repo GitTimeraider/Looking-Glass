@@ -174,6 +174,21 @@ button:disabled { opacity: .5; cursor: wait; }
 @media (hover: none) { .chat-item .del { visibility: visible; } }
 .chat .conv { display: flex; flex-direction: column; min-height: 0; }
 .msgs { flex: 1; overflow: auto; padding-right: 6px; min-height: 300px; }
+/* AI Analyst › What the AI sees */
+.conv-tools { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.conv-tools button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.sent-note { padding: 10px 12px; margin-bottom: 12px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--border); }
+.sent-msg { margin-bottom: 10px; }
+details.sent-msg { padding: 8px 12px; border: 1px dashed var(--border); border-radius: 8px; }
+details.sent-msg summary { cursor: pointer; }
+.sent-role { font-weight: 600; margin-bottom: 4px; }
+.sent-text { white-space: pre-wrap; }
+.sent-call { margin-top: 8px; }
+.sent-pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; margin: 6px 0 0;
+  max-height: 420px; overflow: auto; }
+mark.pseudo { background: color-mix(in srgb, #eab308 35%, transparent); color: inherit; border-radius: 3px; padding: 0 2px;
+  cursor: help; }
+mark.pseudo.real { background: color-mix(in srgb, #22c55e 30%, transparent); }
 .msg { margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border); overflow-wrap: anywhere; }
 .msg.user { background: #1e3a5f; border-color: #1e3a5f; margin-left: 15%; }
 .msg.user { background: color-mix(in srgb, var(--accent) 22%, var(--panel)); border-color: color-mix(in srgb, var(--accent) 35%, var(--panel)); }
@@ -422,6 +437,13 @@ details.card > summary { cursor: pointer; }
 .al-kv > div { min-width: 0; overflow-wrap: anywhere; }
 .al-rule { overflow-wrap: anywhere; }
 .al-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.al-cms { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.al-cm { padding: 8px 10px; background: var(--panel); border-radius: 8px; display: flex; flex-direction: column; gap: 6px; }
+.al-cm-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.al-cm-tools { margin-left: auto; display: flex; gap: 4px; }
+.al-cm-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.al-cm-input { width: 100%; min-height: 44px; resize: vertical; font: inherit; font-size: 13px; }
+.al-cm-n { white-space: nowrap; }
 .pill.st-open { background: color-mix(in srgb, var(--accent) 25%, var(--panel2)); }
 .bulk { position: sticky; bottom: 12px; z-index: 25; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px;
   padding: 10px 12px; background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; box-shadow: 0 6px 24px rgba(0, 0, 0, .4); }

@@ -138,6 +138,6 @@ async function overview() {
 }
 async function refresh() { await Promise.all([overview(), now()]); }
 showTab(tab); refresh();
-setInterval(() => { refresh(); charts(); }, 60000);
+LG.autoRefresh(() => { refresh(); charts(); }, 60000);
 </script>
 {% endblock %}

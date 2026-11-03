@@ -155,9 +155,79 @@ function details(a) {
       <div>Status</div><div>${statusPills(a)}</div>
     </div>
     <div class="al-actions">${ev ? `<a class="btn secondary small" href="${ev}" title="Show the events behind this alert">Events</a>` : ""}${a.muted_by ? `<button type="button" class="secondary small" data-unmute="${a.muted_by.id}" title="Delete the filter “${LG.esc(a.muted_by.name)}” so alerts like this are created again">Unmute</button>`
-      : `<a class="btn secondary small" href="${muteUrl(a)}" title="Create a filter that stops alerts like this one">Mute similar…</a>`}<a class="btn secondary small" href="${muteUrl(a, "severity")}" title="Give alerts like this one your own severity from now on">Change severity…</a>{% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do.`)}" title="Let the AI analyst investigate this alert">Ask AI</a>{% endif %}</div>
+      : `<a class="btn secondary small" href="${muteUrl(a)}" title="Create a filter that stops alerts like this one">Mute similar…</a>`}<a class="btn secondary small" href="${muteUrl(a, "severity")}" title="Give alerts like this one your own severity from now on">Change severity…</a>{% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do. Take my comments on it and on earlier similar alerts into account.`)}" title="Let the AI analyst investigate this alert (it also reads the comments)">Ask AI</a>{% endif %}</div>
+    ${comments(a)}
   </div>`;
 }
+/* comments: notes on an alert in any status - why it was closed / a false positive, extra context. The AI analyst
+   reads them too. Unsent text and open edits survive the automatic refresh. */
+const drafts = new Map(), editing = new Map();
+function comment(a, c) {
+  if (editing.has(c.id)) return `<div class="al-cm">
+      <textarea class="al-cm-input" data-cm-edittext="${c.id}" rows="3" maxlength="5000" aria-label="Edit comment">${LG.esc(editing.get(c.id))}</textarea>
+      <div class="al-actions"><button type="button" class="small" data-cm-save="${c.id}">Save</button>
+        <button type="button" class="secondary small" data-cm-cancel="${c.id}">Cancel</button></div></div>`;
+  return `<div class="al-cm">
+      <div class="al-cm-head small muted"><b>${LG.esc(c.author || "unknown")}</b> · <span title="${LG.esc(LG.time(c.created_at))}">${LG.esc(LG.time(c.created_at))}</span>${c.updated_at ? ` <span title="edited ${LG.esc(LG.time(c.updated_at))}">(edited)</span>` : ""}
+        <span class="al-cm-tools"><button type="button" class="secondary small" data-cm-edit="${c.id}" data-aid="${a.id}" title="Edit this comment">Edit</button><button type="button" class="secondary small" data-cm-del="${c.id}" title="Delete this comment">Delete</button></span></div>
+      <div class="al-cm-body">${LG.esc(c.body)}</div></div>`;
+}
+function comments(a) {
+  const list = a.comments || [], closed = a.status === "closed";
+  return `<div class="al-cms">
+    <div class="small al-cms-title"><b>Comments</b>${list.length ? ` (${list.length})` : ""} <span class="muted">· also read by the AI analyst</span></div>
+    ${list.map(c => comment(a, c)).join("")}
+    <textarea class="al-cm-input" data-cm-new="${a.id}" rows="2" maxlength="5000" aria-label="New comment"
+      placeholder="Why it was closed / a false positive, what this device is, what you already did… (Ctrl+Enter adds it)">${LG.esc(drafts.get(a.id) || "")}</textarea>
+    <div class="al-actions">
+      <button type="button" class="small" data-cm-add="${a.id}">Add comment</button>
+      ${closed ? `<button type="button" class="secondary small" data-cm-status="${a.id}" data-s="open" title="Add the comment and open the alert again">Comment &amp; re-open</button>`
+        : `<button type="button" class="secondary small" data-cm-status="${a.id}" data-s="closed" data-r="resolved" title="Add the comment and close the alert">Comment &amp; close</button><button type="button" class="secondary small" data-cm-status="${a.id}" data-s="closed" data-r="false_positive" title="Add the comment and close the alert as false positive">Comment &amp; false positive</button>`}
+    </div></div>`;
+}
+async function cmDo(fn) {
+  try { await fn(); } catch (e) { alert(e.message); return false; }
+  load(); return true;
+}
+function wireComments(el) {
+  el.querySelectorAll("[data-cm-new]").forEach(t => {
+    t.oninput = () => { t.value ? drafts.set(Number(t.dataset.cmNew), t.value) : drafts.delete(Number(t.dataset.cmNew)); };
+    t.onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); el.querySelector(`[data-cm-add="${t.dataset.cmNew}"]`).click(); } };
+  });
+  el.querySelectorAll("[data-cm-edittext]").forEach(t => t.oninput = () => editing.set(Number(t.dataset.cmEdittext), t.value));
+  const text = id => (drafts.get(id) || "").trim();
+  el.querySelectorAll("[data-cm-add]").forEach(b => b.onclick = async () => {
+    const id = Number(b.dataset.cmAdd);
+    if (!text(id)) return alert("Write the comment first.");
+    b.disabled = true;
+    if (await cmDo(() => LG.api(`/api/alerts/${id}/comments`, { method: "POST", body: { body: text(id) } }))) drafts.delete(id);
+    b.disabled = false;
+  });
+  el.querySelectorAll("[data-cm-status]").forEach(b => b.onclick = async () => {
+    const id = Number(b.dataset.cmStatus);
+    if (!text(id)) return alert("Write the comment first.");
+    b.disabled = true;
+    const body = { ids: [id], status: b.dataset.s, reason: b.dataset.r, comment: text(id) };
+    if (await cmDo(() => LG.api("/api/alerts/status", { method: "POST", body }))) { drafts.delete(id); picked.delete(id); suggestions(); }
+    b.disabled = false;
+  });
+  el.querySelectorAll("[data-cm-edit]").forEach(b => b.onclick = () => {
+    const a = alerts.find(x => x.id === Number(b.dataset.aid)), c = a && a.comments.find(x => x.id === Number(b.dataset.cmEdit));
+    if (c) { editing.set(c.id, c.body); render(); }
+  });
+  el.querySelectorAll("[data-cm-cancel]").forEach(b => b.onclick = () => { editing.delete(Number(b.dataset.cmCancel)); render(); });
+  el.querySelectorAll("[data-cm-save]").forEach(b => b.onclick = async () => {
+    const cid = Number(b.dataset.cmSave), body = (editing.get(cid) || "").trim();
+    if (!body) return alert("The comment is empty - use Delete to remove it.");
+    if (await cmDo(() => LG.api(`/api/alerts/comments/${cid}`, { method: "PUT", body: { body } }))) editing.delete(cid);
+  });
+  el.querySelectorAll("[data-cm-del]").forEach(b => b.onclick = async () => {
+    if (!confirm("Delete this comment?")) return;
+    await cmDo(() => LG.api(`/api/alerts/comments/${b.dataset.cmDel}`, { method: "DELETE" }));
+  });
+}
+/* the automatic refresh waits while a comment is being written or edited */
+const typing = () => editing.size > 0 || (document.activeElement && document.activeElement.matches("#list textarea"));
 function item(a) {
   const src = a.src_name || a.src_ip, dp = ((a.data || {}).ports || {});
   const port = (dp.dst || []).length === 1 && dp.dst_n === 1 ? `port ${LG.esc(String(dp.dst[0]))}` : "";
@@ -168,7 +238,7 @@ function item(a) {
       <input type="checkbox" value="${a.id}" ${picked.has(a.id) ? "checked" : ""} aria-label="Select this alert">
       <div class="al-sum" role="button" tabindex="0" aria-expanded="${open}" data-toggle="${a.id}">
         <div class="al-title">${LG.sev(a.severity)} <b>${LG.esc(a.title)}</b>${a.count > 1 ? ` <span class="al-n" title="${LG.num(a.count)} times">×${LG.num(a.count)}</span>` : ""}</div>
-        <div class="al-meta small muted">${meta}${status === "all" || a.close_reason ? " " + statusPills(a) : ""}${a.muted_by ? ` <span title="Muted by ${LG.esc(a.muted_by.name)}">🔇</span>` : ""}</div>
+        <div class="al-meta small muted">${meta}${status === "all" || a.close_reason ? " " + statusPills(a) : ""}${a.muted_by ? ` <span title="Muted by ${LG.esc(a.muted_by.name)}">🔇</span>` : ""}${(a.comments || []).length ? ` <span class="al-cm-n" title="${a.comments.length} comment(s): ${LG.esc(a.comments[a.comments.length - 1].body.slice(0, 120))}">💬 ${a.comments.length}</span>` : ""}</div>
       </div>
       <span class="al-chev" data-toggle="${a.id}" aria-hidden="true">▸</span>
     </div>
@@ -198,6 +268,7 @@ function render() {
     t.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } };
   });
   selButton();
+  wireComments(el);
   el.querySelectorAll("[data-unmute]").forEach(b => b.onclick = () => unmute(Number(b.dataset.unmute)));
   el.querySelectorAll("[data-restore]").forEach(b => b.onclick = async () => {
     await LG.api(`/api/alerts/${b.dataset.restore}/restore-severity`, { method: "POST" }); load();
@@ -284,6 +355,6 @@ document.getElementById("del-closed").onclick = async () => {
 /* the ⋯ menu closes when clicking elsewhere */
 document.addEventListener("click", e => { const m = document.querySelector(".al-tools .more"); if (m.open && !m.contains(e.target)) m.open = false; });
 document.getElementById("filter").oninput = render;
-viewButtons(); load(); suggestions(); setInterval(load, 60000);
+viewButtons(); load(); suggestions(); LG.autoRefresh(() => { if (!typing()) load(); }, 60000);
 </script>
 {% endblock %}
