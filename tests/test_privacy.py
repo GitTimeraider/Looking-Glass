@@ -355,3 +355,38 @@ def test_fake_networks_avoid_your_own_networks_from_the_database():
         finally:
             await db.close()
     asyncio.run(main())
+
+
+def test_devices_of_one_subnet_always_share_one_fake_subnet():
+    """The analysis depends on it: every device of a /24 (and of the /25 - /30 VLANs inside one) lands in the same fake
+    /24, different subnets in different ones - also when fake networks have to be replaced: the whole subnet moves."""
+    async def main():
+        mp = privacy.Mapping(privacy.MemoryStore())
+        subnets = ["192.168.1", "192.168.20", "192.168.30", "10.10.5", "172.16.8"]
+        devices = [f"{n}.{h}" for n in subnets for h in (1, 2, 17, 64, 65, 130, 200, 254)]  # .64/.65: a /26 border
+        text = " ".join(devices)
+
+        async def check(sess):
+            hidden = (await sess.hide(text)).split(" ")
+            fake_net = {}
+            for real, fake in zip(devices, hidden):
+                assert fake.rsplit(".", 1)[1] == real.rsplit(".", 1)[1]  # host part kept
+                assert fake.split(".")[0] == real.split(".")[0]  # private range kept (192.168 / 10 / 172.16)
+                fake_net.setdefault(real.rsplit(".", 1)[0], set()).add(fake.rsplit(".", 1)[0])
+            assert all(len(f) == 1 for f in fake_net.values()), fake_net  # one subnet -> one fake subnet
+            assert len({next(iter(f)) for f in fake_net.values()}) == len(subnets)  # different -> different
+            assert sess.reveal(" ".join(hidden)) == text
+            return {k: next(iter(v)) for k, v in fake_net.items()}
+
+        first = await check(privacy.Session(mp, {}, set(), [], set()))
+        # the fake of 192.168.1 (and more) becomes forbidden: whole subnets move, still together
+        excluded = privacy.parse_avoid(", ".join(f"{f}.0/24" for f in list(first.values())[:3]))
+        sess = privacy.Session(mp, {}, set(), [], set(), avoid=excluded)
+        await privacy._drop_blocked(sess)
+        second = await check(sess)
+        assert [second[k] != first[k] for k in subnets] == [True, True, True, False, False]
+        # and once more with all of 192.168.0-127 excluded
+        sess = privacy.Session(mp, {}, set(), [], set(), avoid=excluded + privacy.parse_avoid("192.168.0.0-192.168.127.255"))
+        await privacy._drop_blocked(sess)
+        await check(sess)
+    asyncio.run(main())
