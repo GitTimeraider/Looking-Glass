@@ -118,6 +118,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         async def handler(request: Request):
             return templates.TemplateResponse(request, tpl, {
                 "title": title, "path": path, "version": __version__, "ai_enabled": settings.ai_enabled,
+                "ai_privacy": settings.ai_privacy,
                 "ai_model": settings.ai_model, "opnsense": settings.opnsense_enabled,
                 "syslog_port": settings.syslog_udp_port, "user": request.session.get("user"),
                 "dashboards": DASH_NAV,
@@ -230,7 +231,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         all_filters = await alert_filters._filters()
         active_ids = {f["id"] for f in all_filters}
         filters = [f for f in all_filters if f["action"] != "severity"]
+        comments: dict[int, list[dict[str, Any]]] = {}
+        if out:
+            for r in await db.pool().fetch("SELECT id, alert_id, created_at, updated_at, author, body FROM alert_comments "
+                                           "WHERE alert_id = ANY($1::bigint[]) ORDER BY created_at, id", [a["id"] for a in out]):
+                comments.setdefault(r["alert_id"], []).append(db.jsonable(dict(r)))
         for a in out:
+            a["comments"] = comments.get(a["id"], [])
             a["src_name"] = a["src_name"] or names.get(a.get("src_ip"))
             a["muted_by"], a["override_active"] = None, False
             try:
@@ -477,13 +484,16 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             where, args = "status = 'closed' AND id = ANY($1::bigint[])", [ids]
         if payload.get("dry_run"):
             return {"count": await db.pool().fetchval(f"SELECT count(*) FROM alerts WHERE {where}", *args)}
-        res = await db.pool().execute(f"DELETE FROM alerts WHERE {where}", *args)
-        n = int(res.split()[-1])
+        async with db.pool().acquire() as conn, conn.transaction():
+            ids = [r["id"] for r in await conn.fetch(f"DELETE FROM alerts WHERE {where} RETURNING id", *args)]
+            await conn.execute("DELETE FROM alert_comments WHERE alert_id = ANY($1::bigint[])", ids)
+        n = len(ids)
         log.info("deleted %d closed alert(s)", n)
         return {"deleted": n}
 
     @app.post("/api/alerts/status")
-    async def set_alert_status(payload: dict = Body(...)):
+    async def set_alert_status(request: Request, payload: dict = Body(...)):
+        """Change the status of alerts; an optional "comment" is added to each of them (e.g. why it was closed)."""
         ids = [int(i) for i in payload.get("ids", [])]
         status = payload.get("status")
         if status not in ("open", "acknowledged", "closed"):
@@ -491,9 +501,56 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         reason = payload.get("reason") if status == "closed" else None
         if reason not in (None, "false_positive", "resolved"):
             raise HTTPException(400, "invalid reason")
-        await db.pool().execute("UPDATE alerts SET status = $1, close_reason = $3 WHERE id = ANY($2::bigint[])",
-                                status, ids, reason)
+        comment = _comment_text(payload.get("comment"), required=False)
+        async with db.pool().acquire() as conn, conn.transaction():
+            await conn.execute("UPDATE alerts SET status = $1, close_reason = $3 WHERE id = ANY($2::bigint[])",
+                               status, ids, reason)
+            if comment:
+                await conn.execute("INSERT INTO alert_comments (alert_id, author, body) SELECT id, $2, $3 FROM alerts "
+                                   "WHERE id = ANY($1::bigint[])", ids, _author(request), comment)
         return {"ok": True, "updated": len(ids)}
+
+    # ----------------------------------------------------- alert comments ---
+    # notes on an alert in any status (why it was closed / a false positive, extra context); the AI analyst reads them
+    COMMENT_MAX = 5000
+
+    def _comment_text(value: Any, required: bool = True) -> str:
+        text = str(value or "").strip()
+        if required and not text:
+            raise HTTPException(400, "The comment is empty.")
+        if len(text) > COMMENT_MAX:
+            raise HTTPException(400, f"A comment can be at most {COMMENT_MAX} characters.")
+        return text
+
+    def _author(request: Request) -> str | None:
+        user = getattr(request.state, "user", None)  # set by the login guard for every API call
+        return user.get("username") if isinstance(user, dict) else None
+
+    @app.post("/api/alerts/{aid}/comments")
+    async def add_alert_comment(aid: int, request: Request, payload: dict = Body(...)):
+        text = _comment_text(payload.get("body"))
+        row = await db.pool().fetchrow(
+            "INSERT INTO alert_comments (alert_id, author, body) SELECT id, $2, $3 FROM alerts WHERE id = $1 "
+            "RETURNING id, alert_id, created_at, updated_at, author, body", aid, _author(request), text)
+        if not row:
+            raise HTTPException(404, f"Alert #{aid} does not exist (any more).")
+        return db.jsonable(dict(row))
+
+    @app.put("/api/alerts/comments/{cid}")
+    async def edit_alert_comment(cid: int, payload: dict = Body(...)):
+        row = await db.pool().fetchrow(
+            "UPDATE alert_comments SET body = $2, updated_at = now() WHERE id = $1 "
+            "RETURNING id, alert_id, created_at, updated_at, author, body", cid, _comment_text(payload.get("body")))
+        if not row:
+            raise HTTPException(404, "That comment does not exist (any more).")
+        return db.jsonable(dict(row))
+
+    @app.delete("/api/alerts/comments/{cid}")
+    async def delete_alert_comment(cid: int):
+        res = await db.pool().execute("DELETE FROM alert_comments WHERE id = $1", cid)
+        if res.endswith(" 0"):
+            raise HTTPException(404, "That comment does not exist (any more).")
+        return {"ok": True}
 
     @app.get("/api/system")
     async def system():
@@ -534,10 +591,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     # What can be wiped. Never touched: settings, credentials, accounts / MFA, Unraid servers, encryption key.
     PURGE = {
         "events": ("events", "Logs / events"),
-        "alerts": ("alerts", "Alerts"),
+        "alerts": ("alerts, alert_comments", "Alerts (and your comments on them)"),
         "metrics": ("metrics", "Graphs (metrics history)"),
         "reports": ("reports", "Reports"),
-        "ai_chats": ("ai_chats", "AI analyst conversations"),
+        "ai_chats": ("ai_chats, ai_pseudonyms", "AI analyst conversations (and the privacy mode pseudonyms)"),
         "devices": ("devices", "Device list (incl. names, notes and trusted marks you set)"),
         "behavior": ("device_profile, device_hourly, hourly_stats, risk_scores, seen_domains",
                      "Learned behaviour (device profiles, hourly baselines, risk scores, seen domains)"),
@@ -569,6 +626,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             raise HTTPException(403, "Wrong password.")
         # TRUNCATE without RESTART IDENTITY: event ids keep growing, so the detection rules' watermarks stay valid
         await db.pool().execute(f"TRUNCATE {', '.join(PURGE[p][0] for p in parts)}")
+        if "ai_chats" in parts:
+            from .. import privacy
+            privacy.invalidate()
         log.warning("user %s deleted collected data: %s", user["username"], ", ".join(parts))
         return {"ok": True, "deleted": parts}
 

@@ -55,6 +55,8 @@ async def housekeeping(settings) -> None:
             await pool.execute("DELETE FROM metrics WHERE ts < now() - make_interval(days => $1)", settings.metrics_retention_days)
             await pool.execute("DELETE FROM alerts WHERE status = 'closed' AND last_seen < now() - make_interval(days => $1)",
                                max(settings.retention_days, 90))
+            # comments of alerts that are gone (deleted here, by hand or with an older version)
+            await pool.execute("DELETE FROM alert_comments c WHERE NOT EXISTS (SELECT 1 FROM alerts a WHERE a.id = c.alert_id)")
         except Exception:  # noqa: BLE001
             log.exception("housekeeping failed")
         await asyncio.sleep(3600)

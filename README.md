@@ -136,6 +136,12 @@ and also teaches Looking Glass (repeated ones become a mute / lower suggestion).
 similar…**. **Trusted** on the Devices page marks a device as known: it is never counted as "new device" in attack
 chains (it does not silence real alerts about the device).
 
+**Comments**: open an alert (any status - open, acknowledged or closed) and write why it was closed or a false
+positive, what the device is, or what you already did. *Comment & close* / *Comment & false positive* / *Comment &
+re-open* do both in one click; comments can be edited and deleted, and the filter box searches them too. The **AI
+analyst reads them**: for the alert itself and for earlier alerts of the same rule and address, so it doesn't report
+again what you already explained as expected (unless the data shows it changed).
+
 ### Behaviour & machine learning
 
 *Settings › Behaviour & ML* - every check has its own switch, and **Never analyse these devices** (IPs, CIDRs, MACs)
@@ -191,6 +197,38 @@ seconds, which is what a 504 means - a streamed answer keeps the connection busy
 The **AI chat** works the same way: the question starts the run on the server and the page asks for the result
 every few seconds, so a reverse proxy in front of Looking Glass itself (nginx `proxy_read_timeout`, 60 s by default)
 no longer cuts long answers off.
+
+### AI privacy mode (pseudonyms)
+
+*Settings › AI analyst › Privacy mode: pseudonymize local data* (off by default). Before anything leaves Looking Glass,
+local identifiers are replaced by consistent pseudonyms; the answer (and every query the model runs) is translated
+back, so you keep seeing - and the tools keep querying - the real values. A 🔒 on the AI Analyst page shows it is on.
+
+| Replaced | By |
+|---|---|
+| Private IPv4 (10/8, 172.16/12, 192.168/16, 100.64/10) | another network of the same range, per /24; the last number stays (`.1` is still the gateway), so subnets and CIDR filters keep working |
+| Your own public / WAN addresses (OPNsense interfaces, *Extra internal networks*) | documentation addresses `203.0.113.x`, `198.51.100.x`, `192.0.2.x` |
+| IPv6: unique local `fd…`, your own prefixes, link-local | a fake site prefix (`2001:db8:…` / `fd…`), the subnet id stays, a random interface id (it can contain the MAC) |
+| MAC addresses | the vendor part (first three bytes) stays, the rest is random |
+| Email addresses | `mail-xxxx@example.net` |
+| *Also replace names* (on by default): device names / UniFi aliases, Wi-Fi names (also neighbouring ones - they can locate you), user names that logged in, Unraid server names | tokens such as `iphone-k7q2`, `ssid-iot-m3xa`, `user-p9rd` - a generic word in the name (iphone, camera, tv …) is kept as a hint |
+| *Always replace these*: your domains (with subdomains), family names, a street … | `name-xxxx`, `domain-xxxx.example` |
+
+Not replaced, because the analysis needs them and they don't identify you on their own: internet addresses, domains,
+ports, countries, container / program names, rule names and signatures. Generic names (root, admin, nas, router …) and
+the entries under *Never replace these* stay readable.
+
+Good to know:
+
+* Values are replaced by kind **everywhere** (columns, raw log lines, alert titles, report data, your own question),
+  never per field, so the model always sees one consistent picture. A device keeps its pseudonym in every request,
+  report and conversation (stored in the table `ai_pseudonyms`, a few kB).
+* Conversations and reports are stored with the real values, and only the outgoing request is changed, so turning the
+  mode on or off never breaks an old conversation. Logs and the database don't grow (apart from that small table).
+* Free text in log lines (container logs, file paths, notifications) can still hold a name Looking Glass does not
+  know: add it under *Always replace these*. The AI provider still knows *your account*; for complete privacy use a
+  local model (Ollama, LM Studio).
+* Costs a few milliseconds per request; the analysis stays about as good - only meaning carried by a name is lost.
 
 ### How severity is decided
 
@@ -694,7 +732,8 @@ How UniFi and OPNsense data are combined:
   [OpenAI SDK compatibility layer](https://platform.claude.com/docs/en/api/openai-sdk)). It can run read-only SQL against the log database, search events, profile an
   IP, read alerts, OPNsense + Unraid status and traffic statistics, and answers with evidence and remediation steps.
   Credentials (users, MFA secrets, API keys) are never accessible to it. Data sent to the AI provider consists of the
-  query results the model asks for (IPs, domains, log lines).
+  query results the model asks for (IPs, domains, log lines) - with **privacy mode** on, local addresses and names
+  in them are pseudonyms (see [AI privacy mode](#ai-privacy-mode-pseudonyms)). It also reads your comments on alerts.
 
 ## Configuration reference
 

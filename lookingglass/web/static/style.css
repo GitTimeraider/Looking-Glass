@@ -422,6 +422,13 @@ details.card > summary { cursor: pointer; }
 .al-kv > div { min-width: 0; overflow-wrap: anywhere; }
 .al-rule { overflow-wrap: anywhere; }
 .al-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.al-cms { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.al-cm { padding: 8px 10px; background: var(--panel); border-radius: 8px; display: flex; flex-direction: column; gap: 6px; }
+.al-cm-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.al-cm-tools { margin-left: auto; display: flex; gap: 4px; }
+.al-cm-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.al-cm-input { width: 100%; min-height: 44px; resize: vertical; font: inherit; font-size: 13px; }
+.al-cm-n { white-space: nowrap; }
 .pill.st-open { background: color-mix(in srgb, var(--accent) 25%, var(--panel2)); }
 .bulk { position: sticky; bottom: 12px; z-index: 25; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px;
   padding: 10px 12px; background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; box-shadow: 0 6px 24px rgba(0, 0, 0, .4); }
