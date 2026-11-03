@@ -299,7 +299,7 @@ decide it for every rule:
 | Malicious domain looked up (blocked): 1-2 domains / 3+ | medium / high, up when confirmed |
 | Suspicious outbound port (Tor, IRC, RDP, SMB, mining…) blocked / allowed | low / medium, up when confirmed |
 | Gateway down / degraded, security service stopped / other service stopped, logs stopped | high / low, medium / low, medium |
-| UniFi: switch offline / AP offline, foreign AP with your Wi-Fi name (open or strong signal: up), rogue DHCP | high / medium, medium-high, high |
+| UniFi: switch offline / AP offline (after *Offline alerts wait*), foreign AP with your Wi-Fi name (open or strong signal: up), rogue DHCP | high / medium, medium-high, high |
 | New device | low |
 
 Severities of rules that look at a time window (scans, brute force, DNS) are re-evaluated on every run, so they can
@@ -689,6 +689,12 @@ What you get depends on what the controller accepts:
   uses - no SSID, signal, events or rogue APs. *Setup & status* tells you when this happens.
 
 Polled every 60 seconds (Settings › UniFi › Poll interval), events every 2 minutes, neighbouring APs every 10 minutes.
+
+**Offline alerts wait** (Settings › UniFi › *Offline alerts wait (minutes)*, default 10): an "access point / switch is
+offline" or "UniFi controller is unreachable" alert only appears once it has been down that long, so rebooting OPNsense
+(e.g. for an update), the controller or the device itself stays quiet. Such an alert closes by itself when the device
+or controller is back (with how long it was down), and opens again if it goes down for that long once more. 0 = alert
+right away. The offline / online *events* are always recorded (Event search, UniFi dashboard).
 Don't also send UniFi's *SIEM / Activity Logging (syslog)* to Looking Glass: the API already delivers those events.
 
 How UniFi and OPNsense data are combined:

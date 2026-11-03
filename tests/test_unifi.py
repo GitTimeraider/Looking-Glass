@@ -1,3 +1,7 @@
+import os
+
+import pytest
+
 from lookingglass import unifi
 
 SW = {"mac": "F4:E2:C6:00:00:10", "name": "Office switch", "model": "USL16LP", "type": "usw", "state": 1,
@@ -61,3 +65,82 @@ def test_v1_device_without_name_or_model_still_has_a_label():
     # a nameless device used to give a NULL metrics label: the insert failed and every UniFi chart stayed empty
     d = unifi.device_from_v1({"id": "x", "macAddress": "AA:BB:CC:00:00:09", "features": ["switching"]}, {"cpuUtilizationPct": 5})
     assert d["name"] == "aa:bb:cc:00:00:09"
+
+
+DSN = os.environ.get("TEST_DATABASE_URL")
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_offline_alerts_wait_for_the_grace_time_and_close_by_themselves():
+    """A reboot of OPNsense / the controller / the AP itself stays quiet; a device that stays down is alerted once and
+    the alert closes when it is back. The controller itself the same way."""
+    import asyncio
+
+    from lookingglass import alert_filters, db
+    from lookingglass.config import Settings
+    from lookingglass.unifi import UnifiPoller
+
+    def ap(state):
+        return [{"mac": "aa:bb:cc:00:00:01", "name": "AP Living", "kind": "access point", "model": "U6-Lite",
+                 "state": state, "ip": "192.168.1.5"}]
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE alerts, alert_filters")
+            alert_filters.invalidate()
+            p = UnifiPoller(Settings(unifi_offline_grace=10), None)
+            t = 1_000_000.0
+            alerts = lambda: pool.fetch("SELECT rule, status, close_reason, description FROM alerts ORDER BY id")  # noqa: E731
+            # OPNsense reboot: the AP is gone for 5 minutes - no alert
+            await p.check_devices(ap("online"), now=t)
+            await p.check_devices(ap("offline"), now=t + 60)
+            await p.check_devices(ap("heartbeat missed"), now=t + 300)  # another down state: still the same outage
+            await p.check_devices(ap("online"), now=t + 360)
+            assert await alerts() == []
+            # down for 10 minutes: one alert, saying how long
+            await p.check_devices(ap("offline"), now=t + 1000)
+            await p.check_devices(ap("offline"), now=t + 1599)
+            assert await alerts() == []
+            await p.check_devices(ap("offline"), now=t + 1600)
+            await p.check_devices(ap("offline"), now=t + 1700)
+            rows = await alerts()
+            assert len(rows) == 1 and rows[0]["status"] == "open" and "for 10 minutes" in rows[0]["description"]
+            assert await pool.fetchval("SELECT count FROM alerts") == 1  # not counted again every poll
+            # back online: closed by itself
+            await p.check_devices(ap("online"), now=t + 1800)
+            row = (await alerts())[0]
+            assert row["status"] == "closed" and row["close_reason"] == "resolved" and "online again" in row["description"]
+            # down again for longer than the grace time: the alert opens again
+            await p.check_devices(ap("offline"), now=t + 2000)
+            await p.check_devices(ap("offline"), now=t + 2700)
+            assert [r["status"] for r in await alerts()] == ["open"]
+            # 0 = right away
+            await pool.execute("TRUNCATE alerts")
+            p = UnifiPoller(Settings(unifi_offline_grace=0), None)
+            await p.check_devices(ap("offline"), now=t)
+            assert [r["status"] for r in await alerts()] == ["open"]
+
+            # the controller: unreachable while OPNsense reboots - quiet; longer - alerted, closed when it answers
+            await pool.execute("TRUNCATE alerts")
+            p = UnifiPoller(Settings(unifi_offline_grace=10), None)
+            for i, dt in enumerate((0, 60, 120, 420)):
+                p.failures = i + 1
+                await p.controller_down("ConnectError", now=t + dt)
+            await p.controller_back(now=t + 480)
+            assert await alerts() == []
+            for i, dt in enumerate((1000, 1060, 1120, 1420, 1720)):
+                p.failures = i + 1
+                await p.controller_down("ConnectError", now=t + dt)
+            rows = await alerts()
+            assert [(r["rule"], r["status"]) for r in rows] == [("unifi_unreachable", "open")]
+            assert "No answer for 12 minutes" in rows[0]["description"]
+            await p.controller_back(now=t + 1800)
+            row = (await alerts())[0]
+            assert row["status"] == "closed" and "unreachable for 13 minutes" in row["description"]
+            await pool.execute("TRUNCATE alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
