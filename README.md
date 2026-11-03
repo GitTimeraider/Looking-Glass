@@ -200,9 +200,37 @@ no longer cuts long answers off.
 
 ### AI privacy mode (pseudonyms)
 
-*Settings › AI analyst › Privacy mode: pseudonymize local data* (off by default). Before anything leaves Looking Glass,
-local identifiers are replaced by consistent pseudonyms; the answer (and every query the model runs) is translated
-back, so you keep seeing - and the tools keep querying - the real values. A 🔒 on the AI Analyst page shows it is on.
+Off by default. When it is on, local identifiers (your private IPs, MAC addresses, device and user names, your WAN
+address …) are replaced by consistent pseudonyms **before anything leaves Looking Glass**, and translated back in what
+the AI returns - its answer and every query it runs. You keep seeing the real values, the tools keep querying the real
+data; only the AI provider sees pseudonyms.
+
+**Turning it on** (Looking Glass web UI › **Settings** › **AI analyst** tab):
+
+1. Tick **Privacy mode: pseudonymize local data**.
+2. Leave **Privacy mode: also replace names** ticked (device, Wi-Fi and user names), unless you only want addresses
+   replaced.
+3. Optional: under **Privacy mode: always replace these** enter, one per line, anything else that identifies you and
+   Looking Glass cannot know - your own domain(s) (subdomains are included), your family name, a static WAN address.
+4. Optional: under **Privacy mode: never replace these** enter names that should stay readable (e.g. a device whose
+   name is also an ordinary word in your logs).
+5. **Save**. It applies from the next question / report on, no restart needed. A **🔒 Privacy mode** badge appears next
+   to the model name on the **AI Analyst** page.
+
+**Where it applies**: everything that is sent to the AI - the AI Analyst chat, **Ask AI** on an alert, and the AI
+analysis of **reports** (written by hand, scheduled, or *Retry AI analysis*; the report's statistics are sent to the AI
+as part of the prompt and are pseudonymized too). Not affected (nothing goes to the AI): the report itself and its
+numbers, report and notification **mails** (they go through your own mail server and keep the real values), and
+*Test connection* (sends only "Reply with OK").
+
+**Example** - what the AI receives for one log line, and what you read in the answer:
+
+| | |
+|---|---|
+| In the database | `Accepted password for john from 192.168.1.20 (Johns-iPhone, aa:bb:cc:11:22:33) via 84.12.33.4` |
+| Sent to the AI | `Accepted password for user-p9rd from 192.168.124.20 (iphone-9hfj, aa:bb:cc:9d:06:7a) via 198.51.100.41` |
+| The AI answers | "*iphone-9hfj* (192.168.124.20) logged in as *user-p9rd* …" |
+| You read | "*Johns-iPhone* (192.168.1.20) logged in as *john* …" |
 
 | Replaced | By |
 |---|---|
@@ -229,6 +257,12 @@ Good to know:
   know: add it under *Always replace these*. The AI provider still knows *your account*; for complete privacy use a
   local model (Ollama, LM Studio).
 * Costs a few milliseconds per request; the analysis stays about as good - only meaning carried by a name is lost.
+* If the pseudonyms cannot be prepared (e.g. the database is unreachable), the request is **not sent** - the mode never
+  falls back to sending the real values.
+* *Settings › Data & detection › Delete collected data › AI analyst conversations* also empties `ai_pseudonyms`; devices simply get new
+  pseudonyms from then on (stored conversations keep working, they hold the real values).
+* Want to see it for yourself? Use a logging proxy in front of the AI (e.g. LiteLLM with request logging) as *API base
+  URL*: the requests it logs contain only pseudonyms.
 
 ### How severity is decided
 
@@ -376,7 +410,8 @@ Next logins ask for password + TOTP code or passkey.
 * **AI analyst** tab – your Anthropic API key (<https://console.anthropic.com> › *API keys*). Base URL
   `https://api.anthropic.com/v1/` and model `claude-opus-5-5` are pre-filled; any other OpenAI-compatible service
   (OpenAI, OpenRouter, LiteLLM, Ollama at `http://host:11434/v1/` …) works by changing base URL, model and key.
-  *Test connection* → *Save*.
+  *Test connection* → *Save*. Optional: tick **Privacy mode** so the AI only ever sees pseudonyms instead of your local
+  addresses and names (see [AI privacy mode](#ai-privacy-mode-pseudonyms)).
 * **Ingestion & network** tab – set *Syslog allowed senders* to your OPNsense IP and your *Time zone*.
 * **Display** tab – *Time format*: 24-hour (default, 14:05), 12-hour (2:05 PM) or your browser's default - for the
   web UI, notification mails and the AI analyst (mails and AI write times in your *Time zone*).
@@ -780,6 +815,9 @@ user / password / SSL mode · first account.
   never returned by the UI/API, and are not readable by the AI analyst's SQL tool. The environment holds no API keys.
 * Set *Settings › Ingestion & network › Syslog allowed senders* to your OPNsense IP so nobody else can inject log lines.
 * The AI's SQL tool runs inside read-only transactions with a statement timeout and only accepts `SELECT`.
+* *Settings › AI analyst › Privacy mode* keeps your local addresses, MAC addresses and names away from the AI provider
+  (it sees consistent pseudonyms) - see [AI privacy mode](#ai-privacy-mode-pseudonyms). For no data leaving your network
+  at all, use a local model (Ollama, LM Studio).
 
 ## Sources used
 
