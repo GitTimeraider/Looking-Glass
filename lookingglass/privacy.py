@@ -355,10 +355,16 @@ class Session:
             return text
         if text in self.memo:
             return self.memo[text]
-        matches = list(self._hide_re.finditer(text))
+        result = "".join(fake if fake is not None else part for part, fake in await self.hide_parts(text))
+        self.memo[text] = result
+        return result
+
+    async def hide_parts(self, text: str) -> list[tuple[str, str | None]]:
+        """``text`` cut into pieces: (piece, its pseudonym) for what is replaced, (piece, None) for what is sent as it
+        is. Joined, the pseudonyms give exactly what ``hide`` sends (Settings › AI analyst › Show what the AI sees)."""
+        matches = list(self._hide_re.finditer(text or ""))
         if not matches:
-            self.memo[text] = text
-            return text
+            return [(text, None)] if text else []
         # the same address / name occurs many times: each distinct match is worked out once (per session)
         keyed = [((m.lastgroup, m.group(0)), m) for m in matches]
         todo = {k: m for k, m in keyed if k not in self.tokens}
@@ -386,17 +392,25 @@ class Session:
 
         for k, m in todo.items():
             self.tokens[k] = self._replace(m, lookup)
-        out, pos = [], 0
+        out: list[tuple[str, str | None]] = []
+        pos = 0
         for k, m in keyed:
             rep = self.tokens[k]
             if rep is not None:
-                out.append(text[pos:m.start()])
-                out.append(rep)
+                if m.start() > pos:
+                    out.append((text[pos:m.start()], None))
+                out.append((m.group(0), rep))
                 pos = m.end()
-        out.append(text[pos:])
-        result = "".join(out)
-        self.memo[text] = result
-        return result
+        if pos < len(text):
+            out.append((text[pos:], None))
+        return out
+
+    def known_names(self) -> dict[str, int]:
+        """How many names of each kind are replaced (escaped spellings of the same name not counted twice)."""
+        out: dict[str, int] = {}
+        for category, display in set(self.names.values()):
+            out[category] = out.get(category, 0) + 1
+        return out
 
     async def hide_json(self, value: Any) -> Any:
         if isinstance(value, str):

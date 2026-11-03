@@ -443,6 +443,10 @@ class Analyst:
                 .replace("{style}", time_style(self.settings)).replace("{zone}", self.settings.timezone or "UTC")
                 .replace("{volumes}", volumes))
 
+    async def system_message(self, private: bool) -> str:
+        """The system prompt exactly as it is sent (with the privacy note in privacy mode)."""
+        return await self._system_prompt() + (privacy.PROMPT_NOTE if private else "")
+
     async def _complete(self, client: httpx.AsyncClient, messages: list[dict[str, Any]], tools: bool = True,
                         step: int = 1, priv: privacy.Session | None = None) -> dict[str, Any]:
         """One model call (streamed when possible), retried on overload / gateway errors and timeouts.
@@ -558,7 +562,7 @@ class Analyst:
         request_log.info("AI analysis started: %s", user_message[:120].replace("\n", " "))
         new: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
         priv = await privacy.session(self.settings) if self.settings.ai_privacy else None
-        system = {"role": "system", "content": await self._system_prompt() + (privacy.PROMPT_NOTE if priv else "")}
+        system = {"role": "system", "content": await self.system_message(priv is not None)}
         base = self.settings.ai_base_url.rstrip("/") + "/"
         headers = {"Authorization": f"Bearer {self.settings.ai_api_key}"}
         async with httpx.AsyncClient(base_url=base, headers=headers, timeout=self.settings.ai_timeout) as client:

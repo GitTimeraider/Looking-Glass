@@ -261,8 +261,12 @@ Good to know:
   falls back to sending the real values.
 * *Settings › Data & detection › Delete collected data › AI analyst conversations* also empties `ai_pseudonyms`; devices simply get new
   pseudonyms from then on (stored conversations keep working, they hold the real values).
-* Want to see it for yourself? Use a logging proxy in front of the AI (e.g. LiteLLM with request logging) as *API base
-  URL*: the requests it logs contain only pseudonyms.
+* **See for yourself what is sent**: open a chat on the **AI Analyst** page and click **What the AI sees** (top right
+  of the conversation). It shows the whole conversation exactly as the AI receives it with your next question - the
+  instructions (system prompt), your questions, the queries the AI ran, the data returned to it and its answers. The
+  pseudonyms are highlighted: hover one to see the real value it stands for, or click / tap it to swap. A real name you
+  can still read there was not recognised - add it under *Always replace these*. With privacy mode off the same view
+  shows that everything is sent as it is. Click the button again for the normal view.
 
 ### How severity is decided
 

@@ -243,3 +243,54 @@ def test_ipv6_networks_and_generic_blocks():
         assert "fc00::/7" in hidden and "2a02:a45f::/32" in hidden and "2606:4700::1111" in hidden
         assert sess.reveal(hidden) == text
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_what_the_ai_sees_shows_a_chat_as_it_is_sent():
+    """AI Analyst › What the AI sees: every message, tool call and tool result as sent - pseudonyms paired with the
+    real values, and the real values joined back give the stored conversation."""
+    from lookingglass.web.app import create_app
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE ai_pseudonyms, devices, ai_chats")
+            await pool.execute("INSERT INTO devices (mac, ip, hostname) VALUES ('14:c1:4e:51:a1:0b', '192.168.20.3', 'Google-Nest-Mini')")
+            privacy.invalidate()
+            messages = [
+                {"role": "user", "content": "What does Google-Nest-Mini (192.168.20.3) do?"},
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "t1", "type": "function", "function": {
+                    "name": "ip_profile", "arguments": json.dumps({"ip": "192.168.20.3"})}}]},
+                {"role": "tool", "tool_call_id": "t1", "content": json.dumps({"ip": "192.168.20.3", "mac": "14:c1:4e:51:a1:0b",
+                                                                              "hostname": "Google-Nest-Mini", "dst": "8.8.8.8"})},
+                {"role": "assistant", "content": "Google-Nest-Mini at 192.168.20.3 only talks to 8.8.8.8."},
+            ]
+            cid = await pool.fetchval("INSERT INTO ai_chats (title, messages) VALUES ('t', $1) RETURNING id", messages)
+            for on in (True, False):
+                s = Settings(ai_privacy=on, ai_base_url="https://ai.example/v1", ai_api_key="k", ai_model="m")
+                app = create_app(s, Analyst(s))
+                ep = next(r.endpoint for r in app.routes if getattr(r, "path", "") == "/api/ai/chats/{chat_id}/sent")
+                d = await ep(cid)
+                assert d["privacy"] is on and d["tools"] and ("PRIVACY MODE" in d["system"]) is on
+                sent = json.dumps([[f if f is not None else r for r, f in m["parts"]] for m in d["messages"]])
+                real = "".join(r for m in d["messages"] for r, _ in m["parts"])
+                assert real.startswith("What does Google-Nest-Mini (192.168.20.3)")  # real values joined = stored
+                call = d["messages"][1]["tool_calls"][0]
+                assert call["name"] == "ip_profile"
+                if on:
+                    for value in ("Google-Nest-Mini", "192.168.20.3", "14:c1:4e:51:a1:0b"):
+                        assert value not in sent
+                    assert "8.8.8.8" in sent and "nest-" in sent  # internet addresses as they are, device type hint
+                    swapped = {r: f for m in d["messages"] for r, f in m["parts"] if f}
+                    assert swapped["Google-Nest-Mini"].startswith("nest-") and swapped["192.168.20.3"].endswith(".3")
+                    assert not [p for p in call["parts"] if p[1] is None and "192.168.20.3" in p[0]]
+                    assert d["names"].get("host", 0) >= 1
+                else:
+                    assert all(f is None for m in d["messages"] for _, f in m["parts"]) and "192.168.20.3" in sent
+            await pool.execute("TRUNCATE ai_pseudonyms, devices, ai_chats")
+            privacy.invalidate()
+        finally:
+            await db.close()
+
+    asyncio.run(main())
