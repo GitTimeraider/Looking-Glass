@@ -67,3 +67,37 @@ def test_alert_list_sort_orders():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_device_limits_api():
+    """Per-device alert limits: saved validated on the device, listed with it, {} = the global settings again."""
+    from fastapi import HTTPException
+
+    from lookingglass.web.app import create_app
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE devices")
+            await pool.execute("INSERT INTO devices (mac, ip) VALUES ('aa:bb:cc:dd:ee:01', '192.168.1.30')")
+            routes = {(getattr(r, "path", ""), next(iter(getattr(r, "methods", None) or {""}))): r.endpoint
+                      for r in create_app(Settings(), None).routes if hasattr(r, "endpoint")}
+            update, listing = routes[("/api/devices/{mac}", "POST")], routes[("/api/devices", "GET")]
+            await update(mac="AA:BB:CC:DD:EE:01", payload={"limits": {"volume_factor": "30", "ml_sensitivity": "",
+                                                                      "risk_threshold": 120}})
+            dev = (await listing(hours=24))[0]
+            assert dev["limits"] == {"volume_factor": 30, "risk_threshold": 120} and dev["risk_threshold"] == 120
+            with pytest.raises(HTTPException):
+                await update(mac="aa:bb:cc:dd:ee:01", payload={"limits": {"volume_factor": -1}})
+            await update(mac="aa:bb:cc:dd:ee:01", payload={"limits": {}})
+            dev = (await listing(hours=24))[0]
+            assert dev["limits"] == {} and dev["risk_threshold"] == Settings().risk_threshold
+            defaults = await routes[("/api/devices/limits", "GET")]()
+            assert defaults["volume_factor"] == Settings().behavior_volume_factor
+            await pool.execute("TRUNCATE devices")
+        finally:
+            await db.close()
+
+    asyncio.run(main())

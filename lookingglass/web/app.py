@@ -923,7 +923,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def devices(hours: float = Query(24, gt=0)):
         rows = await db.pool().fetch(
             "SELECT d.mac, d.hwaddr, host(d.ip) ip, d.hostname, d.name_source, d.vendor, d.interface, d.sources, d.lease_type, d.lease_expires, "
-            "d.online, d.trusted, d.notes, d.first_seen, d.last_seen, d.conn_type, d.conn_where, d.conn_signal, "
+            "d.online, d.trusted, d.notes, d.first_seen, d.last_seen, d.conn_type, d.conn_where, d.conn_signal, d.limits, "
+            "coalesce((d.limits->>'risk_threshold')::int, $2) risk_threshold, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = ANY(d.all_ips) AND e.ts > now() - make_interval(secs => $1)) events, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = ANY(d.all_ips) AND e.action = 'block' AND e.ts > now() - make_interval(secs => $1)) blocked, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = ANY(d.all_ips) AND e.source = 'unbound' AND e.ts > now() - make_interval(secs => $1)) dns, "
@@ -932,8 +933,17 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "(SELECT count(*) FROM device_profile p WHERE p.key = d.mac) learned, "
             "(SELECT array_agg(host(x)) FROM unnest(d.ips) x WHERE x IS DISTINCT FROM d.ip) other_ips "
             "FROM (SELECT *, coalesce(nullif(ips, '{}'), ARRAY[ip]) all_ips FROM devices) d "
-            "ORDER BY d.online DESC, d.last_seen DESC LIMIT 3000", hours * 3600)
+            "ORDER BY d.online DESC, d.last_seen DESC LIMIT 3000", hours * 3600, settings.risk_threshold)
         return db.records(rows)
+
+    @app.get("/api/devices/limits")
+    async def device_limit_defaults():
+        """The global values a device without its own limits uses (Settings › Behaviour & ML)."""
+        return {"volume_factor": settings.behavior_volume_factor if settings.behavior_enabled else 0,
+                "ml_sensitivity": settings.anomaly_ml_sensitivity
+                if settings.behavior_enabled and settings.anomaly_ml_enabled else "off",
+                "risk_threshold": settings.risk_threshold if settings.risk_enabled else 0,
+                "behavior_enabled": settings.behavior_enabled, "risk_enabled": settings.risk_enabled}
 
     @app.get("/api/devices/{mac}/profile")
     async def device_profile(mac: str):
@@ -967,8 +977,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     @app.get("/api/risk")
     async def risk_list(limit: int = Query(50, ge=1, le=500)):
         rows = await db.pool().fetch(
-            "SELECT r.entity, round(r.score::numeric, 1) score, r.parts, r.updated, d.hostname, d.mac FROM risk_scores r "
-            "LEFT JOIN devices d ON host(d.ip) = r.entity ORDER BY r.score DESC LIMIT $1", limit)
+            "SELECT r.entity, round(r.score::numeric, 1) score, r.parts, r.updated, d.hostname, d.mac, "
+            "coalesce((d.limits->>'risk_threshold')::int, $2) threshold FROM risk_scores r "
+            "LEFT JOIN devices d ON host(d.ip) = r.entity ORDER BY r.score DESC LIMIT $1", limit, settings.risk_threshold)
         return {"threshold": settings.risk_threshold, "rows": db.records(rows)}
 
     @app.get("/api/intel/status")
@@ -1006,6 +1017,14 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     @app.post("/api/devices/{mac}")
     async def update_device(mac: str, payload: dict = Body(...)):
         pool = db.pool()
+        if "limits" in payload:
+            # the device's own alert limits (traffic spike, machine learning, risk score); {} = global settings again
+            from ..behavior import clean_limits
+            try:
+                limits = clean_limits(payload["limits"])
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            await pool.execute("UPDATE devices SET limits = $2 WHERE mac = $1", mac.lower(), limits)
         await pool.execute("UPDATE devices SET trusted = COALESCE($2, trusted), notes = COALESCE($3, notes) WHERE mac = $1",
                            mac.lower(), payload.get("trusted"), payload.get("notes"))
         if "hostname" in payload:
@@ -1094,6 +1113,69 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             v["api_key"] = crypto.decrypt(await db.pool().fetchval("SELECT api_key FROM unraid_servers WHERE id = $1",
                                                                   int(payload["id"])) or "")
         return await unraid_test(v["url"], v["api_key"], v["verify_ssl"], v["docker_url"], v["nut"])
+
+    # log alert rules for containers (Unraid › Docker); registered before /api/unraid/{sid}
+    def _log_rule_out(r: Any) -> dict[str, Any]:
+        return {k: r[k] for k in ("id", "name", "enabled", "server_id", "containers", "match", "ignore", "threshold",
+                                  "minutes", "severity")}
+
+    async def _clean_log_rule(payload: dict) -> dict[str, Any]:
+        from .. import container_watch
+        try:
+            rule = container_watch.clean_rule(payload)
+            await container_watch.check_regex(rule)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return rule
+
+    @app.get("/api/unraid/log-rules")
+    async def log_rules():
+        rows = await db.pool().fetch("SELECT * FROM container_log_rules ORDER BY id")
+        return {"rules": [_log_rule_out(r) for r in rows],
+                "default": {"threshold": settings.unraid_log_error_count, "minutes": settings.unraid_log_error_minutes},
+                "restarts": {"count": settings.unraid_restart_count, "minutes": settings.unraid_restart_minutes}}
+
+    @app.post("/api/unraid/log-rules")
+    async def add_log_rule(payload: dict = Body(...)):
+        r = await _clean_log_rule(payload)
+        rid = await db.pool().fetchval(
+            "INSERT INTO container_log_rules (name, enabled, server_id, containers, match, ignore, threshold, minutes, "
+            "severity) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id", r["name"], r["enabled"], r["server_id"],
+            r["containers"], r["match"], r["ignore"], r["threshold"], r["minutes"], r["severity"])
+        return {"id": rid}
+
+    @app.put("/api/unraid/log-rules/{rid}")
+    async def edit_log_rule(rid: int, payload: dict = Body(...)):
+        r = await _clean_log_rule(payload)
+        await db.pool().execute(
+            "UPDATE container_log_rules SET name = $2, enabled = $3, server_id = $4, containers = $5, match = $6, "
+            "ignore = $7, threshold = $8, minutes = $9, severity = $10 WHERE id = $1", rid, r["name"], r["enabled"],
+            r["server_id"], r["containers"], r["match"], r["ignore"], r["threshold"], r["minutes"], r["severity"])
+        return {"ok": True}
+
+    @app.delete("/api/unraid/log-rules/{rid}")
+    async def delete_log_rule(rid: int):
+        await db.pool().execute("DELETE FROM container_log_rules WHERE id = $1", rid)
+        return {"ok": True}
+
+    @app.post("/api/unraid/log-rules/test")
+    async def test_log_rule(payload: dict = Body(...)):
+        """How a rule (saved or not) would have done over the last hours, per container."""
+        from .. import container_watch
+        r = await _clean_log_rule({"name": "test", **payload})
+        rule = container_watch.LogRule(id=None, **r)
+        hours = max(1, min(int(payload.get("hours") or 24), 24 * 30))
+        host = None
+        if r["server_id"]:
+            host = await db.pool().fetchval("SELECT name FROM unraid_servers WHERE id = $1", r["server_id"])
+        names = None
+        if rule.containers:  # the containers this rule covers, among those that logged in that time
+            known = [x["program"] for x in await db.pool().fetch(
+                "SELECT DISTINCT program FROM events WHERE source = 'docker' AND ts > now() - make_interval(hours => $1) "
+                "AND program IS NOT NULL", hours)]
+            names = [n for n in known if rule.covers(n)]
+        rows = await container_watch.preview(host, names, rule, hours)
+        return {"hours": hours, "rows": db.records(rows)}
 
     @app.get("/api/unraid/{sid}")
     async def unraid_overview(sid: int):

@@ -103,8 +103,15 @@ def answer(q: str, variables: dict) -> dict:
                     "autoStart": auto, "webUiUrl": f"http://tower:8080/{name}" if state == "RUNNING" else None,
                     "iconUrl": None, "created": int(time.time()) - 86400 * 30,
                     "ports": [{"ip": "0.0.0.0", "privatePort": 80, "publicPort": 8080, "type": "TCP"}] if name == "nginx-proxy" else []}
+        # "crashy" is in a restart loop: it crashes 10 s after every start and Docker restarts it 30 s later
+        phase = int(time.time()) % 40
+        crashy = {**c("c5", "crashy", "example/crashy", "RUNNING"),
+                  "status": f"Up {phase} seconds" if phase < 10 else f"Restarting (1) {phase - 10} seconds ago"}
+        if phase >= 10:
+            crashy["state"] = "EXITED"
         return {"docker": {"containers": [c("c1", "plex", "plexinc/pms-docker", "RUNNING"), c("c2", "nginx-proxy", "jc21/nginx-proxy-manager", "RUNNING"),
-                                          c("c3", "homeassistant", "ghcr.io/home-assistant/home-assistant", "RUNNING"), c("c4", "nextcloud", "nextcloud", "EXITED")]}}
+                                          c("c3", "homeassistant", "ghcr.io/home-assistant/home-assistant", "RUNNING"), c("c4", "nextcloud", "nextcloud", "EXITED"),
+                                          crashy]}}
     if "notifications" in q:
         return {"notifications": {"overview": {"unread": {"info": 1, "warning": 1, "alert": 1, "total": 3}, "archive": {"total": 40}},
                                   "list": [{"id": "n1", "title": "Unraid Status", "subject": "Parity check finished (0 errors)", "description": "Duration 13h", "importance": "INFO",

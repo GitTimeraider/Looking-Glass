@@ -161,6 +161,10 @@ class Settings(BaseSettings):
     detection_interval: int = 60
     unraid_container_grace: int = 10  # minutes
     unraid_offline_grace: int = 10  # minutes
+    unraid_restart_count: int = 5  # restarts in unraid_restart_minutes = "keeps restarting" (0 = off)
+    unraid_restart_minutes: int = 15
+    unraid_log_error_count: int = 50  # default log rule: error lines in unraid_log_error_minutes (0 = off)
+    unraid_log_error_minutes: int = 10
 
     # legacy: only imported once into the Unraid server list (Settings -> Integrations)
     unraid_name: str = "Unraid"

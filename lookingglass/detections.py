@@ -568,7 +568,8 @@ async def delete_devices(keys: list[str]) -> None:
 
 async def device_upkeep(remove_days: int) -> tuple[int, int]:
     """Clients without a MAC that went quiet -> offline; with ``remove_days`` > 0, devices not seen for that long are
-    removed - except the ones you marked trusted, named yourself or wrote notes for, and OPNsense's own interfaces.
+    removed - except the ones you marked trusted, named yourself, wrote notes for or gave their own alert limits, and
+    OPNsense's own interfaces.
     Returns (marked offline, removed)."""
     pool = db.pool()
     offline = await pool.execute(
@@ -578,7 +579,8 @@ async def device_upkeep(remove_days: int) -> tuple[int, int]:
     if remove_days > 0:
         removed = [r["mac"] for r in await pool.fetch(
             "SELECT mac FROM devices WHERE last_seen < now() - make_interval(days => $1) AND NOT trusted "
-            "AND name_source IS DISTINCT FROM 'manual' AND coalesce(btrim(notes), '') = '' AND mac NOT LIKE 'if:%'",
+            "AND name_source IS DISTINCT FROM 'manual' AND coalesce(btrim(notes), '') = '' AND limits = '{}' "
+            "AND mac NOT LIKE 'if:%'",
             remove_days)]
         await delete_devices(removed)
         if removed:

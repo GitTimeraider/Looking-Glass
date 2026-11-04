@@ -138,6 +138,9 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_type TEXT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_where TEXT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_signal INTEGER;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_seen TIMESTAMPTZ;
+-- per-device alert limits set on the Devices page; a missing key = the global setting (Settings › Behaviour & ML):
+-- {"volume_factor": 0..1000 (0 = off), "ml_sensitivity": off|low|medium|high, "risk_threshold": 0..1000 (0 = never)}
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS limits JSONB NOT NULL DEFAULT '{}';
 -- every address of a device with several (OPNsense: one MAC for a port and its VLANs); ip is the main one
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS ips INET[];
 -- the hardware address of a device not keyed by it (OPNsense interface "if:vlan0.20": VLANs share the port's MAC)
@@ -168,6 +171,21 @@ CREATE TABLE IF NOT EXISTS unraid_servers (
 ALTER TABLE unraid_servers ADD COLUMN IF NOT EXISTS storage JSONB NOT NULL DEFAULT '{}';
 -- UPS through NUT (upsd): '' = try the Unraid host when the API knows no UPS, 'off', or '[ups@]host[:port]'
 ALTER TABLE unraid_servers ADD COLUMN IF NOT EXISTS nut TEXT NOT NULL DEFAULT '';
+
+-- log alert rules for Unraid Docker containers (Unraid › Docker): which lines count, how many in how many minutes
+CREATE TABLE IF NOT EXISTS container_log_rules (
+    id         BIGSERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    enabled    BOOLEAN NOT NULL DEFAULT true,
+    server_id  BIGINT,                              -- NULL = every Unraid server
+    containers TEXT[] NOT NULL DEFAULT '{}',        -- name patterns with * and ?; empty = all containers
+    match      TEXT[] NOT NULL DEFAULT '{}',        -- text (contains) or /regex/, case-insensitive; empty = error lines
+    ignore     TEXT[] NOT NULL DEFAULT '{}',
+    threshold  INTEGER NOT NULL DEFAULT 50,         -- 0 = no log alerts for these containers
+    minutes    INTEGER NOT NULL DEFAULT 10,
+    severity   TEXT NOT NULL DEFAULT 'low',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- ------------------------------------------------------- app settings ---
 -- settings edited in the web UI; secrets are Fernet-encrypted ("fernet:..."), key file lives in the data volume

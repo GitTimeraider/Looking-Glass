@@ -28,7 +28,7 @@ from urllib.parse import urlsplit
 import httpx
 import websockets
 
-from . import crypto, db, nut
+from . import container_watch, crypto, db, nut
 from . import unraid_storage as storage
 from .config import Settings
 from .detections import close_alerts, offline_for, raise_alert
@@ -208,6 +208,7 @@ class UnraidServerPoller:
         self.boot_at: float | None = None  # when the server booted (Unraid API: os.uptime)
         self.reachable_since: float | None = None  # first good poll since Looking Glass started / the server came back
         self.ctr_state: dict[str, tuple[str, float]] = {}  # container -> (state, seen in that state since)
+        self.restarts = container_watch.RestartTracker()  # start / crash times per container (restart loops)
         self.unreachable_since: float | None = None  # first failed poll of the current outage
         self.unreachable_alerted = False
         self.open_checked = False  # an 'unreachable' alert left open from before a restart is closed on the first good poll
@@ -275,6 +276,7 @@ class UnraidServerPoller:
                 await self.step("misc", self.poll_misc)
             if self.server.get("collect_logs") and self.due("logs", 120):
                 await self.step("container_logs", self.poll_container_logs)
+                await self.step("container_log_rules", self.check_logs)
                 await self.step("syslog", self.poll_syslog)
             if self.due("docker_stats", max(p, 60)):
                 await self.step("docker_stats", self.poll_stats)
@@ -569,6 +571,7 @@ class UnraidServerPoller:
         await db.add_metrics([("unraid_containers_running", str(self.sid), running),
                               ("unraid_containers_total", str(self.sid), len(containers))])
         await self.check_containers(containers)
+        await self.check_restarts(containers)
 
     async def check_containers(self, containers: list[dict[str, Any]], now: float | None = None) -> None:
         """'Container stopped' alerts, not while the server is still starting up (after a reboot Unraid starts the
@@ -597,6 +600,93 @@ class UnraidServerPoller:
                     {"auto_closed": True}, f"\n\nClosed automatically: the container is running again "
                                            f"({c.get('status') or 'RUNNING'}).")
                 log.info("unraid %s: container %s running again - alert closed", self.name, name)
+
+    async def check_restarts(self, containers: list[dict[str, Any]], now: float | None = None) -> None:
+        """'Container keeps restarting': N starts / crashes within M minutes (Settings › Data & detection). A few
+        restarts (an update, a manual restart, the server booting) stay quiet. Closes by itself once it stays up."""
+        now = now or time.time()
+        n_max, window = self.settings.unraid_restart_count, max(1, self.settings.unraid_restart_minutes) * 60
+        names = []
+        for c in containers:
+            name = (c.get("names") or ["?"])[0].lstrip("/")
+            names.append(name)
+            self.restarts.observe(name, str(c.get("status") or ""), now)
+        self.restarts.forget(now - max(window, 3600) * 2)
+        counts = {n: self.restarts.count(n, now - 3600) for n in names}
+        await self.snap("restarts", {n: {"last_hour": k, "last": self.restarts.last(n)} for n, k in counts.items()})
+        prefix = f"unraid_restart:{self.sid}:"
+        open_fps = {r["fingerprint"] for r in await db.pool().fetch(
+            "SELECT fingerprint FROM alerts WHERE rule = 'unraid_container_restarting' AND status <> 'closed' "
+            "AND fingerprint LIKE $1", prefix.replace("%", r"\%").replace("_", r"\_") + "%")}
+        calm = []
+        for c in containers:
+            name = (c.get("names") or ["?"])[0].lstrip("/")
+            n = self.restarts.count(name, now - window)
+            if n_max and n >= n_max:
+                mins = window // 60
+                await raise_alert(
+                    "unraid_container_restarting", "high" if n >= 3 * n_max else "medium",
+                    f"{self.name}: container {name} keeps restarting ({n}× in {mins} min)", prefix + name, count=n,
+                    mode="max", events={"source": "docker", "host": self.name, "program": name},
+                    data={"server_id": self.sid, "container": name, "restarts": n, "minutes": mins},
+                    description=f"The container started or crashed {n} times in the last {mins} minutes (now: "
+                                f"{c.get('status') or c.get('state')}). Something inside it fails right after it "
+                                "starts - its log (Unraid › Docker › logs, or the events linked here) usually says what. "
+                                "Limit: Settings › Data & detection › Unraid: container keeps restarting.")
+            elif prefix + name in open_fps and self.restarts.count(name, now - 2 * window) == 0:
+                calm.append(prefix + name)
+        if calm:
+            await close_alerts("unraid_container_restarting", calm,
+                               f"no restarts for {2 * window // 60} minutes")
+
+    async def check_logs(self) -> None:
+        """Log alert rules (Unraid › Docker): too many matching lines of a container within the rule's minutes."""
+        containers = await db.get_snapshot(f"unraid:{self.sid}:docker") or []
+        names = [(c.get("names") or ["?"])[0].lstrip("/") for c in containers if isinstance(c, dict)]
+        if not names:
+            return
+        rules = await container_watch.load_rules()
+        default = container_watch.default_rule(self.settings)
+        groups: dict[int | None, tuple[container_watch.LogRule, list[str]]] = {}
+        for name in names:
+            for r in container_watch.rules_for(name, self.sid, rules, default):
+                if r.threshold > 0:
+                    groups.setdefault(r.id, (r, []))[1].append(name)
+        prefix = f"unraid_logerr:{self.sid}:"
+        open_fps = {r["fingerprint"] for r in await db.pool().fetch(
+            "SELECT fingerprint FROM alerts WHERE rule = 'unraid_container_errors' AND status <> 'closed' "
+            "AND fingerprint LIKE $1", prefix.replace("%", r"\%").replace("_", r"\_") + "%")}
+        hit: set[str] = set()
+        for rid, (rule, ctrs) in groups.items():
+            for row in await container_watch.count_matches(self.name, ctrs, rule, rule.minutes):
+                fp = f"{prefix}{row['program']}:{rid or 'default'}"
+                if row["n"] < rule.threshold:
+                    continue
+                hit.add(fp)
+                what = "error lines" if not rule.match else "matching lines"
+                examples = "\n".join(f"  {e}" for e in row["examples"] or [])
+                await raise_alert(
+                    "unraid_container_errors", rule.severity,
+                    f"{self.name}: {row['n']} {what} in the log of {row['program']} ({rule.minutes} min)", fp,
+                    count=row["n"], mode="max",
+                    events={"source": "docker", "host": self.name, "program": row["program"],
+                            **({"min_severity": 3} if not rule.match else {})},
+                    data={"server_id": self.sid, "container": row["program"], "log_rule": rule.name, "lines": row["n"]},
+                    description=f"{row['n']} {what} in {rule.minutes} minutes (alert from {rule.threshold}, rule "
+                                f"“{rule.name}”). Newest:\n{examples}\n\nAdjust what counts for this container - "
+                                "other words, exceptions, a higher limit or 0 = no log alerts - under Unraid › Docker › "
+                                "Log alert rules.")
+        # an open alert closes once 3 windows of its rule together have fewer lines than the limit (or the rule is gone)
+        done = []
+        for fp in open_fps - hit:
+            ctr, _, rid = fp[len(prefix):].rpartition(":")
+            rule = default if rid == "default" else next((r for r in rules if str(r.id) == rid), None)
+            rows = await container_watch.count_matches(self.name, [ctr], rule, 3 * rule.minutes) \
+                if rule and rule.threshold > 0 else []
+            if not rows or rows[0]["n"] < rule.threshold:
+                done.append(fp)
+        if done:
+            await close_alerts("unraid_container_errors", done, "the container log is below its limit again")
 
     async def poll_notifications(self) -> None:
         d = await self.section("notifications", "notifications")

@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from lookingglass import db
-from lookingglass.behavior import Behavior, Matcher
+from lookingglass.behavior import Behavior, Matcher, clean_limits
 from lookingglass.config import Settings
 from lookingglass.detections import DetectionEngine
 from lookingglass.intel import (Intel, describe_rule, dns_redirects, exposure_changes, nat_redirects, opens_inbound, parse_canaries,
@@ -273,6 +273,65 @@ def test_risk_score_and_feedback():
         assert f["action"] == "severity" and f["set_severity"] == "info" and "192.168.1.60" in f["networks"]
         assert f["name"].startswith("Learned:")
         assert await b.feedback() == []  # covered by the rule now
+    run(body)
+
+
+def test_clean_limits():
+    assert clean_limits({"volume_factor": "25", "ml_sensitivity": "low", "risk_threshold": ""}) == \
+        {"volume_factor": 25, "ml_sensitivity": "low"}
+    assert clean_limits({"volume_factor": 0, "risk_threshold": 0}) == {"volume_factor": 0, "risk_threshold": 0}
+    assert clean_limits(None) == {} and clean_limits({}) == {}
+    for bad in ({"volume_factor": "x"}, {"volume_factor": 5000}, {"ml_sensitivity": "extreme"}, {"nope": 1}, [1]):
+        with pytest.raises(ValueError):
+            clean_limits(bad)
+
+
+@needs_db
+def test_per_device_limits():
+    async def body(pool):
+        hour = NOW.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+        r = random.Random(5)
+        rows = []
+        for i in range(1, 7 * 24):
+            for d in range(4):
+                f = {"connections": 100 + r.randint(-20, 20), "destinations": 20 + r.randint(-3, 3), "ports": 3,
+                     "countries": 2, "dns": 200 + r.randint(-30, 30), "failed_lookups": r.randint(0, 2), "blocked": r.randint(0, 3),
+                     "upload_mb": 5 + r.random()}
+                rows.append((f"aa:00:00:00:00:0{d}", hour - timedelta(hours=i), f"192.168.1.{20 + d}", f))
+        spike = {"connections": 9000, "destinations": 900, "ports": 40, "countries": 25, "dns": 210, "failed_lookups": 1,
+                 "blocked": 2, "upload_mb": 6}
+        rows.append(("aa:00:00:00:00:00", hour, "192.168.1.20", spike))                     # 90x: busy-at-random device
+        rows.append(("aa:00:00:00:00:01", hour, "192.168.1.21", {**spike, "connections": 600}))  # 6x: steady device
+        await pool.executemany("INSERT INTO device_hourly (key, hour, ip, features) VALUES ($1, $2, $3::inet, $4)", rows)
+        await pool.execute(
+            "INSERT INTO devices (mac, ip, limits) VALUES ('aa:00:00:00:00:00', '192.168.1.20', "
+            "'{\"volume_factor\": 100, \"ml_sensitivity\": \"off\", \"risk_threshold\": 0}'), "
+            "('aa:00:00:00:00:01', '192.168.1.21', '{\"volume_factor\": 5, \"risk_threshold\": 20}')")
+        b = Behavior(Settings(), DetectionEngine(Settings()).internal)
+        await b.volume(hour)
+        vol = await rules(pool, "volume_spike")
+        # the global factor (10) would alert on .20 and not on .21; the device limits turn that around
+        assert [a["ip"] for a in vol] == ["192.168.1.21"] and "set for this device" in vol[0]["description"]
+        await b.ml(hour)
+        assert "192.168.1.20" not in [a["ip"] for a in await rules(pool, "ml_anomaly")]
+        # a device limit works even when the global setting is off
+        await pool.execute("DELETE FROM alerts")
+        off = Settings(behavior_volume_factor=0)
+        await Behavior(off, DetectionEngine(off).internal).volume(hour)
+        assert [a["ip"] for a in await rules(pool, "volume_spike")] == ["192.168.1.21"]
+        # risk: 48 points; the global threshold is 60, .21 alerts from 20, .20 never
+        await pool.execute("DELETE FROM alerts")
+        await pool.execute(
+            "INSERT INTO alerts (rule, severity, title, fingerprint, src_ip, last_seen) VALUES "
+            "('beaconing', 'medium', 'b', 'r1', '192.168.1.20', now()), ('lateral_movement', 'high', 'l', 'r2', '192.168.1.20', now()), "
+            "('dns_bypass', 'high', 'd', 'r3', '192.168.1.20', now()), ('beaconing', 'medium', 'b', 'r4', '192.168.1.21', now()), "
+            "('lateral_movement', 'high', 'l', 'r5', '192.168.1.21', now()), ('dns_bypass', 'high', 'd', 'r6', '192.168.1.21', now()), "
+            "('beaconing', 'medium', 'b', 'r7', '192.168.1.22', now()), ('lateral_movement', 'high', 'l', 'r8', '192.168.1.22', now()), "
+            "('dns_bypass', 'high', 'd', 'r9', '192.168.1.22', now())")
+        await b.risk()
+        risk = await rules(pool, "risk_score")
+        assert [(a["ip"], a["severity"]) for a in risk] == [("192.168.1.21", "critical")]
+        assert "set for this device" in risk[0]["description"]
     run(body)
 
 
