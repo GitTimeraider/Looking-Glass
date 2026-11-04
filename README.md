@@ -153,14 +153,23 @@ excludes devices from all of them.
 | **Predictable devices only** | "new …" alerts only for devices that rarely pick up anything new (cameras, TVs, plugs) - PCs and phones are skipped automatically | *max. new things per day* (0 = all devices) |
 | **Similar devices** | devices of the same vendor form a group: what the others do too is normal, what none of them do weighs heavier - unless other devices on the network do it too (a phone and a PC both using WhatsApp or IMAP) | on / off |
 | **Odd hours** | activity at an hour the device has never been active | on / off |
-| **Traffic spike** | connections, DNS lookups or upload of one hour N× the device's median | factor (0 = off) |
-| **Machine learning** | an Isolation Forest (one per pair of 8 features, pure Python, nothing leaves the server) scores each device-hour against the device's own history; alerts name the features that were off ("connections 9,000, normally ~100") | sensitivity low / medium / high |
+| **Traffic spike** | connections, DNS lookups or upload of one hour N× the device's median | factor (0 = off); per device on the Devices page |
+| **Machine learning** | an Isolation Forest (one per pair of 8 features, pure Python, nothing leaves the server) scores each device-hour against the device's own history; alerts name the features that were off ("connections 9,000, normally ~100") | sensitivity low / medium / high; per device (incl. off) on the Devices page |
 | **Hour of the week** | network totals (blocks, failed logins, DNS, NXDOMAIN, per log source) against the same hour in previous weeks | sensitivity, metrics to ignore |
-| **Risk score** | every alert adds points (info 1 … critical 40, once per rule) that fade with a half-life; one alert when a device's total is high; shown on the Devices page | threshold, half-life, addresses to skip |
+| **Risk score** | every alert adds points (info 1 … critical 40, once per rule) that fade with a half-life; one alert when a device's total is high; shown on the Devices page | threshold, half-life, addresses to skip; threshold per device on the Devices page |
 | **Learning from false positives** | **Close as false positive** on the Alerts page; the same rule + address 3× in 30 days becomes a suggestion (mute / lower to info), or in *auto* mode a "Learned: …" severity rule (visible and removable under Alert filters) | suggest / auto / off, how many |
 
 **Devices › Learned** shows what was learned for a device and lets you forget it (per kind or everything). The
 **Delete collected data** option in Settings can also clear all learned behaviour.
+
+**Per-device limits** - **Devices › limits** (next to *edit*) gives one device its own alert limits instead of the
+global ones above: the **traffic spike** factor (0 = no spike alerts for it), the **machine learning** sensitivity (off /
+low / medium / high) and the **risk score** threshold (0 = never alert, the score is still kept). Raise them for devices
+that are busy at random (a gaming PC, a backup or download server), lower them for very steady ones (cameras, plugs, TVs)
+so smaller changes already alert. Empty fields use the global setting; *Use global settings* clears them all. Devices
+with their own limits show *⚙ limits*, the alerts they raise say which limit was used, and they are never removed
+automatically. A device limit also works when the global switch is off (e.g. traffic spikes only for your cameras), as
+long as *Learn device behaviour* (spike, machine learning) or the *Risk score* is on.
 
 ### Threat intel & traps
 
@@ -807,7 +816,7 @@ How UniFi and OPNsense data are combined:
   Offline: a device with a MAC once it leaves the ARP table; one without a MAC after 20 minutes without traffic.
   Devices stay on the list until you **delete** them (Devices page, next to *edit*; what was learned about them goes
   too) or *Settings › Data & detection › Remove devices not seen for (days)* removes them (default 0 = never; trusted
-  devices, devices you named and devices with notes are kept).
+  devices, devices you named, devices with notes and devices with their own alert limits are kept).
 * **Unraid** – see above.
 * **Settings › Data & detection › Delete collected data** – wipe logs/events, alerts, graphs, reports, AI conversations
   and optionally the device list to start over. Settings, credentials, accounts/MFA, Unraid servers and the encryption

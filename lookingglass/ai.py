@@ -50,7 +50,8 @@ metrics(ts, name, labels, value)  names: memory_used_pct, load1, pf_states, pf_s
        gateway_delay_ms, gateway_loss_pct, if_rx_bps, if_tx_bps (labels = interface), if_received_errors, ...
 devices(mac, ip, hostname, name_source, vendor, interface, sources text[], lease_type, lease_expires, online, trusted, notes,
         conn_type /*wifi|wired, from UniFi*/, conn_where /*'AP Living room · Home (5 GHz)' / 'Switch Office port 5'*/,
-        conn_signal /*dBm*/, conn_seen, first_seen, last_seen)   -- network inventory: ARP, DHCP leases, UniFi clients, Zenarmor
+        conn_signal /*dBm*/, conn_seen, first_seen, last_seen,
+        limits jsonb /*per-device overrides: volume_factor, ml_sensitivity, risk_threshold; missing = global setting*/)   -- network inventory: ARP, DHCP leases, UniFi clients, Zenarmor
 device_profile(key /*MAC or IP*/, kind /*country|port|domain|tls|hour*/, value, first_seen, last_seen, hits)
        -- what is NORMAL for each device (learned); device_hourly(key, hour, ip, features jsonb: connections, destinations,
        ports, countries, dns, failed_lookups, blocked, upload_mb) -- per device and hour

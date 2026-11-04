@@ -138,6 +138,9 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_type TEXT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_where TEXT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_signal INTEGER;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_seen TIMESTAMPTZ;
+-- per-device alert limits set on the Devices page; a missing key = the global setting (Settings › Behaviour & ML):
+-- {"volume_factor": 0..1000 (0 = off), "ml_sensitivity": off|low|medium|high, "risk_threshold": 0..1000 (0 = never)}
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS limits JSONB NOT NULL DEFAULT '{}';
 -- every address of a device with several (OPNsense: one MAC for a port and its VLANs); ip is the main one
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS ips INET[];
 -- the hardware address of a device not keyed by it (OPNsense interface "if:vlan0.20": VLANs share the port's MAC)

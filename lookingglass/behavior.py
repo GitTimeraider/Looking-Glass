@@ -8,6 +8,8 @@
   pairs, see mlforest.py) that finds hours unlike the device's own history.
 * Hour-of-week baselines (hourly_stats): network-wide totals compared to the same hour in previous weeks.
 * Risk score per address: all alerts add points that fade over time.
+* Per-device limits (devices.limits, Devices page): a device's own traffic-spike factor, machine learning sensitivity
+  and risk score threshold - higher for devices that are busy at random, lower for very steady ones.
 * Feedback: alerts closed as "false positive" become suggestions (or automatic severity rules).
 
 Everything is configurable under Settings › Behaviour & ML, including devices never to analyse.
@@ -44,6 +46,48 @@ MIN_INCREASE = {"connections": 200, "destinations": 30, "ports": 10, "countries"
                 "blocked": 50, "upload_mb": 100}
 ML_LEVELS = {"low": (0.9995, 4.0), "medium": (0.998, 3.5), "high": (0.995, 3.0)}  # training percentile, deviation
 RISK_POINTS = {"info": 1, "low": 3, "medium": 8, "high": 20, "critical": 40}
+# per-device overrides of global settings (devices.limits); a missing key means "use the global setting"
+LIMITS = {"volume_factor": (0, 1000), "ml_sensitivity": ("off", "low", "medium", "high"), "risk_threshold": (0, 1000)}
+
+
+def clean_limits(raw: Any) -> dict[str, Any]:
+    """Validate per-device limits from the UI: empty / None = default (key dropped). Raises ValueError."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("limits must be an object")
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key not in LIMITS:
+            raise ValueError(f"unknown limit {key}")
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        if key == "ml_sensitivity":
+            if value not in LIMITS[key]:
+                raise ValueError(f"machine learning sensitivity must be one of {', '.join(LIMITS[key])}")
+            out[key] = value
+            continue
+        lo, hi = LIMITS[key]
+        try:
+            n = int(str(value).strip())
+        except ValueError as exc:
+            raise ValueError(f"{key}: '{value}' is not a whole number") from exc
+        if not lo <= n <= hi:
+            raise ValueError(f"{key}: must be between {lo} and {hi}")
+        out[key] = n
+    return out
+
+
+async def device_limits() -> dict[str, dict[str, Any]]:
+    """Per-device limits by MAC (the behaviour key) and by every address of the device."""
+    rows = await db.pool().fetch(
+        "SELECT mac, limits, (SELECT array_agg(DISTINCT host(x)) FROM unnest(coalesce(ips, '{}'::inet[]) || ip) x "
+        "WHERE x IS NOT NULL) ips FROM devices WHERE limits <> '{}'::jsonb ORDER BY mac NOT LIKE 'ip:%', last_seen")
+    out: dict[str, dict[str, Any]] = {}
+    for r in rows:  # later rows win: a device with a MAC over an ip: entry, the most recently seen one
+        for k in [r["mac"], *(r["ips"] or [])]:
+            out[k] = dict(r["limits"] or {})
+    return out
 
 
 class Matcher:
@@ -362,8 +406,9 @@ class Behavior:
 
     async def volume(self, hour: datetime) -> None:
         """Connections, DNS lookups or upload of one device far above its own normal."""
-        factor = self.s.behavior_volume_factor
-        if not self.s.behavior_enabled or not factor:
+        default = self.s.behavior_volume_factor
+        limits = await device_limits() if self.s.behavior_enabled else {}
+        if not self.s.behavior_enabled or not (default or any(v.get("volume_factor") for v in limits.values())):
             return
         floors = {"connections": 500, "dns": 500, "upload_mb": 200}
         for key, rows in (await self._history(hour)).items():
@@ -372,6 +417,10 @@ class Behavior:
             if not cur or len(hist) < 24 * min(self.s.behavior_min_days, 3):
                 continue
             ip = cur["ip"]
+            own = (limits.get(key) or limits.get(ip) or {}).get("volume_factor")
+            factor = default if own is None else own
+            if not factor:
+                continue  # off (for this device)
             spikes = []
             for f, floor in floors.items():
                 med = statistics.median(h.get(f, 0) for h in hist)
@@ -380,19 +429,26 @@ class Behavior:
                     spikes.append(f"{FEATURE_LABEL[f]} {v:,.0f} (normally ~{med:,.0f})")
             if spikes:
                 await raise_alert(
-                    "volume_spike", corroborate(Rating("low", f"{factor}× or more above this device's normal hour"),
+                    "volume_spike", corroborate(Rating("low", f"{factor}× or more above this device's normal hour"
+                                                        + (" (this device's own limit)" if own is not None else "")),
                                                 await evidence(ip, "volume_spike"), 1),
                     f"Traffic spike from {ip}: {spikes[0]}", f"volume:{key}:{hour:%Y%m%d%H}", src_ip=ip, events={"ip": ip},
                     description=f"Between {local_time(self.s, hour)} and {local_time(self.s, hour + timedelta(hours=1))}: "
-                                f"{'; '.join(spikes)}. Factor and on/off: Settings › Behaviour & ML.")
+                                f"{'; '.join(spikes)}. Alert from {factor}× the normal hour"
+                                + (" (set for this device on the Devices page)." if own is not None else
+                                   ". Factor and on/off: Settings › Behaviour & ML, or per device on the Devices page."))
 
     async def ml(self, hour: datetime) -> None:
         """Isolation Forest on each device's deviations from its own normal: hours unlike any normal hour."""
-        if not (self.s.behavior_enabled and self.s.anomaly_ml_enabled):
+        if not self.s.behavior_enabled:
+            return
+        default = self.s.anomaly_ml_sensitivity if self.s.anomaly_ml_enabled else "off"
+        limits = await device_limits()
+        if default == "off" and not any(v.get("ml_sensitivity", "off") != "off" for v in limits.values()):
             return
         history = await self._history(hour)
         train: list[list[float]] = []
-        current: list[tuple[str, dict[str, Any], list[float], list[float]]] = []
+        current: list[tuple[str, dict[str, Any], list[float], list[float], str]] = []
         for key, rows in history.items():
             hist = [r for r in rows if r["hour"] != hour]
             if len(hist) < 48:
@@ -404,23 +460,24 @@ class Behavior:
             def vec(feat: dict[str, Any]) -> list[float]:
                 return [(math.log1p(float(feat.get(f, 0))) - norm[f][0]) / norm[f][1] for f in FEATURES]
             train += [vec(r["features"]) for r in hist]
-            if rows[-1]["hour"] == hour:
+            level = (limits.get(key) or limits.get(rows[-1]["ip"]) or {}).get("ml_sensitivity", default)
+            if rows[-1]["hour"] == hour and level in ML_LEVELS:  # every device trains the model, only these are judged
                 v = vec(rows[-1]["features"])
                 med_raw = [statistics.median(float(r["features"].get(f, 0)) for r in hist) for f in FEATURES]
-                current.append((key, rows[-1], v, med_raw))
+                current.append((key, rows[-1], v, med_raw, level))
         if len(train) < 500 or not current:
             return
-        q, z = ML_LEVELS.get(self.s.anomaly_ml_sensitivity, ML_LEVELS["medium"])
 
-        def run() -> tuple[float, list[float]]:
+        def run() -> tuple[dict[str, float], list[float]]:
             rnd = random.Random(7)
             forest = SubspaceForest().fit(train)
             sample = rnd.sample(train, min(len(train), 3000))
             ref = sorted(forest.score(x) for x in sample)
-            cut = ref[min(len(ref) - 1, int(q * len(ref)))]
-            return cut, [forest.score(c[2]) for c in current]
-        cut, scores = await asyncio.to_thread(run)
-        for (key, row, v, med_raw), score in zip(current, scores):
+            cuts = {lv: ref[min(len(ref) - 1, int(ML_LEVELS[lv][0] * len(ref)))] for lv in {c[4] for c in current}}
+            return cuts, [forest.score(c[2]) for c in current]
+        cuts, scores = await asyncio.to_thread(run)
+        for (key, row, v, med_raw, level), score in zip(current, scores):
+            cut, z = cuts[level], ML_LEVELS[level][1]
             dev = [(v[i], f) for i, f in enumerate(FEATURES)
                    if v[i] >= z and float(row["features"].get(f, 0)) - med_raw[i] >= MIN_INCREASE[f]]
             # the forest finds unusual combinations; it cannot score values beyond everything it has seen higher than
@@ -437,7 +494,9 @@ class Behavior:
                 events={"ip": ip}, data={"score": round(score, 3), "cut": round(cut, 3)},
                 description=f"Between {local_time(self.s, hour)} and {local_time(self.s, hour + timedelta(hours=1))} this "
                             f"device behaved unlike its last {self.s.behavior_learn_days} days: {'; '.join(parts)}. "
-                            f"Anomaly score {score:.2f} (alert from {cut:.2f}). Sensitivity: Settings › Behaviour & ML.")
+                            f"Anomaly score {score:.2f} (alert from {cut:.2f}, sensitivity {level}"
+                            + (", set for this device on the Devices page)." if level != default else
+                               "). Sensitivity: Settings › Behaviour & ML, or per device on the Devices page."))
 
     async def seasonal(self, hour: datetime) -> None:
         """Network-wide totals of this hour against the same hour of the week before (or the same hour of day)."""
@@ -483,6 +542,7 @@ class Behavior:
             "AND last_seen > now() - interval '7 days' AND coalesce(src_ip, dst_ip) IS NOT NULL "
             "AND rule NOT IN ('risk_score')")
         excl, never = Matcher(self.s.risk_exclude), self.excluded()
+        limits = await device_limits()
         half = max(1, self.s.risk_half_life) * 3600
         now = datetime.now(timezone.utc)
         best: dict[str, dict[str, tuple[float, str]]] = defaultdict(dict)
@@ -501,17 +561,22 @@ class Behavior:
                 "ON CONFLICT (entity) DO UPDATE SET score = EXCLUDED.score, parts = EXCLUDED.parts, updated = now()",
                 ent, round(score, 1), [{"points": p, "rule": r, "severity": s} for p, r, s in detail])
             internal = self.internal(ent)
-            if score >= self.s.risk_threshold and internal:  # internet addresses collect points too, but alerting on
+            own = (limits.get(ent) or {}).get("risk_threshold")
+            threshold = self.s.risk_threshold if own is None else own  # 0 = never alert for this device
+            if threshold and score >= threshold and internal:  # internet addresses collect points too, but alerting on
                 # every busy scanner would be noise - they only add context (attack chains, the AI analyst)
                 await raise_alert(
-                    "risk_score", Rating("high" if score < 2 * self.s.risk_threshold else "critical",
-                                         f"many signals add up (risk score {score:.0f}, alert from {self.s.risk_threshold})"),
+                    "risk_score", Rating("high" if score < 2 * threshold else "critical",
+                                         f"many signals add up (risk score {score:.0f}, alert from {threshold}"
+                                         + (", this device's own limit)" if own is not None else ")")),
                     f"High risk score for {ent}: {score:.0f} ({len(detail)} alert types)", f"risk:{ent}", src_ip=ent,
                     events={"ip": ent}, data={"score": round(score, 1), "parts": detail[:15]},
                     description=f"{'This device' if internal else 'This address'} collected: "
                                 + ", ".join(f"{r} ({s}, {p:.0f} pts)" for p, r, s in detail[:10])
                                 + ". Points fade with a half-life of "
-                                f"{self.s.risk_half_life} h. Tune: Settings › Behaviour & ML › Risk score.")
+                                f"{self.s.risk_half_life} h. Tune: Settings › Behaviour & ML › Risk score"
+                                + (" (alert threshold set for this device on the Devices page)." if own is not None else
+                                   ", or a threshold for this device on the Devices page."))
 
     # ------------------------------------------------------------- feedback ---
     async def feedback(self) -> list[dict[str, Any]]:
@@ -562,4 +627,4 @@ def metric_events(metric: str) -> dict[str, Any]:
             "nxdomain": {"source": "unbound", "d_rcode": "NXDOMAIN"}}.get(metric, {})
 
 
-__all__ = ["Behavior", "Matcher", "SEVERITIES"]
+__all__ = ["Behavior", "Matcher", "SEVERITIES", "clean_limits", "device_limits"]

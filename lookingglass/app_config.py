@@ -272,7 +272,8 @@ FIELDS: list[Field] = [
     Field("retention_days", "data", "Keep events (days)", "int", "", min=1, max=3650),
     Field("metrics_retention_days", "data", "Keep metrics (days)", "int", "", min=1, max=3650),
     Field("device_remove_days", "data", "Remove devices not seen for (days)", "int", "0 = never. Devices you marked "
-          "trusted, named yourself or wrote notes for are kept. A removed device that comes back is a new device again.",
+          "trusted, named yourself, wrote notes for or gave their own "
+          "alert limits are kept. A removed device that comes back is a new device again.",
           min=0, max=3650),
     Field("detection_interval", "data", "Detection interval (seconds)", "int", "", min=10, max=3600),
     Field("dns_ignore_domains", "data", "DNS: domains to ignore", "list",
