@@ -1114,6 +1114,69 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                                                                   int(payload["id"])) or "")
         return await unraid_test(v["url"], v["api_key"], v["verify_ssl"], v["docker_url"], v["nut"])
 
+    # log alert rules for containers (Unraid › Docker); registered before /api/unraid/{sid}
+    def _log_rule_out(r: Any) -> dict[str, Any]:
+        return {k: r[k] for k in ("id", "name", "enabled", "server_id", "containers", "match", "ignore", "threshold",
+                                  "minutes", "severity")}
+
+    async def _clean_log_rule(payload: dict) -> dict[str, Any]:
+        from .. import container_watch
+        try:
+            rule = container_watch.clean_rule(payload)
+            await container_watch.check_regex(rule)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return rule
+
+    @app.get("/api/unraid/log-rules")
+    async def log_rules():
+        rows = await db.pool().fetch("SELECT * FROM container_log_rules ORDER BY id")
+        return {"rules": [_log_rule_out(r) for r in rows],
+                "default": {"threshold": settings.unraid_log_error_count, "minutes": settings.unraid_log_error_minutes},
+                "restarts": {"count": settings.unraid_restart_count, "minutes": settings.unraid_restart_minutes}}
+
+    @app.post("/api/unraid/log-rules")
+    async def add_log_rule(payload: dict = Body(...)):
+        r = await _clean_log_rule(payload)
+        rid = await db.pool().fetchval(
+            "INSERT INTO container_log_rules (name, enabled, server_id, containers, match, ignore, threshold, minutes, "
+            "severity) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id", r["name"], r["enabled"], r["server_id"],
+            r["containers"], r["match"], r["ignore"], r["threshold"], r["minutes"], r["severity"])
+        return {"id": rid}
+
+    @app.put("/api/unraid/log-rules/{rid}")
+    async def edit_log_rule(rid: int, payload: dict = Body(...)):
+        r = await _clean_log_rule(payload)
+        await db.pool().execute(
+            "UPDATE container_log_rules SET name = $2, enabled = $3, server_id = $4, containers = $5, match = $6, "
+            "ignore = $7, threshold = $8, minutes = $9, severity = $10 WHERE id = $1", rid, r["name"], r["enabled"],
+            r["server_id"], r["containers"], r["match"], r["ignore"], r["threshold"], r["minutes"], r["severity"])
+        return {"ok": True}
+
+    @app.delete("/api/unraid/log-rules/{rid}")
+    async def delete_log_rule(rid: int):
+        await db.pool().execute("DELETE FROM container_log_rules WHERE id = $1", rid)
+        return {"ok": True}
+
+    @app.post("/api/unraid/log-rules/test")
+    async def test_log_rule(payload: dict = Body(...)):
+        """How a rule (saved or not) would have done over the last hours, per container."""
+        from .. import container_watch
+        r = await _clean_log_rule({"name": "test", **payload})
+        rule = container_watch.LogRule(id=None, **r)
+        hours = max(1, min(int(payload.get("hours") or 24), 24 * 30))
+        host = None
+        if r["server_id"]:
+            host = await db.pool().fetchval("SELECT name FROM unraid_servers WHERE id = $1", r["server_id"])
+        names = None
+        if rule.containers:  # the containers this rule covers, among those that logged in that time
+            known = [x["program"] for x in await db.pool().fetch(
+                "SELECT DISTINCT program FROM events WHERE source = 'docker' AND ts > now() - make_interval(hours => $1) "
+                "AND program IS NOT NULL", hours)]
+            names = [n for n in known if rule.covers(n)]
+        rows = await container_watch.preview(host, names, rule, hours)
+        return {"hours": hours, "rows": db.records(rows)}
+
     @app.get("/api/unraid/{sid}")
     async def unraid_overview(sid: int):
         rows = await db.pool().fetch("SELECT key, ts, data FROM snapshots WHERE key LIKE $1", f"unraid:{sid}:%")

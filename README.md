@@ -678,11 +678,12 @@ The **Unraid** page then shows:
 * **Array, pools & disks**: the array and each pool separately (e.g. a ZFS SSD pool), with capacity, file system,
   member disks, spinning / spun-down state, temperature, errors, parity check, shares and SMART. Charts show
   spinning disks and usage per array/pool.
-* **Docker**: containers, state, updates, CPU/memory. Container CPU is the share of the whole CPU (all threads), like the server's own CPU graph - not `docker stats`' 100 % per thread.
+* **Docker**: containers, state, updates, CPU/memory, restarts in the last hour, and the **log alert rules** (below). Container CPU is the share of the whole CPU (all threads), like the server's own CPU graph - not `docker stats`' 100 % per thread.
 * **Logs**: container logs and the Unraid syslog, searchable.
 * **Notifications**.
 
-These become Looking Glass alerts: disk errors or overheating, stopped auto-start containers, array problems, ZFS
+These become Looking Glass alerts: disk errors or overheating, stopped auto-start containers, containers that keep
+restarting, too many errors in a container log, array problems, ZFS
 errors in the Unraid syslog (`zed` device faults, checksum/I/O errors), UPS on battery and Unraid *warning/alert*
 notifications.
 
@@ -693,6 +694,31 @@ Reboots stay quiet (both under *Settings › Data & detection*, default 10 minut
   server answers again (with how long it was unreachable). 0 = after 3 failed polls (about 45 seconds).
 * **Unraid: container alerts wait** - no "container stopped" alert while the server is still starting its containers
   after a reboot; it closes by itself once the container runs again.
+
+**Containers that keep restarting** - a container that crashes right after it starts and is restarted by Docker over
+and over (a restart policy such as `--restart=unless-stopped`). Looking Glass reads the start / crash time from each
+container's status ("Up 5 seconds", "Restarting (1) 20 seconds ago") on every poll. 2-3 restarts (an update, a manual
+restart, a reboot) stay quiet; *Settings › Data & detection › Unraid: container keeps restarting from* (default 5
+restarts within 15 minutes, 0 = off) sets when it alerts (medium; high at 3× the limit). The alert closes by itself
+once the container has not restarted for twice that time. The Docker tab shows the restarts of the last hour per
+container. A crash loop that restarts much faster than the poll interval is counted lower than it is - it still alerts.
+
+**Errors in container logs** (needs *Collect logs* on the server) - every container is different, so what counts is up
+to you, under **Unraid › Docker › Log alert rules** (or *rule* under *logs* next to a container):
+
+| Field | Meaning |
+|---|---|
+| Containers | names, one per line, `*` / `?` wildcards; empty = every container. Optionally only one server |
+| Lines that count | one per line: text the line contains (case does not matter) or a `/regular expression/` (`\b` works as a word boundary). Empty = lines with error, fatal, panic, exception, traceback or critical |
+| Except lines with | same format: known harmless lines that never count (`0 errors`, `deprecated`) |
+| Alert from … within … | that many lines in that many minutes; **0 = no log alerts for these containers** |
+| Severity | of the alert |
+
+A container with its own rule(s) uses only those (each rule its own alert); every other container uses the default
+rule from *Settings › Data & detection › Unraid: container log errors from* (default 50 error lines in 10 minutes,
+0 = off). **Test against the last 24 hours** shows, before you save, how many lines a rule finds per container, its
+busiest window and how often it would have alerted. Alerts show the newest matching lines, link to them in Event
+search, and close by themselves once three windows of the rule together stay below the limit.
 
 ### Spun-down disks are never woken
 

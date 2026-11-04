@@ -45,8 +45,32 @@
       <div class="card"><h3>Container CPU % (top 8)</h3><div class="chart-box sm"><canvas id="c-ccpu"></canvas></div><div class="small muted n-ctr"></div></div>
       <div class="card"><h3>Container memory (top 8)</h3><div class="chart-box sm"><canvas id="c-cmem"></canvas></div><div class="small muted n-ctr"></div></div>
       <div class="card span3"><h3>Containers <span class="muted small">click a column header to sort</span></h3><div class="small muted" id="dk-note"></div><div id="containers"></div></div>
+      <div class="card span3"><h3>Log alert rules <span class="sp"></span><button class="small-btn" id="lr-add">Add rule</button></h3>
+        <p class="small muted" id="lr-help"></p><div id="lr-list"></div></div>
     </div>
   </section>
+  <dialog id="lr-dlg" class="dlg" style="width:min(760px, calc(100vw - 32px))">
+    <div class="dlg-head"><h3 id="lr-title">Log alert rule</h3><button class="secondary" id="lr-close">Close</button></div>
+    <form id="lr-form" class="filter-form" style="margin-top:10px">
+      <label class="full">Name <input name="name" required placeholder="Nextcloud: PHP errors"></label>
+      <label>Containers <textarea name="containers" rows="3" placeholder="nextcloud*&#10;mariadb"></textarea>
+        <span class="small muted">One per line, * and ? as wildcards. Empty = every container.</span></label>
+      <label>Server <select name="server_id"></select><span class="small muted">Which Unraid server's containers.</span></label>
+      <label>Lines that count <textarea name="match" rows="4" placeholder="PHP Fatal&#10;/database is locked/&#10;/\bERR\b/"></textarea>
+        <span class="small muted">One per line: text the line contains (upper / lower case does not matter), or a /regular expression/. Empty = lines with error, fatal, panic, exception, traceback or critical.</span></label>
+      <label>Except lines with <textarea name="ignore" rows="4" placeholder="0 errors&#10;deprecated"></textarea>
+        <span class="small muted">Same format: lines with these never count (known harmless messages).</span></label>
+      <label>Alert from (lines) <input type="number" name="threshold" min="0" max="100000" value="20">
+        <span class="small muted">0 = no log alerts for these containers (also not from the default rule).</span></label>
+      <label>… within (minutes) <input type="number" name="minutes" min="1" max="1440" value="10"></label>
+      <label>Severity <select name="severity"><option>info</option><option selected>low</option><option>medium</option><option>high</option><option>critical</option></select></label>
+      <label class="chk"><input type="checkbox" name="enabled" checked> Enabled</label>
+      <div class="full small" id="lr-err" style="color:var(--bad)"></div>
+      <div class="full"><button type="submit">Save</button> <button type="button" class="secondary" id="lr-test">Test against the last 24 hours</button>
+        <button type="button" class="danger" id="lr-del" style="float:right">Delete</button></div>
+      <div class="full" id="lr-result"></div>
+    </form>
+  </dialog>
   <section data-s="logs" hidden>
     <div class="filters">
       <select id="lg-kind"><option value="docker">Container logs</option><option value="syslog">Unraid syslog</option></select>
@@ -96,6 +120,7 @@ async function init() {
   const sel = document.getElementById("server");
   sel.innerHTML = servers.map(s => `<option value="${s.id}" ${s.id === sid ? "selected" : ""}>${LG.esc(s.name)}</option>`).join("");
   sel.onchange = () => { sid = Number(sel.value); localStorage.setItem("lg-unraid", sid); load(); };
+  try { await loadLogRules(); } catch (e) { console.error("log rules", e); }  // first: the restart badges use its limits
   load();
 }
 let renderErrors = [], lastStatus = {};
@@ -196,7 +221,8 @@ function storageView(d) {
 function dockerView(d) {
   const st = d.status || {}, k = (l, v, c = "") => `<div class="card kpi ${c}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
   const stats = D("docker_stats") || [], sByName = Object.fromEntries(stats.map(s => [s.name, s]));
-  const ctrs = (D("docker") || []).map(c => { const name = (c.names || [])[0]?.replace(/^\//, "") || ""; return { ...c, name, st: sByName[name] }; });
+  const rs = D("restarts") || {};
+  const ctrs = (D("docker") || []).map(c => { const name = (c.names || [])[0]?.replace(/^\//, "") || ""; return { ...c, name, st: sByName[name], restarts: (rs[name] || {}).last_hour || 0 }; });
   document.getElementById("dk-kpis").innerHTML = k("Containers", ctrs.length) + k("Running", ctrs.filter(c => c.state === "RUNNING").length, "ok") +
     k("Stopped", ctrs.filter(c => c.state !== "RUNNING").length, ctrs.some(c => c.state === "EXITED" && c.autoStart) ? "bad" : "") +
     (stats.length ? k("CPU used by containers", stats.reduce((a, s) => a + s.cpu_pct, 0).toFixed(1) + "%") + k("Total memory", LG.bytes(stats.reduce((a, s) => a + s.mem_bytes, 0))) : "");
@@ -208,14 +234,80 @@ function dockerView(d) {
     {k: "image", l: "Image", s: true, f: v => `<span class="small mono">${LG.esc(v)}</span>`},
     {k: "state", l: "State", s: true, f: (v, r) => `<span class="state-${LG.esc(v)}">${LG.esc(v)}</span> <span class="small muted">${LG.esc(r.status)}</span>`},
     {k: "autoStart", l: "Autostart", f: v => v ? "yes" : ""},
+    {k: "restarts", l: "Restarts 1h", num: true, s: r => r.restarts, f: v => v ? `<span class="badge ${v >= (logRules.restarts || {}).count ? "high" : v > 1 ? "medium" : "low"}" title="Starts / crashes seen in the last hour (alert from ${(logRules.restarts || {}).count || "–"} in ${(logRules.restarts || {}).minutes || "–"} min, Settings › Data & detection)">${v}</span>` : ""},
     {k: "ports", l: "Ports", f: v => (v || []).filter(p => p.publicPort).map(p => `<span class="pill">${p.publicPort}→${p.privatePort}/${LG.esc(p.type || "").toLowerCase()}</span>`).join("")},
     {k: "st", l: "CPU", num: true, s: r => r.st ? r.st.cpu_pct : null, f: v => v ? `<span title="Share of the whole CPU (all threads)">${v.cpu_pct.toFixed(v.cpu_pct < 10 ? 2 : 1)}%</span>` : ""},
     {k: "st", l: "Memory", num: true, s: r => r.st ? r.st.mem_bytes : null, f: v => v ? LG.bytes(v.mem_bytes) + (v.mem_pct ? `<span class="small muted"> ${v.mem_pct.toFixed(1)}%</span>` : "") : ""},
-    {k: "name", l: "", f: v => `<a href="#" data-logs="${LG.esc(v)}">logs</a>`},
+    {k: "name", l: "", f: v => `<a href="#" data-logs="${LG.esc(v)}">logs</a><div class="small"><a href="#" data-newrule="${LG.esc(v)}" title="Log alert rule: which log lines of this container should alert">rule</a></div>`},
     {k: "webUiUrl", l: "", f: v => v ? `<a href="${LG.esc(v)}" target="_blank" rel="noopener">web UI</a>` : ""}], ctrs, "No container data");
+  document.querySelectorAll("[data-newrule]").forEach(a => a.onclick = e => { e.preventDefault(); const n = a.dataset.newrule;
+    const own = logRules.rules.find(r => r.containers.length === 1 && r.containers[0] === n); editLogRule(own || null, own ? null : n); });
   document.querySelectorAll("[data-logs]").forEach(a => a.onclick = e => { e.preventDefault(); document.getElementById("lg-kind").value = "docker"; ctrSel(a.dataset.logs); document.querySelector('#tabs [data-t="logs"]').click(); });
   ctrSel();
+  logRulesView();
 }
+// ------------------------------------------------------------ log alert rules ---
+let logRules = { rules: [], default: {}, restarts: {} }, lrEdit = null;
+async function loadLogRules() { logRules = await LG.api("/api/unraid/log-rules"); logRulesView(); }
+function logRulesView() {
+  const d = logRules.default || {}, srv = id => id ? (servers.find(s => s.id === id) || {}).name || `#${id}` : "all servers";
+  const terms = a => (a || []).map(t => `<span class="pill mono">${LG.esc(t)}</span>`).join(" ");
+  document.getElementById("lr-help").innerHTML = `Which log lines of a container are a problem, and how many are too many. A container with its own rule(s) uses only those;
+    every other container uses the default rule: <b>${d.threshold ? `${d.threshold} lines with error / fatal / panic / exception / traceback / critical within ${d.minutes} min` : "off"}</b>
+    (Settings › Data &amp; detection). Containers need "Collect logs" on the server (Settings › Unraid servers).`;
+  LG.table("#lr-list", [
+    {k: "name", l: "Rule", f: (v, r) => `<a href="#" data-lr="${r.id}"><b>${LG.esc(v)}</b></a>${r.enabled ? "" : ' <span class="muted small">(off)</span>'}`},
+    {k: "containers", l: "Containers", f: (v, r) => (terms(v) || '<span class="muted">all</span>') + `<div class="small muted">${LG.esc(srv(r.server_id))}</div>`},
+    {k: "match", l: "Lines that count", f: (v, r) => (terms(v) || '<span class="muted">error lines</span>') + (r.ignore.length ? `<div class="small muted">except ${terms(r.ignore)}</div>` : "")},
+    {k: "threshold", l: "Alert from", f: (v, r) => v ? `${v} in ${r.minutes} min` : '<span class="muted">no log alerts</span>'},
+    {k: "severity", l: "Severity", f: v => LG.sev(v)}], logRules.rules, "No own rules yet - every container uses the default rule.");
+  document.querySelectorAll("[data-lr]").forEach(a => a.onclick = e => { e.preventDefault(); editLogRule(logRules.rules.find(r => r.id === Number(a.dataset.lr))); });
+}
+function editLogRule(r, container) {
+  lrEdit = r || null;
+  const f = document.getElementById("lr-form").elements;
+  f.server_id.innerHTML = `<option value="">all servers</option>` + servers.map(s => `<option value="${s.id}">${LG.esc(s.name)}</option>`).join("");
+  const v = r || { name: container ? `${container}: errors` : "", containers: container ? [container] : [], match: [], ignore: [], threshold: 20, minutes: 10, severity: "low", enabled: true, server_id: null };
+  f.name.value = v.name; f.containers.value = v.containers.join("\n"); f.match.value = v.match.join("\n"); f.ignore.value = v.ignore.join("\n");
+  f.threshold.value = v.threshold; f.minutes.value = v.minutes; f.severity.value = v.severity; f.enabled.checked = v.enabled; f.server_id.value = v.server_id || "";
+  document.getElementById("lr-title").textContent = r ? `Log alert rule: ${r.name}` : "New log alert rule";
+  document.getElementById("lr-del").hidden = !r;
+  document.getElementById("lr-err").textContent = ""; document.getElementById("lr-result").innerHTML = "";
+  document.getElementById("lr-dlg").showModal();
+}
+function lrBody() {
+  const f = document.getElementById("lr-form").elements;
+  return { name: f.name.value, containers: f.containers.value, match: f.match.value, ignore: f.ignore.value, threshold: f.threshold.value,
+    minutes: f.minutes.value, severity: f.severity.value, enabled: f.enabled.checked, server_id: f.server_id.value || null };
+}
+document.getElementById("lr-add").onclick = () => editLogRule(null);
+document.getElementById("lr-close").onclick = () => document.getElementById("lr-dlg").close();
+document.getElementById("lr-form").onsubmit = async e => {
+  e.preventDefault();
+  try {
+    await LG.api(lrEdit ? `/api/unraid/log-rules/${lrEdit.id}` : "/api/unraid/log-rules", { method: lrEdit ? "PUT" : "POST", body: lrBody() });
+    document.getElementById("lr-dlg").close(); loadLogRules();
+  } catch (err) { document.getElementById("lr-err").textContent = err.message; }
+};
+document.getElementById("lr-del").onclick = async () => {
+  if (!lrEdit || !confirm(`Delete the rule "${lrEdit.name}"?`)) return;
+  await LG.api(`/api/unraid/log-rules/${lrEdit.id}`, { method: "DELETE" }); document.getElementById("lr-dlg").close(); loadLogRules();
+};
+document.getElementById("lr-test").onclick = async () => {
+  const out = document.getElementById("lr-result"); document.getElementById("lr-err").textContent = ""; out.innerHTML = '<span class="muted small">testing…</span>';
+  try {
+    const b = lrBody(), t = await LG.api("/api/unraid/log-rules/test", { method: "POST", body: { ...b, name: b.name || "test", hours: 24 } });
+    const lim = Number(b.threshold);
+    out.innerHTML = `<p class="small muted">Last ${t.hours} hours, per container: matching lines, the busiest ${LG.esc(b.minutes)}-minute window and how many windows reached the limit${lim ? "" : " (limit 0: this rule would never alert)"}.</p>`;
+    LG.table(out.appendChild(document.createElement("div")), [
+      {k: "program", l: "Container", f: (v, r) => `<b>${LG.esc(v)}</b><div class="small muted">${LG.esc(r.host)}</div>`},
+      {k: "total", l: "Lines", num: true, f: LG.num},
+      {k: "busiest", l: "Busiest window", num: true, f: v => `<span class="${lim && v >= lim ? "badge high" : ""}">${LG.num(v)}</span>`},
+      {k: "over_limit", l: "Would alert", f: v => lim && v ? `${v} window${v > 1 ? "s" : ""}` : "no"},
+      {k: "examples", l: "Newest lines", f: v => (v || []).map(x => `<div class="small mono cell-clip" title="${LG.esc(x)}">${LG.esc(x)}</div>`).join("")}],
+      t.rows, "No matching log lines in this time.");
+  } catch (err) { out.innerHTML = ""; document.getElementById("lr-err").textContent = err.message; }
+};
 function notificationsView() {
   const k = (l, v, c = "") => `<div class="card kpi ${c}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
   const nt = D("notifications") || {}, ov = (nt.overview || {}).unread || {};

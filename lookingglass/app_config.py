@@ -288,6 +288,16 @@ FIELDS: list[Field] = [
           "unreachable' alert until Looking Glass has not reached the server for this long - a reboot of the server or "
           "of OPNsense in between stays quiet. The alert closes by itself when the server answers again. 0 = alert "
           "right away (after 3 failed polls).", min=0, max=240),
+    Field("unraid_restart_count", "data", "Unraid: container keeps restarting from (restarts)", "int", "A container "
+          "that started this many times within the minutes below raises an alert ('keeps restarting'); 2-3 restarts "
+          "(an update, a manual restart) stay quiet. It closes by itself once the container stays up. 0 = off.",
+          min=0, max=100),
+    Field("unraid_restart_minutes", "data", "Unraid: … within (minutes)", "int", "", min=2, max=1440),
+    Field("unraid_log_error_count", "data", "Unraid: container log errors from (lines)", "int", "Default rule for "
+          "container logs: this many lines with error / fatal / panic / exception / traceback / critical within the "
+          "minutes below raise an alert. Containers with their own rule (Unraid › Docker › Log alert rules) use that "
+          "instead. Needs 'Collect container logs' on the server. 0 = off.", min=0, max=100000),
+    Field("unraid_log_error_minutes", "data", "Unraid: … within (minutes)", "int", "", min=1, max=1440),
     Field("geoip_db", "data", "GeoIP database path", "str", "MaxMind GeoLite2-City or -Country .mmdb inside the data volume.",
           placeholder="/data/GeoLite2-City.mmdb"),
 ]

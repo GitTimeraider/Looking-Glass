@@ -57,7 +57,9 @@ RULES: dict[str, list[tuple[str, str]]] = {
     "Unraid": [("unraid_array", "Array problem"), ("unraid_disk", "Disk problem"), ("unraid_disk_errors", "Disk errors"),
                ("unraid_disk_temp", "Disk temperature"), ("unraid_smart", "SMART"), ("unraid_parity", "Parity check"),
                ("unraid_zfs", "ZFS problem"), ("unraid_temp", "Temperature"), ("unraid_ups", "UPS"),
-               ("unraid_container_down", "Container stopped"), ("unraid_notification", "Unraid notification"),
+               ("unraid_container_down", "Container stopped"),
+               ("unraid_container_restarting", "Container keeps restarting"),
+               ("unraid_container_errors", "Errors in a container log"), ("unraid_notification", "Unraid notification"),
                ("unraid_unreachable", "Server unreachable")],
 }
 RULE_NAMES = {r for group in RULES.values() for r, _ in group}
