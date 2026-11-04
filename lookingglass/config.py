@@ -161,6 +161,7 @@ class Settings(BaseSettings):
     detection_interval: int = 60
     unraid_container_grace: int = 10  # minutes
     unraid_offline_grace: int = 10  # minutes
+    unraid_unhealthy_minutes: int = 5  # a failing Docker health check alerts after this long (0 = off)
     unraid_restart_count: int = 5  # restarts in unraid_restart_minutes = "keeps restarting" (0 = off)
     unraid_restart_minutes: int = 15
     unraid_log_error_count: int = 50  # default log rule: error lines in unraid_log_error_minutes (0 = off)

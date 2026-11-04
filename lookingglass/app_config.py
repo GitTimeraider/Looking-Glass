@@ -288,6 +288,10 @@ FIELDS: list[Field] = [
           "unreachable' alert until Looking Glass has not reached the server for this long - a reboot of the server or "
           "of OPNsense in between stays quiet. The alert closes by itself when the server answers again. 0 = alert "
           "right away (after 3 failed polls).", min=0, max=240),
+    Field("unraid_unhealthy_minutes", "data", "Unraid: unhealthy alerts wait (minutes)", "int", "A container whose own "
+          "Docker health check (status 'unhealthy') keeps failing for this long raises an alert; it closes by itself "
+          "once the check passes again. Only containers whose image has a health check can be unhealthy. 0 = off.",
+          min=0, max=1440),
     Field("unraid_restart_count", "data", "Unraid: container keeps restarting from (restarts)", "int", "A container "
           "that started this many times within the minutes below raises an alert ('keeps restarting'); 2-3 restarts "
           "(an update, a manual restart) stay quiet. It closes by itself once the container stays up. 0 = off.",

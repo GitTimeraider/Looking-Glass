@@ -514,6 +514,8 @@ These steps were checked against the current OPNsense documentation and source (
      storage and cannot be changed afterwards.
    * **Paid editions**: the same page, *Stream Reporting Data to External Syslog*: server = Docker host, port 514,
      select Connections, DNS, TLS, Web (HTTP) and Alerts.
+   Not using Zenarmor? Then the *Zenarmor* menu entry, its Overview widget and the report section stay hidden. They
+   appear as soon as the first Zenarmor record arrives, and hide again after 7 days without any.
 7. **Q-Feeds** – the plugin only creates firewall aliases. Its *Events* (which Looking Glass reads) only appear when you
    add **block rules that use the Q-Feeds aliases with logging enabled**, e.g. on LAN: *block, destination = Q-Feeds
    alias, Log ✓* and on WAN: *block, source = Q-Feeds alias, Log ✓* (**Firewall › Rules**). The domain feeds are
@@ -678,12 +680,12 @@ The **Unraid** page then shows:
 * **Array, pools & disks**: the array and each pool separately (e.g. a ZFS SSD pool), with capacity, file system,
   member disks, spinning / spun-down state, temperature, errors, parity check, shares and SMART. Charts show
   spinning disks and usage per array/pool.
-* **Docker**: containers, state, updates, CPU/memory, restarts in the last hour, and the **log alert rules** (below). Container CPU is the share of the whole CPU (all threads), like the server's own CPU graph - not `docker stats`' 100 % per thread.
+* **Docker**: containers, state (with an *unhealthy* mark when the container's health check fails), updates, CPU/memory, restarts in the last hour, and the **log alert rules** (below). Container CPU is the share of the whole CPU (all threads), like the server's own CPU graph - not `docker stats`' 100 % per thread.
 * **Logs**: container logs and the Unraid syslog, searchable.
 * **Notifications**.
 
 These become Looking Glass alerts: disk errors or overheating, stopped auto-start containers, containers that keep
-restarting, too many errors in a container log, array problems, ZFS
+restarting, unhealthy containers (their Docker health check keeps failing), too many errors in a container log, array problems, ZFS
 errors in the Unraid syslog (`zed` device faults, checksum/I/O errors), UPS on battery and Unraid *warning/alert*
 notifications.
 
@@ -694,6 +696,11 @@ Reboots stay quiet (both under *Settings › Data & detection*, default 10 minut
   server answers again (with how long it was unreachable). 0 = after 3 failed polls (about 45 seconds).
 * **Unraid: container alerts wait** - no "container stopped" alert while the server is still starting its containers
   after a reboot; it closes by itself once the container runs again.
+
+**Unhealthy containers** - a container whose image has a health check (`HEALTHCHECK`, or `--health-cmd` in *Extra
+Parameters*) shows *(unhealthy)* in its status when that check keeps failing: it runs, but does not work. Looking
+Glass alerts (medium) once it has been unhealthy for *Settings › Data & detection › Unraid: unhealthy alerts wait*
+(default 5 minutes, 0 = off) and closes the alert by itself when the check passes again.
 
 **Containers that keep restarting** - a container that crashes right after it starts and is restarted by Docker over
 and over (a restart policy such as `--restart=unless-stopped`). Looking Glass reads the start / crash time from each

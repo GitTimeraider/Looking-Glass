@@ -52,6 +52,15 @@ QUERIES: dict[str, str] = {
         system { manufacturer model virtual }
         baseboard { manufacturer model memMax memSlots }
         versions { core { unraid api kernel } }
+        memory { layout { size type clockSpeed manufacturer bank partNum serialNum formFactor } }
+    } }""",
+    # older API: fewer memory fields
+    "info_basic": """{ info {
+        os { hostname distro release kernel arch uptime uefi }
+        cpu { manufacturer brand cores threads speed speedmax socket packages { temp totalPower } }
+        system { manufacturer model virtual }
+        baseboard { manufacturer model memMax memSlots }
+        versions { core { unraid api kernel } }
         memory { layout { size type clockSpeed manufacturer } }
     } }""",
     "metrics": """{ metrics {
@@ -208,6 +217,7 @@ class UnraidServerPoller:
         self.boot_at: float | None = None  # when the server booted (Unraid API: os.uptime)
         self.reachable_since: float | None = None  # first good poll since Looking Glass started / the server came back
         self.ctr_state: dict[str, tuple[str, float]] = {}  # container -> (state, seen in that state since)
+        self.unhealthy_since: dict[str, float] = {}  # container -> first poll its health check failed
         self.restarts = container_watch.RestartTracker()  # start / crash times per container (restart loops)
         self.unreachable_since: float | None = None  # first failed poll of the current outage
         self.unreachable_alerted = False
@@ -314,7 +324,7 @@ class UnraidServerPoller:
 
     # ------------------------------------------------------------ sections ---
     async def poll_info(self) -> None:
-        d = await self.section("info", "info")
+        d = await self.section("info", "info", "info_basic")
         if d:
             await self.snap("info", d.get("info"))
             up = ((d.get("info") or {}).get("os") or {}).get("uptime")
@@ -572,6 +582,7 @@ class UnraidServerPoller:
                               ("unraid_containers_total", str(self.sid), len(containers))])
         await self.check_containers(containers)
         await self.check_restarts(containers)
+        await self.check_health(containers)
 
     async def check_containers(self, containers: list[dict[str, Any]], now: float | None = None) -> None:
         """'Container stopped' alerts, not while the server is still starting up (after a reboot Unraid starts the
@@ -638,6 +649,40 @@ class UnraidServerPoller:
         if calm:
             await close_alerts("unraid_container_restarting", calm,
                                f"no restarts for {2 * window // 60} minutes")
+
+    async def check_health(self, containers: list[dict[str, Any]], now: float | None = None) -> None:
+        """'Container unhealthy': its own Docker health check (HEALTHCHECK in the image or --health-cmd) has failed for
+        the set minutes (Settings › Data & detection). Closes by itself once the check passes again."""
+        now = now or time.time()
+        wait = self.settings.unraid_unhealthy_minutes
+        prefix = f"unraid_health:{self.sid}:"
+        open_fps = {r["fingerprint"] for r in await db.pool().fetch(
+            "SELECT fingerprint FROM alerts WHERE rule = 'unraid_container_unhealthy' AND status <> 'closed' "
+            "AND fingerprint LIKE $1", prefix.replace("%", r"\%").replace("_", r"\_") + "%")}
+        fine: dict[str, str] = {}
+        for c in containers:
+            name = (c.get("names") or ["?"])[0].lstrip("/")
+            status = str(c.get("status") or "")
+            if container_watch.health(status) != "unhealthy":
+                self.unhealthy_since.pop(name, None)
+                fine[prefix + name] = status or str(c.get("state") or "")
+                continue
+            since = self.unhealthy_since.setdefault(name, now)
+            if wait and now - since >= wait * 60:
+                mins = max(1, int((now - since) // 60))
+                await raise_alert(
+                    "unraid_container_unhealthy", "medium", f"{self.name}: container {name} is unhealthy", prefix + name,
+                    events={"source": "docker", "host": self.name, "program": name},
+                    data={"server_id": self.sid, "container": name},
+                    description=f"The container's own health check has failed for {mins} minute{'s' if mins != 1 else ''} "
+                                f"({status}). It runs, but does not work as it should: its log (Unraid › Docker › logs, "
+                                "or the events linked here) usually says why. In Unraid: Docker tab › the container › "
+                                "Restart is often enough. Wait time: Settings › Data & detection › Unraid: unhealthy "
+                                "alerts wait.")
+        if done := [fp for fp in open_fps if fp in fine]:
+            for fp in done:
+                await close_alerts("unraid_container_unhealthy", [fp],
+                                   f"the container is no longer unhealthy ({fine[fp]})")
 
     async def check_logs(self) -> None:
         """Log alert rules (Unraid › Docker): too many matching lines of a container within the rule's minutes."""

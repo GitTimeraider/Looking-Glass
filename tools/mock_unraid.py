@@ -68,13 +68,17 @@ def answer(q: str, variables: dict) -> dict:
                          "system": {"manufacturer": "ASRock", "model": "B550M Pro4", "virtual": False},
                          "baseboard": {"manufacturer": "ASRock", "model": "B550M Pro4", "memMax": 128e9, "memSlots": 4},
                          "versions": {"core": {"unraid": "7.2.0", "api": STATE["api"], "kernel": "6.12.24-Unraid"}},
-                         "memory": {"layout": [{"size": 17179869184, "type": "DDR4", "clockSpeed": 3200, "manufacturer": "Kingston"}] * 2}}}
+                         "memory": {"layout": [  # one DDR5 stick listed once per sub-channel (same serial) + empty slots, like some boards do
+                             {"size": 34359738368, "type": "DDR5", "clockSpeed": 5600, "manufacturer": "Kingston", "bank": "BANK 0", "partNum": "KF556C40-32", "serialNum": "1A2B3C4D"},
+                             {"size": 34359738368, "type": "DDR5", "clockSpeed": 5600, "manufacturer": "Kingston", "bank": "BANK 1", "partNum": "KF556C40-32", "serialNum": "1A2B3C4D"},
+                             {"size": 0, "type": "Empty", "clockSpeed": 0, "manufacturer": "", "bank": "BANK 2", "partNum": "", "serialNum": ""},
+                             {"size": 0, "type": "Empty", "clockSpeed": 0, "manufacturer": "", "bank": "BANK 3", "partNum": "", "serialNum": ""}]}}}
     if "metrics" in q:
         if "temperature" in q and old_api():
             wake("metrics.temperature (API <= 4.37.5)")
         cpus = [{"percentTotal": random.random() * 40} for _ in range(16)]
         return {"metrics": {"cpu": {"percentTotal": sum(c["percentTotal"] for c in cpus) / 16, "cpus": cpus},
-                            "memory": {"total": 34359738368, "used": 12e9, "available": 22e9, "percentTotal": 35 + random.random() * 5,
+                            "memory": {"total": 68719476736, "used": 12e9, "available": 52e9, "percentTotal": 35 + random.random() * 5,
                                        "swapTotal": 0, "swapUsed": 0, "percentSwapTotal": 0},
                             "temperature": {"sensors": [{"name": "CPU Tctl", "type": "CPU_PACKAGE", "current": {"value": 50 + random.random() * 5, "status": "NORMAL"}, "warning": 80, "critical": 95},
                                                         {"name": "Motherboard", "type": "MOTHERBOARD", "current": {"value": 38.0, "status": "NORMAL"}, "warning": None, "critical": None}]},
@@ -109,7 +113,7 @@ def answer(q: str, variables: dict) -> dict:
                   "status": f"Up {phase} seconds" if phase < 10 else f"Restarting (1) {phase - 10} seconds ago"}
         if phase >= 10:
             crashy["state"] = "EXITED"
-        return {"docker": {"containers": [c("c1", "plex", "plexinc/pms-docker", "RUNNING"), c("c2", "nginx-proxy", "jc21/nginx-proxy-manager", "RUNNING"),
+        return {"docker": {"containers": [c("c1", "plex", "plexinc/pms-docker", "RUNNING"), {**c("c2", "nginx-proxy", "jc21/nginx-proxy-manager", "RUNNING"), "status": "Up 3 days (unhealthy)"},
                                           c("c3", "homeassistant", "ghcr.io/home-assistant/home-assistant", "RUNNING"), c("c4", "nextcloud", "nextcloud", "EXITED"),
                                           crashy]}}
     if "notifications" in q:
