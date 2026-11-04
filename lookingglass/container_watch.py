@@ -51,6 +51,12 @@ def parse_status(status: str) -> tuple[str, float, float] | None:
     return (m.group(1).lower(), *age) if age else None
 
 
+def health(status: str) -> str | None:
+    """Docker's health check result in the status text: 'healthy', 'unhealthy', 'starting' or None (no health check)."""
+    m = re.search(r"\((healthy|unhealthy|health: starting)\)", status or "", re.I)
+    return None if not m else "starting" if "starting" in m.group(1).lower() else m.group(1).lower()
+
+
 class RestartTracker:
     """Start times (from "Up …") and crash times (from "Restarting … ago") per container, merged across polls."""
 

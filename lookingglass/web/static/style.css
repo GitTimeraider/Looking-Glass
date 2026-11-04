@@ -236,6 +236,7 @@ form.inline-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax
 label.chk { display: flex; gap: 6px; align-items: center; }
 .chart-box.tall { height: 380px; }
 th { overflow-wrap: normal; white-space: nowrap; }
+.nowrap { white-space: nowrap; overflow-wrap: normal; }
 .chart-box.nodata canvas { display: none; }
 .chart-box.nodata::after { content: "No data in this period"; color: var(--muted); font-style: italic; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
 td a, td .mono, td .pill, td .badge { white-space: nowrap; overflow-wrap: normal; }

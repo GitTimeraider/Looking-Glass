@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import uvicorn
 
-from . import __version__, app_config, auth, crypto, db, db_config, notify, rollup
+from . import __version__, app_config, auth, crypto, db, db_config, notify, optional_sources, rollup
 from .ai import Analyst, request_log
 from .config import get_settings
 from .detections import (
@@ -214,13 +214,19 @@ async def amain() -> None:
     writer = EventWriter(enricher)
     writer.listeners.append(dhcp_listener)
     writer.listeners.append(zenarmor_device_listener)
+    writer.listeners.append(optional_sources.listener)
+    try:  # before the web UI starts: the menu shows Zenarmor only when it is set up
+        await optional_sources.refresh()
+    except Exception:  # noqa: BLE001
+        log.exception("checking whether Zenarmor is set up failed")
     analyst = Analyst(settings)
 
     tasks = [asyncio.create_task(writer.run(), name="writer"),
              asyncio.create_task(DetectionEngine(settings).run(), name="detections"),
              asyncio.create_task(housekeeping(settings), name="housekeeping"),
              asyncio.create_task(rollup.loop(), name="event_rollup"),
-             asyncio.create_task(device_upkeep_loop(settings), name="device_upkeep")]
+             asyncio.create_task(device_upkeep_loop(settings), name="device_upkeep"),
+             asyncio.create_task(optional_sources.loop(), name="optional_sources")]
     if settings.syslog_enabled:
         await SyslogServer(settings, writer).start()
     tasks.append(asyncio.create_task(opnsense_supervisor(settings, writer), name="opnsense"))

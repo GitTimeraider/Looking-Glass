@@ -6,7 +6,8 @@ import pytest
 
 from lookingglass import db
 from lookingglass.config import Settings
-from lookingglass.container_watch import LogRule, RestartTracker, clean_rule, docker_age, parse_status, rules_for
+from lookingglass.container_watch import (LogRule, RestartTracker, clean_rule, docker_age, health, parse_status,
+                                         rules_for)
 
 DSN = os.environ.get("TEST_DATABASE_URL")
 needs_db = pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
@@ -25,6 +26,11 @@ def test_docker_status_texts():
     assert parse_status("Restarting (1) 10 seconds ago") == ("restarting", 10.0, 2.0)
     assert parse_status("Exited (137) 2 minutes ago")[0] == "exited"
     assert parse_status("Created") is None and parse_status("") is None
+
+
+def test_health_from_status():
+    assert health("Up 3 hours (unhealthy)") == "unhealthy" and health("Up 2 minutes (healthy)") == "healthy"
+    assert health("Up 5 seconds (health: starting)") == "starting" and health("Up 3 days") is None
 
 
 def test_restart_tracker_counts_a_crash_loop_but_not_a_steady_container():
@@ -143,6 +149,79 @@ def test_log_rules_alert_override_and_close():
             assert await pool.fetchval("SELECT count(*) FROM alerts WHERE status <> 'closed'") == 0
             await pool.execute("TRUNCATE alerts, events, container_log_rules")
         finally:
+            await db.close()
+
+    asyncio.run(main())
+
+
+@needs_db
+def test_unhealthy_alert_waits_and_closes():
+    from lookingglass.unraid import UnraidServerPoller
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE alerts")
+            p = UnraidServerPoller({"id": 1, "name": "Tower", "url": "http://tower", "api_key": "k", "verify_ssl": False},
+                                   Settings(unraid_unhealthy_minutes=5), None)
+            sick = [{"names": ["/web"], "state": "RUNNING", "status": "Up 2 hours (unhealthy)"},
+                    {"names": ["/db"], "state": "RUNNING", "status": "Up 2 hours (healthy)"}]
+            t = 1_000_000.0
+            await p.check_health(sick, now=t)
+            await p.check_health(sick, now=t + 240)  # unhealthy for 4 minutes: not yet
+            assert await pool.fetchval("SELECT count(*) FROM alerts") == 0
+            await p.check_health(sick, now=t + 301)
+            row = await pool.fetchrow("SELECT status, title, data FROM alerts")
+            assert row["status"] == "open" and row["title"] == "Tower: container web is unhealthy"
+            assert row["data"]["events"]["program"] == "web"
+            ok = [{"names": ["/web"], "state": "RUNNING", "status": "Up 2 hours (healthy)"}]
+            await p.check_health(ok, now=t + 400)
+            row = await pool.fetchrow("SELECT status, description FROM alerts")
+            assert row["status"] == "closed" and "no longer unhealthy" in row["description"]
+            await p.check_health(sick, now=t + 500)  # unhealthy again: the wait starts over
+            assert await pool.fetchval("SELECT status FROM alerts") == "closed"
+            await pool.execute("TRUNCATE alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
+
+
+def test_zenarmor_menu_follows_whether_it_is_set_up():
+    """The menu entry is read from memory (no database work per page): unknown = shown, set up = shown, else hidden."""
+    from lookingglass import optional_sources
+    from lookingglass.web.app import dash_nav
+    try:
+        optional_sources.set_zenarmor(None)
+        assert "zenarmor" in [d[0] for d in dash_nav()]
+        optional_sources.set_zenarmor(False)
+        assert "zenarmor" not in [d[0] for d in dash_nav()] and "firewall" in [d[0] for d in dash_nav()]
+        asyncio.run(optional_sources.listener([{"source": "firewall"}]))
+        assert not optional_sources.zenarmor()
+        asyncio.run(optional_sources.listener([{"source": "zenarmor"}]))  # first record: shown right away
+        assert "zenarmor" in [d[0] for d in dash_nav()]
+    finally:
+        optional_sources.set_zenarmor(None)
+
+
+@needs_db
+def test_zenarmor_refresh_reads_recent_records():
+    from lookingglass import optional_sources
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events")
+            assert await optional_sources.refresh() is False
+            await pool.execute("INSERT INTO events (ts, source, message) VALUES (now() - interval '10 days', 'zenarmor', 'old')")
+            assert await optional_sources.refresh() is False  # only an old record: no longer set up
+            await pool.execute("INSERT INTO events (ts, source, message) VALUES (now() - interval '1 hour', 'zenarmor', 'x')")
+            assert await optional_sources.refresh() is True
+            await pool.execute("TRUNCATE events")
+        finally:
+            optional_sources.set_zenarmor(None)
             await db.close()
 
     asyncio.run(main())

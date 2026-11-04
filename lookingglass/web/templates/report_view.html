@@ -81,6 +81,7 @@ function showAI(r) {
     k("Medium alerts", LG.num(sev.medium || 0)) + k("DNS queries", LG.num(tot.unbound || 0)) + k("Web requests", LG.num(tot.nginx || 0));
   const box = document.getElementById("sections");
   for (const [key, title, cols] of SECTIONS) {
+    if (key === "zenarmor_top" && !(d[key] || []).length) continue;  // Zenarmor not used in this period
     const c = document.createElement("div"); c.className = "card";
     c.innerHTML = `<h3>${title}</h3><div></div>`; box.appendChild(c);
     LG.table(c.lastElementChild, cols, d[key] || []);

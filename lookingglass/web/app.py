@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 from starlette.middleware.sessions import SessionMiddleware
 
-from .. import __version__, app_config, auth, crypto, db, event_filter
+from .. import __version__, app_config, auth, crypto, db, event_filter, optional_sources
 from ..ai import Analyst, request_log
 from ..config import Settings
 from . import asset_version
@@ -43,6 +43,14 @@ templates.env.globals["asset_v"] = asset_version()
 # (key, menu label, menu group): dashboards sit under their product ("opnsense", "unifi"), "tools" covers every source
 DASH_NAV = [(k, v["title"].split(" (")[0], v.get("group", "tools")) for k, v in DASHBOARDS.items()]
 templates.env.globals["dashboards"] = DASH_NAV
+
+
+def dash_nav() -> list[tuple[str, str, str]]:
+    """Menu entries of the dashboards; Zenarmor only when it is set up (in-memory flag, optional_sources.py)."""
+    return DASH_NAV if optional_sources.zenarmor() else [d for d in DASH_NAV if d[0] != "zenarmor"]
+
+
+templates.env.globals["dash_nav"] = dash_nav
 
 # alert list orders (?sort=): highest priority first (the default), newest / oldest alert number, latest activity
 _PRIO = "array_position(ARRAY['critical','high','medium','low','info'], severity)"
@@ -123,7 +131,6 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 "ai_privacy": settings.ai_privacy,
                 "ai_model": settings.ai_model, "opnsense": settings.opnsense_enabled,
                 "syslog_port": settings.syslog_udp_port, "user": request.session.get("user"),
-                "dashboards": DASH_NAV,
             })
         return handler
 
@@ -183,8 +190,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         # optional sources: hide their overview cards when their pull is off and they have no data in the period
         has = {r["source"] for r in report.get("totals_by_source") or []}
         enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
-                   "nginx": settings.nginx_pull, "unbound": settings.unbound_query_pull, "zenarmor": False}
+                   "nginx": settings.nginx_pull, "unbound": settings.unbound_query_pull}
         enabled = {k: (v and settings.opnsense_enabled) or k in has for k, v in enabled.items()}
+        enabled["zenarmor"] = optional_sources.zenarmor() or "zenarmor" in has
         return {
             "sources": enabled,
             "kpi": {**kpi, "open_alerts": {r["severity"]: r["n"] for r in alerts},

@@ -59,6 +59,7 @@ RULES: dict[str, list[tuple[str, str]]] = {
                ("unraid_zfs", "ZFS problem"), ("unraid_temp", "Temperature"), ("unraid_ups", "UPS"),
                ("unraid_container_down", "Container stopped"),
                ("unraid_container_restarting", "Container keeps restarting"),
+               ("unraid_container_unhealthy", "Container unhealthy"),
                ("unraid_container_errors", "Errors in a container log"), ("unraid_notification", "Unraid notification"),
                ("unraid_unreachable", "Server unreachable")],
 }

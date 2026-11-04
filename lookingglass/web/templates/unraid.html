@@ -109,6 +109,28 @@ const ramSize = (layout, seen) => {
   if (!sum || !seen) return sum;
   return [1, 1024, 1024 ** 2, 1024 ** 3].map(f => sum * f).reduce((best, v) => Math.abs(Math.log(v / seen)) < Math.abs(Math.log(best / seen)) ? v : best);
 };
+// the API lists every memory device the BIOS reports: empty slots (size 0 / "Empty") and, on some DDR5 boards, one
+// stick twice (once per sub-channel, same serial number) - count each real stick once
+const SERIAL_NONE = /^(|0+|unknown|not specified|none|n\/a|to be filled.*)$/i;
+function ramModules(layout) {
+  const real = layout.filter(x => Number(x.size || 0) > 0 && !/^empty$/i.test(String(x.type || "")));
+  const seen = new Set(), out = [];
+  for (const x of real) {
+    const sn = String(x.serialNum || "").trim(), key = SERIAL_NONE.test(sn) ? null : `${sn}|${x.partNum || ""}`;
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    out.push(x);
+  }
+  return out;
+}
+function ramText(layout, seen) {
+  const mods = ramModules(layout);
+  if (!mods.length) return "–";
+  const t = mods[0], same = mods.every(m => m.type === t.type && m.clockSpeed === t.clockSpeed);
+  const raw = layout.map(x => [x.bank, x.size ? LG.bytes(Number(x.size)) : "empty", x.type, x.clockSpeed ? x.clockSpeed + " MHz" : "", x.partNum, x.serialNum ? "S/N " + x.serialNum : ""].filter(Boolean).join(" · ")).join("\n");
+  return `<span title="What the Unraid API reports per memory device:\n${LG.esc(raw)}">${LG.bytes(ramSize(layout.filter(x => Number(x.size || 0) > 0), seen))} in ${mods.length} module${mods.length > 1 ? "s" : ""}` +
+    (same ? ` ${LG.esc(t.type || "")} ${t.clockSpeed ? t.clockSpeed + " MHz" : ""}` : "") + `</span>`;
+}
 // "used" from the API includes cache / buffers; really in use (what the % is based on) = total - available
 const memUsed = m => m.percentTotal !== undefined && m.percentTotal !== null ? Number(m.total) * m.percentTotal / 100
   : m.available !== undefined && m.available !== null ? Number(m.total) - Number(m.available) : m.used;
@@ -153,7 +175,7 @@ function overview(d) {
     <div>System</div><div>${LG.esc([(info.system || {}).manufacturer, (info.system || {}).model].filter(Boolean).join(" ") || "–")}</div>
     <div>Board</div><div>${LG.esc([(info.baseboard || {}).manufacturer, (info.baseboard || {}).model].filter(Boolean).join(" ") || "–")}</div>
     <div>CPU</div><div>${LG.esc([cpu.manufacturer, cpu.brand].filter(Boolean).join(" ") || "–")} ${cpu.cores ? `(${cpu.cores}C/${cpu.threads}T${cpu.speedmax ? ", " + cpu.speedmax + " GHz" : ""})` : ""}</div>
-    <div>RAM</div><div>${layout.length ? `${LG.bytes(ramSize(layout, mem.total))} in ${layout.length} module(s) ${LG.esc(layout[0].type || "")} ${layout[0].clockSpeed || ""}${layout[0].clockSpeed ? " MHz" : ""}` : "–"}</div>
+    <div>RAM</div><div>${ramText(layout, mem.total)}</div>
     <div>Up since</div><div>${os.uptime ? (isNaN(new Date(os.uptime)) ? LG.esc(os.uptime) : LG.time(os.uptime)) : "–"}</div></div>`;
   LG.chart("c-cores", { type: "bar", data: { labels: ((m.cpu || {}).cpus || []).map((_, i) => "" + i), datasets: [{ data: ((m.cpu || {}).cpus || []).map(c => c.percentTotal), backgroundColor: "#3b82f6" }] },
     options: { maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { y: { min: 0, max: 100 } } } });
@@ -232,13 +254,13 @@ function dockerView(d) {
   LG.table("#containers", [
     {k: "name", l: "Container", s: true, f: (v, r) => `${r.iconUrl ? `<img src="${LG.esc(r.iconUrl)}" width="16" height="16" style="vertical-align:middle;margin-right:6px" onerror="this.remove()">` : ""}<b>${LG.esc(v)}</b>`},
     {k: "image", l: "Image", s: true, f: v => `<span class="small mono">${LG.esc(v)}</span>`},
-    {k: "state", l: "State", s: true, f: (v, r) => `<span class="state-${LG.esc(v)}">${LG.esc(v)}</span> <span class="small muted">${LG.esc(r.status)}</span>`},
+    {k: "state", l: "State", s: true, f: (v, r) => `<span class="state-${LG.esc(v)}">${LG.esc(v)}</span> <span class="small muted">${LG.esc(r.status)}</span>${/\(unhealthy\)/i.test(r.status || "") ? ' <span class="badge high" title="Its Docker health check fails">unhealthy</span>' : ""}`},
     {k: "autoStart", l: "Autostart", f: v => v ? "yes" : ""},
     {k: "restarts", l: "Restarts 1h", num: true, s: r => r.restarts, f: v => v ? `<span class="badge ${v >= (logRules.restarts || {}).count ? "high" : v > 1 ? "medium" : "low"}" title="Starts / crashes seen in the last hour (alert from ${(logRules.restarts || {}).count || "–"} in ${(logRules.restarts || {}).minutes || "–"} min, Settings › Data & detection)">${v}</span>` : ""},
     {k: "ports", l: "Ports", f: v => (v || []).filter(p => p.publicPort).map(p => `<span class="pill">${p.publicPort}→${p.privatePort}/${LG.esc(p.type || "").toLowerCase()}</span>`).join("")},
     {k: "st", l: "CPU", num: true, s: r => r.st ? r.st.cpu_pct : null, f: v => v ? `<span title="Share of the whole CPU (all threads)">${v.cpu_pct.toFixed(v.cpu_pct < 10 ? 2 : 1)}%</span>` : ""},
     {k: "st", l: "Memory", num: true, s: r => r.st ? r.st.mem_bytes : null, f: v => v ? LG.bytes(v.mem_bytes) + (v.mem_pct ? `<span class="small muted"> ${v.mem_pct.toFixed(1)}%</span>` : "") : ""},
-    {k: "name", l: "", f: v => `<a href="#" data-logs="${LG.esc(v)}">logs</a><div class="small"><a href="#" data-newrule="${LG.esc(v)}" title="Log alert rule: which log lines of this container should alert">rule</a></div>`},
+    {k: "name", l: "", f: v => `<a href="#" class="nowrap" data-logs="${LG.esc(v)}">logs</a><div class="small"><a href="#" class="nowrap" data-newrule="${LG.esc(v)}" title="Log alert rule: which log lines of this container should alert">rule</a></div>`},
     {k: "webUiUrl", l: "", f: v => v ? `<a href="${LG.esc(v)}" target="_blank" rel="noopener">web UI</a>` : ""}], ctrs, "No container data");
   document.querySelectorAll("[data-newrule]").forEach(a => a.onclick = e => { e.preventDefault(); const n = a.dataset.newrule;
     const own = logRules.rules.find(r => r.containers.length === 1 && r.containers[0] === n); editLogRule(own || null, own ? null : n); });
