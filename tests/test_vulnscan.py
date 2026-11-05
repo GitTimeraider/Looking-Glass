@@ -260,6 +260,7 @@ def test_scan_cycle_alerts_and_closes(tmp_path):
             assert st["tools"]["grype"]["ok"] and st["db"]["valid"] and st["db"]["age_days"] < 1 and not st.get("error")
             img = await pool.fetchrow("SELECT * FROM vuln_images")
             assert img["status"] == "ok" and img["packages"] == 1 and img["sbom_source"] == "registry (exact digest)"
+            assert img["version"]["version"] is None and img["version"]["tried"]  # nothing in this image says its version
             assert (tmp_path / "data" / "vulnscan" / "sbom").is_dir()
             rows = {r["vuln"]: r for r in await pool.fetch("SELECT * FROM vuln_findings")}
             assert rows["CVE-2024-4577"]["alerted"] and rows["GHSA-aaaa-bbbb-cccc"]["alerted"]
@@ -538,3 +539,23 @@ def test_group_marks_packages_that_already_have_the_fix():
     g = group_findings([{**done, "image_key": "i"}, {**todo, "image_key": "i"}])[0]
     assert {p["name"]: p["fixed"] for p in g["packages"]} == {"dotnet-runtime-10.0": True, "dotnet-host-10.0": False}
     assert g["package"] == "dotnet-host-10.0" and not g["matched"]["probably_fixed"]  # the row describes the unfixed one
+
+
+def test_version_of_every_image():
+    from lookingglass.vulnscan import detect_version, parse_version_sources
+    rules = parse_version_sources(Settings().vuln_version_sources)
+    fileflows = parse_image("revenz/fileflows:stable")
+    # inherited Ubuntu label skipped, the app's own environment variable used
+    d = detect_version({"labels": {"org.opencontainers.image.version": "26.04"}, "env": {"FILEFLOWS_VERSION": "25.11.3.6000"},
+                        "tag": "stable", "os_version": "26.04"}, fileflows, rules)
+    assert d["version"] == "25.11.3.6000" and d["from"] == "environment variable FILEFLOWS_VERSION"
+    ls = detect_version({"labels": {"build_version": "Linuxserver.io version:- 10.10.3-ls45 Build-date:- 2026-10-01"}},
+                        parse_image("lscr.io/linuxserver/jellyfin:latest"), rules)
+    assert ls["version"] == "10.10.3" and "build_version" in ls["from"]
+    assert detect_version({"tag": "1.22.3"}, parse_image("gitea/gitea:1.22.3"), rules)["version"] == "1.22.3"
+    none = detect_version({"tag": "latest"}, parse_image("x/y:latest"), rules)
+    assert none["version"] is None and "image tag" in none["tried"]
+    with pytest.raises(ValueError, match="line 1"):
+        parse_version_sources("foo bar")
+    with pytest.raises(app_config.SettingsError, match="Where image versions are read"):
+        app_config._coerce(app_config.BY_KEY["vuln_version_sources"], "label")

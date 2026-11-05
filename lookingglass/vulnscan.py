@@ -421,6 +421,63 @@ def parse_app_checks(text: str) -> list[AppCheck]:
     return out
 
 
+@dataclass
+class VersionSource:
+    source: str   # label | env | tag | package
+    name: str     # may contain {NAME} (image name for env: NEXTCLOUD) or {name} (nextcloud)
+    regex: str
+    text: str
+
+
+def parse_version_sources(text: str) -> list[VersionSource]:
+    """Where to read the version of every image, tried top to bottom: ``label NAME``, ``env NAME``, ``tag`` or
+    ``package NAME``, optionally followed by a /regex/ (first group = the version). {NAME} / {name} stand for the
+    image's own name (FILEFLOWS / fileflows for revenz/fileflows)."""
+    out = []
+    for n, raw in enumerate((text or "").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        rx = DEFAULT_VERSION_RE
+        if m := re.search(r"\s/(.+)/$", " " + line):
+            rx, line = m.group(1), line[: len(line) - len(m.group(0)) + 1].strip()
+            try:
+                re.compile(rx)
+            except re.error as exc:
+                raise ValueError(f"line {n}: the /regex/ is not valid ({exc})") from exc
+        kind, _, name = line.partition(" ")
+        kind, name = kind.lower(), name.strip()
+        if kind not in VERSION_FROM:
+            raise ValueError(f"line {n}: use label NAME, env NAME, tag or package NAME - not '{kind}'")
+        if kind != "tag" and not name:
+            raise ValueError(f"line {n}: {kind} needs a name")
+        out.append(VersionSource(kind, name, rx, raw.strip()))
+    return out
+
+
+def detect_version(data: dict[str, Any], image: ImageName, rules: list[VersionSource]) -> dict[str, Any]:
+    """The version of the software in an image: {version, raw, from} from the first rule that gives one, else
+    {version: None, tried: [...]}. Only shown (and used for the alert text); CVEs of the app itself need an app check."""
+    base = image.repo.rsplit("/", 1)[-1]
+    names = {"{NAME}": re.sub(r"[^A-Za-z0-9]+", "_", base).upper(), "{name}": base.lower()}
+    tried = []
+    for r in rules:
+        name = r.name
+        for k, v in names.items():
+            name = name.replace(k, v)
+        chk = AppCheck([], r.source, name, r.regex, "", "", 0, r.text)
+        version, where = chk.version(data)
+        if version and r.source == "label" and version == data.get("os_version"):
+            tried.append(f"{where} (= the base image's OS release {version}, skipped)")
+            continue  # inherited from the base image: ubuntu:26.04 labels itself 26.04
+        tried.append(where)
+        if version:
+            raw = {"env": (data.get("env") or {}).get(name), "label": (data.get("labels") or {}).get(name),
+                   "tag": data.get("tag")}.get(r.source) or version
+            return {"version": version, "raw": str(raw)[:120], "from": where}
+    return {"version": None, "tried": tried}
+
+
 def parse_env(text: str) -> dict[str, str]:
     out = {}
     for n, raw in enumerate((text or "").splitlines(), 1):
@@ -1136,20 +1193,7 @@ class VulnScanner:
         mine = [c for c in checks if matches(c.images, t.names())]
         if not mine:
             return [], []
-        data = {"env": t.env, "labels": t.labels, "tag": t.name.tag, "packages": self.sbom_packages(t)}
-        if not t.labels and not t.env:  # no Docker API: the image config inside the SBOM (Syft keeps it)
-            try:
-                src = json.loads(self.sbom_path(t).read_text()).get("source") or {}
-                meta = src.get("metadata") or src.get("target") or {}
-                cfg = meta.get("config")
-                if isinstance(cfg, str):
-                    import base64
-                    cfg = json.loads(base64.b64decode(cfg))
-                c = (cfg or {}).get("config") or {}
-                data["labels"] = c.get("Labels") or meta.get("labels") or {}
-                data["env"] = dict(e.split("=", 1) for e in c.get("Env") or [] if "=" in e)
-            except (OSError, ValueError, TypeError):
-                pass
+        data = self.image_meta(t)
         for chk in mine:
             version, where = chk.version(data)
             entry = {"line": chk.line, "check": chk.text, "from": where, "version": version, "error": None}
@@ -1175,6 +1219,38 @@ class VulnScanner:
                     await self.source_status("osv", False, error=entry["error"])
             info.append(entry)
         return found, info
+
+    def image_meta(self, t: Target) -> dict[str, Any]:
+        """Labels, environment, tag and packages of an image: from the Docker API, else the image config Syft keeps
+        in the package list (works without a Docker API, once the image was read)."""
+        data = {"env": t.env, "labels": t.labels, "tag": t.name.tag, "packages": self.sbom_packages(t)}
+        try:
+            data["os_version"] = (json.loads(self.sbom_path(t).read_text()).get("distro") or {}).get("versionID")
+        except (OSError, ValueError):
+            pass
+        if not t.labels and not t.env:
+            try:
+                src = json.loads(self.sbom_path(t).read_text()).get("source") or {}
+                meta = src.get("metadata") or src.get("target") or {}
+                cfg = meta.get("config")
+                if isinstance(cfg, str):
+                    import base64
+                    cfg = json.loads(base64.b64decode(cfg))
+                c = (cfg or {}).get("config") or {}
+                data["labels"] = c.get("Labels") or meta.get("labels") or {}
+                data["env"] = dict(e.split("=", 1) for e in c.get("Env") or [] if "=" in e)
+            except (OSError, ValueError, TypeError):
+                pass
+        return data
+
+    def version_of(self, t: Target) -> dict[str, Any]:
+        text = self.s.vuln_version_sources if (self.s.vuln_version_sources or "").strip() else \
+            Settings.model_fields["vuln_version_sources"].default
+        try:
+            rules = parse_version_sources(text)
+        except ValueError:
+            rules = parse_version_sources(Settings.model_fields["vuln_version_sources"].default)
+        return detect_version(self.image_meta(t), t.name, rules)
 
     async def update_check(self, client: httpx.AsyncClient, t: Target, old: dict[str, Any] | None) -> dict[str, Any] | None:
         """Is there a newer image for the tag? Compares the running digest with the registry's (a HEAD request,
@@ -1256,6 +1332,7 @@ class VulnScanner:
                                 not self.sbom_path(t).exists() or row.get("sbom_tool") != tool_ver:
                             how, n = await self.build_sbom(t)
                             cols.update(sbom_at=datetime.now(timezone.utc), sbom_source=how, sbom_tool=tool_ver, packages=n)
+                        cols["version"] = self.version_of(t)
                         if not db_ok:
                             cols.update(status="pending", error="waiting for the vulnerability database (see Problems)")
                             await self.store(t, [], **cols)

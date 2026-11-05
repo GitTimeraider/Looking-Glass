@@ -81,7 +81,7 @@ async function load() {
     {k: "kev", l: "Exploited", num: true, s: true, desc: true, f: v => v ? `<span class="badge critical">${v}</span>` : "0"},
     {k: "max_cvss", l: "Max CVSS", num: true, s: true, desc: true, f: v => score(v)},
     {k: "update_info", l: "Newer image", f: v => !v ? `<span class="muted" title="needs the exact digest (Docker API with IMAGES=1)">?</span>` : v.error ? `<span class="muted" title="${LG.esc(v.error)}">unknown</span>` : v.available ? `<span class="badge warn">yes</span>` : "no"},
-    {k: "app", l: "App version", f: v => (v || []).map(a => a.version ? `${LG.esc(a.version)} <span class="muted small">(${LG.esc(a.from)})</span>` : `<span class="err small" title="${LG.esc(a.error)}">not found</span>`).join("<br>")},
+    {k: "app", l: "App version", s: r => (r.version || {}).version, f: (v, r) => appCell(v, r.version)},
     {k: "packages", l: "Packages", num: true},
     {k: "sbom_at", l: "Image read", f: (v, r) => v ? `<span title="${LG.esc(r.sbom_source || "")}">${LG.ago(v)}</span>` : "never"},
     {k: "matched_at", l: "Matched", f: v => v ? LG.ago(v) : "never"},
@@ -117,6 +117,17 @@ async function findings() {
   ], rows, show === "alerted" ? "Nothing above your threshold." : "No findings.", null, { sortAll: true });
 }
 // one row per vulnerability + source package: Ubuntu / Debian report a CVE of e.g. dotnet10 once per package built from it
+// the version of the software in the image (every image) and, where an app check exists, its own CVE lookup
+function appCell(checks, ver) {
+  checks = checks || [];
+  if (checks.length) return checks.map(a => a.version
+    ? `${LG.esc(a.version)} <span class="muted small">(${LG.esc(a.from)})</span>` + (a.error ? `<div class="err small">${LG.esc(a.error)}</div>` : `<div class="small ok-msg">app CVEs checked</div>`)
+    : `<span class="err small" title="${LG.esc(a.error)}">not found</span>`).join("<br>");
+  if (ver && ver.version) return `${LG.esc(ver.version)} <span class="muted small" title="${LG.esc(ver.raw || "")}">(${LG.esc(ver.from)})</span>` +
+    `<div class="small muted" title="Only its packages are checked. For CVEs of the application itself add a line under Settings › Container vulnerabilities › App version checks (needs the app's OSV ecosystem and package name).">packages checked, app itself not</div>`;
+  if (ver) return `<span class="muted" title="Looked in: ${LG.esc((ver.tried || []).join("; "))}. Add where this image keeps its version under Settings › Container vulnerabilities › Where image versions are read.">unknown</span>`;
+  return `<span class="muted" title="known after the next check">–</span>`;
+}
 function pkgCell(r) {
   const ps = r.packages || [{ name: r.package, version: r.version, locations: r.locations }];
   const head = ps.length > 1 || (r.upstream && r.upstream !== r.package)

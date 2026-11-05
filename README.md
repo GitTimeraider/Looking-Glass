@@ -799,6 +799,21 @@ If the package already has the fix, it is marked *already fixed* and raises no a
 "not fixed yet". `pkg:dotnet10` under *Exceptions* covers all packages of a source package. Matches made only by
 product name (*CPE guess*) are marked, because they are wrong more often.
 
+**App version column.** Every image gets the version of the software inside it. It is read, top to bottom, from
+the image label `org.opencontainers.image.version`, linuxserver's `build_version`, `org.label-schema.version`, an
+environment variable named after the image (`FILEFLOWS_VERSION` for `revenz/fileflows`), `version`, `VERSION` or the
+tag (`latest` / `stable` hold no version). A label equal to the base image's OS release (Ubuntu labels itself
+`26.04`) is skipped. Change the order or add your own under *Settings › Container vulnerabilities › Where image
+versions are read*. This only shows the version. CVEs of the application itself are looked up only for images with
+an *App version check* line (marked "app CVEs checked"); for the others the packages inside are checked, not the
+app itself.
+
+**What it can't tell.** Grype decides by package name and version. It can't see whether the vulnerable code is
+used, configured or reachable in your container: a Windows-only bug in a library that ships in a Linux image, an
+optional module that is switched off, or a package that is installed but never runs still count. The checks above
+remove the version-format mistake and mark name-only (CPE) matches. For the rest, the *Exceptions* setting records
+what you checked (`CVE-… on fileflows  # Windows only`), optionally until a date.
+
 **Set it up**
 
 1. **Unraid web UI** › *Docker* tab › your `docker-socket-proxy` container › *Edit* › *Add another Path, Port,

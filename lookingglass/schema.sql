@@ -415,6 +415,8 @@ CREATE TABLE IF NOT EXISTS vuln_findings (
 -- namespace, distro} - findings of one source package are shown as one
 ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS upstream TEXT;
 ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS matched JSONB;
+-- version of the software in the image, for every image: {version, raw, from} or {version: null, tried: [...]}
+ALTER TABLE vuln_images ADD COLUMN IF NOT EXISTS version JSONB;
 -- looked-up EPSS / CVSS values per CVE
 CREATE TABLE IF NOT EXISTS vuln_cache (
     kind    TEXT NOT NULL,
