@@ -345,6 +345,12 @@ FIELDS: list[Field] = [
           "label NAME, tag or package NAME (from the image's package list), optionally followed by a /regex/ whose first "
           "group is the version (default: the first number like 30.0.2). The version is looked up with the osv source "
           "below. Ecosystems: osv.dev/list (Packagist, npm, PyPI, Go, Maven, ...). # = comment."),
+    Field("vuln_version_sources", "vulns", "Where image versions are read", "text", "For the App version column of "
+          "every image, tried top to bottom: label NAME, env NAME, tag or package NAME, optionally followed by a /regex/ "
+          "(first group = the version; default: the first number like 1.2.3). {NAME} / {name} = the image's own name "
+          "(env {NAME}_VERSION -> FILEFLOWS_VERSION for revenz/fileflows). A tag like latest or stable holds no version. "
+          "Only shown - CVEs of the application itself are looked up by the App version checks. Empty = the built-in "
+          "list."),
     Field("vuln_sources", "vulns", "Sources", "text", "Where extra information comes from - change an address or format "
           "when a provider moves or changes its format, or add a mirror. One per line 'kind: [POST] address | format'; "
           "per kind tried top to bottom until one answers. kev (actively exploited CVEs): '| json <path>', '| csv "
@@ -468,6 +474,8 @@ def _coerce(f: Field, value: Any) -> Any:
                 vulnscan.parse_sources(v)
             elif f.key == "vuln_app_checks":
                 vulnscan.parse_app_checks(v)
+            elif f.key == "vuln_version_sources":
+                vulnscan.parse_version_sources(v)
             elif f.key == "vuln_ignore":
                 vulnscan.parse_ignore(v)
             elif f.key == "vuln_tool_env":

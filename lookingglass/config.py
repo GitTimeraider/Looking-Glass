@@ -183,6 +183,15 @@ class Settings(BaseSettings):
         "nextcloud, */library/nextcloud | env NEXTCLOUD_VERSION | Packagist nextcloud/server\n"
         "*/linuxserver/nextcloud, linuxserver/nextcloud | label org.opencontainers.image.version | Packagist nextcloud/server\n"
     )
+    vuln_version_sources: str = (
+        "label org.opencontainers.image.version\n"
+        "label build_version\n"
+        "label org.label-schema.version\n"
+        "env {NAME}_VERSION\n"
+        "label version\n"
+        "env VERSION\n"
+        "tag\n"
+    )
     vuln_sources: str = (
         "# kind: [POST] address | format - per kind tried top to bottom until one answers\n"
         "kev: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json | json vulnerabilities[].cveID\n"
