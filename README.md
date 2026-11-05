@@ -782,13 +782,14 @@ Looking Glass image, plus a few online sources. It is off by default.
    version is read from an image label, environment variable, the tag or a package, and looked up in
    [OSV](https://osv.dev). Nextcloud (official and linuxserver images) is built in; add your own, one line each:
    `images | env NAME / label NAME / tag / package NAME [/regex/] | <OSV ecosystem> <package>`.
-6. **Alerts.** You get one alert per image (rule *Vulnerable container image*). It lists the findings above your
+6. **Alerts** (once *Create alerts for vulnerabilities* is on - it is off by default). You get one alert per image (rule *Vulnerable container image*). It lists the findings above your
    threshold and says whether a newer image exists for the tag, and it closes by itself after you update. The default
    threshold is CVSS ≥ 7.0, plus every actively exploited CVE, and only findings that have a fix. Change it under
    *Settings › Container vulnerabilities*: *Alert from CVSS score*, *Also alert from EPSS*, *Only alert when a fix
    exists*. Two more settings decide whether those findings become alerts at all:
-   * **Create alerts for vulnerabilities**: off = findings are only listed on the Vulnerabilities page, no alerts
-     (open ones close). Scan-problem alerts still come.
+   * **Create alerts for vulnerabilities** (**off by default**): off = findings are only listed on the
+     Vulnerabilities page, no alerts (open ones close). Tick it to get the alerts described here. Scan-problem
+     alerts come either way.
    * **Alert from level**: the lowest level that raises an alert: *critical* (CVSS 9+ or actively exploited),
      *high* (7+), *medium* (4+) or *low* (everything above the threshold, the default).
 
@@ -851,6 +852,8 @@ what you checked (`CVE-… on fileflows  # Windows only`), optionally until a da
 3. **Looking Glass › Vulnerabilities** shows every image, its findings (filters: above your threshold / actively
    exploited / fix available / all / exceptions / closed by you), the app versions found and whether a newer image exists. The
    *Check now* and *Read all images again* buttons start a check right away.
+   Want alerts too? Tick **Create alerts for vulnerabilities** under *Settings › Container vulnerabilities* (off by
+   default) and pick the **Alert from level**.
 4. Optional, under *Settings › Container vulnerabilities*:
    * a **registry login**: Docker Hub limits anonymous pulls; private registries need one.
    * an **NVD API key**: more CVSS lookups per minute.

@@ -806,7 +806,7 @@ class Policy:
         level = str(getattr(s, "vuln_alert_min_level", "low") or "low").lower()
         return cls(parse_threshold(s.vuln_min_cvss, "", 10) or 0.0, s.vuln_kev_always,
                    parse_threshold(s.vuln_epss_min, "", 1), s.vuln_only_fixed, ignore,
-                   bool(getattr(s, "vuln_alerts", True)), level if level in LEVELS else "low")
+                   bool(getattr(s, "vuln_alerts", False)), level if level in LEVELS else "low")
 
     def raises_alert(self, f: dict[str, Any]) -> bool:
         """A finding above the threshold that is also worth an alert (alerts on, at least the chosen level)."""

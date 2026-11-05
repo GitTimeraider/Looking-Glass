@@ -253,7 +253,7 @@ def test_scan_cycle_alerts_and_closes(tmp_path):
         try:
             await _reset()
             pool = db.pool()
-            s = Settings(vuln_scan_enabled=True, vuln_sources=ALL_OFF, vuln_app_checks="",
+            s = Settings(vuln_scan_enabled=True, vuln_alerts=True, vuln_sources=ALL_OFF, vuln_app_checks="",
                          vuln_images="registry.example/team/app@sha256:abc", **_tools(tmp_path))
             sc = VulnScanner(s)
             await sc.cycle()
@@ -297,7 +297,7 @@ def test_problems_are_reported_and_close_again(tmp_path):
             pool = db.pool()
             tools = _tools(tmp_path)
             # scanner missing: one clear alert, nothing else is tried
-            s = Settings(vuln_scan_enabled=True, vuln_sources=ALL_OFF, vuln_app_checks="",
+            s = Settings(vuln_scan_enabled=True, vuln_alerts=True, vuln_sources=ALL_OFF, vuln_app_checks="",
                          vuln_images="registry.example/team/app:1", **{**tools, "vuln_syft_path": "/nonexistent/syft"})
             sc = VulnScanner(s)
             await sc.cycle()
@@ -574,7 +574,7 @@ def test_alert_closes_right_after_an_update(tmp_path):
             tools = _tools(tmp_path)
             sid = await pool.fetchval("INSERT INTO unraid_servers (name, url, api_key) VALUES ('Tower', 'http://t', 'k') RETURNING id")
             await db.set_snapshot(f"unraid:{sid}:docker", [{"names": ["/app"], "image": "team/app:1", "state": "RUNNING"}])
-            s = Settings(vuln_scan_enabled=True, vuln_sources=ALL_OFF, vuln_app_checks="", **tools)
+            s = Settings(vuln_scan_enabled=True, vuln_alerts=True, vuln_sources=ALL_OFF, vuln_app_checks="", **tools)
             sc = VulnScanner(s)
             await sc.cycle()
             assert await pool.fetchval("SELECT status FROM alerts WHERE rule = 'container_vulnerable'") == "open"
@@ -605,7 +605,7 @@ def test_an_updated_container_is_checked_right_away(tmp_path):
             pool = db.pool()
             sid = await pool.fetchval("INSERT INTO unraid_servers (name, url, api_key) VALUES ('Tower', 'http://t', 'k') RETURNING id")
             await db.set_snapshot(f"unraid:{sid}:docker", [{"names": ["/app"], "image": "team/app:latest", "created": 100}])
-            sc = VulnScanner(Settings(vuln_scan_enabled=True, vuln_sources=ALL_OFF, vuln_app_checks="", **_tools(tmp_path)))
+            sc = VulnScanner(Settings(vuln_scan_enabled=True, vuln_alerts=True, vuln_sources=ALL_OFF, vuln_app_checks="", **_tools(tmp_path)))
             await sc.load_status()
             runs = []
 
@@ -677,10 +677,10 @@ def test_alert_level_and_switch():
     crit = {"vuln": "CVE-1", "cvss": 9.8, "kev": False, "fix_versions": ["2"]}
     high = {"vuln": "CVE-2", "cvss": 7.5, "kev": False, "fix_versions": ["2"]}
     kev = {"vuln": "CVE-3", "cvss": 5.0, "kev": True, "fix_versions": []}
-    pol = Policy.of(Settings(vuln_alert_min_level="critical"))
+    assert Settings().vuln_alerts is False and not Policy.of(Settings()).raises_alert(crit)  # off by default
+    pol = Policy.of(Settings(vuln_alerts=True, vuln_alert_min_level="critical"))
     assert pol.raises_alert(crit) and pol.raises_alert(kev) and not pol.raises_alert(high)
-    assert Policy.of(Settings()).raises_alert(high)  # default: everything above the threshold
-    assert not Policy.of(Settings(vuln_alerts=False)).raises_alert(crit)
+    assert Policy.of(Settings(vuln_alerts=True)).raises_alert(high)  # default level: everything above the threshold
     assert Policy.of(Settings(vuln_alert_min_level="bogus")).alert_level == "low"
     assert app_config.BY_KEY["vuln_alert_min_level"].choices == ("low", "medium", "high", "critical")
 
@@ -701,7 +701,7 @@ def test_closed_findings_stay_away(tmp_path):
         try:
             await _reset()
             pool = db.pool()
-            s = Settings(vuln_scan_enabled=True, vuln_sources=ALL_OFF, vuln_app_checks="",
+            s = Settings(vuln_scan_enabled=True, vuln_alerts=True, vuln_sources=ALL_OFF, vuln_app_checks="",
                          vuln_images="registry.example/team/app@sha256:abc", **_tools(tmp_path))
             sc = VulnScanner(s)
             await sc.cycle()

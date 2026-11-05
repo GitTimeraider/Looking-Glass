@@ -310,7 +310,7 @@ FIELDS: list[Field] = [
           "Every container of your Unraid servers (and the extra images below) is checked with Grype / Syft for known "
           "vulnerabilities in the operating system packages, libraries and programs inside the image. Results: "
           "Vulnerabilities page."),
-    Field("vuln_alerts", "vulns", "Create alerts for vulnerabilities", "bool", "Off = findings are only listed on "
+    Field("vuln_alerts", "vulns", "Create alerts for vulnerabilities", "bool", "Off by default. Off = findings are only listed on "
           "the Vulnerabilities page; no 'vulnerable container' alerts (open ones are closed). Scan problems still alert."),
     Field("vuln_alert_min_level", "vulns", "Alert from level", "choice", "The lowest level of a finding that raises an "
           "alert: critical = CVSS 9+ or actively exploited, high = 7+, medium = 4+, low = everything above the "
