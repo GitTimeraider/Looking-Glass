@@ -1376,11 +1376,16 @@ class VulnScanner:
         await self.enrich_cvss(client, srcs.get("cvss", []), missing)
 
     async def forget(self, targets: list[Target]) -> None:
-        """Images no container uses any more (gone for 2 days - not after one failed listing): removed, alerts closed."""
+        """Images no container uses any more: removed right away when every server they ran on was listed fine in
+        this check (a container updated to a new image: the old image's findings must not keep its alert open),
+        else after 2 days (a server that could not be listed once does not lose its results)."""
         pool = db.pool()
         keep = [t.key for t in targets]
-        gone = await pool.fetch("DELETE FROM vuln_images WHERE NOT (key = ANY($1::text[])) AND seen_at < now() - interval '2 days' "
-                                "RETURNING key, repo", keep)
+        listed = [int(sid) for sid, st in (self.status.get("inventory") or {}).items() if st.get("ok")]
+        gone = await pool.fetch(
+            "DELETE FROM vuln_images WHERE NOT (key = ANY($1::text[])) AND (seen_at < now() - interval '2 days' OR "
+            "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(containers) c WHERE c->>'server_id' IS NOT NULL "
+            "AND NOT ((c->>'server_id')::bigint = ANY($2::bigint[])))) RETURNING key, repo", keep, listed)
         for r in gone:
             await pool.execute("DELETE FROM vuln_findings WHERE image_key = $1", r["key"])
             (self.base / "sbom" / f"{safe_name(r['key'])}.json").unlink(missing_ok=True)
@@ -1485,6 +1490,15 @@ class VulnScanner:
                 pass
             self.wake.clear()
 
+    async def containers_signature(self) -> str:
+        """Which containers run which image, and since when: Unraid recreates a container when it is updated (new
+        'created' time), so a change starts a check right away instead of at the next scheduled one."""
+        parts = [self.s.vuln_images or "", self.s.vuln_exclude or ""]
+        for r in await db.pool().fetch("SELECT id FROM unraid_servers WHERE enabled ORDER BY id"):
+            for c in await db.get_snapshot(f"unraid:{r['id']}:docker") or []:
+                parts.append(f"{r['id']}|{(c.get('names') or ['?'])[0]}|{c.get('image')}|{c.get('created')}")
+        return hashlib.sha256("\n".join(sorted(parts)).encode()).hexdigest()
+
     async def tick(self) -> None:
         if not self.s.vuln_scan_enabled:
             if self.status.get("enabled") is not False:
@@ -1496,7 +1510,13 @@ class VulnScanner:
         if req:
             await db.pool().execute("DELETE FROM kv WHERE key = 'vulnscan:request'")
         now = time.time()
-        if req or now - (self.status.get("last_try") or 0) >= self.s.vuln_recheck_hours * 3600:
+        changed = False
+        if now - (self.status.get("last_try") or 0) >= 600:  # not more often than every 10 minutes
+            sig = await self.containers_signature()
+            changed = sig != self.status.get("containers_sig")
+            if changed:
+                await self.save_status(containers_sig=sig)
+        if req or changed or now - (self.status.get("last_try") or 0) >= self.s.vuln_recheck_hours * 3600:
             await self.cycle(rebuild=bool((req or {}).get("rebuild")))
         elif now - (self.status.get("last_eval") or 0) >= 3600:
             await self.evaluate()
