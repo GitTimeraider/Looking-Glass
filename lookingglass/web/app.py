@@ -1040,11 +1040,15 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "GROUP BY i.key ORDER BY alerted DESC, i.image")
         kev = await db.kv_get("vulnscan:kev", []) or []
         closed_n = await db.pool().fetchval("SELECT count(*) FROM vuln_closed")
+        hidden = await db.pool().fetch(
+            "SELECT coalesce(f.hidden_why, 'hidden') why, count(DISTINCT (f.image_key, f.vuln)) n FROM vuln_findings f "
+            f"JOIN vuln_images i ON i.key = f.image_key WHERE {not_closed} AND NOT {shown} GROUP BY 1 ORDER BY 2 DESC")
         hidden_n = await db.pool().fetchval(
             "SELECT count(*) FROM (SELECT DISTINCT f.image_key, f.vuln FROM vuln_findings f JOIN vuln_images i "
             f"ON i.key = f.image_key WHERE {not_closed} AND NOT {shown}) x")
         return {"enabled": settings.vuln_scan_enabled, "status": await db.kv_get("vulnscan:status", {}) or {},
                 "images": db.records(rows), "kev_count": len(kev), "closed_count": closed_n, "hidden_count": hidden_n,
+                "hidden": {r["why"]: r["n"] for r in hidden},
                 "policy": {"min_cvss": settings.vuln_min_cvss, "kev_always": settings.vuln_kev_always,
                            "epss_min": settings.vuln_epss_min, "only_fixed": settings.vuln_only_fixed,
                            "alerts": settings.vuln_alerts, "show_min_cvss": settings.vuln_show_min_cvss}}

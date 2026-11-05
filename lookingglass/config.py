@@ -171,6 +171,11 @@ class Settings(BaseSettings):
     vuln_alerts: bool = False  # off by default: findings only on the Vulnerabilities page
     vuln_min_cvss: str = "7.0"        # alerts from this score
     vuln_show_min_cvss: str = "0"     # Vulnerabilities page lists from this score
+    vuln_hide_wont_fix: bool = False      # page: hide 'will not fix' findings
+    vuln_hide_no_fix: bool = False        # page: hide findings without a fixed version yet
+    vuln_hide_not_affected: bool = True   # page: hide 'not affected' / 'already fixed' (version-format mistakes)
+    vuln_hide_cpe: bool = False           # page: hide matches by product name only (CPE guess)
+    vuln_hide_types: str = ""             # page: package types not to show (go-module, java-archive, ...)
     vuln_kev_always: bool = True
     vuln_epss_min: str = ""
     vuln_only_fixed: bool = True

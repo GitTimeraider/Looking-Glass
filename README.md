@@ -786,8 +786,13 @@ Looking Glass image, plus a few online sources. It is off by default.
 
    | Setting (section) | Decides | Default |
    |---|---|---|
-   | **Minimum CVSS score to show** (*Vulnerabilities page*) | which findings the Vulnerabilities page lists and counts. Lower ones are hidden (the page says how many). A finding that raises an alert is always shown | 0 = everything |
+   | **Minimum CVSS score to show** (*Vulnerabilities page*) | which findings the Vulnerabilities page lists and counts. Lower ones are hidden (the page says how many, and why) | 0 = everything |
    | **Minimum CVSS score for an alert** (*Alerts*) | which findings raise an alert | 7.0 |
+
+   The *Vulnerabilities page* section can also hide findings that **will not be fixed**, findings **without a fix
+   yet**, findings that are **not affected** (on by default), **guesses by product name (CPE)**, and whole **package
+   types** (e.g. `go-module`). These only change the page, never alerts: a finding that meets the alert rules is
+   always shown, and exceptions are always listed under *Exceptions*.
 
    The *Alerts* section also has **Create alerts for vulnerabilities** (**off by default**: no alerts at all, only the
    page), **Also alert on actively exploited vulnerabilities** (CISA KEV, whatever the score), **Also alert from EPSS
@@ -813,6 +818,14 @@ though it is the fixed build. Looking Glass then compares the binary package's v
 If the package already has the fix, it is marked *already fixed* and raises no alert; otherwise the finding says
 "not fixed yet". `pkg:dotnet10` under *Exceptions* covers all packages of a source package. Matches made only by
 product name (*CPE guess*) are marked, because they are wrong more often.
+
+**Looks equal, but isn't.** `brotli 1.1.0-2 vs < 1.1.0-2+deb13u1` or `1.1.0-2build2 vs < 1.1.0-2ubuntu0.1` is a real
+finding: the release (1.1.0) is the same, but Debian / Ubuntu fixed the CVE in a *patched build* of it (`+deb13u1`,
+`ubuntu0.1`), and the image still has the build from before the patch. `dpkg` sorts these the same way. The page
+says so under the package. It is fixed by a newer image, or by the maintainer updating packages. The same goes for
+`golang.org/x/crypto v0.19.0 vs < 0.52.0 (go)`: a library compiled into a Go program in the image (the page shows
+which), fixed only when that program is rebuilt. Hide such findings with *Package types not to show* (`go-module`) if
+you can't act on them.
 
 **Distribution suffixes.** Distributions add their own part to a version: `1.3.1+ubuntu26`, `1.3.1-0ubuntu1`,
 `1.3.1-r2` (Alpine), `+deb12u1`, `+dfsg`. Some matchers (by product name, language packages, semver) read that part

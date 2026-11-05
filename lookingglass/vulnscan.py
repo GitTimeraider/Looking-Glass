@@ -557,6 +557,8 @@ def parse_grype(doc: dict[str, Any]) -> list[dict[str, Any]]:
     for f in found.values():
         if note := version_note(f) or suffix_note(f):
             f["matched"] = {**f["matched"], "note": note["text"], "probably_fixed": note["fixed"]}
+        elif text := patch_note(f) or built_in_note(f):
+            f["matched"] = {**f["matched"], "note": text}  # explains a real finding; not marked as fixed
     return list(found.values())
 
 
@@ -704,6 +706,38 @@ def suffix_note(f: dict[str, Any]) -> dict[str, Any] | None:
                                    f"{why} - {base} is not affected. Grype read the suffix as an earlier version."}
 
 
+def _upstream_part(v: str) -> str:
+    """'1:1.1.0-2+deb13u1' -> '1.1.0' (Debian / Ubuntu / RPM / Alpine: the version before the packaging revision)."""
+    v = str(v or "").split(":", 1)[-1]
+    return v.rsplit("-", 1)[0] if "-" in v else v
+
+
+def patch_note(f: dict[str, Any]) -> str | None:
+    """1.1.0-2 against 'fixed in 1.1.0-2+deb13u1': the same upstream release, patched by the distribution. Looks equal
+    but is not - the image has the build from before the security patch."""
+    if f.get("pkg_type") not in ("deb", "rpm", "apk"):
+        return None
+    m = f.get("matched") or {}
+    inst = (m.get("searched") or "").rpartition(" ")[2] or str(f.get("version") or "")
+    for fix in f.get("fix_versions") or []:
+        if _upstream_part(fix) == _upstream_part(inst) and fix != inst and (
+                f["pkg_type"] != "deb" or dpkg_compare(inst, fix) < 0):
+            return (f"Same release {_upstream_part(inst)}, but not the same build: the distribution fixed it with "
+                    f"the patched build {fix}; this image still has {inst} from before the patch. A newer image (or the "
+                    "maintainer updating packages) fixes it.")
+    return None
+
+
+def built_in_note(f: dict[str, Any]) -> str | None:
+    """A Go module found inside a compiled program: only a rebuild of that program fixes it."""
+    if f.get("pkg_type") != "go-module":
+        return None
+    where = next(iter(f.get("locations") or []), "")
+    return (f"Compiled into a Go program{f' ({where})' if where else ''} - the version is read from the program's build "
+            "information. Fixed when the image maintainer rebuilds it with a newer version; nothing to update inside "
+            "the container.")
+
+
 def match_info(m: dict[str, Any]) -> dict[str, Any]:
     """How Grype matched: which package name / version it looked up, in which advisory data, against which range -
     so a finding can be checked by hand (e.g. Ubuntu files fixes under the SOURCE package: dotnet10 for
@@ -796,6 +830,8 @@ class Policy:
     ignore: list[IgnoreRule]
     alerts: bool = False          # raise alerts at all (findings are listed either way)
     show_min: float = 0.0         # the Vulnerabilities page lists findings from this score
+    hide: frozenset[str] = frozenset()   # page: wont_fix, no_fix, not_affected, cpe
+    hide_types: tuple[str, ...] = ()     # page: package types not to show
 
     @classmethod
     def of(cls, s: Settings) -> "Policy":
@@ -805,13 +841,32 @@ class Policy:
             ignore = []
         return cls(parse_threshold(s.vuln_min_cvss, "", 10) or 0.0, s.vuln_kev_always,
                    parse_threshold(s.vuln_epss_min, "", 1), s.vuln_only_fixed, ignore, bool(s.vuln_alerts),
-                   _threshold_or(s.vuln_show_min_cvss, 0.0))
+                   _threshold_or(s.vuln_show_min_cvss, 0.0),
+                   frozenset(k for k in ("wont_fix", "no_fix", "not_affected", "cpe") if getattr(s, f"vuln_hide_{k}", False)),
+                   tuple(p.lower() for p in patterns(s.vuln_hide_types)))
+
+    def hidden_by(self, f: dict[str, Any]) -> str | None:
+        """Which page setting hides this finding, or None. Does not look at alerts (see ``shown``)."""
+        m = f.get("matched") or {}
+        has_fix = f.get("fix_state") == "fixed" or bool(f.get("fix_versions"))
+        if "not_affected" in self.hide and m.get("probably_fixed"):
+            return "not affected"
+        if "wont_fix" in self.hide and f.get("fix_state") == "wont-fix" and not has_fix:
+            return "will not be fixed"
+        if "no_fix" in self.hide and not has_fix:
+            return "no fix yet"
+        if "cpe" in self.hide and "cpe" in str(m.get("type") or "").lower():
+            return "CPE guess"
+        if self.hide_types and matches(list(self.hide_types), [str(f.get("pkg_type") or "")]):
+            return f"package type {f.get('pkg_type')}"
+        if self.show_min > 0 and (score_of(f) or 0.0) < self.show_min:
+            return f"CVSS below {self.show_min:g}"
+        return None
 
     def shown(self, f: dict[str, Any], alert: bool) -> bool:
-        """Listed on the Vulnerabilities page: from the 'show' score, and always when it meets the alert rules."""
-        if alert or self.show_min <= 0:
-            return True
-        return (score_of(f) or 0.0) >= self.show_min
+        """Listed on the Vulnerabilities page: unless a page setting hides it - and always when it meets the alert
+        rules (an alert must never point at a finding you can't see)."""
+        return alert or self.hidden_by(f) is None
 
     def judge(self, f: dict[str, Any], names: list[str], today: date | None = None) -> tuple[bool, str | None, str]:
         """(alert?, ignore rule that matched, why) for one finding."""
@@ -1549,12 +1604,13 @@ class VulnScanner:
                     else:
                         alert, ignored, why = pol.judge(f, names, today)
                     updates.append((img["key"], f["vuln"], f["package"], f["version"], f["epss"], f["epss_pct"], f["cvss"],
-                                    f["cvss_source"], f["kev"], alert, ignored, why, pol.shown(f, alert)))
+                                    f["cvss_source"], f["kev"], alert, ignored, why, pol.shown(f, alert),
+                                    None if alert else pol.hidden_by(f)))
                     if alert:
                         hits.append((img, f, why))
                 await pool.executemany(
                     "UPDATE vuln_findings SET epss = $5, epss_pct = $6, cvss = $7, cvss_source = $8, kev = $9, alerted = $10, "
-                    "ignored = $11, why = $12, shown = $13 WHERE image_key = $1 AND vuln = $2 AND package = $3 AND version = $4", updates)
+                    "ignored = $11, why = $12, shown = $13, hidden_why = $14 WHERE image_key = $1 AND vuln = $2 AND package = $3 AND version = $4", updates)
             await self.alert(repo, imgs, hits, pol)
         await self.save_status(last_eval=time.time())
 

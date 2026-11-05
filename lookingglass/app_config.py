@@ -37,7 +37,9 @@ class Field:
 # what a section is for, shown under its heading
 SECTIONS = {
     "Scanning": "What is scanned and how often.",
-    "Vulnerabilities page": "What the Vulnerabilities page lists. Does not change what raises an alert.",
+    "Vulnerabilities page": "What the Vulnerabilities page lists and counts (the page says how many are hidden). "
+                            "Does not change alerts: a finding that meets the alert rules is always shown, and your "
+                            "exceptions are always listed under Exceptions.",
     "Alerts": "When a finding raises an alert. Only used while 'Create alerts for vulnerabilities' is on; the findings "
               "that meet these rules are under 'Meets alert rules' on the Vulnerabilities page either way.",
     "Exceptions": "Findings you accept: no alert, listed under 'Exceptions' on the Vulnerabilities page. To hide "
@@ -343,6 +345,20 @@ FIELDS: list[Field] = [
     Field("vuln_show_min_cvss", "vulns", "Minimum CVSS score to show", "str", "Findings below this score are not shown "
           "on the Vulnerabilities page (nor counted there). 0 = show everything. A finding that raises an alert is "
           "always shown, whatever this says.", placeholder="0", section="Vulnerabilities page"),
+    Field("vuln_hide_wont_fix", "vulns", "Hide findings that will not be fixed", "bool", "The distribution decided "
+          "not to fix them (Debian / Ubuntu 'will not fix', usually minor or not exploitable in practice).",
+          section="Vulnerabilities page"),
+    Field("vuln_hide_no_fix", "vulns", "Hide findings without a fix yet", "bool", "No fixed version exists yet, so "
+          "there is nothing to update to (includes 'will not fix').", section="Vulnerabilities page"),
+    Field("vuln_hide_not_affected", "vulns", "Hide findings that are not affected", "bool", "Findings Looking Glass "
+          "found to be a version-format mistake of the scanner ('not affected' / 'already fixed'). They never alert.",
+          section="Vulnerabilities page"),
+    Field("vuln_hide_cpe", "vulns", "Hide guesses by product name (CPE)", "bool", "Matches made only by the product "
+          "name, without a package database entry - wrong more often. Marked 'CPE guess' on the page.",
+          section="Vulnerabilities page"),
+    Field("vuln_hide_types", "vulns", "Package types not to show", "list", "e.g. go-module (libraries compiled into "
+          "Go programs), java-archive, npm, python, gem, rust-crate, binary, deb, rpm, apk. The type is shown under each "
+          "package on the page.", placeholder="go-module\njava-archive", section="Vulnerabilities page"),
     Field("vuln_alerts", "vulns", "Create alerts for vulnerabilities", "bool", "Off by default. On = one alert per "
           "container image for the findings that meet the rules below. Off = findings are only listed on the "
           "Vulnerabilities page (open alerts are closed). Scan problems alert either way.", section="Alerts"),

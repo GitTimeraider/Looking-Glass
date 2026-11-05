@@ -245,7 +245,8 @@ function item(a) {
     ${open ? details(a) : ""}
   </div>`;
 }
-function render() {
+function render() { LG.keepScroll(document.getElementById("list"), renderList); }
+function renderList() {
   const f = document.getElementById("filter").value.toLowerCase();
   const rows = alerts.filter(a => !f || JSON.stringify(a).toLowerCase().includes(f));
   const el = document.getElementById("list");

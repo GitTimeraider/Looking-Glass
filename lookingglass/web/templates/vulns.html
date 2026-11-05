@@ -137,9 +137,10 @@ async function findings() {
   const p = new URLSearchParams({ show }); if (img) p.set("image", img); if (q) p.set("q", q);
   rows = await LG.api("/api/vulns/findings?" + p);
   const pol = D.policy || {};
-  const showMin = Number(pol.show_min_cvss || 0), hidden = Number(D.hidden_count || 0);
+  const hidden = Number(D.hidden_count || 0);
+  const why = Object.entries(D.hidden || {}).map(([k, n]) => `${n} ${k}`).join(", ");
   document.getElementById("f-note").innerHTML = LG.esc(
-    (showMin > 0 ? `shown from CVSS ${showMin}` + (hidden ? ` (${hidden} lower hidden)` : "") + " · " : "") +
+    (hidden ? `${hidden} hidden by your page settings (${why}) · ` : "") +
     `alert rules: CVSS ≥ ${pol.min_cvss || 0}` + (pol.kev_always ? ", actively exploited always" : "") +
     (pol.epss_min ? `, EPSS ≥ ${pol.epss_min}` : "") + (pol.only_fixed ? ", only with a fix" : "") +
     (pol.alerts ? " · alerts on" : " · alerts off")) + ` <a href="/settings#vulns">change</a>`;
@@ -167,7 +168,7 @@ async function findings() {
     {k: "image", l: "Image", f: (v, r) => LG.esc(v) + `<div class="small muted">${LG.esc((r.containers || []).map(c => c.name).join(", "))}</div>`},
     {k: "why", l: "Why", f: (v, r) => r.ignored ? `<span class="muted">exception: ${LG.esc(r.ignored)}</span>` : LG.esc(v || "")},
     {k: "first_seen", l: "First seen", f: v => LG.ago(v)},
-  ], rows, show === "alerted" ? "Nothing meets the alert rules." : hidden && showMin > 0 ? `No findings from CVSS ${showMin} (${hidden} lower hidden - Settings › Container vulnerabilities › Minimum CVSS score to show).` : "No findings.", null, { sortAll: true });
+  ], rows, show === "alerted" ? "Nothing meets the alert rules." : hidden ? `No findings to show (${hidden} hidden by Settings › Container vulnerabilities › Vulnerabilities page).` : "No findings.", null, { sortAll: true });
   wirePicks();
 }
 // one row per vulnerability + source package: Ubuntu / Debian report a CVE of e.g. dotnet10 once per package built from it

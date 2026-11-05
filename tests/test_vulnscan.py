@@ -702,7 +702,9 @@ def test_vulnerability_settings_are_grouped():
             last = f.section
     alerts = [f.key for f in fs if f.section == "Alerts"]
     assert alerts == ["vuln_alerts", "vuln_min_cvss", "vuln_kev_always", "vuln_epss_min", "vuln_only_fixed"]
-    assert [f.key for f in fs if f.section == "Vulnerabilities page"] == ["vuln_show_min_cvss"]
+    assert [f.key for f in fs if f.section == "Vulnerabilities page"] == [
+        "vuln_show_min_cvss", "vuln_hide_wont_fix", "vuln_hide_no_fix", "vuln_hide_not_affected", "vuln_hide_cpe",
+        "vuln_hide_types"]
     view = app_config.public_view(Settings())
     assert view["sections"]["Alerts"] and next(x for x in view["fields"] if x["key"] == "vuln_min_cvss")["section"] == "Alerts"
 
@@ -769,6 +771,7 @@ def test_closed_findings_stay_away(tmp_path):
             assert "CVE-2023-0001" not in {r["vuln"] for r in rows} and "CVE-2024-4577" in {r["vuln"] for r in rows}
             overview = await ep["/api/vulns"]()
             assert overview["hidden_count"] == 1 and overview["policy"]["show_min_cvss"] == "9"
+            assert overview["hidden"] == {"CVSS below 9": 1}
             assert overview["images"][0]["total"] == len(rows)
             s.vuln_show_min_cvss = "0"
             await sc.evaluate()
@@ -784,3 +787,45 @@ def test_closed_findings_stay_away(tmp_path):
             await db.close()
 
     asyncio.run(main())
+
+
+def _deb_match(name, inst, constraint, fix):
+    return {"vulnerability": {"id": "CVE-2026-2222", "severity": "Medium", "fix": {"versions": [fix], "state": "fixed"},
+                              "cvss": [{"source": "nvd@nist.gov", "version": "3.1", "metrics": {"baseScore": 7.5}}]},
+            "matchDetails": [{"type": "exact-direct-match", "searchedBy": {"package": {"name": name, "version": inst}},
+                              "found": {"versionConstraint": constraint}}],
+            "artifact": {"name": name, "version": inst, "type": "deb"}}
+
+
+def test_distribution_patched_build_is_explained_not_hidden():
+    """brotli 1.1.0-2 vs < 1.1.0-2+deb13u1: same release, but the image lacks the distribution's security patch."""
+    pol = Policy(7.0, True, None, True, [])
+    for inst, fix in [("1.1.0-2", "1.1.0-2+deb13u1"), ("1.1.0-2build2", "1.1.0-2ubuntu0.1")]:
+        f = parse_grype({"matches": [_deb_match("brotli", inst, f"< {fix} (deb)", fix)]})[0]
+        m = f["matched"]
+        assert "probably_fixed" not in m and "patched build" in m["note"] and inst in m["note"], inst
+        assert pol.judge(f, ["x"])[0]  # a real finding: it still alerts
+    # already the patched build: Grype would not report it, and no note claims otherwise
+    from lookingglass.vulnscan import patch_note
+    assert patch_note({"pkg_type": "deb", "version": "1.1.0-2+deb13u1", "fix_versions": ["1.1.0-2+deb13u1"]}) is None
+    go = parse_grype({"matches": [{"vulnerability": {"id": "GO-2026-1", "fix": {"versions": ["0.52.0"], "state": "fixed"}},
+                                   "artifact": {"name": "golang.org/x/crypto", "version": "v0.19.0", "type": "go-module",
+                                                "locations": [{"path": "/usr/bin/app"}]}}]})[0]
+    assert "Compiled into a Go program (/usr/bin/app)" in go["matched"]["note"] and "probably_fixed" not in go["matched"]
+
+
+def test_page_settings_hide_findings():
+    wont = {"vuln": "CVE-1", "cvss": 5.0, "fix_state": "wont-fix", "fix_versions": [], "pkg_type": "deb"}
+    nofix = {"vuln": "CVE-2", "cvss": 5.0, "fix_state": "not-fixed", "fix_versions": [], "pkg_type": "deb"}
+    fixed = {"vuln": "CVE-3", "cvss": 5.0, "fix_state": "fixed", "fix_versions": ["2"], "pkg_type": "go-module"}
+    na = {**fixed, "pkg_type": "deb", "matched": {"probably_fixed": True}}
+    cpe = {**fixed, "pkg_type": "binary", "matched": {"type": "cpe-match"}}
+    default = Policy.of(Settings())
+    assert default.hidden_by(na) == "not affected"  # on by default
+    assert all(default.hidden_by(x) is None for x in (wont, nofix, fixed, cpe))
+    pol = Policy.of(Settings(vuln_hide_wont_fix=True, vuln_hide_cpe=True, vuln_hide_types="go-*",
+                             vuln_hide_not_affected=False))
+    assert pol.hidden_by(wont) == "will not be fixed" and pol.hidden_by(nofix) is None and pol.hidden_by(na) is None
+    assert pol.hidden_by(cpe) == "CPE guess" and pol.hidden_by(fixed) == "package type go-module"
+    assert Policy.of(Settings(vuln_hide_no_fix=True)).hidden_by(wont) == "no fix yet"
+    assert not pol.shown(wont, False) and pol.shown(wont, True)  # meets the alert rules: always shown
