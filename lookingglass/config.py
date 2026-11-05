@@ -169,8 +169,8 @@ class Settings(BaseSettings):
     # container vulnerabilities (Settings › Container vulnerabilities, vulnscan.py)
     vuln_scan_enabled: bool = False
     vuln_alerts: bool = False  # off by default: findings only on the Vulnerabilities page
-    vuln_alert_min_level: str = "low"  # low | medium | high | critical
-    vuln_min_cvss: str = "7.0"
+    vuln_min_cvss: str = "7.0"        # alerts from this score
+    vuln_show_min_cvss: str = "0"     # Vulnerabilities page lists from this score
     vuln_kev_always: bool = True
     vuln_epss_min: str = ""
     vuln_only_fixed: bool = True

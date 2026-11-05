@@ -187,7 +187,7 @@ def test_settings_validation():
     f = app_config.BY_KEY
     with pytest.raises(app_config.SettingsError, match="Sources: line 1"):
         app_config._coerce(f["vuln_sources"], "kev https://x")
-    with pytest.raises(app_config.SettingsError, match="Alert from CVSS score"):
+    with pytest.raises(app_config.SettingsError, match="Minimum CVSS score for an alert"):
         app_config._coerce(f["vuln_min_cvss"], "11")
     with pytest.raises(app_config.SettingsError, match="EPSS"):
         app_config._coerce(f["vuln_epss_min"], "2")
@@ -673,16 +673,38 @@ def test_distribution_suffix_is_not_an_earlier_version():
         assert pol.judge(f, ["x"])[0], (v, c, fx)
 
 
-def test_alert_level_and_switch():
+def test_alert_and_show_scores():
+    """Two separate scores: one for an alert, one for being listed on the page."""
     crit = {"vuln": "CVE-1", "cvss": 9.8, "kev": False, "fix_versions": ["2"]}
-    high = {"vuln": "CVE-2", "cvss": 7.5, "kev": False, "fix_versions": ["2"]}
-    kev = {"vuln": "CVE-3", "cvss": 5.0, "kev": True, "fix_versions": []}
-    assert Settings().vuln_alerts is False and not Policy.of(Settings()).raises_alert(crit)  # off by default
-    pol = Policy.of(Settings(vuln_alerts=True, vuln_alert_min_level="critical"))
-    assert pol.raises_alert(crit) and pol.raises_alert(kev) and not pol.raises_alert(high)
-    assert Policy.of(Settings(vuln_alerts=True)).raises_alert(high)  # default level: everything above the threshold
-    assert Policy.of(Settings(vuln_alert_min_level="bogus")).alert_level == "low"
-    assert app_config.BY_KEY["vuln_alert_min_level"].choices == ("low", "medium", "high", "critical")
+    mid = {"vuln": "CVE-2", "cvss": 5.0, "kev": False, "fix_versions": ["2"]}
+    nosc = {"vuln": "CVE-3", "cvss": None, "severity": "Unknown", "kev": False, "fix_versions": ["2"]}
+    assert Settings().vuln_alerts is False and not Policy.of(Settings()).alerts  # alerts off by default
+    pol = Policy.of(Settings(vuln_min_cvss="9.0", vuln_show_min_cvss="4"))
+    assert pol.judge(crit, ["x"])[0] and not pol.judge(mid, ["x"])[0]  # alert score 9
+    assert pol.shown(mid, False) and not pol.shown({**mid, "cvss": 3.9}, False) and not pol.shown(nosc, False)
+    assert pol.shown({**mid, "cvss": 1.0}, True)  # meets the alert rules: always shown
+    every = Policy.of(Settings())
+    assert every.show_min == 0 and every.shown(nosc, False)  # default: everything is listed
+    assert Policy.of(Settings(vuln_show_min_cvss="nonsense")).show_min == 0
+    with pytest.raises(app_config.SettingsError, match="Minimum CVSS score to show"):
+        app_config._coerce(app_config.BY_KEY["vuln_show_min_cvss"], "11")
+    assert "vuln_alert_min_level" not in app_config.BY_KEY
+
+
+def test_vulnerability_settings_are_grouped():
+    fs = [f for f in app_config.FIELDS if f.group == "vulns"]
+    assert all(f.section in app_config.SECTIONS for f in fs)
+    seen, last = [], None
+    for f in fs:  # every section in one block, not spread over the tab
+        if f.section != last:
+            assert f.section not in seen, f.section
+            seen.append(f.section)
+            last = f.section
+    alerts = [f.key for f in fs if f.section == "Alerts"]
+    assert alerts == ["vuln_alerts", "vuln_min_cvss", "vuln_kev_always", "vuln_epss_min", "vuln_only_fixed"]
+    assert [f.key for f in fs if f.section == "Vulnerabilities page"] == ["vuln_show_min_cvss"]
+    view = app_config.public_view(Settings())
+    assert view["sections"]["Alerts"] and next(x for x in view["fields"] if x["key"] == "vuln_min_cvss")["section"] == "Alerts"
 
 
 def _Req():  # stands in for the request the login guard marked
@@ -740,10 +762,18 @@ def test_closed_findings_stay_away(tmp_path):
             await sc.evaluate()
             assert await pool.fetchval("SELECT status FROM alerts WHERE rule = 'container_vulnerable' "
                                        "ORDER BY id DESC LIMIT 1") == "open"
-            # alert level critical still alerts the KEV one; alerts off closes the alert, the findings stay listed
-            s.vuln_alert_min_level = "critical"
+            # show from CVSS 9: the 5.4 one is hidden from the lists and counts, the alerting ones stay
+            s.vuln_show_min_cvss = "9"
             await sc.evaluate()
-            assert await pool.fetchval("SELECT count(*) FROM alerts WHERE rule = 'container_vulnerable' AND status = 'open'") == 1
+            rows = await ep["/api/vulns/findings"](image=None, show="all", q=None, limit=1000)
+            assert "CVE-2023-0001" not in {r["vuln"] for r in rows} and "CVE-2024-4577" in {r["vuln"] for r in rows}
+            overview = await ep["/api/vulns"]()
+            assert overview["hidden_count"] == 1 and overview["policy"]["show_min_cvss"] == "9"
+            assert overview["images"][0]["total"] == len(rows)
+            s.vuln_show_min_cvss = "0"
+            await sc.evaluate()
+            assert await pool.fetchval("SELECT bool_and(shown) FROM vuln_findings")
+            # alerts off closes the alert, the findings stay listed
             s.vuln_alerts = False
             await sc.evaluate()
             assert not await pool.fetchval("SELECT count(*) FROM alerts WHERE rule = 'container_vulnerable' AND status = 'open'")

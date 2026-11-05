@@ -417,6 +417,8 @@ ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS upstream TEXT;
 ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS matched JSONB;
 -- version of the software in the image, for every image: {version, raw, from} or {version: null, tried: [...]}
 ALTER TABLE vuln_images ADD COLUMN IF NOT EXISTS version JSONB;
+-- listed on the Vulnerabilities page (Settings › Container vulnerabilities › Minimum CVSS score to show)
+ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS shown BOOLEAN NOT NULL DEFAULT true;
 -- looked-up EPSS / CVSS values per CVE
 CREATE TABLE IF NOT EXISTS vuln_cache (
     kind    TEXT NOT NULL,

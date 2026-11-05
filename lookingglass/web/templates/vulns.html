@@ -18,7 +18,7 @@
 <div class="card" style="margin-top:14px">
   <h3>Findings <span class="muted small" id="f-note"></span></h3>
   <div class="filters">
-    <div class="seg" id="show"><button data-v="alerted">Above your threshold</button><button data-v="kev">Actively exploited</button><button data-v="fixable">Fix available</button><button data-v="all">All</button><button data-v="ignored">Exceptions</button><button data-v="closed">Closed by you</button></div>
+    <div class="seg" id="show"><button data-v="all">All</button><button data-v="alerted" title="Findings that meet the alert rules (Settings › Container vulnerabilities › Alerts) - also while alerts are switched off">Meets alert rules</button><button data-v="kev">Actively exploited</button><button data-v="fixable">Fix available</button><button data-v="ignored">Exceptions</button><button data-v="closed">Closed by you</button></div>
     <select id="img"><option value="">all images</option></select>
     <input id="q" placeholder="CVE, package or image…" style="flex:1">
   </div>
@@ -42,7 +42,7 @@
 {% endblock %}
 {% block scripts %}
 <script>
-let D = {}, show = "alerted", img = "", q = "", rows = [];
+let D = {}, show = "all", img = "", q = "", rows = [];
 const picked = new Map();  // key -> {vuln, group, repo} (findings) or {vuln, grp, repo} (closed): kept across refreshes
 const keyOf = r => show === "closed" ? `c|${r.vuln}|${r.grp}|${r.repo}` : `f|${r.vuln}|${r.group}|${r.repo}`;
 const ts = v => v ? (typeof v === "number" ? new Date(v * 1000).toISOString() : v) : null;
@@ -80,7 +80,7 @@ async function load() {
   const vuln = imgs.filter(i => i.alerted > 0).length, kev = imgs.reduce((a, i) => a + Number(i.kev || 0), 0);
   const above = imgs.reduce((a, i) => a + Number(i.alerted || 0), 0), age = (st.db || {}).age_days;
   document.getElementById("kpis").innerHTML = k("images scanned", imgs.filter(i => i.matched_at).length + " / " + imgs.length) +
-    k("images above threshold", vuln, vuln ? "bad" : "ok") + k("findings above threshold", above, above ? "bad" : "ok") +
+    k("images meeting alert rules", vuln, vuln ? "bad" : "ok") + k("findings meeting alert rules", above, above ? "bad" : "ok") +
     k("actively exploited", kev, kev ? "bad" : "ok") + k("database age (days)", age ?? "–", age == null || age > 3 ? "warn" : "ok") +
     k("known exploited CVEs", LG.num(D.kev_count)) + k("closed by you", LG.num(D.closed_count || 0));
   LG.table("#images", [
@@ -88,7 +88,7 @@ async function load() {
       (r.notes || []).map(n => `<div class="small muted">${LG.esc(n)}</div>`).join("")},
     {k: "containers", l: "Containers", f: v => (v || []).map(c => LG.esc(c.name) + (c.server ? ` <span class="muted small">(${LG.esc(c.server)})</span>` : "")).join("<br>")},
     {k: "status", l: "Scan", f: (v, r) => v === "ok" ? `<span class="badge ok">ok</span>` : v === "error" ? `<span class="badge high" title="${LG.esc(r.error)}">error</span>` : `<span class="muted">waiting</span>`},
-    {k: "alerted", l: "Above threshold", num: true, s: true, desc: true, f: (v, r) => `<b class="${v ? "err" : ""}">${LG.num(v)}</b> <span class="muted small">of ${LG.num(r.total)}</span>`},
+    {k: "alerted", l: "Meets alert rules", num: true, s: true, desc: true, f: (v, r) => `<b class="${v ? "err" : ""}">${LG.num(v)}</b> <span class="muted small">of ${LG.num(r.total)}</span>`},
     {k: "kev", l: "Exploited", num: true, s: true, desc: true, f: v => v ? `<span class="badge critical">${v}</span>` : "0"},
     {k: "max_cvss", l: "Max CVSS", num: true, s: true, desc: true, f: v => score(v)},
     {k: "update_info", l: "Newer image", f: v => !v ? `<span class="muted" title="needs the exact digest (Docker API with IMAGES=1)">?</span>` : v.error ? `<span class="muted" title="${LG.esc(v.error)}">unknown</span>` : v.available ? `<span class="badge warn">yes</span>` : "no"},
@@ -137,9 +137,12 @@ async function findings() {
   const p = new URLSearchParams({ show }); if (img) p.set("image", img); if (q) p.set("q", q);
   rows = await LG.api("/api/vulns/findings?" + p);
   const pol = D.policy || {};
-  document.getElementById("f-note").textContent = `threshold: CVSS ≥ ${pol.min_cvss || 0}` + (pol.kev_always ? ", actively exploited always" : "") +
+  const showMin = Number(pol.show_min_cvss || 0), hidden = Number(D.hidden_count || 0);
+  document.getElementById("f-note").innerHTML = LG.esc(
+    (showMin > 0 ? `shown from CVSS ${showMin}` + (hidden ? ` (${hidden} lower hidden)` : "") + " · " : "") +
+    `alert rules: CVSS ≥ ${pol.min_cvss || 0}` + (pol.kev_always ? ", actively exploited always" : "") +
     (pol.epss_min ? `, EPSS ≥ ${pol.epss_min}` : "") + (pol.only_fixed ? ", only with a fix" : "") +
-    (pol.alerts === false ? " · alerts off" : pol.alert_level && pol.alert_level !== "low" ? ` · alerts from ${pol.alert_level}` : "");
+    (pol.alerts ? " · alerts on" : " · alerts off")) + ` <a href="/settings#vulns">change</a>`;
   if (show === "closed") {
     LG.table("#findings", [pickCol(),
       {k: "vuln", l: "Vulnerability"},
@@ -164,7 +167,7 @@ async function findings() {
     {k: "image", l: "Image", f: (v, r) => LG.esc(v) + `<div class="small muted">${LG.esc((r.containers || []).map(c => c.name).join(", "))}</div>`},
     {k: "why", l: "Why", f: (v, r) => r.ignored ? `<span class="muted">exception: ${LG.esc(r.ignored)}</span>` : LG.esc(v || "")},
     {k: "first_seen", l: "First seen", f: v => LG.ago(v)},
-  ], rows, show === "alerted" ? "Nothing above your threshold." : "No findings.", null, { sortAll: true });
+  ], rows, show === "alerted" ? "Nothing meets the alert rules." : hidden && showMin > 0 ? `No findings from CVSS ${showMin} (${hidden} lower hidden - Settings › Container vulnerabilities › Minimum CVSS score to show).` : "No findings.", null, { sortAll: true });
   wirePicks();
 }
 // one row per vulnerability + source package: Ubuntu / Debian report a CVE of e.g. dotnet10 once per package built from it

@@ -229,7 +229,17 @@ document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
   history.replaceState(null, "", "#" + b.dataset.t);
 });
 if (location.hash) { const b = document.querySelector(`#tabs [data-t="${location.hash.slice(1)}"]`); if (b) b.click(); }
-let FIELDS = [];
+let FIELDS = [], SECTIONS = {};
+// the fields of a group, with a heading (and what it is for) wherever a new section starts
+function groupHtml(g) {
+  let last = null;
+  return FIELDS.filter(f => f.group === g).map(f => {
+    const head = f.section && f.section !== last
+      ? `<div class="setting-section"><h4>${LG.esc(f.section)}</h4>${SECTIONS[f.section] ? `<div class="small muted">${LG.esc(SECTIONS[f.section])}</div>` : ""}</div>` : "";
+    last = f.section;
+    return head + fieldHtml(f);
+  }).join("");
+}
 function fieldHtml(f) {
   const id = "s-" + f.key, help = f.help ? `<div class="small muted">${LG.esc(f.help)}</div>` : "";
   let input;
@@ -272,8 +282,8 @@ function groupValues(g) {
   return out;
 }
 async function loadSettings() {
-  const d = await LG.api("/api/settings"); FIELDS = d.fields;
-  document.querySelectorAll(".settings-form").forEach(form => form.innerHTML = FIELDS.filter(f => f.group === form.dataset.group).map(fieldHtml).join(""));
+  const d = await LG.api("/api/settings"); FIELDS = d.fields; SECTIONS = d.sections || {};
+  document.querySelectorAll(".settings-form").forEach(form => form.innerHTML = groupHtml(form.dataset.group));
   wireLists();
   wireTheme();
 }

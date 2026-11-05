@@ -794,8 +794,8 @@ class Policy:
     epss_min: float | None
     only_fixed: bool
     ignore: list[IgnoreRule]
-    alerts: bool = True           # raise alerts at all (findings are listed either way)
-    alert_level: str = "low"      # lowest level that raises an alert
+    alerts: bool = False          # raise alerts at all (findings are listed either way)
+    show_min: float = 0.0         # the Vulnerabilities page lists findings from this score
 
     @classmethod
     def of(cls, s: Settings) -> "Policy":
@@ -803,14 +803,15 @@ class Policy:
             ignore = parse_ignore(s.vuln_ignore)
         except ValueError:
             ignore = []
-        level = str(getattr(s, "vuln_alert_min_level", "low") or "low").lower()
         return cls(parse_threshold(s.vuln_min_cvss, "", 10) or 0.0, s.vuln_kev_always,
-                   parse_threshold(s.vuln_epss_min, "", 1), s.vuln_only_fixed, ignore,
-                   bool(getattr(s, "vuln_alerts", False)), level if level in LEVELS else "low")
+                   parse_threshold(s.vuln_epss_min, "", 1), s.vuln_only_fixed, ignore, bool(s.vuln_alerts),
+                   _threshold_or(s.vuln_show_min_cvss, 0.0))
 
-    def raises_alert(self, f: dict[str, Any]) -> bool:
-        """A finding above the threshold that is also worth an alert (alerts on, at least the chosen level)."""
-        return self.alerts and LEVELS.index(level_of(f)) >= LEVELS.index(self.alert_level)
+    def shown(self, f: dict[str, Any], alert: bool) -> bool:
+        """Listed on the Vulnerabilities page: from the 'show' score, and always when it meets the alert rules."""
+        if alert or self.show_min <= 0:
+            return True
+        return (score_of(f) or 0.0) >= self.show_min
 
     def judge(self, f: dict[str, Any], names: list[str], today: date | None = None) -> tuple[bool, str | None, str]:
         """(alert?, ignore rule that matched, why) for one finding."""
@@ -832,6 +833,14 @@ class Policy:
         if self.epss_min is not None and (f.get("epss") or 0) >= self.epss_min:
             return True, None, f"EPSS {f['epss']:.0%} ≥ {self.epss_min:.0%}"
         return False, None, "below the threshold"
+
+
+def _threshold_or(value: Any, default: float) -> float:
+    try:
+        v = parse_threshold(value, "", 10)
+    except ValueError:
+        return default
+    return default if v is None else v
 
 
 def finding_group(f: dict[str, Any]) -> str:
@@ -1540,12 +1549,12 @@ class VulnScanner:
                     else:
                         alert, ignored, why = pol.judge(f, names, today)
                     updates.append((img["key"], f["vuln"], f["package"], f["version"], f["epss"], f["epss_pct"], f["cvss"],
-                                    f["cvss_source"], f["kev"], alert, ignored, why))
-                    if alert and pol.raises_alert(f):
+                                    f["cvss_source"], f["kev"], alert, ignored, why, pol.shown(f, alert)))
+                    if alert:
                         hits.append((img, f, why))
                 await pool.executemany(
                     "UPDATE vuln_findings SET epss = $5, epss_pct = $6, cvss = $7, cvss_source = $8, kev = $9, alerted = $10, "
-                    "ignored = $11, why = $12 WHERE image_key = $1 AND vuln = $2 AND package = $3 AND version = $4", updates)
+                    "ignored = $11, why = $12, shown = $13 WHERE image_key = $1 AND vuln = $2 AND package = $3 AND version = $4", updates)
             await self.alert(repo, imgs, hits, pol)
         await self.save_status(last_eval=time.time())
 
@@ -1557,7 +1566,7 @@ class VulnScanner:
                                "vulnerabilities); the findings stay on the Vulnerabilities page")
             return
         if not hits:
-            await close_alerts(RULE, [fp], "no vulnerability above your threshold / alert level any more (updated "
+            await close_alerts(RULE, [fp], "no vulnerability meets the alert rules any more (updated "
                                "image, new threshold, exception or closed by you)")
             return
         uniq: dict[str, tuple[dict[str, Any], dict[str, Any], str]] = {}

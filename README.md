@@ -782,19 +782,22 @@ Looking Glass image, plus a few online sources. It is off by default.
    version is read from an image label, environment variable, the tag or a package, and looked up in
    [OSV](https://osv.dev). Nextcloud (official and linuxserver images) is built in; add your own, one line each:
    `images | env NAME / label NAME / tag / package NAME [/regex/] | <OSV ecosystem> <package>`.
-6. **Alerts** (once *Create alerts for vulnerabilities* is on - it is off by default). You get one alert per image (rule *Vulnerable container image*). It lists the findings above your
-   threshold and says whether a newer image exists for the tag, and it closes by itself after you update. The default
-   threshold is CVSS ≥ 7.0, plus every actively exploited CVE, and only findings that have a fix. Change it under
-   *Settings › Container vulnerabilities*: *Alert from CVSS score*, *Also alert from EPSS*, *Only alert when a fix
-   exists*. Two more settings decide whether those findings become alerts at all:
-   * **Create alerts for vulnerabilities** (**off by default**): off = findings are only listed on the
-     Vulnerabilities page, no alerts (open ones close). Tick it to get the alerts described here. Scan-problem
-     alerts come either way.
-   * **Alert from level**: the lowest level that raises an alert: *critical* (CVSS 9+ or actively exploited),
-     *high* (7+), *medium* (4+) or *low* (everything above the threshold, the default).
+6. **What you see and what alerts.** Two separate scores, both under *Settings › Container vulnerabilities*:
+
+   | Setting (section) | Decides | Default |
+   |---|---|---|
+   | **Minimum CVSS score to show** (*Vulnerabilities page*) | which findings the Vulnerabilities page lists and counts. Lower ones are hidden (the page says how many). A finding that raises an alert is always shown | 0 = everything |
+   | **Minimum CVSS score for an alert** (*Alerts*) | which findings raise an alert | 7.0 |
+
+   The *Alerts* section also has **Create alerts for vulnerabilities** (**off by default**: no alerts at all, only the
+   page), **Also alert on actively exploited vulnerabilities** (CISA KEV, whatever the score), **Also alert from EPSS
+   chance** and **Only alert when a fix exists**. With alerts on you get one alert per image (rule *Vulnerable
+   container image*), listing its findings and whether a newer image exists for the tag. The *Meets alert rules* tab
+   on the page shows what would alert, also while alerts are off. Without a CVSS score the severity word counts
+   (critical 9, high 7, medium 4, low 0.1).
 
 **When alerts close.** An image alert updates on every check (count, severity, list) and closes by itself once
-nothing of that image is above your threshold any more: after you update the container, change the threshold or add
+nothing of that image meets the alert rules any more: after you update the container, change the alert score or add
 an exception, or close the findings. Updating a container recreates it, which Looking Glass notices within about 10 minutes and checks right
 away, so the alert closes then, not at the next scheduled check. If it comes back (a new CVE), the alert opens again.
 An alert you closed by hand stays closed unless the image gets worse. Scan-problem alerts close as soon as that part
@@ -849,11 +852,11 @@ what you checked (`CVE-… on fileflows  # Windows only`), optionally until a da
 2. **Looking Glass web UI** › *Settings › Container vulnerabilities* › tick **Scan container images for
    vulnerabilities** › *Save*. The first check starts within a few minutes. Grype's first database download takes a
    while (a few hundred MB, kept in `/data/vulnscan`).
-3. **Looking Glass › Vulnerabilities** shows every image, its findings (filters: above your threshold / actively
-   exploited / fix available / all / exceptions / closed by you), the app versions found and whether a newer image exists. The
+3. **Looking Glass › Vulnerabilities** shows every image, its findings (tabs: all / meets alert rules / actively
+   exploited / fix available / exceptions / closed by you), the app versions found and whether a newer image exists. The
    *Check now* and *Read all images again* buttons start a check right away.
-   Want alerts too? Tick **Create alerts for vulnerabilities** under *Settings › Container vulnerabilities* (off by
-   default) and pick the **Alert from level**.
+   Want alerts too? Under *Settings › Container vulnerabilities › Alerts* tick **Create alerts for vulnerabilities**
+   (off by default) and set the **Minimum CVSS score for an alert**.
 4. Optional, under *Settings › Container vulnerabilities*:
    * a **registry login**: Docker Hub limits anonymous pulls; private registries need one.
    * an **NVD API key**: more CVSS lookups per minute.

@@ -31,6 +31,22 @@ class Field:
     min: int | None = None
     max: int | None = None
     placeholder: str = ""
+    section: str = ""  # sub-heading inside the group (fields of one section are listed together)
+
+
+# what a section is for, shown under its heading
+SECTIONS = {
+    "Scanning": "What is scanned and how often.",
+    "Vulnerabilities page": "What the Vulnerabilities page lists. Does not change what raises an alert.",
+    "Alerts": "When a finding raises an alert. Only used while 'Create alerts for vulnerabilities' is on; the findings "
+              "that meet these rules are under 'Meets alert rules' on the Vulnerabilities page either way.",
+    "Exceptions": "Findings you accept: no alert, listed under 'Exceptions' on the Vulnerabilities page. To hide "
+                  "single findings for good, tick them on the Vulnerabilities page and press Close selected.",
+    "Application versions": "The App version column, and CVE checks for the application itself.",
+    "Data sources": "Where scores and 'actively exploited' come from.",
+    "Registry login": "Optional: for pulling images (Docker Hub limits anonymous pulls; private registries need one).",
+    "Advanced: Grype and Syft": "Only change these when you know you need to.",
+}
 
 
 GROUPS = {
@@ -305,58 +321,58 @@ FIELDS: list[Field] = [
     Field("unraid_log_error_minutes", "data", "Unraid: … within (minutes)", "int", "", min=1, max=1440),
     Field("geoip_db", "data", "GeoIP database path", "str", "MaxMind GeoLite2-City or -Country .mmdb inside the data volume.",
           placeholder="/data/GeoLite2-City.mmdb"),
-    # container vulnerabilities (vulnscan.py)
+    # container vulnerabilities (vulnscan.py), shown in these sections
     Field("vuln_scan_enabled", "vulns", "Scan container images for vulnerabilities", "bool",
           "Every container of your Unraid servers (and the extra images below) is checked with Grype / Syft for known "
           "vulnerabilities in the operating system packages, libraries and programs inside the image. Results: "
-          "Vulnerabilities page."),
-    Field("vuln_alerts", "vulns", "Create alerts for vulnerabilities", "bool", "Off by default. Off = findings are only listed on "
-          "the Vulnerabilities page; no 'vulnerable container' alerts (open ones are closed). Scan problems still alert."),
-    Field("vuln_alert_min_level", "vulns", "Alert from level", "choice", "The lowest level of a finding that raises an "
-          "alert: critical = CVSS 9+ or actively exploited, high = 7+, medium = 4+, low = everything above the "
-          "threshold below. Findings under it are still listed on the Vulnerabilities page.",
-          choices=("low", "medium", "high", "critical")),
-    Field("vuln_min_cvss", "vulns", "Alert from CVSS score", "str", "Findings with this CVSS base score or higher raise "
-          "an alert (per container image, listing them). 7.0 = high and critical; 9.0 = critical only. Without a score "
-          "the severity word counts (critical 9, high 7, medium 4).", placeholder="7.0"),
-    Field("vuln_kev_always", "vulns", "Always alert on actively exploited vulnerabilities", "bool",
-          "A CVE on CISA's Known Exploited Vulnerabilities list is attacked in the wild: alert (critical) whatever its "
-          "score, also when no fixed version exists yet."),
-    Field("vuln_epss_min", "vulns", "Also alert from EPSS", "str", "EPSS = the chance a CVE gets exploited in the next "
-          "30 days (0-1 or a percentage). Findings at or above it alert even below the CVSS score. Empty = not used.",
-          placeholder="0.1 or 10%"),
-    Field("vuln_only_fixed", "vulns", "Only alert when a fix exists", "bool", "Skip findings without a fixed version "
-          "(Debian / Alpine 'will not fix', or not fixed yet) - there is nothing to update to. Actively exploited ones "
-          "still alert when the switch above is on. They are always listed on the Vulnerabilities page."),
+          "Vulnerabilities page.", section="Scanning"),
     Field("vuln_recheck_hours", "vulns", "Check against new vulnerabilities every (hours)", "int", "Updates Grype's "
           "database and matches the stored package lists of all images again - fast, the images are not downloaded.",
-          min=1, max=168),
+          min=1, max=168, section="Scanning"),
     Field("vuln_rescan_days", "vulns", "Read the images again every (days)", "int", "The package list of an image is "
-          "made again after this many days (and always when a container runs a new image).", min=1, max=90),
+          "made again after this many days (and always when a container runs a new image).", min=1, max=90, section="Scanning"),
     Field("vuln_image_source", "vulns", "Image source", "choice", "auto = from the registry by the exact digest the "
           "container runs (Docker API with IMAGES=1 needed to know it), else exported through the Docker API, else the "
           "registry's current image of the tag; registry = only from the registry; docker = only through the Docker API "
-          "(also for images built locally).", choices=("auto", "registry", "docker")),
+          "(also for images built locally).", choices=("auto", "registry", "docker"), section="Scanning"),
     Field("vuln_images", "vulns", "Extra images to scan", "list", "Images that do not run on an Unraid server Looking "
           "Glass knows, e.g. on another Docker host. Scanned from their registry.",
-          placeholder="ghcr.io/gittimeraider/looking-glass:latest\npostgres:18"),
+          placeholder="ghcr.io/gittimeraider/looking-glass:latest\npostgres:18", section="Scanning"),
     Field("vuln_exclude", "vulns", "Containers / images not to scan", "list", "Names or images, * as wildcard.",
-          placeholder="my-test-*\nlocalhost/*"),
+          placeholder="my-test-*\nlocalhost/*", section="Scanning"),
+    Field("vuln_show_min_cvss", "vulns", "Minimum CVSS score to show", "str", "Findings below this score are not shown "
+          "on the Vulnerabilities page (nor counted there). 0 = show everything. A finding that raises an alert is "
+          "always shown, whatever this says.", placeholder="0", section="Vulnerabilities page"),
+    Field("vuln_alerts", "vulns", "Create alerts for vulnerabilities", "bool", "Off by default. On = one alert per "
+          "container image for the findings that meet the rules below. Off = findings are only listed on the "
+          "Vulnerabilities page (open alerts are closed). Scan problems alert either way.", section="Alerts"),
+    Field("vuln_min_cvss", "vulns", "Minimum CVSS score for an alert", "str", "A finding with this CVSS base score or "
+          "higher raises an alert. 7.0 = high and critical; 9.0 = critical only. Without a score the severity word "
+          "counts (critical 9, high 7, medium 4, low 0.1).", placeholder="7.0", section="Alerts"),
+    Field("vuln_kev_always", "vulns", "Also alert on actively exploited vulnerabilities", "bool",
+          "A CVE on CISA's Known Exploited Vulnerabilities list is attacked in the wild: alert (critical) whatever its "
+          "CVSS score, also when no fixed version exists yet.", section="Alerts"),
+    Field("vuln_epss_min", "vulns", "Also alert from EPSS chance", "str", "EPSS = the chance a CVE gets exploited in the next "
+          "30 days (0-1 or a percentage). Findings at or above it alert even below the minimum CVSS score. Empty = not used.",
+          placeholder="0.1 or 10%", section="Alerts"),
+    Field("vuln_only_fixed", "vulns", "Only alert when a fix exists", "bool", "Skip findings without a fixed version "
+          "(Debian / Alpine 'will not fix', or not fixed yet) - there is nothing to update to. Actively exploited ones "
+          "still alert when the switch above is on. They are always listed on the Vulnerabilities page.", section="Alerts"),
     Field("vuln_ignore", "vulns", "Exceptions", "text", "Findings you accept, one per line: a CVE / GHSA id (patterns "
           "with * allowed) or pkg:<package>, optionally 'on <containers or images>' and 'until <date>' - after that date "
           "it counts again. Still listed (marked) on the Vulnerabilities page. # starts a comment.",
-          placeholder="CVE-2023-45853 on mariadb*  # not reachable\npkg:perl-base\nCVE-2024-* on test-* until 2026-12-31"),
-    Field("vuln_app_checks", "vulns", "App version checks", "text", "Own checks for the application itself, which package "
-          "scanners often miss: one per line 'images | version source | OSV ecosystem package'. Version source: env NAME, "
-          "label NAME, tag or package NAME (from the image's package list), optionally followed by a /regex/ whose first "
-          "group is the version (default: the first number like 30.0.2). The version is looked up with the osv source "
-          "below. Ecosystems: osv.dev/list (Packagist, npm, PyPI, Go, Maven, ...). # = comment."),
+          placeholder="CVE-2023-45853 on mariadb*  # not reachable\npkg:perl-base\nCVE-2024-* on test-* until 2026-12-31", section="Exceptions"),
     Field("vuln_version_sources", "vulns", "Where image versions are read", "text", "For the App version column of "
           "every image, tried top to bottom: label NAME, env NAME, tag or package NAME, optionally followed by a /regex/ "
           "(first group = the version; default: the first number like 1.2.3). {NAME} / {name} = the image's own name "
           "(env {NAME}_VERSION -> FILEFLOWS_VERSION for revenz/fileflows). A tag like latest or stable holds no version. "
           "Only shown - CVEs of the application itself are looked up by the App version checks. Empty = the built-in "
-          "list."),
+          "list.", section="Application versions"),
+    Field("vuln_app_checks", "vulns", "App version checks", "text", "Own checks for the application itself, which package "
+          "scanners often miss: one per line 'images | version source | OSV ecosystem package'. Version source: env NAME, "
+          "label NAME, tag or package NAME (from the image's package list), optionally followed by a /regex/ whose first "
+          "group is the version (default: the first number like 30.0.2). The version is looked up with the osv source "
+          "below. Ecosystems: osv.dev/list (Packagist, npm, PyPI, Go, Maven, ...). # = comment.", section="Application versions"),
     Field("vuln_sources", "vulns", "Sources", "text", "Where extra information comes from - change an address or format "
           "when a provider moves or changes its format, or add a mirror. One per line 'kind: [POST] address | format'; "
           "per kind tried top to bottom until one answers. kev (actively exploited CVEs): '| json <path>', '| csv "
@@ -365,29 +381,29 @@ FIELDS: list[Field] = [
           "time, without it = one full download (.gz is unpacked). cvss (for findings without a score): address with "
           "{cve}, '| json <path>, <path>' (highest number found). osv: OSV-compatible query API. Paths: a.b[].c ([] = "
           "every list item, * = every value). 'kind: off' switches a kind off. Empty = the built-in list. Test sources "
-          "tries every line."),
+          "tries every line.", section="Data sources"),
     Field("vuln_nvd_api_key", "vulns", "NVD API key", "secret", "Optional: more CVSS lookups per minute. Free at "
-          "nvd.nist.gov › Developers › Request an API Key. Only sent to nvd.nist.gov."),
+          "nvd.nist.gov › Developers › Request an API Key. Only sent to nvd.nist.gov.", section="Data sources"),
     Field("vuln_registry_host", "vulns", "Registry login: registry", "str", "Optional login for pulling images (Docker "
-          "Hub limits anonymous pulls; private registries need one).", placeholder="docker.io"),
-    Field("vuln_registry_user", "vulns", "Registry login: user", "str", ""),
+          "Hub limits anonymous pulls; private registries need one).", placeholder="docker.io", section="Registry login"),
+    Field("vuln_registry_user", "vulns", "Registry login: user", "str", "", section="Registry login"),
     Field("vuln_registry_password", "vulns", "Registry login: password / token", "secret", "Docker Hub: Account "
-          "settings › Personal access tokens › Generate (read-only)."),
+          "settings › Personal access tokens › Generate (read-only).", section="Registry login"),
     Field("vuln_grype_path", "vulns", "Grype program", "str", "Included in the image; change only to use another one.",
-          placeholder="grype"),
-    Field("vuln_syft_path", "vulns", "Syft program", "str", "Included in the image.", placeholder="syft"),
+          placeholder="grype", section="Advanced: Grype and Syft"),
+    Field("vuln_syft_path", "vulns", "Syft program", "str", "Included in the image.", placeholder="syft", section="Advanced: Grype and Syft"),
     Field("vuln_grype_db_url", "vulns", "Grype database address", "str", "Where Grype downloads its vulnerability "
           "database (the listing / latest.json URL); empty = Grype's own. For a mirror or when Anchore moves it.",
-          placeholder="https://grype.anchore.io/databases"),
+          placeholder="https://grype.anchore.io/databases", section="Advanced: Grype and Syft"),
     Field("vuln_grype_args", "vulns", "Extra Grype arguments", "str", "Added to every match, e.g. --only-fixed or "
-          "--exclude '/usr/share/**'.", placeholder="--exclude /usr/share/doc/**"),
+          "--exclude '/usr/share/**'.", placeholder="--exclude /usr/share/doc/**", section="Advanced: Grype and Syft"),
     Field("vuln_syft_args", "vulns", "Extra Syft arguments", "str", "Added to every image read, e.g. --platform "
-          "linux/arm64 or --scope all-layers.", placeholder="--scope squashed"),
+          "linux/arm64 or --scope all-layers.", placeholder="--scope squashed", section="Advanced: Grype and Syft"),
     Field("vuln_tool_env", "vulns", "Extra environment for Grype / Syft", "text", "NAME=value per line - any Grype / "
           "Syft setting (GRYPE_DB_MAX_ALLOWED_BUILT_AGE=240h, HTTPS_PROXY=..., GRYPE_DB_CA_CERT=...).",
-          placeholder="GRYPE_DB_MAX_ALLOWED_BUILT_AGE=240h"),
+          placeholder="GRYPE_DB_MAX_ALLOWED_BUILT_AGE=240h", section="Advanced: Grype and Syft"),
     Field("vuln_scan_timeout", "vulns", "Time limit per run (minutes)", "int", "For one image read or database update; "
-          "large images over a slow connection need longer.", min=2, max=240),
+          "large images over a slow connection need longer.", min=2, max=240, section="Advanced: Grype and Syft"),
 ]
 BY_KEY = {f.key: f for f in FIELDS}
 SECRET_KEYS = {f.key for f in FIELDS if f.kind == "secret"}
@@ -473,6 +489,8 @@ def _coerce(f: Field, value: Any) -> Any:
         from . import vulnscan
         try:
             if f.key == "vuln_min_cvss":
+                vulnscan.parse_threshold(v, f.label, 10)
+            elif f.key == "vuln_show_min_cvss":
                 vulnscan.parse_threshold(v, f.label, 10)
             elif f.key == "vuln_epss_min":
                 vulnscan.parse_threshold(v, f.label, 1)
@@ -574,13 +592,14 @@ def public_view(settings: Settings) -> dict[str, Any]:
     for f in FIELDS:
         v = getattr(settings, f.key)
         item = {"key": f.key, "group": f.group, "label": f.label, "kind": f.kind, "help": f.help,
-                "choices": list(f.choices), "min": f.min, "max": f.max, "placeholder": f.placeholder}
+                "choices": list(f.choices), "min": f.min, "max": f.max, "placeholder": f.placeholder,
+                "section": f.section}
         if f.kind == "secret":
             item["is_set"] = bool(v)
         else:
             item["value"] = v
         out.append(item)
-    return {"groups": GROUPS, "fields": out, "version": STATE.version}
+    return {"groups": GROUPS, "fields": out, "sections": SECTIONS, "version": STATE.version}
 
 
 def signature(settings: Settings, group: str) -> tuple:

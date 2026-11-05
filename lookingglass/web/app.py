@@ -1014,6 +1014,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     not_closed = ("NOT EXISTS (SELECT 1 FROM vuln_closed c WHERE (c.vuln = f.vuln OR c.vuln = ANY(f.aliases)) "
                   "AND c.grp = coalesce(nullif(f.upstream, ''), f.package) AND c.repo IN ('', i.repo))")
 
+    # listed on the page: from 'Minimum CVSS score to show' (findings that meet the alert rules always); your
+    # exceptions are always listed under Exceptions
+    shown = "(f.shown OR f.ignored IS NOT NULL)"
+
     async def _vulns_reevaluate() -> None:
         """Ask the scanner to judge the stored findings again (alerts follow within ~20 s), without a new scan."""
         await db.kv_set("vulnscan:reevaluate", {"at": time.time()})
@@ -1025,29 +1029,32 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def vulns_overview():
         rows = await db.pool().fetch(
             # distinct vulnerabilities: one CVE in a source package is one finding, however many packages it built;
-            # findings you closed do not count
+            # findings you closed, and those below 'Minimum CVSS score to show', do not count
             "SELECT i.*, count(DISTINCT f.vuln) total, count(DISTINCT f.vuln) FILTER (WHERE f.alerted) alerted, "
             "count(DISTINCT f.vuln) FILTER (WHERE f.kev AND f.ignored IS NULL) kev, "
             "count(DISTINCT f.vuln) FILTER (WHERE f.ignored IS NOT NULL) ignored_n, "
             "max(f.cvss) FILTER (WHERE f.ignored IS NULL) max_cvss, "
             "count(DISTINCT f.vuln) FILTER (WHERE coalesce(f.cvss, 0) >= 9 AND f.ignored IS NULL) crit, "
             "count(DISTINCT f.vuln) FILTER (WHERE f.cvss >= 7 AND f.cvss < 9 AND f.ignored IS NULL) high "
-            f"FROM vuln_images i LEFT JOIN vuln_findings f ON f.image_key = i.key AND {not_closed} "
+            f"FROM vuln_images i LEFT JOIN vuln_findings f ON f.image_key = i.key AND {not_closed} AND {shown} "
             "GROUP BY i.key ORDER BY alerted DESC, i.image")
         kev = await db.kv_get("vulnscan:kev", []) or []
         closed_n = await db.pool().fetchval("SELECT count(*) FROM vuln_closed")
+        hidden_n = await db.pool().fetchval(
+            "SELECT count(*) FROM (SELECT DISTINCT f.image_key, f.vuln FROM vuln_findings f JOIN vuln_images i "
+            f"ON i.key = f.image_key WHERE {not_closed} AND NOT {shown}) x")
         return {"enabled": settings.vuln_scan_enabled, "status": await db.kv_get("vulnscan:status", {}) or {},
-                "images": db.records(rows), "kev_count": len(kev), "closed_count": closed_n,
+                "images": db.records(rows), "kev_count": len(kev), "closed_count": closed_n, "hidden_count": hidden_n,
                 "policy": {"min_cvss": settings.vuln_min_cvss, "kev_always": settings.vuln_kev_always,
                            "epss_min": settings.vuln_epss_min, "only_fixed": settings.vuln_only_fixed,
-                           "alerts": settings.vuln_alerts, "alert_level": settings.vuln_alert_min_level}}
+                           "alerts": settings.vuln_alerts, "show_min_cvss": settings.vuln_show_min_cvss}}
 
     @app.get("/api/vulns/findings")
-    async def vulns_findings(image: str | None = None, show: str = "alerted", q: str | None = None,
+    async def vulns_findings(image: str | None = None, show: str = "all", q: str | None = None,
                              limit: int = Query(1000, ge=1, le=10000)):
         if show == "closed":
             return await vulns_closed_list()
-        cond, args = [not_closed], []
+        cond, args = [not_closed, shown], []
         if image:
             args.append(image)
             cond.append(f"f.image_key = ${len(args)}")
