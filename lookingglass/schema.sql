@@ -362,3 +362,66 @@ CREATE TABLE IF NOT EXISTS event_rollup_state (
     seen BIGINT NOT NULL DEFAULT 0
 );
 INSERT INTO event_rollup_state (one) VALUES (true) ON CONFLICT DO NOTHING;
+
+-- container vulnerabilities (vulnscan.py): one row per scanned image (digest, or image name when the digest is unknown)
+CREATE TABLE IF NOT EXISTS vuln_images (
+    key         TEXT PRIMARY KEY,
+    image       TEXT NOT NULL,                     -- as the containers use it: nextcloud:30-apache
+    repo        TEXT NOT NULL,                     -- docker.io/library/nextcloud (alerts are per repo)
+    digest      TEXT,
+    containers  JSONB NOT NULL DEFAULT '[]',       -- [{server, server_id, name, state}]
+    notes       JSONB NOT NULL DEFAULT '[]',
+    status      TEXT NOT NULL DEFAULT 'pending',   -- ok | error | pending
+    error       TEXT,
+    errors      INTEGER NOT NULL DEFAULT 0,        -- failed scans in a row
+    tried_at    TIMESTAMPTZ,
+    sbom_at     TIMESTAMPTZ,                       -- package list (Syft) made
+    sbom_source TEXT,                              -- registry (exact digest) | Docker API export | registry (tag)
+    sbom_tool   TEXT,
+    packages    INTEGER,
+    matched_at  TIMESTAMPTZ,                       -- last Grype match
+    db_built    TEXT,
+    app         JSONB,                             -- own app checks: [{line, check, from, version, error}]
+    update_info JSONB,                             -- {checked, running, latest, available, error}
+    seen_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS vuln_findings (
+    image_key    TEXT NOT NULL,
+    vuln         TEXT NOT NULL,                    -- CVE / GHSA / distro id
+    package      TEXT NOT NULL,
+    version      TEXT NOT NULL DEFAULT '',
+    pkg_type     TEXT,
+    aliases      TEXT[] NOT NULL DEFAULT '{}',
+    cves         TEXT[] NOT NULL DEFAULT '{}',
+    severity     TEXT,
+    cvss         REAL,
+    cvss_source  TEXT,
+    kev          BOOLEAN NOT NULL DEFAULT false,   -- actively exploited (CISA KEV)
+    epss         REAL,
+    epss_pct     REAL,
+    fix_versions TEXT[] NOT NULL DEFAULT '{}',
+    fix_state    TEXT,
+    url          TEXT,
+    description  TEXT,
+    locations    TEXT[] NOT NULL DEFAULT '{}',
+    source       TEXT,                             -- grype | app check (line n)
+    alerted      BOOLEAN,                          -- above your threshold
+    ignored      TEXT,                             -- the exception that matched
+    why          TEXT,
+    first_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (image_key, vuln, package, version)
+);
+-- source package (Debian / Ubuntu: dotnet10 for dotnet-host-10.0) and how Grype matched: {type, searched, constraint,
+-- namespace, distro} - findings of one source package are shown as one
+ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS upstream TEXT;
+ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS matched JSONB;
+-- version of the software in the image, for every image: {version, raw, from} or {version: null, tried: [...]}
+ALTER TABLE vuln_images ADD COLUMN IF NOT EXISTS version JSONB;
+-- looked-up EPSS / CVSS values per CVE
+CREATE TABLE IF NOT EXISTS vuln_cache (
+    kind    TEXT NOT NULL,
+    id      TEXT NOT NULL,
+    value   JSONB NOT NULL,
+    fetched TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (kind, id)
+);

@@ -166,6 +166,54 @@ class Settings(BaseSettings):
     unraid_restart_minutes: int = 15
     unraid_log_error_count: int = 50  # default log rule: error lines in unraid_log_error_minutes (0 = off)
     unraid_log_error_minutes: int = 10
+    # container vulnerabilities (Settings › Container vulnerabilities, vulnscan.py)
+    vuln_scan_enabled: bool = False
+    vuln_min_cvss: str = "7.0"
+    vuln_kev_always: bool = True
+    vuln_epss_min: str = ""
+    vuln_only_fixed: bool = True
+    vuln_recheck_hours: int = 24
+    vuln_rescan_days: int = 7
+    vuln_image_source: str = "auto"
+    vuln_images: str = ""
+    vuln_exclude: str = ""
+    vuln_ignore: str = ""
+    vuln_app_checks: str = (
+        "# images | where the version is | OSV ecosystem and package\n"
+        "nextcloud, */library/nextcloud | env NEXTCLOUD_VERSION | Packagist nextcloud/server\n"
+        "*/linuxserver/nextcloud, linuxserver/nextcloud | label org.opencontainers.image.version | Packagist nextcloud/server\n"
+    )
+    vuln_version_sources: str = (
+        "label org.opencontainers.image.version\n"
+        "label build_version\n"
+        "label org.label-schema.version\n"
+        "env {NAME}_VERSION\n"
+        "label version\n"
+        "env VERSION\n"
+        "tag\n"
+    )
+    vuln_sources: str = (
+        "# kind: [POST] address | format - per kind tried top to bottom until one answers\n"
+        "kev: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json | json vulnerabilities[].cveID\n"
+        "kev: https://raw.githubusercontent.com/cisagov/kev-data/main/known_exploited_vulnerabilities.json | json vulnerabilities[].cveID\n"
+        "epss: https://api.first.org/data/v1/epss?cve={cves} | json data[] cve epss percentile\n"
+        "cvss: https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve} | json "
+        "vulnerabilities[].cve.metrics.cvssMetricV40[].cvssData.baseScore, "
+        "vulnerabilities[].cve.metrics.cvssMetricV31[].cvssData.baseScore, "
+        "vulnerabilities[].cve.metrics.cvssMetricV30[].cvssData.baseScore\n"
+        "osv: https://api.osv.dev/v1/query\n"
+    )
+    vuln_nvd_api_key: str = ""
+    vuln_registry_host: str = "docker.io"
+    vuln_registry_user: str = ""
+    vuln_registry_password: str = ""
+    vuln_grype_path: str = "grype"
+    vuln_syft_path: str = "syft"
+    vuln_grype_db_url: str = ""
+    vuln_grype_args: str = ""
+    vuln_syft_args: str = ""
+    vuln_tool_env: str = ""
+    vuln_scan_timeout: int = 30  # minutes per Grype / Syft run
 
     # legacy: only imported once into the Unraid server list (Settings -> Integrations)
     unraid_name: str = "Unraid"
