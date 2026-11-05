@@ -682,7 +682,7 @@ def test_alert_and_show_scores():
     pol = Policy.of(Settings(vuln_min_cvss="9.0", vuln_show_min_cvss="4"))
     assert pol.judge(crit, ["x"])[0] and not pol.judge(mid, ["x"])[0]  # alert score 9
     assert pol.shown(mid, False) and not pol.shown({**mid, "cvss": 3.9}, False) and not pol.shown(nosc, False)
-    assert pol.shown({**mid, "cvss": 1.0}, True)  # meets the alert rules: always shown
+    assert not pol.shown({**mid, "cvss": 1.0}, True)  # your page settings win, also when it would alert
     every = Policy.of(Settings())
     assert every.show_min == 0 and every.shown(nosc, False)  # default: everything is listed
     assert Policy.of(Settings(vuln_show_min_cvss="nonsense")).show_min == 0
@@ -764,15 +764,18 @@ def test_closed_findings_stay_away(tmp_path):
             await sc.evaluate()
             assert await pool.fetchval("SELECT status FROM alerts WHERE rule = 'container_vulnerable' "
                                        "ORDER BY id DESC LIMIT 1") == "open"
-            # show from CVSS 9: the 5.4 one is hidden from the lists and counts, the alerting ones stay
-            s.vuln_show_min_cvss = "9"
+            # show from CVSS 9.9: everything left is hidden (CVE-2023-0002 / GHSA is closed), also CVE-2024-4577 (9.8)
+            # which raises an alert - the alert still lists it and says it is hidden on the page
+            s.vuln_show_min_cvss = "9.9"
             await sc.evaluate()
             rows = await ep["/api/vulns/findings"](image=None, show="all", q=None, limit=1000)
-            assert "CVE-2023-0001" not in {r["vuln"] for r in rows} and "CVE-2024-4577" in {r["vuln"] for r in rows}
+            assert rows == []
             overview = await ep["/api/vulns"]()
-            assert overview["hidden_count"] == 1 and overview["policy"]["show_min_cvss"] == "9"
-            assert overview["hidden"] == {"CVSS below 9": 1}
-            assert overview["images"][0]["total"] == len(rows)
+            assert overview["hidden_count"] == 2 and overview["policy"]["show_min_cvss"] == "9.9"
+            assert overview["hidden"] == {"CVSS below 9.9": 2} and overview["images"][0]["total"] == 0
+            desc = await pool.fetchval("SELECT description FROM alerts WHERE rule = 'container_vulnerable' "
+                                       "AND status = 'open' ORDER BY id DESC LIMIT 1")
+            assert "CVE-2024-4577" in desc and "hidden on the Vulnerabilities page: CVSS below 9.9" in desc
             s.vuln_show_min_cvss = "0"
             await sc.evaluate()
             assert await pool.fetchval("SELECT bool_and(shown) FROM vuln_findings")
@@ -828,7 +831,7 @@ def test_page_settings_hide_findings():
     assert pol.hidden_by(wont) == "will not be fixed" and pol.hidden_by(nofix) is None and pol.hidden_by(na) is None
     assert pol.hidden_by(cpe) == "CPE guess" and pol.hidden_by(fixed) == "package type go-module"
     assert Policy.of(Settings(vuln_hide_no_fix=True)).hidden_by(wont) == "no fix yet"
-    assert not pol.shown(wont, False) and pol.shown(wont, True)  # meets the alert rules: always shown
+    assert not pol.shown(wont, False) and not pol.shown(wont, True)  # hidden, also when it would alert
 
 
 def test_hide_packages_by_name_or_type():
@@ -839,7 +842,8 @@ def test_hide_packages_by_name_or_type():
     assert pol.hidden_by({**chromium, "package": "libx11-6"}) == "package libx11-6"
     assert pol.hidden_by({**chromium, "package": "x", "pkg_type": "go-module"}) == "package type go-module"
     assert pol.hidden_by({**chromium, "package": "chromium-browser-l10n", "upstream": ""}) is None  # no wildcard
-    assert pol.shown(chromium, True)  # meets the alert rules: still shown
+    # the reported case: chromium meets the alert rules (CVSS 8.8, fix exists) while alerts are off - still hidden
+    assert pol.judge(chromium, ["x"])[0] and not pol.alerts and not pol.shown(chromium, True)
 
 
 @needs_db

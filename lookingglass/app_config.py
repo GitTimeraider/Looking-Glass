@@ -37,9 +37,9 @@ class Field:
 # what a section is for, shown under its heading
 SECTIONS = {
     "Scanning": "What is scanned and how often.",
-    "Vulnerabilities page": "What the Vulnerabilities page lists and counts (the page says how many are hidden). "
-                            "Does not change alerts: a finding that meets the alert rules is always shown, and your "
-                            "exceptions are always listed under Exceptions.",
+    "Vulnerabilities page": "What the Vulnerabilities page lists and counts (the page says how many are hidden, "
+                            "and why). Does not change alerts: with alerts on, an alert still lists a hidden finding "
+                            "and says it is hidden. Your exceptions are always listed under Exceptions.",
     "Alerts": "When a finding raises an alert. Only used while 'Create alerts for vulnerabilities' is on; the findings "
               "that meet these rules are under 'Meets alert rules' on the Vulnerabilities page either way.",
     "Exceptions": "Findings you accept: no alert, listed under 'Exceptions' on the Vulnerabilities page. To hide "
@@ -343,8 +343,7 @@ FIELDS: list[Field] = [
     Field("vuln_exclude", "vulns", "Containers / images not to scan", "list", "Names or images, * as wildcard.",
           placeholder="my-test-*\nlocalhost/*", section="Scanning"),
     Field("vuln_show_min_cvss", "vulns", "Minimum CVSS score to show", "str", "Findings below this score are not shown "
-          "on the Vulnerabilities page (nor counted there). 0 = show everything. A finding that raises an alert is "
-          "always shown, whatever this says.", placeholder="0", section="Vulnerabilities page"),
+          "on the Vulnerabilities page (nor counted there). 0 = show everything.", placeholder="0", section="Vulnerabilities page"),
     Field("vuln_hide_wont_fix", "vulns", "Hide findings that will not be fixed", "bool", "The distribution decided "
           "not to fix them (Debian / Ubuntu 'will not fix', usually minor or not exploitable in practice).",
           section="Vulnerabilities page"),

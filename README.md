@@ -792,8 +792,9 @@ Looking Glass image, plus a few online sources. It is off by default.
    The *Vulnerabilities page* section can also hide findings that **will not be fixed**, findings **without a fix
    yet**, findings that are **not affected** (on by default), **guesses by product name (CPE)**, and **packages not to
    show**: package names (also the source package, `*` as wildcard: `chromium`, `libx11-*`) or whole package types
-   (`go-module`). These only change the page, never alerts: a finding that meets the alert rules is
-   always shown, and exceptions are always listed under *Exceptions*.
+   (`go-module`). What you hide here is hidden on the page, also when it would raise an
+   alert. Alerts are not changed: with alerts on, an alert still lists a hidden finding and says it is hidden on
+   the page. Exceptions are always listed under *Exceptions*.
 
    The *Alerts* section also has **Create alerts for vulnerabilities** (**off by default**: no alerts at all, only the
    page), **Also alert on actively exploited vulnerabilities** (CISA KEV, whatever the score), **Also alert from EPSS

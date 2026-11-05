@@ -1014,9 +1014,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     not_closed = ("NOT EXISTS (SELECT 1 FROM vuln_closed c WHERE (c.vuln = f.vuln OR c.vuln = ANY(f.aliases)) "
                   "AND c.grp = coalesce(nullif(f.upstream, ''), f.package) AND c.repo IN ('', i.repo))")
 
-    # listed on the page: from 'Minimum CVSS score to show' (findings that meet the alert rules always); your
-    # exceptions are always listed under Exceptions
-    shown = "(f.shown OR f.ignored IS NOT NULL)"
+    # listed on the page: not hidden by Settings › Container vulnerabilities › Vulnerabilities page. The Exceptions
+    # tab lists every finding your exceptions cover, hidden or not.
+    shown = "f.shown"
 
     async def _vulns_reevaluate() -> None:
         """Ask the scanner to judge the stored findings again (alerts follow within ~20 s), without a new scan."""
@@ -1060,7 +1060,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                              limit: int = Query(1000, ge=1, le=10000)):
         if show == "closed":
             return await vulns_closed_list()
-        cond, args = [not_closed, shown], []
+        cond, args = [not_closed] + ([] if show == "ignored" else [shown]), []
         if image:
             args.append(image)
             cond.append(f"f.image_key = ${len(args)}")

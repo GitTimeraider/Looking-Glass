@@ -865,10 +865,10 @@ class Policy:
             return f"CVSS below {self.show_min:g}"
         return None
 
-    def shown(self, f: dict[str, Any], alert: bool) -> bool:
-        """Listed on the Vulnerabilities page: unless a page setting hides it - and always when it meets the alert
-        rules (an alert must never point at a finding you can't see)."""
-        return alert or self.hidden_by(f) is None
+    def shown(self, f: dict[str, Any], alert: bool = False) -> bool:
+        """Listed on the Vulnerabilities page: unless a page setting hides it. Your page settings always win; an alert
+        for a hidden finding still lists it (and says it is hidden on the page)."""
+        return self.hidden_by(f) is None
 
     def judge(self, f: dict[str, Any], names: list[str], today: date | None = None) -> tuple[bool, str | None, str]:
         """(alert?, ignore rule that matched, why) for one finding."""
@@ -1606,8 +1606,9 @@ class VulnScanner:
                     else:
                         alert, ignored, why = pol.judge(f, names, today)
                     updates.append((img["key"], f["vuln"], f["package"], f["version"], f["epss"], f["epss_pct"], f["cvss"],
-                                    f["cvss_source"], f["kev"], alert, ignored, why, pol.shown(f, alert),
-                                    None if alert else pol.hidden_by(f)))
+                                    f["cvss_source"], f["kev"], alert, ignored, why, pol.shown(f),
+                                    pol.hidden_by(f)))
+                    f["hidden_why"] = pol.hidden_by(f)
                     if alert:
                         hits.append((img, f, why))
                 await pool.executemany(
@@ -1644,7 +1645,9 @@ class VulnScanner:
         if n_kev:
             rating.note(f"{n_kev} actively exploited (CISA KEV)")
         lines = [f"- {_finding_short(f)} – {why}" + (f"; fixed in {', '.join(f['fix_versions'][:3])}" if f["fix_versions"] else "")
-                 + _also(f, pkgs[f["vuln"]]) for _, f, why in ordered[:15]]
+                 + _also(f, pkgs[f["vuln"]])
+                 + (f" (hidden on the Vulnerabilities page: {f['hidden_why']})" if f.get("hidden_why") else "")
+                 for _, f, why in ordered[:15]]
         more = f"\n- … and {len(ordered) - 15} more (Vulnerabilities page)" if len(ordered) > 15 else ""
         fix = ("A newer image is available for this tag: update the container (Unraid › Docker tab › the container › "
                "'apply update', or Check for Updates first). Most findings are fixed by the image maintainer's next build."
