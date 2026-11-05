@@ -1,10 +1,9 @@
 # Run this ON THE UNRAID SERVER (optional). It exposes a READ-ONLY Docker API on port 2375 so Looking Glass can
-# graph per-container CPU / memory / network usage and scan exactly the image each container runs for vulnerabilities
-# (IMAGES=1: reads image digests, and lets Syft export locally built images). Never publish the raw /var/run/docker.sock.
+# graph per-container CPU / memory / network usage. Never publish the raw /var/run/docker.sock.
 #
 # Unraid without the compose plugin: Docker tab > Add Container, Repository: ghcr.io/tecnativa/docker-socket-proxy:v0.5.0,
 # add a Path /var/run/docker.sock -> /var/run/docker.sock (read only), a Port 2375 -> 2375 and the
-# Variables CONTAINERS=1, IMAGES=1, INFO=1, VERSION=1, POST=0.
+# Variables CONTAINERS=1, INFO=1, VERSION=1, POST=0.
 # Then in Looking Glass: Settings > Unraid servers > your server > Docker API = http://<unraid-ip>:2375
 #
 # Restrict access: only Looking Glass's host should reach port 2375 (firewall rule in OPNsense or bind to a specific IP).
@@ -15,7 +14,6 @@ services:
     restart: unless-stopped
     environment:
       CONTAINERS: 1    # /containers/json, /containers/{id}/stats, /containers/{id}/logs
-      IMAGES: 1        # /images/{id}/json (exact digest for vulnerability scans), /images/{id}/get (export, still read only)
       INFO: 1
       VERSION: 1
       POST: 0          # read only

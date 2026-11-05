@@ -1,8 +1,3 @@
-# vulnerability scanning (Settings › Container vulnerabilities): Grype and Syft, copied from their official images
-# (static binaries, linux/amd64 + linux/arm64); Dependabot keeps these tags current
-FROM anchore/grype:v0.120.1 AS grype
-FROM anchore/syft:v1.55.0 AS syft
-
 FROM python:3.15-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -14,8 +9,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY --from=grype /grype /usr/local/bin/grype
-COPY --from=syft /syft /usr/local/bin/syft
 COPY lookingglass ./lookingglass
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 # Runs as an unprivileged user and needs no Linux capabilities, so it works with
