@@ -18,9 +18,18 @@
 <div class="card" style="margin-top:14px">
   <h3>Findings <span class="muted small" id="f-note"></span></h3>
   <div class="filters">
-    <div class="seg" id="show"><button data-v="alerted">Above your threshold</button><button data-v="kev">Actively exploited</button><button data-v="fixable">Fix available</button><button data-v="all">All</button><button data-v="ignored">Exceptions</button></div>
+    <div class="seg" id="show"><button data-v="alerted">Above your threshold</button><button data-v="kev">Actively exploited</button><button data-v="fixable">Fix available</button><button data-v="all">All</button><button data-v="ignored">Exceptions</button><button data-v="closed">Closed by you</button></div>
     <select id="img"><option value="">all images</option></select>
     <input id="q" placeholder="CVE, package or image…" style="flex:1">
+  </div>
+  <div id="bulk" class="filters" hidden style="margin-top:8px">
+    <b id="bulk-n"></b>
+    <span id="close-opts"><select id="scope" title="Where the closed finding stays away">
+      <option value="image">close for this image</option><option value="all">close for every image</option></select>
+    <input id="note" placeholder="Why (optional), e.g. not reachable" maxlength="500" style="flex:1"></span>
+    <button id="close-sel" class="danger" title="Hide these findings for good: no alerts, also after new scans and image updates">Close selected</button>
+    <button id="reopen-sel" class="secondary" hidden>Reopen selected</button>
+    <button id="clear-sel" class="secondary">Clear selection</button>
   </div>
   <div id="findings"></div>
 </div>
@@ -33,7 +42,9 @@
 {% endblock %}
 {% block scripts %}
 <script>
-let D = {}, show = "alerted", img = "", q = "";
+let D = {}, show = "alerted", img = "", q = "", rows = [];
+const picked = new Map();  // key -> {vuln, group, repo} (findings) or {vuln, grp, repo} (closed): kept across refreshes
+const keyOf = r => show === "closed" ? `c|${r.vuln}|${r.grp}|${r.repo}` : `f|${r.vuln}|${r.group}|${r.repo}`;
 const ts = v => v ? (typeof v === "number" ? new Date(v * 1000).toISOString() : v) : null;
 const score = (v, src) => v === null || v === undefined ? `<span class="muted">–</span>` :
   `<span class="badge ${v >= 9 ? "critical" : v >= 7 ? "high" : v >= 4 ? "medium" : "low"}" title="${LG.esc(src || "")}">${Number(v).toFixed(1)}</span>`;
@@ -71,7 +82,7 @@ async function load() {
   document.getElementById("kpis").innerHTML = k("images scanned", imgs.filter(i => i.matched_at).length + " / " + imgs.length) +
     k("images above threshold", vuln, vuln ? "bad" : "ok") + k("findings above threshold", above, above ? "bad" : "ok") +
     k("actively exploited", kev, kev ? "bad" : "ok") + k("database age (days)", age ?? "–", age == null || age > 3 ? "warn" : "ok") +
-    k("known exploited CVEs", LG.num(D.kev_count));
+    k("known exploited CVEs", LG.num(D.kev_count)) + k("closed by you", LG.num(D.closed_count || 0));
   LG.table("#images", [
     {k: "image", l: "Image", f: (v, r) => `<b>${LG.esc(v)}</b>${r.digest ? `<div class="small muted mono" title="${LG.esc(r.digest)}">${LG.esc(r.digest.slice(0, 19))}…</div>` : ""}` +
       (r.notes || []).map(n => `<div class="small muted">${LG.esc(n)}</div>`).join("")},
@@ -96,13 +107,52 @@ async function load() {
   scanner(st);
   await findings();
 }
+function bulk() {
+  const n = picked.size, closed = show === "closed";
+  document.getElementById("bulk").hidden = !n;
+  document.getElementById("bulk-n").textContent = `${n} selected`;
+  document.getElementById("close-opts").hidden = closed;
+  document.getElementById("close-sel").hidden = closed;
+  document.getElementById("reopen-sel").hidden = !closed;
+  const all = document.getElementById("sel-all");
+  if (all) { const shown = rows.filter(r => picked.has(keyOf(r))).length; all.checked = !!rows.length && shown === rows.length; all.indeterminate = shown > 0 && shown < rows.length; }
+}
+const pickCol = () => ({k: "_pick", l: `<input type="checkbox" id="sel-all" title="Select every shown row" aria-label="Select all">`, raw: true,
+  f: (v, r) => `<input type="checkbox" class="pick" data-k="${LG.esc(keyOf(r))}" ${picked.has(keyOf(r)) ? "checked" : ""} aria-label="Select">`});
+const pickOf = r => show === "closed" ? { vuln: r.vuln, grp: r.grp, repo: r.repo } : { vuln: r.vuln, group: r.group, repo: r.repo };
+// one listener on the container: the table is drawn again when sorted, the checkboxes with it
+document.getElementById("findings").addEventListener("change", e => {
+  const c = e.target;
+  if (c.id === "sel-all") {
+    for (const r of rows) c.checked ? picked.set(keyOf(r), pickOf(r)) : picked.delete(keyOf(r));
+    document.querySelectorAll("#findings input.pick").forEach(x => x.checked = c.checked);
+  } else if (c.classList.contains("pick")) {
+    const r = rows.find(x => keyOf(x) === c.dataset.k);
+    c.checked && r ? picked.set(c.dataset.k, pickOf(r)) : picked.delete(c.dataset.k);
+  } else return;
+  bulk();
+});
+function wirePicks() { bulk(); }
 async function findings() {
   const p = new URLSearchParams({ show }); if (img) p.set("image", img); if (q) p.set("q", q);
-  const rows = await LG.api("/api/vulns/findings?" + p);
+  rows = await LG.api("/api/vulns/findings?" + p);
   const pol = D.policy || {};
   document.getElementById("f-note").textContent = `threshold: CVSS ≥ ${pol.min_cvss || 0}` + (pol.kev_always ? ", actively exploited always" : "") +
-    (pol.epss_min ? `, EPSS ≥ ${pol.epss_min}` : "") + (pol.only_fixed ? ", only with a fix" : "");
-  LG.table("#findings", [
+    (pol.epss_min ? `, EPSS ≥ ${pol.epss_min}` : "") + (pol.only_fixed ? ", only with a fix" : "") +
+    (pol.alerts === false ? " · alerts off" : pol.alert_level && pol.alert_level !== "low" ? ` · alerts from ${pol.alert_level}` : "");
+  if (show === "closed") {
+    LG.table("#findings", [pickCol(),
+      {k: "vuln", l: "Vulnerability"},
+      {k: "grp", l: "Package", f: v => `<b>${LG.esc(v)}</b>`},
+      {k: "repo", l: "Closed for", f: v => v ? LG.esc(v) : `<i>every image</i>`},
+      {k: "images", l: "Hides it in", f: v => (v || []).length ? (v || []).map(LG.esc).join("<br>") : `<span class="muted">no image at the moment</span>`},
+      {k: "note", l: "Why", f: v => LG.esc(v || "")},
+      {k: "closed_by", l: "By", f: v => LG.esc(v || "")},
+      {k: "closed_at", l: "Closed", f: v => LG.ago(v)},
+    ], rows, "Nothing closed. Select findings in the other tabs and use Close selected.", null, { sortAll: true });
+    return wirePicks();
+  }
+  LG.table("#findings", [pickCol(),
     {k: "vuln", l: "Vulnerability", f: (v, r) => (r.url ? `<a href="${LG.esc(r.url)}" target="_blank" rel="noopener noreferrer">${LG.esc(v)}</a>` : LG.esc(v)) +
       (r.aliases && r.aliases.length ? `<div class="small muted">${LG.esc(r.aliases.slice(0, 3).join(", "))}</div>` : "") +
       (r.description ? `<div class="small muted" title="${LG.esc(r.description)}">${LG.esc(r.description.slice(0, 110))}${r.description.length > 110 ? "…" : ""}</div>` : "")},
@@ -115,6 +165,7 @@ async function findings() {
     {k: "why", l: "Why", f: (v, r) => r.ignored ? `<span class="muted">exception: ${LG.esc(r.ignored)}</span>` : LG.esc(v || "")},
     {k: "first_seen", l: "First seen", f: v => LG.ago(v)},
   ], rows, show === "alerted" ? "Nothing above your threshold." : "No findings.", null, { sortAll: true });
+  wirePicks();
 }
 // one row per vulnerability + source package: Ubuntu / Debian report a CVE of e.g. dotnet10 once per package built from it
 // the version of the software in the image (every image) and, where an app check exists, its own CVE lookup
@@ -161,7 +212,21 @@ function scanner(st) {
     line("Schema", LG.esc(db.schema || "–")) +
     line("Last full check", st.last_scan ? LG.ago(ts(st.last_scan)) : "never");
 }
-LG.seg(document.getElementById("show"), show, v => { show = v; findings(); });
+LG.seg(document.getElementById("show"), show, v => { show = v; picked.clear(); findings(); });
+document.getElementById("clear-sel").onclick = () => { picked.clear(); findings(); };
+document.getElementById("close-sel").onclick = async () => {
+  const items = [...picked.values()], scope = document.getElementById("scope").value;
+  if (!items.length) return;
+  if (!confirm(`Close ${items.length} finding(s) ${scope === "all" ? "for every image" : "for their image"}? They disappear, raise no alerts and do not come back after new scans or image updates. You can reopen them under "Closed by you".`)) return;
+  try { await LG.api("/api/vulns/close", { method: "POST", body: { items, scope, note: document.getElementById("note").value } });
+    picked.clear(); document.getElementById("note").value = ""; await load(); }
+  catch (e) { alert(e.message); }
+};
+document.getElementById("reopen-sel").onclick = async () => {
+  const items = [...picked.values()]; if (!items.length) return;
+  try { await LG.api("/api/vulns/reopen", { method: "POST", body: { items } }); picked.clear(); await load(); }
+  catch (e) { alert(e.message); }
+};
 document.getElementById("img").onchange = e => { img = e.target.value; findings(); };
 let qt; document.getElementById("q").oninput = e => { clearTimeout(qt); qt = setTimeout(() => { q = e.target.value.trim(); findings(); }, 300); };
 for (const [id, rebuild] of [["scan", false], ["rebuild", true]])

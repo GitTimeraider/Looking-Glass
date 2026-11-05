@@ -241,7 +241,7 @@ def _tools(tmp_path):
 
 async def _reset():
     pool = db.pool()
-    await pool.execute("TRUNCATE alerts, vuln_images, vuln_findings, vuln_cache, unraid_servers")
+    await pool.execute("TRUNCATE alerts, vuln_images, vuln_findings, vuln_cache, vuln_closed, unraid_servers")
     await pool.execute("DELETE FROM kv WHERE key LIKE 'vulnscan:%'")
     await pool.execute("DELETE FROM snapshots WHERE key LIKE 'unraid:%'")
 
@@ -622,6 +622,134 @@ def test_an_updated_container_is_checked_right_away(tmp_path):
             sc.status["last_try"] -= 700
             await sc.tick()
             assert len(runs) == 2  # recreated by an update: checked now
+        finally:
+            await db.close()
+
+    asyncio.run(main())
+
+
+# ------------------------------------------------ distribution suffixes ---
+def _pkg_match(version, constraint, fixes, pkg_type="python", name="pybot", vid="CVE-2026-1111"):
+    return {"vulnerability": {"id": vid, "severity": "High", "fix": {"versions": fixes, "state": "fixed" if fixes else "unknown"},
+                              "cvss": [{"source": "nvd@nist.gov", "version": "3.1", "metrics": {"baseScore": 8.1}}]},
+            "matchDetails": [{"type": "cpe-match", "matcher": "python-matcher",
+                              "searchedBy": {"package": {"name": name, "version": version}},
+                              "found": {"versionConstraint": constraint}}],
+            "artifact": {"name": name, "version": version, "type": pkg_type}}
+
+
+def test_version_suffixes():
+    from lookingglass.vulnscan import plain_affected, split_suffix
+    assert split_suffix("1.3.1+ubuntu26") == ("1.3.1", "+ubuntu26")
+    assert split_suffix("2:1.3.1-0ubuntu1~26.04.1") == ("1.3.1", "-0ubuntu1~26.04.1")
+    assert split_suffix("1.3.1-r2") == ("1.3.1", "-r2") and split_suffix("1.3.1+b1") == ("1.3.1", "+b1")
+    for v in ("1.3.1", "1.3.1-rc1", "1.3.1~beta2", "1.3.1.dev3", "1.3.1-alpha", "latest"):
+        assert split_suffix(v) is None, v  # nothing to strip, or a real pre-release
+    assert plain_affected("< 1.3.1 (python)", "1.3.1") is False and plain_affected("< 1.3.1", "1.3.0") is True
+    assert plain_affected(">= 2.0, < 2.3.4 || < 1.9 (semver)", "1.9") is False
+    assert plain_affected(">= 2.0, < 2.3.4 || < 1.9 (semver)", "2.3") is True
+    assert plain_affected("<= 1.3.1", "1.3.1") is True and plain_affected("< 1.3.1-2 (deb)", "1.3.1") is None
+    assert plain_affected("none (unknown)", "1.0") is None and plain_affected("", "1.0") is None
+
+
+def test_distribution_suffix_is_not_an_earlier_version():
+    """pybot 1.3.1+ubuntu26 against 'fixed in 1.3.1': the suffix is the distribution's, not a pre-release."""
+    pol = Policy(7.0, True, None, True, [])
+    f = parse_grype({"matches": [_pkg_match("1.3.1+ubuntu26", "< 1.3.1 (python)", ["1.3.1"])]})[0]
+    assert f["matched"]["probably_fixed"] and "1.3.1+ubuntu26 is release 1.3.1" in f["matched"]["note"]
+    alert, _, why = pol.judge(f, ["x"])
+    assert not alert and why.startswith("not affected")
+    # same with only a fixed version known (no usable constraint), and with a Debian-style revision
+    f = parse_grype({"matches": [_pkg_match("1.3.1-0ubuntu1", "", ["1.3.1"])]})[0]
+    assert f["matched"]["probably_fixed"]
+    # the fixed version of the same line counts, not a later line's
+    f = parse_grype({"matches": [_pkg_match("1.2.9+deb12u1", "", ["1.2.9", "1.3.1"])]})[0]
+    assert f["matched"]["probably_fixed"]
+    # really older, a real pre-release, or a fix with its own distribution revision: Grype's verdict stands
+    for v, c, fx in [("1.3.0+ubuntu26", "< 1.3.1 (python)", ["1.3.1"]), ("1.3.1-rc1", "< 1.3.1", ["1.3.1"]),
+                     ("1.3.1+ubuntu26", "", ["1.3.1-2ubuntu3"]), ("1.3.1+ubuntu26", "<= 1.3.1", ["1.3.2"])]:
+        f = parse_grype({"matches": [_pkg_match(v, c, fx)]})[0]
+        assert "probably_fixed" not in f["matched"], (v, c, fx)
+        assert pol.judge(f, ["x"])[0], (v, c, fx)
+
+
+def test_alert_level_and_switch():
+    crit = {"vuln": "CVE-1", "cvss": 9.8, "kev": False, "fix_versions": ["2"]}
+    high = {"vuln": "CVE-2", "cvss": 7.5, "kev": False, "fix_versions": ["2"]}
+    kev = {"vuln": "CVE-3", "cvss": 5.0, "kev": True, "fix_versions": []}
+    pol = Policy.of(Settings(vuln_alert_min_level="critical"))
+    assert pol.raises_alert(crit) and pol.raises_alert(kev) and not pol.raises_alert(high)
+    assert Policy.of(Settings()).raises_alert(high)  # default: everything above the threshold
+    assert not Policy.of(Settings(vuln_alerts=False)).raises_alert(crit)
+    assert Policy.of(Settings(vuln_alert_min_level="bogus")).alert_level == "low"
+    assert app_config.BY_KEY["vuln_alert_min_level"].choices == ("low", "medium", "high", "critical")
+
+
+def _Req():  # stands in for the request the login guard marked
+    from types import SimpleNamespace
+    return SimpleNamespace(state=SimpleNamespace(user={"username": "admin"}))
+
+
+@needs_db
+def test_closed_findings_stay_away(tmp_path):
+    """Closing a finding hides it on the page and from the alert; it stays closed after a new scan, reopening brings
+    it back. Alerts can be switched off or limited to a level."""
+    from lookingglass.web.app import create_app
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            await _reset()
+            pool = db.pool()
+            s = Settings(vuln_scan_enabled=True, vuln_sources=ALL_OFF, vuln_app_checks="",
+                         vuln_images="registry.example/team/app@sha256:abc", **_tools(tmp_path))
+            sc = VulnScanner(s)
+            await sc.cycle()
+            app = create_app(s, None)
+            ep = {r.path: r.endpoint for r in app.routes if getattr(r, "path", "").startswith("/api/vulns")}
+            rows = await ep["/api/vulns/findings"](image=None, show="all", q=None, limit=1000)
+            php = next(r for r in rows if r["vuln"] == "CVE-2024-4577")
+            assert php["repo"] == "registry.example/team/app" and php["group"] == "php-cli"
+            out = await ep["/api/vulns/close"](_Req(), {"items": [{"vuln": php["vuln"], "group": php["group"],
+                                                                     "repo": php["repo"]}], "note": "not reachable"})
+            assert out["closed"] == 1 and await db.kv_get("vulnscan:reevaluate")
+            rows = await ep["/api/vulns/findings"](image=None, show="all", q=None, limit=1000)
+            assert "CVE-2024-4577" not in {r["vuln"] for r in rows}
+            closed = await ep["/api/vulns/findings"](image=None, show="closed", q=None, limit=1000)
+            assert closed[0]["closed_by"] == "admin" and closed[0]["note"] == "not reachable"
+            assert closed[0]["images"] == ["registry.example/team/app@sha256:abc"]
+            overview = await ep["/api/vulns"]()
+            assert overview["closed_count"] == 1 and overview["images"][0]["kev"] == 0
+            await sc.tick()  # picks up the re-evaluation request
+            assert not await db.kv_get("vulnscan:reevaluate")
+            f = await pool.fetchrow("SELECT alerted, why FROM vuln_findings WHERE vuln = 'CVE-2024-4577'")
+            assert not f["alerted"] and f["why"] == "closed by you"
+            a = await pool.fetchrow("SELECT status, count, description FROM alerts WHERE rule = 'container_vulnerable'")
+            assert a["status"] == "open" and "CVE-2024-4577" not in a["description"].split("\n\n")[1]
+            # a new scan does not bring it back
+            await sc.cycle(rebuild=True)
+            assert await pool.fetchval("SELECT why FROM vuln_findings WHERE vuln = 'CVE-2024-4577'") == "closed by you"
+            # closing the other one (by its alias, for every image) closes the alert
+            await ep["/api/vulns/close"](_Req(), {"items": [{"vuln": "CVE-2023-0002", "group": "guzzlehttp/guzzle"}],
+                                                  "scope": "all"})
+            await sc.evaluate()
+            assert await pool.fetchval("SELECT status FROM alerts WHERE rule = 'container_vulnerable'") == "closed"
+            # reopen: alerted again
+            await ep["/api/vulns/reopen"]({"items": [{"vuln": "CVE-2024-4577", "grp": "php-cli",
+                                                      "repo": "registry.example/team/app"}]})
+            await sc.evaluate()
+            assert await pool.fetchval("SELECT status FROM alerts WHERE rule = 'container_vulnerable' "
+                                       "ORDER BY id DESC LIMIT 1") == "open"
+            # alert level critical still alerts the KEV one; alerts off closes the alert, the findings stay listed
+            s.vuln_alert_min_level = "critical"
+            await sc.evaluate()
+            assert await pool.fetchval("SELECT count(*) FROM alerts WHERE rule = 'container_vulnerable' AND status = 'open'") == 1
+            s.vuln_alerts = False
+            await sc.evaluate()
+            assert not await pool.fetchval("SELECT count(*) FROM alerts WHERE rule = 'container_vulnerable' AND status = 'open'")
+            assert await pool.fetchval("SELECT alerted FROM vuln_findings WHERE vuln = 'CVE-2024-4577'")
+            with pytest.raises(Exception, match="Select"):
+                await ep["/api/vulns/close"](_Req(), {"items": []})
         finally:
             await db.close()
 

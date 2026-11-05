@@ -786,11 +786,15 @@ Looking Glass image, plus a few online sources. It is off by default.
    threshold and says whether a newer image exists for the tag, and it closes by itself after you update. The default
    threshold is CVSS ≥ 7.0, plus every actively exploited CVE, and only findings that have a fix. Change it under
    *Settings › Container vulnerabilities*: *Alert from CVSS score*, *Also alert from EPSS*, *Only alert when a fix
-   exists*.
+   exists*. Two more settings decide whether those findings become alerts at all:
+   * **Create alerts for vulnerabilities**: off = findings are only listed on the Vulnerabilities page, no alerts
+     (open ones close). Scan-problem alerts still come.
+   * **Alert from level**: the lowest level that raises an alert: *critical* (CVSS 9+ or actively exploited),
+     *high* (7+), *medium* (4+) or *low* (everything above the threshold, the default).
 
 **When alerts close.** An image alert updates on every check (count, severity, list) and closes by itself once
 nothing of that image is above your threshold any more: after you update the container, change the threshold or add
-an exception. Updating a container recreates it, which Looking Glass notices within about 10 minutes and checks right
+an exception, or close the findings. Updating a container recreates it, which Looking Glass notices within about 10 minutes and checks right
 away, so the alert closes then, not at the next scheduled check. If it comes back (a new CVE), the alert opens again.
 An alert you closed by hand stays closed unless the image gets worse. Scan-problem alerts close as soon as that part
 works again.
@@ -805,6 +809,19 @@ though it is the fixed build. Looking Glass then compares the binary package's v
 If the package already has the fix, it is marked *already fixed* and raises no alert; otherwise the finding says
 "not fixed yet". `pkg:dotnet10` under *Exceptions* covers all packages of a source package. Matches made only by
 product name (*CPE guess*) are marked, because they are wrong more often.
+
+**Distribution suffixes.** Distributions add their own part to a version: `1.3.1+ubuntu26`, `1.3.1-0ubuntu1`,
+`1.3.1-r2` (Alpine), `+deb12u1`, `+dfsg`. Some matchers (by product name, language packages, semver) read that part
+as a pre-release, so `1.3.1-0ubuntu1` counts as *older* than 1.3.1 and is reported for "fixed in 1.3.1". When the
+affected range and fixed versions are plain release numbers, Looking Glass compares the release number alone (1.3.1)
+with them. If it is not affected, the finding is marked *not affected* and raises no alert. Real pre-releases
+(`-rc1`, `~beta`, `.dev2`) and fixes with their own distribution part (`1.3.1-2ubuntu3`) keep Grype's verdict.
+
+**Closing findings.** On the Vulnerabilities page, tick the findings you've checked and press **Close selected**,
+for that image or for every image, optionally with why. A closed finding disappears from the lists, counts and
+alerts, and stays away after new scans and container updates. It is remembered by vulnerability (also its aliases),
+source package and image, not by version. Reopen it under the **Closed by you** tab. Changes apply within about
+20 seconds.
 
 **App version column.** Every image gets the version of the software inside it. It is read, top to bottom, from
 the image label `org.opencontainers.image.version`, linuxserver's `build_version`, `org.label-schema.version`, an
@@ -832,7 +849,7 @@ what you checked (`CVE-… on fileflows  # Windows only`), optionally until a da
    vulnerabilities** › *Save*. The first check starts within a few minutes. Grype's first database download takes a
    while (a few hundred MB, kept in `/data/vulnscan`).
 3. **Looking Glass › Vulnerabilities** shows every image, its findings (filters: above your threshold / actively
-   exploited / fix available / all / exceptions), the app versions found and whether a newer image exists. The
+   exploited / fix available / all / exceptions / closed by you), the app versions found and whether a newer image exists. The
    *Check now* and *Read all images again* buttons start a check right away.
 4. Optional, under *Settings › Container vulnerabilities*:
    * a **registry login**: Docker Hub limits anonymous pulls; private registries need one.

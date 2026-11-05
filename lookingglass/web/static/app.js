@@ -97,7 +97,7 @@ const LG = {
   table(el, cols, rows, empty = "No data", onRow, opts = {}) {
     if (typeof el === "string") el = document.querySelector(el);
     if (!rows || !rows.length) { el.innerHTML = `<div class="empty">${LG.esc(empty)}</div>`; return; }
-    cols = cols.map(c => c.s || !opts.sortAll || !c.l ? c : { ...c, s: true });
+    cols = cols.map(c => c.s || !opts.sortAll || !c.l || c.raw ? c : { ...c, s: true });  // raw: c.l is HTML (a checkbox)
     const all = rows, st = el._sort, sc = st && cols[st.i];
     if (sc && sc.s) {
       const val = r => LG.sortKey(sc.s === true ? r[sc.k] : sc.s(r));
@@ -112,11 +112,11 @@ const LG = {
     const mark = st ? st : opts.order ? { i: cols.findIndex(c => c.k === opts.order.k && c.s), dir: opts.order.dir } : null;
     const head = cols.map((c, i) => c.s
       ? `<th class="${c.num ? "num " : ""}sortable" data-sort="${i}" title="Sort by ${LG.esc(c.l)}">${LG.esc(c.l)}<span class="arrow">${mark && mark.i === i ? (mark.dir > 0 ? "▲" : "▼") : ""}</span></th>`
-      : `<th class="${c.num ? "num" : ""}">${LG.esc(c.l)}</th>`).join("");
+      : `<th class="${c.num ? "num" : ""}">${c.raw ? c.l : LG.esc(c.l)}</th>`).join("");
     const body = rows.map((r, i) => `<tr${onRow ? ` class="clickable" data-row="${i}" title="Show matching events"` : ""}>` + cols.map(c => {
       const v = r[c.k];
       const html = c.f ? c.f(v, r) : (c.num ? LG.num(v) : LG.esc(Array.isArray(v) ? v.join(", ") : v));
-      return `<td class="${c.num ? "num" : ""}" data-label="${LG.esc(c.l || "")}">${html}</td>`;
+      return `<td class="${c.num ? "num" : ""}" data-label="${c.raw ? "" : LG.esc(c.l || "")}">${html}</td>`;
     }).join("") + "</tr>").join("");
     el.innerHTML = `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
     LG.fit(el.querySelector(".table-wrap"));

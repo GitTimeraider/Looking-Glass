@@ -64,6 +64,8 @@ vuln_images(key, image, repo, digest, containers jsonb [{server, name, state}], 
 vuln_findings(image_key /*vuln_images.key*/, vuln /*CVE / GHSA id*/, package, version, pkg_type, aliases text[], cves text[],
        severity, cvss, kev bool /*actively exploited, CISA KEV*/, epss /*0-1*/, fix_versions text[], fix_state, url,
        description, source /*grype | app check*/, alerted bool /*above the user's threshold*/, ignored /*exception*/, first_seen)
+vuln_closed(vuln, grp /*source package or package*/, repo /*image repo, '' = all*/, note, closed_by, closed_at)
+       -- findings the user closed: hidden and never alerted (match vuln_findings by vuln or alias, package group, repo)
 snapshots(key, ts, data jsonb)  keys: system, activity (top processes), gateways, interfaces, services, firmware, arp,
        leases_kea / leases_dnsmasq / leases_isc, unbound_totals, crowdsec_decisions, qfeeds_stats, poller_status,
        unifi:devices (APs / switches: state, model, firmware, upgradable, cpu, mem, clients, ports[], radios[]),

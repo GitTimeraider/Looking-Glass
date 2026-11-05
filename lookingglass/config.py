@@ -168,6 +168,8 @@ class Settings(BaseSettings):
     unraid_log_error_minutes: int = 10
     # container vulnerabilities (Settings › Container vulnerabilities, vulnscan.py)
     vuln_scan_enabled: bool = False
+    vuln_alerts: bool = True
+    vuln_alert_min_level: str = "low"  # low | medium | high | critical
     vuln_min_cvss: str = "7.0"
     vuln_kev_always: bool = True
     vuln_epss_min: str = ""

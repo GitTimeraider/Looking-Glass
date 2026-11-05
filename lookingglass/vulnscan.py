@@ -555,7 +555,7 @@ def parse_grype(doc: dict[str, Any]) -> list[dict[str, Any]]:
             }
         f["locations"] = list(dict.fromkeys(f["locations"] + locs))[:10]
     for f in found.values():
-        if note := version_note(f):
+        if note := version_note(f) or suffix_note(f):
             f["matched"] = {**f["matched"], "note": note["text"], "probably_fixed": note["fixed"]}
     return list(found.values())
 
@@ -619,6 +619,89 @@ def version_note(f: dict[str, Any]) -> dict[str, Any] | None:
                              f"binary packages get {embedded}). " + (f"{inst} ≥ {embedded}: already fixed - Grype "
                              "compared different version formats." if done else f"{inst} < {embedded}: not fixed yet."))}
     return None
+
+
+PLAIN_VERSION = re.compile(r"v?(\d+(?:\.\d+)*)")
+# what may follow a release number without making it an earlier (pre-release) version: +ubuntu26, -0ubuntu1, -r2,
+# +dfsg-1, .el9, -1 ... but not 1.3.1-rc1, 1.3.1~beta, 1.3.1.dev2
+PRERELEASE = re.compile(r"(?:^|[^a-z])(?:alpha|beta|rc|pre|preview|dev|snapshot|nightly)\d*(?:[^a-z]|$)", re.I)
+
+
+def split_suffix(v: str) -> tuple[str, str] | None:
+    """'1.3.1+ubuntu26' -> ('1.3.1', '+ubuntu26'); None when there is no harmless distribution / build suffix."""
+    v = str(v or "").strip().split(":", 1)[-1]  # epoch
+    m = PLAIN_VERSION.match(v)
+    if not m:
+        return None
+    base, rest = m.group(1), v[m.end():]
+    if not rest or rest[0] not in "+-." or PRERELEASE.search(rest):
+        return None  # nothing to strip, a pre-release, or ~ (sorts before the release in Debian's order)
+    return base, rest
+
+
+def plain_tuple(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in v.split("."))
+
+
+def plain_cmp(a: str, b: str) -> int:
+    ta, tb = plain_tuple(a), plain_tuple(b)
+    n = max(len(ta), len(tb))
+    ta, tb = ta + (0,) * (n - len(ta)), tb + (0,) * (n - len(tb))
+    return (ta > tb) - (ta < tb)
+
+
+def plain_affected(constraint: str, version: str) -> bool | None:
+    """Does a plain version fall in Grype's constraint ('< 1.3.1 (semver)', '>= 2.0, < 2.3.4 || < 1.9')? None when the
+    constraint is missing or uses versions that are not plain numbers (then Grype's own comparison stands)."""
+    c = re.sub(r"\s*\([^)]*\)\s*$", "", str(constraint or "")).strip()
+    if not c or c.lower() in ("none", "unknown", "*"):
+        return None
+    alternatives = []
+    for alt in c.split("||"):
+        clauses = []
+        for part in alt.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            m = re.fullmatch(r"(<=|>=|<|>|==|=|!=)?\s*v?(\d+(?:\.\d+)*)", part)
+            if not m:
+                return None
+            clauses.append((m.group(1) or "=", m.group(2)))
+        if not clauses:
+            return None
+        alternatives.append(clauses)
+    ops = {"<": lambda r: r < 0, "<=": lambda r: r <= 0, ">": lambda r: r > 0, ">=": lambda r: r >= 0,
+           "=": lambda r: r == 0, "==": lambda r: r == 0, "!=": lambda r: r != 0}
+    return any(all(ops[op](plain_cmp(version, v)) for op, v in clauses) for clauses in alternatives)
+
+
+def suffix_note(f: dict[str, Any]) -> dict[str, Any] | None:
+    """A version with a distribution / build suffix (1.3.1+ubuntu26, 1.3.1-0ubuntu1) compared with plain release
+    numbers (< 1.3.1, fixed in 1.3.1): some matchers (CPE, language packages, semver) read the suffix as a pre-release,
+    so 1.3.1-0ubuntu1 counts as older than 1.3.1. Then the release number alone is compared. Only says something when
+    that shows the package is not affected: {"fixed": True, "text": ...}."""
+    m = f.get("matched") or {}
+    searched = (m.get("searched") or "").rpartition(" ")[2] or str(f.get("version") or "")
+    split = split_suffix(searched)
+    if not split:
+        return None
+    base, rest = split
+    fixes = [str(x) for x in f.get("fix_versions") or []]
+    plain_fixes = [x.split(":", 1)[-1] for x in fixes if PLAIN_VERSION.fullmatch(x.split(":", 1)[-1])]
+    affected = plain_affected(m.get("constraint") or "", base)
+    if affected is None:
+        if not fixes or len(plain_fixes) != len(fixes):
+            return None  # the fix has its own distribution suffix (1.3.1-2ubuntu3): Grype's full comparison stands
+        line = [x for x in plain_fixes if plain_tuple(x)[:2] == plain_tuple(base)[:2]]
+        fix = min(line, key=plain_tuple) if line else max(plain_fixes, key=plain_tuple)
+        affected = plain_cmp(base, fix) < 0
+        why = f"fixed in {fix}"
+    else:
+        why = "affected: " + re.sub(r"\s*\([^)]*\)\s*$", "", m.get("constraint") or "")
+    if affected:
+        return None
+    return {"fixed": True, "text": f"{searched} is release {base} with the suffix '{rest}' of the distribution / build; "
+                                   f"{why} - {base} is not affected. Grype read the suffix as an earlier version."}
 
 
 def match_info(m: dict[str, Any]) -> dict[str, Any]:
@@ -711,6 +794,8 @@ class Policy:
     epss_min: float | None
     only_fixed: bool
     ignore: list[IgnoreRule]
+    alerts: bool = True           # raise alerts at all (findings are listed either way)
+    alert_level: str = "low"      # lowest level that raises an alert
 
     @classmethod
     def of(cls, s: Settings) -> "Policy":
@@ -718,8 +803,14 @@ class Policy:
             ignore = parse_ignore(s.vuln_ignore)
         except ValueError:
             ignore = []
+        level = str(getattr(s, "vuln_alert_min_level", "low") or "low").lower()
         return cls(parse_threshold(s.vuln_min_cvss, "", 10) or 0.0, s.vuln_kev_always,
-                   parse_threshold(s.vuln_epss_min, "", 1), s.vuln_only_fixed, ignore)
+                   parse_threshold(s.vuln_epss_min, "", 1), s.vuln_only_fixed, ignore,
+                   bool(getattr(s, "vuln_alerts", True)), level if level in LEVELS else "low")
+
+    def raises_alert(self, f: dict[str, Any]) -> bool:
+        """A finding above the threshold that is also worth an alert (alerts on, at least the chosen level)."""
+        return self.alerts and LEVELS.index(level_of(f)) >= LEVELS.index(self.alert_level)
 
     def judge(self, f: dict[str, Any], names: list[str], today: date | None = None) -> tuple[bool, str | None, str]:
         """(alert?, ignore rule that matched, why) for one finding."""
@@ -728,7 +819,9 @@ class Policy:
                 return False, r.text, "ignored"
         s = score_of(f)
         if (f.get("matched") or {}).get("probably_fixed"):
-            return False, None, "already fixed (Grype compared a binary version with the source package's)"
+            return False, None, ("not affected (Grype read a distribution suffix as an earlier version)"
+                                 if "suffix" in str((f.get("matched") or {}).get("note") or "")
+                                 else "already fixed (Grype compared a binary version with the source package's)")
         if f.get("kev") and self.kev_always:
             return True, None, "actively exploited (CISA KEV)"
         fixed = f.get("fix_state") == "fixed" or bool(f.get("fix_versions"))
@@ -739,6 +832,22 @@ class Policy:
         if self.epss_min is not None and (f.get("epss") or 0) >= self.epss_min:
             return True, None, f"EPSS {f['epss']:.0%} ≥ {self.epss_min:.0%}"
         return False, None, "below the threshold"
+
+
+def finding_group(f: dict[str, Any]) -> str:
+    """The package a closed finding is remembered by: the source package where there is one (dotnet10), so a CVE
+    closed once stays closed for every binary package built from it and for later versions of it."""
+    return str(f.get("upstream") or f.get("package") or "")
+
+
+def is_closed(f: dict[str, Any], repo: str, closed: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The 'closed' entry (vuln_closed) that covers this finding of an image of ``repo``, if any."""
+    ids = {str(f.get("vuln") or "").upper(), *(str(a).upper() for a in f.get("aliases") or [])}
+    grp = finding_group(f)
+    for c in closed:
+        if c["vuln"].upper() in ids and c["grp"] == grp and c["repo"] in ("", repo):
+            return c
+    return None
 
 
 def level_of(f: dict[str, Any]) -> str:
@@ -1405,6 +1514,7 @@ class VulnScanner:
         epss = {r["id"]: r["value"] for r in await pool.fetch("SELECT id, value FROM vuln_cache WHERE kind = 'epss'")}
         cvss = {r["id"]: r["value"] for r in await pool.fetch("SELECT id, value FROM vuln_cache WHERE kind = 'cvss'")}
         images = [dict(r) for r in await pool.fetch("SELECT * FROM vuln_images ORDER BY image")]
+        closed = [dict(r) for r in await pool.fetch("SELECT vuln, grp, repo FROM vuln_closed")]
         today = date.today()
         by_repo: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for img in images:
@@ -1425,22 +1535,30 @@ class VulnScanner:
                         if sc:
                             f["cvss"], f["cvss_source"] = max(sc), "NVD lookup"
                     f["kev"] = bool(f["kev"] or any(c in kev for c in f["cves"]))
-                    alert, ignored, why = pol.judge(f, names, today)
+                    if is_closed(f, img["repo"], closed):
+                        alert, ignored, why = False, None, "closed by you"
+                    else:
+                        alert, ignored, why = pol.judge(f, names, today)
                     updates.append((img["key"], f["vuln"], f["package"], f["version"], f["epss"], f["epss_pct"], f["cvss"],
                                     f["cvss_source"], f["kev"], alert, ignored, why))
-                    if alert:
+                    if alert and pol.raises_alert(f):
                         hits.append((img, f, why))
                 await pool.executemany(
                     "UPDATE vuln_findings SET epss = $5, epss_pct = $6, cvss = $7, cvss_source = $8, kev = $9, alerted = $10, "
                     "ignored = $11, why = $12 WHERE image_key = $1 AND vuln = $2 AND package = $3 AND version = $4", updates)
-            await self.alert(repo, imgs, hits)
+            await self.alert(repo, imgs, hits, pol)
         await self.save_status(last_eval=time.time())
 
-    async def alert(self, repo: str, imgs: list[dict[str, Any]], hits: list[tuple[dict[str, Any], dict[str, Any], str]]) -> None:
+    async def alert(self, repo: str, imgs: list[dict[str, Any]], hits: list[tuple[dict[str, Any], dict[str, Any], str]],
+                    pol: Policy | None = None) -> None:
         fp = f"vuln:{repo}"
+        if pol is not None and not pol.alerts:
+            await close_alerts(RULE, [fp], "alerts for vulnerabilities are switched off (Settings › Container "
+                               "vulnerabilities); the findings stay on the Vulnerabilities page")
+            return
         if not hits:
-            await close_alerts(RULE, [fp], "no vulnerability above your threshold any more (updated image, new "
-                               "threshold or exception)")
+            await close_alerts(RULE, [fp], "no vulnerability above your threshold / alert level any more (updated "
+                               "image, new threshold, exception or closed by you)")
             return
         uniq: dict[str, tuple[dict[str, Any], dict[str, Any], str]] = {}
         pkgs: dict[str, list[str]] = defaultdict(list)
@@ -1506,6 +1624,9 @@ class VulnScanner:
             return
         if self.status.get("enabled") is not True:
             await self.save_status(enabled=True)
+        if await db.kv_get("vulnscan:reevaluate"):  # findings closed / reopened or settings changed on the page
+            await db.pool().execute("DELETE FROM kv WHERE key = 'vulnscan:reevaluate'")
+            await self.evaluate()
         req = await db.kv_get("vulnscan:request")
         if req:
             await db.pool().execute("DELETE FROM kv WHERE key = 'vulnscan:request'")

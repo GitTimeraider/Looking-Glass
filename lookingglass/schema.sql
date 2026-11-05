@@ -425,3 +425,14 @@ CREATE TABLE IF NOT EXISTS vuln_cache (
     fetched TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (kind, id)
 );
+-- findings you closed on the Vulnerabilities page: hidden and never alerted again. Per vulnerability (CVE / GHSA id,
+-- also matched against aliases) + package (the source package where there is one) + image repository ('' = all images)
+CREATE TABLE IF NOT EXISTS vuln_closed (
+    vuln      TEXT NOT NULL,
+    grp       TEXT NOT NULL,                       -- source package (dotnet10) or package name
+    repo      TEXT NOT NULL DEFAULT '',            -- docker.io/library/nextcloud, '' = every image
+    note      TEXT,
+    closed_by TEXT,
+    closed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (vuln, grp, repo)
+);

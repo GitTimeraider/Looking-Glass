@@ -1009,27 +1009,45 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return await intel_status()
 
     # --------------------------------------------- container vulnerabilities ---
+    # a finding the user closed (vuln_closed): by its id or an alias, its source package (else package) and the image
+    # repository or every image ('')
+    not_closed = ("NOT EXISTS (SELECT 1 FROM vuln_closed c WHERE (c.vuln = f.vuln OR c.vuln = ANY(f.aliases)) "
+                  "AND c.grp = coalesce(nullif(f.upstream, ''), f.package) AND c.repo IN ('', i.repo))")
+
+    async def _vulns_reevaluate() -> None:
+        """Ask the scanner to judge the stored findings again (alerts follow within ~20 s), without a new scan."""
+        await db.kv_set("vulnscan:reevaluate", {"at": time.time()})
+        scanner = getattr(app.state, "vulnscan", None)
+        if scanner is not None:
+            scanner.wake.set()
+
     @app.get("/api/vulns")
     async def vulns_overview():
         rows = await db.pool().fetch(
-            # distinct vulnerabilities: one CVE in a source package is one finding, however many packages it built
+            # distinct vulnerabilities: one CVE in a source package is one finding, however many packages it built;
+            # findings you closed do not count
             "SELECT i.*, count(DISTINCT f.vuln) total, count(DISTINCT f.vuln) FILTER (WHERE f.alerted) alerted, "
             "count(DISTINCT f.vuln) FILTER (WHERE f.kev AND f.ignored IS NULL) kev, "
             "count(DISTINCT f.vuln) FILTER (WHERE f.ignored IS NOT NULL) ignored_n, "
             "max(f.cvss) FILTER (WHERE f.ignored IS NULL) max_cvss, "
             "count(DISTINCT f.vuln) FILTER (WHERE coalesce(f.cvss, 0) >= 9 AND f.ignored IS NULL) crit, "
             "count(DISTINCT f.vuln) FILTER (WHERE f.cvss >= 7 AND f.cvss < 9 AND f.ignored IS NULL) high "
-            "FROM vuln_images i LEFT JOIN vuln_findings f ON f.image_key = i.key GROUP BY i.key ORDER BY alerted DESC, i.image")
+            f"FROM vuln_images i LEFT JOIN vuln_findings f ON f.image_key = i.key AND {not_closed} "
+            "GROUP BY i.key ORDER BY alerted DESC, i.image")
         kev = await db.kv_get("vulnscan:kev", []) or []
+        closed_n = await db.pool().fetchval("SELECT count(*) FROM vuln_closed")
         return {"enabled": settings.vuln_scan_enabled, "status": await db.kv_get("vulnscan:status", {}) or {},
-                "images": db.records(rows), "kev_count": len(kev),
+                "images": db.records(rows), "kev_count": len(kev), "closed_count": closed_n,
                 "policy": {"min_cvss": settings.vuln_min_cvss, "kev_always": settings.vuln_kev_always,
-                           "epss_min": settings.vuln_epss_min, "only_fixed": settings.vuln_only_fixed}}
+                           "epss_min": settings.vuln_epss_min, "only_fixed": settings.vuln_only_fixed,
+                           "alerts": settings.vuln_alerts, "alert_level": settings.vuln_alert_min_level}}
 
     @app.get("/api/vulns/findings")
     async def vulns_findings(image: str | None = None, show: str = "alerted", q: str | None = None,
                              limit: int = Query(1000, ge=1, le=10000)):
-        cond, args = ["true"], []
+        if show == "closed":
+            return await vulns_closed_list()
+        cond, args = [not_closed], []
         if image:
             args.append(image)
             cond.append(f"f.image_key = ${len(args)}")
@@ -1048,10 +1066,55 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                         f"ILIKE ${len(args)} OR i.image ILIKE ${len(args)})")
         from ..vulnscan import group_findings
         rows = await db.pool().fetch(
-            "SELECT f.*, i.image, i.containers FROM vuln_findings f JOIN vuln_images i ON i.key = f.image_key "
+            "SELECT f.*, i.image, i.repo, i.containers FROM vuln_findings f JOIN vuln_images i ON i.key = f.image_key "
             f"WHERE {' AND '.join(cond)} ORDER BY f.kev DESC, f.cvss DESC NULLS LAST, f.epss DESC NULLS LAST, f.vuln, f.package "
             f"LIMIT 50000", *args)
         return group_findings(db.records(rows))[:limit]
+
+    async def vulns_closed_list() -> list[dict[str, Any]]:
+        """Your closed findings, with the images they currently hide a finding in."""
+        rows = db.records(await db.pool().fetch(
+            "SELECT c.*, (SELECT array_agg(DISTINCT i.image ORDER BY i.image) FROM vuln_findings f JOIN vuln_images i "
+            "ON i.key = f.image_key WHERE (c.vuln = f.vuln OR c.vuln = ANY(f.aliases)) "
+            "AND c.grp = coalesce(nullif(f.upstream, ''), f.package) AND c.repo IN ('', i.repo)) images "
+            "FROM vuln_closed c ORDER BY c.closed_at DESC"))
+        return rows
+
+    @app.post("/api/vulns/close")
+    async def vulns_close(request: Request, payload: dict = Body(...)):
+        """Close findings: [{vuln, group, repo}], scope 'image' (that image repository) or 'all' (every image)."""
+        items = payload.get("items") or []
+        if not isinstance(items, list) or not items:
+            raise HTTPException(400, "Select the findings to close first.")
+        if len(items) > 5000:
+            raise HTTPException(400, "At most 5000 findings at once.")
+        everywhere = payload.get("scope") == "all"
+        note = str(payload.get("note") or "").strip()[:500] or None
+        rows = set()
+        for it in items:
+            vuln, grp = str((it or {}).get("vuln") or "").strip(), str((it or {}).get("group") or "").strip()
+            repo = "" if everywhere else str((it or {}).get("repo") or "").strip()
+            if not vuln or not grp or (not everywhere and not repo):
+                raise HTTPException(400, "Each finding needs its vulnerability, package and image.")
+            rows.add((vuln[:200], grp[:300], repo[:500]))
+        await db.pool().executemany(
+            "INSERT INTO vuln_closed (vuln, grp, repo, note, closed_by) VALUES ($1, $2, $3, $4, $5) "
+            "ON CONFLICT (vuln, grp, repo) DO UPDATE SET note = coalesce(EXCLUDED.note, vuln_closed.note), "
+            "closed_by = EXCLUDED.closed_by, closed_at = now()",
+            [(*r, note, _author(request)) for r in sorted(rows)])
+        await _vulns_reevaluate()
+        return {"ok": True, "closed": len(rows)}
+
+    @app.post("/api/vulns/reopen")
+    async def vulns_reopen(payload: dict = Body(...)):
+        items = payload.get("items") or []
+        if not isinstance(items, list) or not items:
+            raise HTTPException(400, "Select the closed findings to reopen first.")
+        keys = [(str(i.get("vuln") or ""), str(i.get("grp") or ""), str(i.get("repo") or "")) for i in items
+                if isinstance(i, dict)]
+        await db.pool().executemany("DELETE FROM vuln_closed WHERE vuln = $1 AND grp = $2 AND repo = $3", keys)
+        await _vulns_reevaluate()
+        return {"ok": True, "reopened": len(keys)}
 
     @app.post("/api/vulns/scan")
     async def vulns_scan(payload: dict = Body(default={})):
@@ -1284,6 +1347,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             changed = await app_config.save(settings, payload.get("values") or {})
         except app_config.SettingsError as exc:
             raise HTTPException(400, str(exc)) from exc
+        if any(str(k).startswith("vuln_") for k in changed or []):
+            await _vulns_reevaluate()  # new thresholds / alert level / exceptions apply right away
         return {"ok": True, "changed": changed}
 
     def _candidate(values: dict) -> Any:
