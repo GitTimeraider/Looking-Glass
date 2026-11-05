@@ -5,6 +5,7 @@ import os
 import stat
 import sys
 import textwrap
+import time
 from datetime import date
 
 import httpx
@@ -559,3 +560,69 @@ def test_version_of_every_image():
         parse_version_sources("foo bar")
     with pytest.raises(app_config.SettingsError, match="Where image versions are read"):
         app_config._coerce(app_config.BY_KEY["vuln_version_sources"], "label")
+
+
+@needs_db
+def test_alert_closes_right_after_an_update(tmp_path):
+    """Container updated to an image without the findings: the old image is dropped in the same check and the alert
+    closes - unless its server could not be listed (then the old results stay for 2 days)."""
+    async def main():
+        await db.connect(DSN)
+        try:
+            await _reset()
+            pool = db.pool()
+            tools = _tools(tmp_path)
+            sid = await pool.fetchval("INSERT INTO unraid_servers (name, url, api_key) VALUES ('Tower', 'http://t', 'k') RETURNING id")
+            await db.set_snapshot(f"unraid:{sid}:docker", [{"names": ["/app"], "image": "team/app:1", "state": "RUNNING"}])
+            s = Settings(vuln_scan_enabled=True, vuln_sources=ALL_OFF, vuln_app_checks="", **tools)
+            sc = VulnScanner(s)
+            await sc.cycle()
+            assert await pool.fetchval("SELECT status FROM alerts WHERE rule = 'container_vulnerable'") == "open"
+            # updated: same repo, new tag; the new image has no findings
+            (tmp_path / "clean.json").write_text(json.dumps({"matches": []}))
+            s.vuln_tool_env = f"FAKE_GRYPE_DOC={tmp_path / 'clean.json'}"
+            await db.set_snapshot(f"unraid:{sid}:docker", [{"names": ["/app"], "image": "team/app:2", "state": "RUNNING"}])
+            await sc.cycle()
+            assert [r["image"] for r in await pool.fetch("SELECT image FROM vuln_images")] == ["team/app:2"]
+            a = await pool.fetchrow("SELECT status, description FROM alerts WHERE rule = 'container_vulnerable'")
+            assert a["status"] == "closed" and "Closed automatically" in a["description"]
+            # a server whose containers could not be listed keeps its images
+            await pool.execute("DELETE FROM snapshots WHERE key = $1", f"unraid:{sid}:docker")
+            await sc.cycle()
+            assert await pool.fetchval("SELECT count(*) FROM vuln_images") == 1
+        finally:
+            await db.close()
+
+    asyncio.run(main())
+
+
+@needs_db
+def test_an_updated_container_is_checked_right_away(tmp_path):
+    async def main():
+        await db.connect(DSN)
+        try:
+            await _reset()
+            pool = db.pool()
+            sid = await pool.fetchval("INSERT INTO unraid_servers (name, url, api_key) VALUES ('Tower', 'http://t', 'k') RETURNING id")
+            await db.set_snapshot(f"unraid:{sid}:docker", [{"names": ["/app"], "image": "team/app:latest", "created": 100}])
+            sc = VulnScanner(Settings(vuln_scan_enabled=True, vuln_sources=ALL_OFF, vuln_app_checks="", **_tools(tmp_path)))
+            await sc.load_status()
+            runs = []
+
+            async def cycle(rebuild=False):
+                runs.append(rebuild)
+                await sc.save_status(last_try=time.time())
+            sc.cycle = cycle
+            await sc.tick()
+            assert len(runs) == 1  # first time
+            sc.status["last_try"] -= 700
+            await sc.tick()
+            assert len(runs) == 1  # nothing changed, not due
+            await db.set_snapshot(f"unraid:{sid}:docker", [{"names": ["/app"], "image": "team/app:latest", "created": 200}])
+            sc.status["last_try"] -= 700
+            await sc.tick()
+            assert len(runs) == 2  # recreated by an update: checked now
+        finally:
+            await db.close()
+
+    asyncio.run(main())

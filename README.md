@@ -788,6 +788,13 @@ Looking Glass image, plus a few online sources. It is off by default.
    *Settings › Container vulnerabilities*: *Alert from CVSS score*, *Also alert from EPSS*, *Only alert when a fix
    exists*.
 
+**When alerts close.** An image alert updates on every check (count, severity, list) and closes by itself once
+nothing of that image is above your threshold any more: after you update the container, change the threshold or add
+an exception. Updating a container recreates it, which Looking Glass notices within about 10 minutes and checks right
+away, so the alert closes then, not at the next scheduled check. If it comes back (a new CVE), the alert opens again.
+An alert you closed by hand stays closed unless the image gets worse. Scan-problem alerts close as soon as that part
+works again.
+
 **Reading the findings.** Ubuntu and Debian file a fix under the *source* package (e.g. `dotnet10`), with that
 source package's version (`10.0.114-10.0.14-0ubuntu1~26.04.1` = SDK 10.0.114, runtime 10.0.14). Every binary package
 built from it (`dotnet-host-10.0`, `aspnetcore-runtime-10.0`, …) is then affected by the same CVE. The page shows such
