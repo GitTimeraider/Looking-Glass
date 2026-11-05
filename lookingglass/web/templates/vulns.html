@@ -73,7 +73,10 @@ async function load() {
   D = await LG.api("/api/vulns");
   const st = D.status || {}, imgs = D.images || [];
   document.getElementById("off").hidden = D.enabled;
+  const queued = D.queued && !st.running ? Math.max(0, Math.round((D.now || 0) - (D.queued.at || 0))) : null;
   document.getElementById("state").innerHTML = st.running ? `<span class="spinner"></span> ${LG.esc(st.phase || "running")}` :
+    queued !== null ? `<span class="spinner"></span> check requested ${queued < 5 ? "just now" : queued + " s ago"} – waiting for the scanner` +
+      (queued > 120 ? ` <span class="err">(not picked up yet: see Setup &amp; status and the container log)</span>` : "") :
     st.last_scan ? `last check ${LG.ago(st.last_scan)}` + (st.duration ? ` (took ${st.duration < 90 ? st.duration + " s" : Math.round(st.duration / 60) + " min"})` : "") : D.enabled ? "first check starts soon" : "";
   problems(D);
   const k = (l, v, c = "") => `<div class="card kpi ${c}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
@@ -236,7 +239,11 @@ let qt; document.getElementById("q").oninput = e => { clearTimeout(qt); qt = set
 for (const [id, rebuild] of [["scan", false], ["rebuild", true]])
   document.getElementById(id).onclick = async () => {
     try { await LG.api("/api/vulns/scan", { method: "POST", body: { rebuild } });
-      document.getElementById("state").innerHTML = `<span class="spinner"></span> starting…`; setTimeout(load, 3000); }
+      document.getElementById("state").innerHTML = `<span class="spinner"></span> starting…`;
+      // look again every 2 s until the check has started (then the normal refresh follows it), at most 3 minutes
+      const until = Date.now() + 180000;
+      const poll = async () => { await load(); if (D.queued && !(D.status || {}).running && Date.now() < until) setTimeout(poll, 2000); };
+      setTimeout(poll, 1000); }
     catch (e) { alert(e.message); }
   };
 document.getElementById("test").onclick = async () => {
@@ -248,6 +255,6 @@ document.getElementById("test").onclick = async () => {
   } catch (e) { el.innerHTML = `<span class="err small">${LG.esc(e.message)}</span>`; }
 };
 load();
-LG.autoRefresh(load, () => (D.status || {}).running ? 10000 : 60000);
+LG.autoRefresh(load, () => (D.status || {}).running || D.queued ? 10000 : 60000);
 </script>
 {% endblock %}

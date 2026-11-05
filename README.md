@@ -790,8 +790,9 @@ Looking Glass image, plus a few online sources. It is off by default.
    | **Minimum CVSS score for an alert** (*Alerts*) | which findings raise an alert | 7.0 |
 
    The *Vulnerabilities page* section can also hide findings that **will not be fixed**, findings **without a fix
-   yet**, findings that are **not affected** (on by default), **guesses by product name (CPE)**, and whole **package
-   types** (e.g. `go-module`). These only change the page, never alerts: a finding that meets the alert rules is
+   yet**, findings that are **not affected** (on by default), **guesses by product name (CPE)**, and **packages not to
+   show**: package names (also the source package, `*` as wildcard: `chromium`, `libx11-*`) or whole package types
+   (`go-module`). These only change the page, never alerts: a finding that meets the alert rules is
    always shown, and exceptions are always listed under *Exceptions*.
 
    The *Alerts* section also has **Create alerts for vulnerabilities** (**off by default**: no alerts at all, only the
@@ -824,7 +825,7 @@ finding: the release (1.1.0) is the same, but Debian / Ubuntu fixed the CVE in a
 `ubuntu0.1`), and the image still has the build from before the patch. `dpkg` sorts these the same way. The page
 says so under the package. It is fixed by a newer image, or by the maintainer updating packages. The same goes for
 `golang.org/x/crypto v0.19.0 vs < 0.52.0 (go)`: a library compiled into a Go program in the image (the page shows
-which), fixed only when that program is rebuilt. Hide such findings with *Package types not to show* (`go-module`) if
+which), fixed only when that program is rebuilt. Hide such findings with *Packages not to show* (`go-module`) if
 you can't act on them.
 
 **Distribution suffixes.** Distributions add their own part to a version: `1.3.1+ubuntu26`, `1.3.1-0ubuntu1`,

@@ -831,7 +831,7 @@ class Policy:
     alerts: bool = False          # raise alerts at all (findings are listed either way)
     show_min: float = 0.0         # the Vulnerabilities page lists findings from this score
     hide: frozenset[str] = frozenset()   # page: wont_fix, no_fix, not_affected, cpe
-    hide_types: tuple[str, ...] = ()     # page: package types not to show
+    hide_types: tuple[str, ...] = ()     # page: packages (name / source package) or package types not to show
 
     @classmethod
     def of(cls, s: Settings) -> "Policy":
@@ -857,8 +857,10 @@ class Policy:
             return "no fix yet"
         if "cpe" in self.hide and "cpe" in str(m.get("type") or "").lower():
             return "CPE guess"
-        if self.hide_types and matches(list(self.hide_types), [str(f.get("pkg_type") or "")]):
-            return f"package type {f.get('pkg_type')}"
+        if self.hide_types:
+            for kind, value in (("package", f.get("package")), ("package", f.get("upstream")), ("package type", f.get("pkg_type"))):
+                if value and matches(list(self.hide_types), [str(value)]):
+                    return f"{kind} {value}"
         if self.show_min > 0 and (score_of(f) or 0.0) < self.show_min:
             return f"CVSS below {self.show_min:g}"
         return None
@@ -1658,7 +1660,11 @@ class VulnScanner:
                                 "vulns": [f["vuln"] for _, f, _ in ordered[:50]], "update_available": bool(upd)})
 
     async def run(self) -> None:
-        await asyncio.sleep(90)
+        try:  # let the rest of Looking Glass start first - unless you press Check now
+            await asyncio.wait_for(self.wake.wait(), 90)
+        except asyncio.TimeoutError:
+            pass
+        self.wake.clear()
         await self.load_status()
         if self.status.get("running"):
             await self.save_status(running=False, phase=None)  # a restart in the middle of a scan
@@ -1689,10 +1695,11 @@ class VulnScanner:
             return
         if self.status.get("enabled") is not True:
             await self.save_status(enabled=True)
+        req = await db.kv_get("vulnscan:request")  # Check now first: a re-evaluation is part of every check anyway
         if await db.kv_get("vulnscan:reevaluate"):  # findings closed / reopened or settings changed on the page
             await db.pool().execute("DELETE FROM kv WHERE key = 'vulnscan:reevaluate'")
-            await self.evaluate()
-        req = await db.kv_get("vulnscan:request")
+            if not req:
+                await self.evaluate()
         if req:
             await db.pool().execute("DELETE FROM kv WHERE key = 'vulnscan:request'")
         now = time.time()

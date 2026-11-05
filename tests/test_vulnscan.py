@@ -829,3 +829,41 @@ def test_page_settings_hide_findings():
     assert pol.hidden_by(cpe) == "CPE guess" and pol.hidden_by(fixed) == "package type go-module"
     assert Policy.of(Settings(vuln_hide_no_fix=True)).hidden_by(wont) == "no fix yet"
     assert not pol.shown(wont, False) and pol.shown(wont, True)  # meets the alert rules: always shown
+
+
+def test_hide_packages_by_name_or_type():
+    pol = Policy.of(Settings(vuln_hide_types="chromium\nlibx11-*\ngo-module"))
+    chromium = {"vuln": "CVE-1", "cvss": 8.8, "package": "chromium", "upstream": "", "pkg_type": "deb", "fix_versions": ["2"]}
+    common = {**chromium, "package": "chromium-common", "upstream": "chromium"}  # by its source package
+    assert pol.hidden_by(chromium) == "package chromium" and pol.hidden_by(common) == "package chromium"
+    assert pol.hidden_by({**chromium, "package": "libx11-6"}) == "package libx11-6"
+    assert pol.hidden_by({**chromium, "package": "x", "pkg_type": "go-module"}) == "package type go-module"
+    assert pol.hidden_by({**chromium, "package": "chromium-browser-l10n", "upstream": ""}) is None  # no wildcard
+    assert pol.shown(chromium, True)  # meets the alert rules: still shown
+
+
+@needs_db
+def test_check_now_starts_without_waiting_for_the_start_delay(tmp_path):
+    async def main():
+        await db.connect(DSN)
+        try:
+            await _reset()
+            s = Settings(vuln_scan_enabled=True, vuln_sources=ALL_OFF, vuln_app_checks="",
+                         vuln_images="registry.example/team/app@sha256:abc", **_tools(tmp_path))
+            sc = VulnScanner(s)
+            await db.kv_set("vulnscan:status", {"last_try": time.time(), "last_scan": time.time() - 7200})
+            task = asyncio.create_task(sc.run())
+            await db.kv_set("vulnscan:request", {"at": time.time(), "rebuild": False})
+            sc.wake.set()  # what the Check now button does
+            for _ in range(100):
+                st = await db.kv_get("vulnscan:status")
+                if st.get("last_scan", 0) > time.time() - 60 and not st.get("running"):
+                    break
+                await asyncio.sleep(0.1)
+            task.cancel()
+            assert st["last_scan"] > time.time() - 60, st  # done within seconds, not after the 90 s start delay
+            assert not await db.kv_get("vulnscan:request")
+        finally:
+            await db.close()
+
+    asyncio.run(main())

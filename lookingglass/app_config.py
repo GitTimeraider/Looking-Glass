@@ -356,9 +356,10 @@ FIELDS: list[Field] = [
     Field("vuln_hide_cpe", "vulns", "Hide guesses by product name (CPE)", "bool", "Matches made only by the product "
           "name, without a package database entry - wrong more often. Marked 'CPE guess' on the page.",
           section="Vulnerabilities page"),
-    Field("vuln_hide_types", "vulns", "Package types not to show", "list", "e.g. go-module (libraries compiled into "
-          "Go programs), java-archive, npm, python, gem, rust-crate, binary, deb, rpm, apk. The type is shown under each "
-          "package on the page.", placeholder="go-module\njava-archive", section="Vulnerabilities page"),
+    Field("vuln_hide_types", "vulns", "Packages not to show", "list", "Package names (also the source package, e.g. "
+          "dotnet10 for dotnet-host-10.0) or package types, * as wildcard: chromium, libx11-*, or a type such as "
+          "go-module (libraries compiled into Go programs), java-archive, npm, python, deb. Name and type are shown in "
+          "the Package column of the page.", placeholder="chromium\ngo-module", section="Vulnerabilities page"),
     Field("vuln_alerts", "vulns", "Create alerts for vulnerabilities", "bool", "Off by default. On = one alert per "
           "container image for the findings that meet the rules below. Off = findings are only listed on the "
           "Vulnerabilities page (open alerts are closed). Scan problems alert either way.", section="Alerts"),

@@ -1047,6 +1047,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "SELECT count(*) FROM (SELECT DISTINCT f.image_key, f.vuln FROM vuln_findings f JOIN vuln_images i "
             f"ON i.key = f.image_key WHERE {not_closed} AND NOT {shown}) x")
         return {"enabled": settings.vuln_scan_enabled, "status": await db.kv_get("vulnscan:status", {}) or {},
+                "queued": await db.kv_get("vulnscan:request"),  # Check now pressed, the scanner has not picked it up yet
+                "now": time.time(),
                 "images": db.records(rows), "kev_count": len(kev), "closed_count": closed_n, "hidden_count": hidden_n,
                 "hidden": {r["why"]: r["n"] for r in hidden},
                 "policy": {"min_cvss": settings.vuln_min_cvss, "kev_always": settings.vuln_kev_always,

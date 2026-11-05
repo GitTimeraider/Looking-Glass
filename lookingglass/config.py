@@ -175,7 +175,7 @@ class Settings(BaseSettings):
     vuln_hide_no_fix: bool = False        # page: hide findings without a fixed version yet
     vuln_hide_not_affected: bool = True   # page: hide 'not affected' / 'already fixed' (version-format mistakes)
     vuln_hide_cpe: bool = False           # page: hide matches by product name only (CPE guess)
-    vuln_hide_types: str = ""             # page: package types not to show (go-module, java-archive, ...)
+    vuln_hide_types: str = ""             # page: packages (names, source packages) or package types not to show
     vuln_kev_always: bool = True
     vuln_epss_min: str = ""
     vuln_only_fixed: bool = True
