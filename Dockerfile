@@ -1,7 +1,7 @@
 # vulnerability scanning (Settings › Container vulnerabilities): Grype and Syft, copied from their official images
 # (static binaries, linux/amd64 + linux/arm64); Dependabot keeps these tags current
 FROM anchore/grype:v0.120.1 AS grype
-FROM anchore/syft:v1.55.0 AS syft
+FROM anchore/syft:v1.56.0 AS syft
 
 FROM python:3.15-slim AS base
 
