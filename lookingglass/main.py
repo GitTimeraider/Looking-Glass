@@ -4,10 +4,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-import shutil
 import signal
 from datetime import datetime, timezone
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import uvicorn
@@ -208,11 +206,6 @@ async def amain() -> None:
         await db.close()
         return
     await app_config.load(settings)
-    # removed feature (container vulnerability scanning): its Grype database and package lists, a few hundred MB
-    leftovers = Path(settings.data_dir) / "vulnscan"
-    if leftovers.is_dir():
-        shutil.rmtree(leftovers, ignore_errors=True)
-        log.info("removed %s (left over from the removed vulnerability scanner)", leftovers)
     if not settings.secret_key:
         # persist a generated cookie key so logins survive restarts
         settings.secret_key = await db.kv_get("secret_key") or secrets.token_urlsafe(48)

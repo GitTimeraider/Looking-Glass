@@ -362,14 +362,3 @@ CREATE TABLE IF NOT EXISTS event_rollup_state (
     seen BIGINT NOT NULL DEFAULT 0
 );
 INSERT INTO event_rollup_state (one) VALUES (true) ON CONFLICT DO NOTHING;
-
--- removed feature (container vulnerability scanning, Nov 2026): drop what it left behind. Open alerts of its rules are
--- closed (kept for reference, like other closed alerts); its settings and state are deleted. Safe to run every start.
-DROP TABLE IF EXISTS vuln_findings;
-DROP TABLE IF EXISTS vuln_images;
-DROP TABLE IF EXISTS vuln_cache;
-DELETE FROM kv WHERE key LIKE 'vulnscan:%';
-DELETE FROM app_settings WHERE key LIKE 'vuln\_%';
-UPDATE alerts SET status = 'closed', close_reason = 'resolved',
-       description = coalesce(description, '') || E'\n\nClosed: container vulnerability scanning was removed.'
- WHERE rule IN ('container_vulnerable', 'vuln_scan_problem') AND status <> 'closed';
