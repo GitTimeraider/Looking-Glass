@@ -1,6 +1,7 @@
 import ipaddress
 import asyncio
 import json
+import re
 import os
 
 import httpx
@@ -43,7 +44,10 @@ def test_hide_replaces_every_local_identifier_and_reveal_restores_exactly():
         hidden = await sess.hide(TEXT)
         for name, value in REAL.items():
             assert value.lower() not in hidden.lower(), name
-        assert "1.168.192.in-addr" not in hidden and "192-168-1-20" not in hidden
+        # whole numbers only: the fake network can be e.g. 192.168.131.x, whose PTR "20.131.168.192.in-addr" contains
+        # the text "1.168.192.in-addr" without containing the real network
+        assert not re.search(r"(?<![\d.])20\.1\.168\.192\.in-addr", hidden), hidden
+        assert not re.search(r"(?<!\d)192-168-1-20(?!\d)", hidden), hidden
         # kept: internet addresses, domains, ports, generic names, the whole private block, times
         for kept in ("8.8.8.8", "github.com", "443", "home.lan", " root", "10.0.0.0/8", "12:30:45", "nas."):
             assert kept in hidden, kept
