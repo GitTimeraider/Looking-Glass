@@ -165,7 +165,7 @@ def test_parse_grype_output():
     assert set(fs) == {"CVE-2024-4577", "CVE-2023-0001", "GHSA-aaaa-bbbb-cccc"}
     php = fs["CVE-2024-4577"]
     assert php["cvss"] == 9.8 and php["kev"] and php["epss"] == 0.94 and php["fix_versions"] == ["8.1.29"]
-    assert php["locations"] == ["/usr/bin/php", "/usr/local/bin/php"]
+    assert php["locations"] == ["/usr/local/bin/php", "/usr/bin/php"]  # in the order found
     assert fs["CVE-2023-0001"]["cvss"] == 5.4 and fs["CVE-2023-0001"]["fix_state"] == "not-fixed"  # score from the vector
     gh = fs["GHSA-aaaa-bbbb-cccc"]
     assert gh["cvss"] == 7.5 and gh["cves"] == ["CVE-2023-0002"] and "CVE-2023-0002" in gh["aliases"]  # CVSS 2 ignored
@@ -478,3 +478,63 @@ def test_docker_api_refusal_names_the_missing_variable(tmp_path):
             await db.close()
 
     asyncio.run(main())
+
+
+def _dotnet(name, inst, searched, fix="10.0.114-10.0.14-0ubuntu1~26.04.1"):
+    return {"vulnerability": {"id": "CVE-2026-111497", "dataSource": "https://ubuntu.com/security/CVE-2026-111497",
+                              "urls": ["https://www.cve.org/CVERecord?id=CVE-2026-111497"], "severity": "Critical",
+                              "cvss": [{"source": "nvd@nist.gov", "version": "3.1", "metrics": {"baseScore": 9.8}}],
+                              "fix": {"versions": [fix], "state": "fixed"}},
+            "matchDetails": [{"type": "exact-indirect-match", "matcher": "dpkg-matcher",
+                              "searchedBy": {"distro": {"type": "ubuntu", "version": "26.04"}, "namespace": "ubuntu:distro:ubuntu:26.04",
+                                             "package": {"name": "dotnet10", "version": searched}},
+                              "found": {"vulnerabilityID": "CVE-2026-111497", "versionConstraint": f"< {fix} (deb)"}}],
+            "artifact": {"name": name, "version": inst, "type": "deb", "upstreams": [{"name": "dotnet10"}],
+                         "locations": [{"path": f"/usr/share/doc/{name}/copyright"},
+                                       {"path": "/var/lib/dpkg/status", "annotations": {"evidence": "primary"}}]}}
+
+
+def test_debian_versions():
+    from lookingglass.vulnscan import dpkg_compare
+    assert dpkg_compare("10.0.13-0ubuntu1~26.04.1", "10.0.14-0ubuntu1~26.04.1") == -1
+    assert dpkg_compare("1.0~rc1-1", "1.0-1") == -1 and dpkg_compare("1:1.0-1", "2.0-1") == 1
+    assert dpkg_compare("2.36-9+deb12u10", "2.36-9+deb12u7") == 1 and dpkg_compare("1.2.3", "1.2.3") == 0
+
+
+def test_one_cve_of_a_source_package_is_one_finding_with_how_it_was_matched():
+    from lookingglass.vulnscan import group_findings
+    inst = "10.0.13-0ubuntu1~26.04.1"
+    src = "10.0.113-10.0.13-0ubuntu1~26.04.1"  # Grype knew the source version: formats match, a real finding
+    fs = parse_grype({"matches": [_dotnet(n, inst, src) for n in ("dotnet-host-10.0", "aspnetcore-runtime-10.0", "dotnet-hostfxr-10.0")]})
+    assert len(fs) == 3 and all(f["upstream"] == "dotnet10" for f in fs)
+    f = fs[0]
+    assert f["locations"][0] == "/var/lib/dpkg/status" and f["url"].startswith("https://ubuntu.com/security/")
+    assert f["matched"]["searched"] == f"dotnet10 {src}" and f["matched"]["constraint"].startswith("< 10.0.114")
+    assert f["matched"]["distro"] == "ubuntu 26.04" and "note" not in f["matched"]
+    g = group_findings([{**x, "image_key": "img"} for x in fs])
+    assert len(g) == 1 and g[0]["group"] == "dotnet10" and [p["name"] for p in g[0]["packages"]] == \
+        ["aspnetcore-runtime-10.0", "dotnet-host-10.0", "dotnet-hostfxr-10.0"]
+    assert len(group_findings([{**fs[0], "image_key": "a"}, {**fs[1], "image_key": "b"}])) == 2  # per image
+    # an exception for the source package covers all of them
+    pol = Policy(7.0, True, None, True, parse_ignore("pkg:dotnet10"))
+    assert all(pol.judge(x, ["fileflows"])[1] for x in fs)
+
+
+def test_binary_version_compared_with_a_source_version():
+    fixed = parse_grype({"matches": [_dotnet("dotnet-host-10.0", "10.0.14-0ubuntu1~26.04.1", "10.0.14-0ubuntu1~26.04.1")]})[0]
+    assert fixed["matched"]["probably_fixed"] and "already fixed" in fixed["matched"]["note"]
+    pol = Policy(7.0, True, None, True, [])
+    alert, _, why = pol.judge({**fixed, "kev": True}, ["x"])
+    assert not alert and "already fixed" in why  # also when actively exploited: the package has the fix
+    old = parse_grype({"matches": [_dotnet("dotnet-host-10.0", "10.0.13-0ubuntu1~26.04.1", "10.0.13-0ubuntu1~26.04.1")]})[0]
+    assert old["matched"]["probably_fixed"] is False and "not fixed yet" in old["matched"]["note"]
+    assert pol.judge(old, ["x"])[0]
+
+
+def test_group_marks_packages_that_already_have_the_fix():
+    from lookingglass.vulnscan import group_findings
+    done = parse_grype({"matches": [_dotnet("dotnet-runtime-10.0", "10.0.14-0ubuntu1~26.04.1", "10.0.14-0ubuntu1~26.04.1")]})[0]
+    todo = parse_grype({"matches": [_dotnet("dotnet-host-10.0", "10.0.13-0ubuntu1~26.04.1", "10.0.13-0ubuntu1~26.04.1")]})[0]
+    g = group_findings([{**done, "image_key": "i"}, {**todo, "image_key": "i"}])[0]
+    assert {p["name"]: p["fixed"] for p in g["packages"]} == {"dotnet-runtime-10.0": True, "dotnet-host-10.0": False}
+    assert g["package"] == "dotnet-host-10.0" and not g["matched"]["probably_fixed"]  # the row describes the unfixed one

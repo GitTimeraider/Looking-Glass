@@ -1012,11 +1012,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     @app.get("/api/vulns")
     async def vulns_overview():
         rows = await db.pool().fetch(
-            "SELECT i.*, count(f.vuln) total, count(f.vuln) FILTER (WHERE f.alerted) alerted, "
-            "count(f.vuln) FILTER (WHERE f.kev AND f.ignored IS NULL) kev, "
-            "count(f.vuln) FILTER (WHERE f.ignored IS NOT NULL) ignored_n, max(f.cvss) FILTER (WHERE f.ignored IS NULL) max_cvss, "
-            "count(f.vuln) FILTER (WHERE coalesce(f.cvss, 0) >= 9 AND f.ignored IS NULL) crit, "
-            "count(f.vuln) FILTER (WHERE f.cvss >= 7 AND f.cvss < 9 AND f.ignored IS NULL) high "
+            # distinct vulnerabilities: one CVE in a source package is one finding, however many packages it built
+            "SELECT i.*, count(DISTINCT f.vuln) total, count(DISTINCT f.vuln) FILTER (WHERE f.alerted) alerted, "
+            "count(DISTINCT f.vuln) FILTER (WHERE f.kev AND f.ignored IS NULL) kev, "
+            "count(DISTINCT f.vuln) FILTER (WHERE f.ignored IS NOT NULL) ignored_n, "
+            "max(f.cvss) FILTER (WHERE f.ignored IS NULL) max_cvss, "
+            "count(DISTINCT f.vuln) FILTER (WHERE coalesce(f.cvss, 0) >= 9 AND f.ignored IS NULL) crit, "
+            "count(DISTINCT f.vuln) FILTER (WHERE f.cvss >= 7 AND f.cvss < 9 AND f.ignored IS NULL) high "
             "FROM vuln_images i LEFT JOIN vuln_findings f ON f.image_key = i.key GROUP BY i.key ORDER BY alerted DESC, i.image")
         kev = await db.kv_get("vulnscan:kev", []) or []
         return {"enabled": settings.vuln_scan_enabled, "status": await db.kv_get("vulnscan:status", {}) or {},
@@ -1041,14 +1043,15 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             cond.append("(f.fix_state = 'fixed' OR cardinality(f.fix_versions) > 0)")
         if q:
             args.append(f"%{q}%")
-            cond.append(f"(f.vuln ILIKE ${len(args)} OR f.package ILIKE ${len(args)} OR array_to_string(f.aliases, ' ') "
+            cond.append(f"(f.vuln ILIKE ${len(args)} OR f.package ILIKE ${len(args)} OR f.upstream ILIKE ${len(args)} "
+                        f"OR array_to_string(f.aliases, ' ') "
                         f"ILIKE ${len(args)} OR i.image ILIKE ${len(args)})")
-        args.append(limit)
+        from ..vulnscan import group_findings
         rows = await db.pool().fetch(
             "SELECT f.*, i.image, i.containers FROM vuln_findings f JOIN vuln_images i ON i.key = f.image_key "
-            f"WHERE {' AND '.join(cond)} ORDER BY f.kev DESC, f.cvss DESC NULLS LAST, f.epss DESC NULLS LAST, f.vuln "
-            f"LIMIT ${len(args)}", *args)
-        return db.records(rows)
+            f"WHERE {' AND '.join(cond)} ORDER BY f.kev DESC, f.cvss DESC NULLS LAST, f.epss DESC NULLS LAST, f.vuln, f.package "
+            f"LIMIT 50000", *args)
+        return group_findings(db.records(rows))[:limit]
 
     @app.post("/api/vulns/scan")
     async def vulns_scan(payload: dict = Body(default={})):

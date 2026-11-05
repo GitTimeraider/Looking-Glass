@@ -330,8 +330,8 @@ class IgnoreRule:
         if self.where and not matches(self.where, names):
             return False
         w = self.what.lower()
-        if w.startswith("pkg:"):
-            return fnmatch.fnmatch(str(f.get("package", "")).lower(), w[4:])
+        if w.startswith("pkg:"):  # the package or its source package (pkg:dotnet10 covers dotnet-host-10.0, ...)
+            return any(fnmatch.fnmatch(str(f.get(k) or "").lower(), w[4:]) for k in ("package", "upstream"))
         ids = [str(f.get("vuln", ""))] + list(f.get("aliases") or [])
         return any(fnmatch.fnmatch(i.lower(), w) for i in ids)
 
@@ -474,8 +474,11 @@ def parse_grype(doc: dict[str, Any]) -> list[dict[str, Any]]:
         epss = [e for e in epss if e[0] is not None]
         kev = bool(v.get("knownExploited") or any(r.get("knownExploited") for r in related))
         fix = v.get("fix") or {}
-        locs = [loc.get("path") for loc in art.get("locations") or [] if loc.get("path")]
+        # the package database entry (evidence: primary) first, not a copyright file that also belongs to it
+        locs = [loc.get("path") for loc in sorted(art.get("locations") or [], key=lambda x: (
+            (x.get("annotations") or {}).get("evidence") != "primary", x.get("path") or "")) if loc.get("path")]
         key = (vid, str(art.get("name") or "?"), str(art.get("version") or ""))
+        up = next((u for u in art.get("upstreams") or [] if u.get("name")), {})
         f = found.get(key)
         if f is None:
             f = found[key] = {
@@ -486,13 +489,126 @@ def parse_grype(doc: dict[str, Any]) -> list[dict[str, Any]]:
                 "kev": kev, "epss": max(e[0] for e in epss) if epss else None,
                 "epss_pct": max((e[1] for e in epss if e[1] is not None), default=None),
                 "fix_versions": list(fix.get("versions") or []), "fix_state": fix.get("state") or "unknown",
-                "url": (v.get("urls") or [v.get("dataSource")] or [None])[0] or v.get("dataSource"),
+                # the advisory the fixed version comes from (the distribution's tracker), else the first link
+                "url": v.get("dataSource") or (v.get("urls") or [None])[0],
+                "upstream": str(up.get("name") or ""), "matched": match_info(m),
                 "description": (v.get("description") or next((r.get("description") for r in related if r.get("description")), "")
                                 or "")[:600],
                 "locations": [], "source": "grype", "purl": art.get("purl") or "",
             }
-        f["locations"] = sorted(set(f["locations"]) | set(locs))[:10]
+        f["locations"] = list(dict.fromkeys(f["locations"] + locs))[:10]
+    for f in found.values():
+        if note := version_note(f):
+            f["matched"] = {**f["matched"], "note": note["text"], "probably_fixed": note["fixed"]}
     return list(found.values())
+
+
+def _dpkg_order(c: str) -> int:
+    return -1 if c == "~" else ord(c) if c.isalpha() else ord(c) + 256
+
+
+def _dpkg_part(a: str, b: str) -> int:
+    i = j = 0
+    while i < len(a) or j < len(b):
+        while (i < len(a) and not a[i].isdigit()) or (j < len(b) and not b[j].isdigit()):
+            ac = _dpkg_order(a[i]) if i < len(a) and not a[i].isdigit() else 0
+            bc = _dpkg_order(b[j]) if j < len(b) and not b[j].isdigit() else 0
+            if ac != bc:
+                return -1 if ac < bc else 1
+            i += i < len(a) and not a[i].isdigit()
+            j += j < len(b) and not b[j].isdigit()
+        da = re.match(r"\d*", a[i:]).group(0)
+        db_ = re.match(r"\d*", b[j:]).group(0)
+        i, j = i + len(da), j + len(db_)
+        if int(da or 0) != int(db_ or 0):
+            return -1 if int(da or 0) < int(db_ or 0) else 1
+    return 0
+
+
+def dpkg_compare(a: str, b: str) -> int:
+    """Debian version order (epoch:upstream-revision, ~ sorts before everything): -1, 0 or 1."""
+    def split(v: str) -> tuple[int, str, str]:
+        epoch, _, rest = v.rpartition(":") if ":" in v else ("0", "", v)
+        up, _, rev = rest.rpartition("-") if "-" in rest else (rest, "", "")
+        return int(epoch) if epoch.isdigit() else 0, up, rev
+    ea, ua, ra = split(a)
+    eb, ub, rb = split(b)
+    if ea != eb:
+        return -1 if ea < eb else 1
+    return _dpkg_part(ua, ub) or _dpkg_part(ra, rb)
+
+
+def version_note(f: dict[str, Any]) -> dict[str, Any] | None:
+    """Ubuntu / Debian fixes are filed under the SOURCE package's version, e.g. dotnet10 10.0.114-10.0.14-0ubuntu1~26.04.1
+    (SDK 10.0.114, runtime 10.0.14), while its binary packages carry their own: dotnet-host-10.0 10.0.14-0ubuntu1~26.04.1.
+    When Grype only knew the binary version it compares the two formats (10.0.14 < 10.0.114) and flags a package that
+    is fixed. Then the fix's own part for this binary is compared instead: {"fixed": bool, "text": ...}."""
+    if f.get("pkg_type") != "deb" or not f.get("fix_versions"):
+        return None
+    m = f.get("matched") or {}
+    searched = (m.get("searched") or "").rpartition(" ")[2]
+    inst = str(f.get("version") or "")
+    if searched and searched != inst:
+        return None  # Grype compared the source package's own version: formats match
+    for fix in f["fix_versions"]:
+        up = fix.split(":", 1)[-1]
+        if up.count("-") >= 2 and inst.split(":", 1)[-1].count("-") == 1:
+            embedded = up.split("-", 1)[1]
+            if inst.split("-", 1)[0].split(":")[-1].split(".")[0] != embedded.split(".")[0]:
+                continue  # not the same version line: no conclusion
+            done = dpkg_compare(inst, embedded) >= 0
+            return {"fixed": done, "embedded": embedded,
+                    "text": (f"{inst} is the binary package's version; the fix {fix} is the source package's (its "
+                             f"binary packages get {embedded}). " + (f"{inst} ≥ {embedded}: already fixed - Grype "
+                             "compared different version formats." if done else f"{inst} < {embedded}: not fixed yet."))}
+    return None
+
+
+def match_info(m: dict[str, Any]) -> dict[str, Any]:
+    """How Grype matched: which package name / version it looked up, in which advisory data, against which range -
+    so a finding can be checked by hand (e.g. Ubuntu files fixes under the SOURCE package: dotnet10 for
+    dotnet-host-10.0, with the source package's version)."""
+    d = next(iter(m.get("matchDetails") or []), None) or {}
+    by, found = d.get("searchedBy") or {}, d.get("found") or {}
+    pkg = by.get("package") or {}
+    distro = by.get("distro") or {}
+    out = {"type": d.get("type") or "", "matcher": d.get("matcher") or "",
+           "searched": " ".join(x for x in (pkg.get("name"), pkg.get("version")) if x),
+           "constraint": found.get("versionConstraint") or "",
+           "namespace": by.get("namespace") or "",
+           "distro": " ".join(x for x in (distro.get("type"), distro.get("version")) if x)}
+    if by.get("cpes"):
+        out["cpes"] = list(by["cpes"])[:3]
+    return {k: v for k, v in out.items() if v}
+
+
+def group_findings(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per image + vulnerability + source package + fix: a CVE in one Ubuntu / Debian source package (dotnet10)
+    is reported by Grype once for every binary package built from it (dotnet-host-10.0, aspnetcore-runtime-10.0, ...)."""
+    out: dict[tuple, dict[str, Any]] = {}
+    for r in rows:
+        grp = r.get("upstream") or r["package"]
+        key = (r.get("image_key"), r["vuln"], grp, tuple(r.get("fix_versions") or []))
+        g = out.get(key)
+        pkg = {"name": r["package"], "version": r["version"], "locations": list(r.get("locations") or [])[:3],
+               "fixed": bool((r.get("matched") or {}).get("probably_fixed"))}
+        if g is None:
+            g = out[key] = {**r, "packages": [pkg], "group": grp}
+        elif g["packages"][0]["fixed"] and not pkg["fixed"]:  # the row shows a package that still needs the fix
+            g.update({k: v for k, v in r.items() if k not in ("packages", "group")})
+            g["packages"].append(pkg)
+        else:
+            g["packages"].append(pkg)
+            for k in ("kev", "alerted"):
+                g[k] = bool(g.get(k) or r.get(k))
+            for k in ("cvss", "epss", "epss_pct"):
+                if r.get(k) is not None and (g.get(k) is None or r[k] > g[k]):
+                    g[k] = r[k]
+            if g.get("ignored") and not r.get("ignored"):
+                g["ignored"], g["why"] = None, r.get("why")
+    for g in out.values():
+        g["packages"].sort(key=lambda p: p["name"])
+    return list(out.values())
 
 
 def osv_findings(doc: dict[str, Any], check: AppCheck, version: str) -> list[dict[str, Any]]:
@@ -518,7 +634,9 @@ def osv_findings(doc: dict[str, Any], check: AppCheck, version: str) -> list[dic
                     "url": next((r.get("url") for r in v.get("references") or [] if r.get("type") == "ADVISORY"),
                                 f"https://osv.dev/vulnerability/{vid}"),
                     "description": str(v.get("summary") or v.get("details") or "")[:600], "locations": [],
-                    "source": f"app check (line {check.line})", "purl": ""})
+                    "source": f"app check (line {check.line})", "purl": "", "upstream": "",
+                    "matched": {"type": "app check", "searched": f"{check.ecosystem} {check.package} {version}",
+                                "constraint": "affected per OSV" + (f", fixed in {', '.join(fixed[:3])}" if fixed else "")}})
     return out
 
 
@@ -552,6 +670,8 @@ class Policy:
             if r.applies(f, names, today or date.today()):
                 return False, r.text, "ignored"
         s = score_of(f)
+        if (f.get("matched") or {}).get("probably_fixed"):
+            return False, None, "already fixed (Grype compared a binary version with the source package's)"
         if f.get("kev") and self.kev_always:
             return True, None, "actively exploited (CISA KEV)"
         fixed = f.get("fix_state") == "fixed" or bool(f.get("fix_versions"))
@@ -1089,11 +1209,13 @@ class VulnScanner:
                 await con.executemany(
                     "INSERT INTO vuln_findings (image_key, vuln, package, version, pkg_type, aliases, cves, severity, cvss, "
                     "cvss_source, kev, epss, epss_pct, fix_versions, fix_state, url, description, locations, source, "
-                    "first_seen) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,coalesce($20, now())) "
+                    "first_seen, upstream, matched) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,"
+                    "coalesce($20, now()), $21, $22) "
                     "ON CONFLICT DO NOTHING",
                     [(t.key, f["vuln"], f["package"], f["version"], f["pkg_type"], f["aliases"], f["cves"], f["severity"],
                       f["cvss"], f["cvss_source"], f["kev"], f["epss"], f["epss_pct"], f["fix_versions"], f["fix_state"],
-                      f["url"], f["description"], f["locations"], f["source"], old.get((f["vuln"], f["package"], f["version"])))
+                      f["url"], f["description"], f["locations"], f["source"], old.get((f["vuln"], f["package"], f["version"])),
+                      f.get("upstream") or None, f.get("matched") or None)
                      for f in findings])
 
     # ------------------------------------------------------------------ run ---
@@ -1239,8 +1361,11 @@ class VulnScanner:
                                "threshold or exception)")
             return
         uniq: dict[str, tuple[dict[str, Any], dict[str, Any], str]] = {}
+        pkgs: dict[str, list[str]] = defaultdict(list)
         for img, f, why in hits:
             uniq.setdefault(f["vuln"], (img, f, why))
+            if f["package"] not in pkgs[f["vuln"]]:
+                pkgs[f["vuln"]].append(f["package"])
         ordered = sorted(uniq.values(), key=lambda h: (not h[1]["kev"], -(score_of(h[1]) or 0)))
         top = max((level_of(f) for _, f, _ in ordered), key=LEVELS.index)
         n_kev = sum(1 for _, f, _ in ordered if f["kev"])
@@ -1252,7 +1377,7 @@ class VulnScanner:
         if n_kev:
             rating.note(f"{n_kev} actively exploited (CISA KEV)")
         lines = [f"- {_finding_short(f)} – {why}" + (f"; fixed in {', '.join(f['fix_versions'][:3])}" if f["fix_versions"] else "")
-                 for _, f, why in ordered[:15]]
+                 + _also(f, pkgs[f["vuln"]]) for _, f, why in ordered[:15]]
         more = f"\n- … and {len(ordered) - 15} more (Vulnerabilities page)" if len(ordered) > 15 else ""
         fix = ("A newer image is available for this tag: update the container (Unraid › Docker tab › the container › "
                "'apply update', or Check for Updates first). Most findings are fixed by the image maintainer's next build."
@@ -1309,6 +1434,18 @@ def _finding_short(f: dict[str, Any]) -> str:
     if f.get("epss") is not None:
         extra.append(f"EPSS {f['epss']:.0%}")
     return f"{f['vuln']} in {f['package']} {f['version']} ({score}{', ' + ', '.join(extra) if extra else ''})"
+
+
+def _also(f: dict[str, Any], names: list[str]) -> str:
+    """'; source package dotnet10 10.0.113-… < 10.0.114-… (also: aspnetcore-runtime-10.0, …)' for an alert line."""
+    m = f.get("matched") or {}
+    out = ""
+    if m.get("searched") and m.get("constraint"):
+        out += f"; compared {m['searched']} with {m['constraint']}"
+    others = [n for n in names if n != f["package"]]
+    if others:
+        out += f" (same fix also in {', '.join(others[:5])}{' …' if len(others) > 5 else ''})"
+    return out
 
 
 def _err(exc: BaseException) -> str:

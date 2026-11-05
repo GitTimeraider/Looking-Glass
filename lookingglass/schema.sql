@@ -411,6 +411,10 @@ CREATE TABLE IF NOT EXISTS vuln_findings (
     first_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (image_key, vuln, package, version)
 );
+-- source package (Debian / Ubuntu: dotnet10 for dotnet-host-10.0) and how Grype matched: {type, searched, constraint,
+-- namespace, distro} - findings of one source package are shown as one
+ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS upstream TEXT;
+ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS matched JSONB;
 -- looked-up EPSS / CVSS values per CVE
 CREATE TABLE IF NOT EXISTS vuln_cache (
     kind    TEXT NOT NULL,

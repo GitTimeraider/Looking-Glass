@@ -106,7 +106,7 @@ async function findings() {
     {k: "vuln", l: "Vulnerability", f: (v, r) => (r.url ? `<a href="${LG.esc(r.url)}" target="_blank" rel="noopener noreferrer">${LG.esc(v)}</a>` : LG.esc(v)) +
       (r.aliases && r.aliases.length ? `<div class="small muted">${LG.esc(r.aliases.slice(0, 3).join(", "))}</div>` : "") +
       (r.description ? `<div class="small muted" title="${LG.esc(r.description)}">${LG.esc(r.description.slice(0, 110))}${r.description.length > 110 ? "…" : ""}</div>` : "")},
-    {k: "package", l: "Package", f: (v, r) => `<b>${LG.esc(v)}</b> ${LG.esc(r.version)}<div class="small muted">${LG.esc(r.pkg_type || "")}${(r.locations || []).length ? ` · <span title="${LG.esc(r.locations.join("\n"))}">${LG.esc(r.locations[0])}</span>` : ""}</div>`},
+    {k: "package", l: "Package", s: r => r.group, f: (v, r) => pkgCell(r)},
     {k: "fix_versions", l: "Fixed in", f: (v, r) => (v || []).length ? LG.esc(v.slice(0, 3).join(", ")) : `<span class="muted">${LG.esc(r.fix_state === "wont-fix" ? "won't fix" : "no fix yet")}</span>`},
     {k: "cvss", l: "CVSS", num: true, s: true, desc: true, f: (v, r) => v != null ? score(v, r.cvss_source) : `<span class="muted" title="no score known">${LG.esc(r.severity || "–")}</span>`},
     {k: "epss", l: "EPSS", num: true, s: true, desc: true, f: (v, r) => `<span style="white-space:nowrap" title="percentile ${pct(r.epss_pct)}">${pct(v)}</span>`},
@@ -115,6 +115,19 @@ async function findings() {
     {k: "why", l: "Why", f: (v, r) => r.ignored ? `<span class="muted">exception: ${LG.esc(r.ignored)}</span>` : LG.esc(v || "")},
     {k: "first_seen", l: "First seen", f: v => LG.ago(v)},
   ], rows, show === "alerted" ? "Nothing above your threshold." : "No findings.", null, { sortAll: true });
+}
+// one row per vulnerability + source package: Ubuntu / Debian report a CVE of e.g. dotnet10 once per package built from it
+function pkgCell(r) {
+  const ps = r.packages || [{ name: r.package, version: r.version, locations: r.locations }];
+  const head = ps.length > 1 || (r.upstream && r.upstream !== r.package)
+    ? `<b>${LG.esc(r.group || r.package)}</b>${r.upstream ? ` <span class="muted small">source package</span>` : ""}`
+    : `<b>${LG.esc(ps[0].name)}</b> ${LG.esc(ps[0].version)}`;
+  const list = ps.length > 1 || (r.upstream && r.upstream !== r.package) ? `<div class="small">${ps.slice(0, 6).map(p =>
+    `${LG.esc(p.name)} <span class="muted">${LG.esc(p.version)}</span>${p.fixed ? ` <span class="ok-msg">already fixed</span>` : ""}`).join("<br>")}${ps.length > 6 ? `<br><span class="muted">… ${ps.length - 6} more</span>` : ""}</div>` : "";
+  const loc = (ps[0].locations || [])[0];
+  const m = r.matched || {};
+  const how = m.searched ? `<div class="small muted" title="${LG.esc([m.type, m.matcher, m.namespace, m.distro].filter(Boolean).join(" · "))}">compared: ${LG.esc(m.searched)}${m.constraint ? " vs " + LG.esc(m.constraint) : ""}${m.distro ? ` (${LG.esc(m.distro)})` : ""}${m.note ? `<div class="${m.probably_fixed ? "ok-msg" : ""}">${LG.esc(m.note)}</div>` : ""}${/cpe/i.test(m.type || "") ? ` <span class="badge warn" title="matched by product name (CPE) only - more often wrong">CPE guess</span>` : ""}</div>` : "";
+  return head + list + `<div class="small muted">${LG.esc(r.pkg_type || "")}${loc ? ` · ${LG.esc(loc)}` : ""}</div>` + how;
 }
 function sources(st) {
   const rows = Object.entries(st.sources || {}).map(([k, s]) => ({ kind: k, ...s }));

@@ -788,6 +788,17 @@ Looking Glass image, plus a few online sources. It is off by default.
    *Settings › Container vulnerabilities*: *Alert from CVSS score*, *Also alert from EPSS*, *Only alert when a fix
    exists*.
 
+**Reading the findings.** Ubuntu and Debian file a fix under the *source* package (e.g. `dotnet10`), with that
+source package's version (`10.0.114-10.0.14-0ubuntu1~26.04.1` = SDK 10.0.114, runtime 10.0.14). Every binary package
+built from it (`dotnet-host-10.0`, `aspnetcore-runtime-10.0`, …) is then affected by the same CVE. The page shows such
+a CVE once, with all its packages, and each finding says what Grype compared ("compared: dotnet10 10.0.13-… vs <
+10.0.114-…", plus the distribution). When Grype only knew a binary package's own version
+(`10.0.14-0ubuntu1~26.04.1`), it compares it with the source-style fix version, and 10.0.14 sorts below 10.0.114 even
+though it is the fixed build. Looking Glass then compares the binary package's version with the fix's runtime part.
+If the package already has the fix, it is marked *already fixed* and raises no alert; otherwise the finding says
+"not fixed yet". `pkg:dotnet10` under *Exceptions* covers all packages of a source package. Matches made only by
+product name (*CPE guess*) are marked, because they are wrong more often.
+
 **Set it up**
 
 1. **Unraid web UI** › *Docker* tab › your `docker-socket-proxy` container › *Edit* › *Add another Path, Port,
