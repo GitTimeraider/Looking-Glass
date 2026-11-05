@@ -63,6 +63,7 @@ PAGES = {
     "/alerts": ("alerts.html", "Alerts"),
     "/system": ("system.html", "OPNsense"),
     "/devices": ("devices.html", "Devices"),
+    "/vulns": ("vulns.html", "Vulnerabilities"),
     "/unraid": ("unraid.html", "Unraid"),
     "/unifi": ("unifi.html", "UniFi"),
     "/reports": ("reports.html", "Reports"),
@@ -1006,6 +1007,66 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         from ..intel import Intel
         await Intel(settings).update(force=True)
         return await intel_status()
+
+    # --------------------------------------------- container vulnerabilities ---
+    @app.get("/api/vulns")
+    async def vulns_overview():
+        rows = await db.pool().fetch(
+            "SELECT i.*, count(f.vuln) total, count(f.vuln) FILTER (WHERE f.alerted) alerted, "
+            "count(f.vuln) FILTER (WHERE f.kev AND f.ignored IS NULL) kev, "
+            "count(f.vuln) FILTER (WHERE f.ignored IS NOT NULL) ignored_n, max(f.cvss) FILTER (WHERE f.ignored IS NULL) max_cvss, "
+            "count(f.vuln) FILTER (WHERE coalesce(f.cvss, 0) >= 9 AND f.ignored IS NULL) crit, "
+            "count(f.vuln) FILTER (WHERE f.cvss >= 7 AND f.cvss < 9 AND f.ignored IS NULL) high "
+            "FROM vuln_images i LEFT JOIN vuln_findings f ON f.image_key = i.key GROUP BY i.key ORDER BY alerted DESC, i.image")
+        kev = await db.kv_get("vulnscan:kev", []) or []
+        return {"enabled": settings.vuln_scan_enabled, "status": await db.kv_get("vulnscan:status", {}) or {},
+                "images": db.records(rows), "kev_count": len(kev),
+                "policy": {"min_cvss": settings.vuln_min_cvss, "kev_always": settings.vuln_kev_always,
+                           "epss_min": settings.vuln_epss_min, "only_fixed": settings.vuln_only_fixed}}
+
+    @app.get("/api/vulns/findings")
+    async def vulns_findings(image: str | None = None, show: str = "alerted", q: str | None = None,
+                             limit: int = Query(1000, ge=1, le=10000)):
+        cond, args = ["true"], []
+        if image:
+            args.append(image)
+            cond.append(f"f.image_key = ${len(args)}")
+        if show == "alerted":
+            cond.append("f.alerted")
+        elif show == "kev":
+            cond.append("f.kev")
+        elif show == "ignored":
+            cond.append("f.ignored IS NOT NULL")
+        elif show == "fixable":
+            cond.append("(f.fix_state = 'fixed' OR cardinality(f.fix_versions) > 0)")
+        if q:
+            args.append(f"%{q}%")
+            cond.append(f"(f.vuln ILIKE ${len(args)} OR f.package ILIKE ${len(args)} OR array_to_string(f.aliases, ' ') "
+                        f"ILIKE ${len(args)} OR i.image ILIKE ${len(args)})")
+        args.append(limit)
+        rows = await db.pool().fetch(
+            "SELECT f.*, i.image, i.containers FROM vuln_findings f JOIN vuln_images i ON i.key = f.image_key "
+            f"WHERE {' AND '.join(cond)} ORDER BY f.kev DESC, f.cvss DESC NULLS LAST, f.epss DESC NULLS LAST, f.vuln "
+            f"LIMIT ${len(args)}", *args)
+        return db.records(rows)
+
+    @app.post("/api/vulns/scan")
+    async def vulns_scan(payload: dict = Body(default={})):
+        if not settings.vuln_scan_enabled:
+            raise HTTPException(400, "Switch scanning on first: Settings › Container vulnerabilities")
+        await db.kv_set("vulnscan:request", {"at": time.time(), "rebuild": bool(payload.get("rebuild"))})
+        scanner = getattr(app.state, "vulnscan", None)
+        if scanner is not None:
+            scanner.wake.set()
+        return {"ok": True}
+
+    @app.post("/api/vulns/test-sources")
+    async def vulns_test_sources(payload: dict = Body(default={})):
+        from ..vulnscan import test_sources
+        try:
+            return await test_sources(settings, payload.get("text"))
+        except ValueError as exc:
+            raise HTTPException(400, f"Sources: {exc}") from exc
 
     @app.get("/api/feedback/suggestions")
     async def feedback_suggestions():

@@ -62,6 +62,8 @@ RULES: dict[str, list[tuple[str, str]]] = {
                ("unraid_container_unhealthy", "Container unhealthy"),
                ("unraid_container_errors", "Errors in a container log"), ("unraid_notification", "Unraid notification"),
                ("unraid_unreachable", "Server unreachable")],
+    "Container vulnerabilities": [("container_vulnerable", "Vulnerable container image"),
+                                  ("vuln_scan_problem", "Vulnerability scan problem")],
 }
 RULE_NAMES = {r for group in RULES.values() for r, _ in group}
 RULE_LABELS = {r: label for group in RULES.values() for r, label in group}

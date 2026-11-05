@@ -365,6 +365,38 @@ async def run(settings: Settings) -> dict[str, Any]:
         total = sum(v.get("count") or 0 for v in feeds.values())
         check("intel", "Threat feeds", "ok", ["internet"], f"{total:,} indicators from "
               f"{sum(1 for v in feeds.values() if v.get('ok'))} feeds.", link="/settings#intel")
+    if settings.vuln_scan_enabled:
+        vs = await db.kv_get("vulnscan:status", {}) or {}
+        bad_tools = [f"{k}: {v.get('error')}" for k, v in (vs.get("tools") or {}).items() if not v.get("ok")]
+        vdb = vs.get("db") or {}
+        failing = [f"{k}: {v.get('error')}" for k, v in (vs.get("sources") or {}).items() if v.get("ok") is False]
+        no_api = [v.get("server") for v in (vs.get("inventory") or {}).values() if v.get("docker_api") not in (None, "ok")]
+        img_err = await db.pool().fetchval("SELECT count(*) FROM vuln_images WHERE status = 'error'")
+        if bad_tools:
+            check("vulns", "Container vulnerabilities", "action", ["internet"], "Scanner can't run: " + "; ".join(bad_tools)[:500],
+                  ["Use the official Looking Glass image (it includes Grype and Syft), or set their paths under Settings › "
+                   "Container vulnerabilities."], link="/vulns")
+        elif vdb.get("tried") and (not vdb.get("valid") or (vdb.get("age_days") or 99) > 3):
+            check("vulns", "Container vulnerabilities", "action", ["internet"],
+                  f"Vulnerability database {'missing' if vdb.get('age_days') is None else str(vdb['age_days']) + ' days old'}: "
+                  f"{vdb.get('update_error') or vdb.get('status_error') or ''}"[:500],
+                  ["The container needs HTTPS access to grype.anchore.io (or your mirror under Settings › Container "
+                   "vulnerabilities › Grype database address)."], link="/vulns")
+        elif failing or img_err or no_api:
+            check("vulns", "Container vulnerabilities", "info", ["internet", "API"], "; ".join(
+                  ([f"{img_err} image(s) can't be scanned"] if img_err else []) + failing +
+                  ([f"no exact image digests from {', '.join(no_api)}"] if no_api else []))[:600],
+                  (["Unraid › Docker tab › docker-socket-proxy › Edit: add the variables CONTAINERS = 1 and IMAGES = 1, "
+                    "and enter its address under Looking Glass › Settings › Unraid servers › Docker API."] if no_api else []) +
+                  (["Looking Glass › Vulnerabilities › Sources › Test sources shows which address fails; change it under "
+                    "Settings › Container vulnerabilities › Sources."] if failing else []), link="/vulns")
+        elif vs.get("last_scan"):
+            n_img = await db.pool().fetchval("SELECT count(*) FROM vuln_images")
+            check("vulns", "Container vulnerabilities", "ok", ["internet"], f"{n_img} image(s) checked, database "
+                  f"{vdb.get('age_days')} days old.", link="/vulns")
+        else:
+            check("vulns", "Container vulnerabilities", "info", [], "Switched on - the first check runs within a few "
+                  "minutes (the first database download takes a while).", link="/vulns")
     tls = await db.pool().fetchval("SELECT count(*) FROM events WHERE ts > now() - interval '1 day' AND source IN "
                                    "('suricata', 'zenarmor') AND coalesce(data->>'ja3', data->>'ja4', data->>'ja3_hash') IS NOT NULL")
     if settings.intel_ja3 or settings.behavior_new_tls:

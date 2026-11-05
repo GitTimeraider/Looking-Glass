@@ -58,6 +58,8 @@ DNS tunneling, DGA domains, NXDOMAIN storms, malicious-domain lookups, internal 
 outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), new devices, UniFi access point / switch
 offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, gateway down, resources
 (disk/memory/states) high, stopped services, firmware updates available and "logs stopped arriving" (possible tampering).
+Optionally: **vulnerable container images** (known CVEs in what your containers run, see
+[Container vulnerabilities](#container-vulnerabilities)).
 
 **Logins on all systems**: OPNsense (web GUI, SSH, API, VPN), **Unraid** (web GUI and SSH, from its syslog) and the
 **UniFi controller** (admin logins with their address) all feed the same login rules: brute force, password spraying,
@@ -752,6 +754,84 @@ metrics, no alerts.
 > shows ZFS pools with capacity and member devices, and alerts on ZFS errors from the Unraid syslog (enable *collect
 > container & system logs*) and on Unraid's own notifications.
 
+## Container vulnerabilities
+
+Looking Glass can check the image of every container on your Unraid servers for known vulnerabilities (CVEs). That
+covers the operating system packages, the libraries (PHP Composer, npm, Python, Go, Java, Rust ...) and programs
+compiled from source, such as the `php` binary in the official PHP / Nextcloud images. It uses
+[Grype](https://github.com/anchore/grype) and [Syft](https://github.com/anchore/syft), which are included in the
+Looking Glass image, plus a few online sources. It is off by default.
+
+**How it works**
+
+1. **Which images.** Every container from the Unraid API, plus *Extra images to scan*. Containers that share an image
+   are scanned once. With a Docker API that allows `IMAGES=1` (below), the exact digest each container runs is known,
+   so exactly that image is scanned. Without it, the registry's current image for the tag is scanned, which can be
+   newer than the one running; the page says so.
+2. **Package list (SBOM).** Syft reads the image: from its registry by digest, or exported through the Docker API
+   (also works for images you built yourself). It does this again when a container runs a new image and every
+   *Read the images again every* days (default 7).
+3. **Matching.** Grype updates its vulnerability database (NVD, GitHub advisories and the Debian / Alpine / Ubuntu /
+   RHEL trackers) and matches the stored package lists against it every *Check against new vulnerabilities every*
+   hours (default 24). The images are not downloaded again, so a CVE published today for an image you pulled months
+   ago shows up the same day.
+4. **Extra information.** CISA's [Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+   list (attacked in the wild), [EPSS](https://www.first.org/epss/) (the chance of exploitation in the next 30 days) and
+   an NVD lookup for findings without a CVSS score.
+5. **App version checks.** These cover the application itself (Nextcloud is not a "package" in its own image). The
+   version is read from an image label, environment variable, the tag or a package, and looked up in
+   [OSV](https://osv.dev). Nextcloud (official and linuxserver images) is built in; add your own, one line each:
+   `images | env NAME / label NAME / tag / package NAME [/regex/] | <OSV ecosystem> <package>`.
+6. **Alerts.** You get one alert per image (rule *Vulnerable container image*). It lists the findings above your
+   threshold and says whether a newer image exists for the tag, and it closes by itself after you update. The default
+   threshold is CVSS ≥ 7.0, plus every actively exploited CVE, and only findings that have a fix. Change it under
+   *Settings › Container vulnerabilities*: *Alert from CVSS score*, *Also alert from EPSS*, *Only alert when a fix
+   exists*.
+
+**Set it up**
+
+1. **Unraid web UI** › *Docker* tab › your `docker-socket-proxy` container › *Edit* › *Add another Path, Port,
+   Variable…* › Variable, key `IMAGES`, value `1` › *Apply*. It must also have `CONTAINERS=1`; `POST=0` keeps it
+   read-only. Don't have one yet? Start [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml)
+   on Unraid, then in **Looking Glass › Settings › Unraid servers** › your server › *Docker API* enter
+   `http://<unraid-ip>:2375`. This step is optional, but without it the exact running image is not known.
+2. **Looking Glass web UI** › *Settings › Container vulnerabilities* › tick **Scan container images for
+   vulnerabilities** › *Save*. The first check starts within a few minutes. Grype's first database download takes a
+   while (a few hundred MB, kept in `/data/vulnscan`).
+3. **Looking Glass › Vulnerabilities** shows every image, its findings (filters: above your threshold / actively
+   exploited / fix available / all / exceptions), the app versions found and whether a newer image exists. The
+   *Check now* and *Read all images again* buttons start a check right away.
+4. Optional, under *Settings › Container vulnerabilities*:
+   * a **registry login**: Docker Hub limits anonymous pulls; private registries need one.
+   * an **NVD API key**: more CVSS lookups per minute.
+   * **Exceptions**: findings you accept, e.g. `CVE-2023-45853 on mariadb*` or `pkg:perl-base`, optionally
+     `until 2026-12-31`.
+
+**Nothing is hard-wired.** Every address and response format can be changed in *Settings › Container
+vulnerabilities*:
+
+| Setting | What you can change |
+|---|---|
+| *Sources* | one line per source, `kind: [POST] address \| format`, tried top to bottom per kind until one answers; `kind: off` switches a kind off; empty = the built-in list. `kev`: `json <path>`, `csv <column>` or `text` (every CVE id in the answer, survives most format changes). `epss`: `json <rows> <cve> <score> [<percentile>]` or `csv ...`; `{cves}` in the address = 100 at a time, without it = one full download (`.gz` is unpacked). `cvss`: an address with `{cve}` and `json <path>, <path>`. `osv`: any OSV-compatible query API. Paths look like `vulnerabilities[].cveID` (`[]` = every item, `*` = every value). **Test sources** on the Vulnerabilities page tries every line and shows what it got |
+| *App version checks* | which images, where their version is, which OSV package |
+| *Grype database address* | a mirror, or Anchore's new address if it moves |
+| *Grype / Syft program*, *extra arguments*, *extra environment* | another binary, `--exclude`, `--platform`, any `GRYPE_*` / `SYFT_*` setting, a proxy |
+
+**When something fails, you are told.** Every problem appears at the top of the Vulnerabilities page with the exact
+error, and under *Setup & status*. A problem that leaves you blind also raises its own alert (rule *Vulnerability scan
+problem*), which closes by itself once it works again:
+
+| Problem | Alert |
+|---|---|
+| Grype or Syft can't run | medium |
+| the vulnerability database can't be updated and is older than 3 days | medium |
+| an image fails to scan twice in a row (registry down, login needed, image gone) | low, per image |
+| no source of a kind answers for 2 days (KEV, OSV) or 3 days (EPSS, CVSS) | low, per kind |
+
+In each case the last good results are kept. The page also shows a Docker API that refuses (and which variable is
+missing), an app check that finds no version, and a mistake in your own source list (the built-in list is used
+meanwhile).
+
 ## Adding a UniFi controller
 
 Optional. Looking Glass only reads from the controller; it never changes anything there.
@@ -927,7 +1007,8 @@ CrowdSec, DHCP leases), the [Unraid API](https://github.com/unraid/api) schema a
 UniFi Network controller OpenAPI specs 9.0–11.0 ([beezly/unifi-apis](https://github.com/beezly/unifi-apis)),
 [aiounifi](https://github.com/Kane610/aiounifi), [unpoller](https://github.com/unpoller/unifi) and the
 [Art-of-WiFi UniFi API client](https://github.com/Art-of-WiFi/UniFi-API-client),
-[docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) and Anthropic's
+[docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy), [Grype](https://github.com/anchore/grype) /
+[Syft](https://github.com/anchore/syft) (JSON output models of v0.120 / v1.55), the [OSV API](https://google.github.io/osv.dev/api/) and Anthropic's
 [OpenAI SDK compatibility](https://platform.claude.com/docs/en/api/openai-sdk) docs.
 
 ## Development

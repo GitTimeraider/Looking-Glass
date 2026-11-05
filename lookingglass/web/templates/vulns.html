@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top">
+  <h1>Container vulnerabilities</h1>
+  <span class="muted small" id="state"></span>
+  <button id="scan" class="secondary" title="Update the database and match every image again">Check now</button>
+  <button id="rebuild" class="secondary" title="Read every image again (new package lists), then match">Read all images again</button>
+</header>
+<div id="off" class="card" hidden>Scanning is switched off. Switch it on under
+  <a href="/settings#vulns">Settings › Container vulnerabilities</a>: every container of your Unraid servers is then
+  checked with Grype for known vulnerabilities in its packages, libraries and programs.</div>
+<div id="problems" class="card warn-box" hidden style="margin-bottom:14px"><h3>Problems</h3><ul id="problem-list" class="small"></ul></div>
+<div class="grid kpis" id="kpis"></div>
+<div class="card" style="margin-top:14px">
+  <h3>Images <span class="muted small">click a row to show its findings</span></h3>
+  <div id="images"></div>
+</div>
+<div class="card" style="margin-top:14px">
+  <h3>Findings <span class="muted small" id="f-note"></span></h3>
+  <div class="filters">
+    <div class="seg" id="show"><button data-v="alerted">Above your threshold</button><button data-v="kev">Actively exploited</button><button data-v="fixable">Fix available</button><button data-v="all">All</button><button data-v="ignored">Exceptions</button></div>
+    <select id="img"><option value="">all images</option></select>
+    <input id="q" placeholder="CVE, package or image…" style="flex:1">
+  </div>
+  <div id="findings"></div>
+</div>
+<div class="grid g2" style="margin-top:14px">
+  <div class="card"><h3>Sources <span class="sp"></span><button class="small-btn" id="test">Test sources</button></h3>
+    <p class="small muted">Addresses and formats: <a href="/settings#vulns">Settings › Container vulnerabilities › Sources</a>.</p>
+    <div id="sources"></div><div id="test-result" style="margin-top:10px"></div></div>
+  <div class="card"><h3>Scanner</h3><div id="scanner"></div></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let D = {}, show = "alerted", img = "", q = "";
+const ts = v => v ? (typeof v === "number" ? new Date(v * 1000).toISOString() : v) : null;
+const score = (v, src) => v === null || v === undefined ? `<span class="muted">–</span>` :
+  `<span class="badge ${v >= 9 ? "critical" : v >= 7 ? "high" : v >= 4 ? "medium" : "low"}" title="${LG.esc(src || "")}">${Number(v).toFixed(1)}</span>`;
+const pct = v => v === null || v === undefined ? "–" : (v * 100).toFixed(v < 0.01 ? 2 : 1) + "%";
+function problems(d) {
+  const st = d.status || {}, out = [];
+  for (const [k, t] of Object.entries(st.tools || {})) if (!t.ok) out.push(`<b>${LG.esc(k)}</b>: ${LG.esc(t.error)}`);
+  const db = st.db || {};
+  if (db.tried && (!db.valid || (db.age_days ?? 99) > 3))
+    out.push(`<b>Vulnerability database</b>: ${db.age_days != null ? `${db.age_days} days old` : "missing"} – ${LG.esc(db.update_error || db.status_error || "")}`);
+  else if (db.update_ok === false) out.push(`<b>Database update</b> failed (the old one is still used): ${LG.esc(db.update_error)}`);
+  for (const inv of Object.values(st.inventory || {})) {
+    if (inv.ok === false) out.push(`<b>${LG.esc(inv.server)}</b>: ${LG.esc(inv.error)}`);
+    else if (inv.docker_api && inv.docker_api !== "ok") out.push(`<b>${LG.esc(inv.server)} Docker API</b>: ${LG.esc(inv.docker_api)}`);
+  }
+  for (const [k, s] of Object.entries(st.sources || {})) if (s.ok === false) out.push(`<b>Source ${LG.esc(k)}</b> failing since ${LG.esc(LG.ago(s.failing_since))}: ${LG.esc(s.error)}`);
+  if (st.sources_error) out.push(`<b>Your source list</b> has an error, the built-in list is used: ${LG.esc(st.sources_error)}`);
+  if (st.app_checks_error) out.push(`<b>App version checks</b>: ${LG.esc(st.app_checks_error)}`);
+  for (const i of d.images || []) if (i.status === "error") out.push(`<b>${LG.esc(i.image)}</b> can't be scanned (${i.errors}× in a row): ${LG.esc(i.error)}`);
+  for (const i of d.images || []) for (const a of i.app || []) if (a.error) out.push(`<b>${LG.esc(i.image)}</b> app check (line ${a.line}): ${LG.esc(a.error)}`);
+  if (st.error) out.push(`<b>Last run</b> stopped: ${LG.esc(st.error)}`);
+  document.getElementById("problems").hidden = !out.length;
+  document.getElementById("problem-list").innerHTML = out.map(x => `<li>${x}</li>`).join("");
+}
+async function load() {
+  D = await LG.api("/api/vulns");
+  const st = D.status || {}, imgs = D.images || [];
+  document.getElementById("off").hidden = D.enabled;
+  document.getElementById("state").innerHTML = st.running ? `<span class="spinner"></span> ${LG.esc(st.phase || "running")}` :
+    st.last_scan ? `last check ${LG.ago(st.last_scan)}` + (st.duration ? ` (took ${st.duration < 90 ? st.duration + " s" : Math.round(st.duration / 60) + " min"})` : "") : D.enabled ? "first check starts soon" : "";
+  problems(D);
+  const k = (l, v, c = "") => `<div class="card kpi ${c}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  const vuln = imgs.filter(i => i.alerted > 0).length, kev = imgs.reduce((a, i) => a + Number(i.kev || 0), 0);
+  const above = imgs.reduce((a, i) => a + Number(i.alerted || 0), 0), age = (st.db || {}).age_days;
+  document.getElementById("kpis").innerHTML = k("images scanned", imgs.filter(i => i.matched_at).length + " / " + imgs.length) +
+    k("images above threshold", vuln, vuln ? "bad" : "ok") + k("findings above threshold", above, above ? "bad" : "ok") +
+    k("actively exploited", kev, kev ? "bad" : "ok") + k("database age (days)", age ?? "–", age == null || age > 3 ? "warn" : "ok") +
+    k("known exploited CVEs", LG.num(D.kev_count));
+  LG.table("#images", [
+    {k: "image", l: "Image", f: (v, r) => `<b>${LG.esc(v)}</b>${r.digest ? `<div class="small muted mono" title="${LG.esc(r.digest)}">${LG.esc(r.digest.slice(0, 19))}…</div>` : ""}` +
+      (r.notes || []).map(n => `<div class="small muted">${LG.esc(n)}</div>`).join("")},
+    {k: "containers", l: "Containers", f: v => (v || []).map(c => LG.esc(c.name) + (c.server ? ` <span class="muted small">(${LG.esc(c.server)})</span>` : "")).join("<br>")},
+    {k: "status", l: "Scan", f: (v, r) => v === "ok" ? `<span class="badge ok">ok</span>` : v === "error" ? `<span class="badge high" title="${LG.esc(r.error)}">error</span>` : `<span class="muted">waiting</span>`},
+    {k: "alerted", l: "Above threshold", num: true, s: true, desc: true, f: (v, r) => `<b class="${v ? "err" : ""}">${LG.num(v)}</b> <span class="muted small">of ${LG.num(r.total)}</span>`},
+    {k: "kev", l: "Exploited", num: true, s: true, desc: true, f: v => v ? `<span class="badge critical">${v}</span>` : "0"},
+    {k: "max_cvss", l: "Max CVSS", num: true, s: true, desc: true, f: v => score(v)},
+    {k: "update_info", l: "Newer image", f: v => !v ? `<span class="muted" title="needs the exact digest (Docker API with IMAGES=1)">?</span>` : v.error ? `<span class="muted" title="${LG.esc(v.error)}">unknown</span>` : v.available ? `<span class="badge warn">yes</span>` : "no"},
+    {k: "app", l: "App version", f: v => (v || []).map(a => a.version ? `${LG.esc(a.version)} <span class="muted small">(${LG.esc(a.from)})</span>` : `<span class="err small" title="${LG.esc(a.error)}">not found</span>`).join("<br>")},
+    {k: "packages", l: "Packages", num: true},
+    {k: "sbom_at", l: "Image read", f: (v, r) => v ? `<span title="${LG.esc(r.sbom_source || "")}">${LG.ago(v)}</span>` : "never"},
+    {k: "matched_at", l: "Matched", f: v => v ? LG.ago(v) : "never"},
+  ], imgs, D.enabled ? "No containers found yet (needs an Unraid server, or extra images in the settings)" : "", r => {
+    img = r.key; document.getElementById("img").value = img; findings();
+    document.getElementById("findings").scrollIntoView({ behavior: "smooth" });
+  }, { sortAll: true });
+  const sel = document.getElementById("img");
+  sel.innerHTML = `<option value="">all images</option>` + imgs.map(i => `<option value="${LG.esc(i.key)}">${LG.esc(i.image)}</option>`).join("");
+  sel.value = img;
+  sources(st);
+  scanner(st);
+  await findings();
+}
+async function findings() {
+  const p = new URLSearchParams({ show }); if (img) p.set("image", img); if (q) p.set("q", q);
+  const rows = await LG.api("/api/vulns/findings?" + p);
+  const pol = D.policy || {};
+  document.getElementById("f-note").textContent = `threshold: CVSS ≥ ${pol.min_cvss || 0}` + (pol.kev_always ? ", actively exploited always" : "") +
+    (pol.epss_min ? `, EPSS ≥ ${pol.epss_min}` : "") + (pol.only_fixed ? ", only with a fix" : "");
+  LG.table("#findings", [
+    {k: "vuln", l: "Vulnerability", f: (v, r) => (r.url ? `<a href="${LG.esc(r.url)}" target="_blank" rel="noopener noreferrer">${LG.esc(v)}</a>` : LG.esc(v)) +
+      (r.aliases && r.aliases.length ? `<div class="small muted">${LG.esc(r.aliases.slice(0, 3).join(", "))}</div>` : "") +
+      (r.description ? `<div class="small muted" title="${LG.esc(r.description)}">${LG.esc(r.description.slice(0, 110))}${r.description.length > 110 ? "…" : ""}</div>` : "")},
+    {k: "package", l: "Package", f: (v, r) => `<b>${LG.esc(v)}</b> ${LG.esc(r.version)}<div class="small muted">${LG.esc(r.pkg_type || "")}${(r.locations || []).length ? ` · <span title="${LG.esc(r.locations.join("\n"))}">${LG.esc(r.locations[0])}</span>` : ""}</div>`},
+    {k: "fix_versions", l: "Fixed in", f: (v, r) => (v || []).length ? LG.esc(v.slice(0, 3).join(", ")) : `<span class="muted">${LG.esc(r.fix_state === "wont-fix" ? "won't fix" : "no fix yet")}</span>`},
+    {k: "cvss", l: "CVSS", num: true, s: true, desc: true, f: (v, r) => v != null ? score(v, r.cvss_source) : `<span class="muted" title="no score known">${LG.esc(r.severity || "–")}</span>`},
+    {k: "epss", l: "EPSS", num: true, s: true, desc: true, f: (v, r) => `<span style="white-space:nowrap" title="percentile ${pct(r.epss_pct)}">${pct(v)}</span>`},
+    {k: "kev", l: "Exploited", s: true, desc: true, f: v => v ? `<span class="badge critical" title="on CISA's Known Exploited Vulnerabilities list">yes</span>` : ""},
+    {k: "image", l: "Image", f: (v, r) => LG.esc(v) + `<div class="small muted">${LG.esc((r.containers || []).map(c => c.name).join(", "))}</div>`},
+    {k: "why", l: "Why", f: (v, r) => r.ignored ? `<span class="muted">exception: ${LG.esc(r.ignored)}</span>` : LG.esc(v || "")},
+    {k: "first_seen", l: "First seen", f: v => LG.ago(v)},
+  ], rows, show === "alerted" ? "Nothing above your threshold." : "No findings.", null, { sortAll: true });
+}
+function sources(st) {
+  const rows = Object.entries(st.sources || {}).map(([k, s]) => ({ kind: k, ...s }));
+  LG.table("#sources", [
+    {k: "kind", l: "Kind"},
+    {k: "ok", l: "State", f: (v, r) => r.off ? `<span class="muted">off</span>` : v ? `<span class="badge ok">ok</span>` : `<span class="badge high">error</span>`},
+    {k: "count", l: "Entries", num: true},
+    {k: "updated", l: "Last success", f: v => v ? LG.ago(ts(v)) : "never"},
+    {k: "url", l: "From / error", f: (v, r) => r.ok === false ? `<span class="small err">${LG.esc(r.error)}</span>` : `<span class="small muted">${LG.esc(v || "")}${r.note ? " · " + LG.esc(r.note) : ""}</span>`},
+  ], rows, "Not used yet - the first check fills this in.");
+}
+function scanner(st) {
+  const t = st.tools || {}, db = st.db || {};
+  const line = (l, v) => `<div class="small"><b>${l}</b> ${v}</div>`;
+  document.getElementById("scanner").innerHTML =
+    line("Grype", t.grype ? (t.grype.ok ? LG.esc(t.grype.version) : `<span class="err">${LG.esc(t.grype.error)}</span>`) : "–") +
+    line("Syft", t.syft ? (t.syft.ok ? LG.esc(t.syft.version) : `<span class="err">${LG.esc(t.syft.error)}</span>`) : "–") +
+    line("Database built", db.built ? `${LG.esc(LG.time(db.built))} (${db.age_days} days old)` : "–") +
+    line("Database update", db.update_ok ? `ok ${LG.ago(ts(db.updated))}` : db.update_error ? `<span class="err">${LG.esc(db.update_error)}</span>` : "–") +
+    line("Schema", LG.esc(db.schema || "–")) +
+    line("Last full check", st.last_scan ? LG.ago(ts(st.last_scan)) : "never");
+}
+LG.seg(document.getElementById("show"), show, v => { show = v; findings(); });
+document.getElementById("img").onchange = e => { img = e.target.value; findings(); };
+let qt; document.getElementById("q").oninput = e => { clearTimeout(qt); qt = setTimeout(() => { q = e.target.value.trim(); findings(); }, 300); };
+for (const [id, rebuild] of [["scan", false], ["rebuild", true]])
+  document.getElementById(id).onclick = async () => {
+    try { await LG.api("/api/vulns/scan", { method: "POST", body: { rebuild } });
+      document.getElementById("state").innerHTML = `<span class="spinner"></span> starting…`; setTimeout(load, 3000); }
+    catch (e) { alert(e.message); }
+  };
+document.getElementById("test").onclick = async () => {
+  const el = document.getElementById("test-result"); el.innerHTML = `<span class="spinner"></span> asking every source…`;
+  try {
+    const rows = await LG.api("/api/vulns/test-sources", { method: "POST", body: {} });
+    LG.table(el, [{k: "kind", l: "Kind"}, {k: "line", l: "Line"}, {k: "ok", l: "", f: v => v ? `<span class="badge ok">ok</span>` : `<span class="badge high">failed</span>`},
+      {k: "result", l: "Answer", f: (v, r) => `${LG.esc(v)}<div class="small muted">${LG.esc(r.url)}</div>`}], rows, "No sources configured.");
+  } catch (e) { el.innerHTML = `<span class="err small">${LG.esc(e.message)}</span>`; }
+};
+load();
+LG.autoRefresh(load, () => (D.status || {}).running ? 10000 : 60000);
+</script>
+{% endblock %}
