@@ -29,6 +29,7 @@
     <input id="note" placeholder="Why (optional), e.g. not reachable" maxlength="500" style="flex:1"></span>
     <button id="close-sel" class="danger" title="Hide these findings for good: no alerts, also after new scans and image updates">Close selected</button>
     <button id="reopen-sel" class="secondary" hidden>Reopen selected</button>
+    {% if ai_enabled %}<button id="ask-ai" class="secondary" title="Open the AI analyst and ask about the selected vulnerabilities: what they are, whether they matter for your containers and how to fix them">Ask AI</button>{% endif %}
     <button id="clear-sel" class="secondary">Clear selection</button>
   </div>
   <div id="findings"></div>
@@ -117,12 +118,18 @@ function bulk() {
   document.getElementById("close-opts").hidden = closed;
   document.getElementById("close-sel").hidden = closed;
   document.getElementById("reopen-sel").hidden = !closed;
+  const ask = document.getElementById("ask-ai"); if (ask) ask.hidden = closed;
   const all = document.getElementById("sel-all");
   if (all) { const shown = rows.filter(r => picked.has(keyOf(r))).length; all.checked = !!rows.length && shown === rows.length; all.indeterminate = shown > 0 && shown < rows.length; }
 }
 const pickCol = () => ({k: "_pick", l: `<input type="checkbox" id="sel-all" title="Select every shown row" aria-label="Select all">`, raw: true,
   f: (v, r) => `<input type="checkbox" class="pick" data-k="${LG.esc(keyOf(r))}" ${picked.has(keyOf(r)) ? "checked" : ""} aria-label="Select">`});
-const pickOf = r => show === "closed" ? { vuln: r.vuln, grp: r.grp, repo: r.repo } : { vuln: r.vuln, group: r.group, repo: r.repo };
+// what is remembered of a selected row: the key fields for closing, plus what the AI question names
+const pickOf = r => show === "closed" ? { vuln: r.vuln, grp: r.grp, repo: r.repo } : {
+  vuln: r.vuln, group: r.group, repo: r.repo, aliases: (r.aliases || []).slice(0, 2),
+  packages: (r.packages || [{ name: r.package, version: r.version }]).slice(0, 3).map(p => `${p.name} ${p.version}`),
+  type: r.pkg_type, where: ((r.packages || [])[0] || {}).locations?.[0] || (r.locations || [])[0] || "",
+  image: r.image, containers: (r.containers || []).map(c => c.name).filter(n => n && !n.startsWith("(")) };  // not "(listed image)"
 // one listener on the container: the table is drawn again when sorted, the checkboxes with it
 document.getElementById("findings").addEventListener("change", e => {
   const c = e.target;
@@ -230,6 +237,30 @@ document.getElementById("close-sel").onclick = async () => {
   try { await LG.api("/api/vulns/close", { method: "POST", body: { items, scope, note: document.getElementById("note").value } });
     picked.clear(); document.getElementById("note").value = ""; await load(); }
   catch (e) { alert(e.message); }
+};
+const ASK_MAX = 20;  // more does not fit one good answer (and the address)
+function askAiQuestion(items) {
+  const lines = items.map(x => `- ${x.vuln}${x.aliases && x.aliases.length ? ` (${x.aliases.join(", ")})` : ""} in ${x.packages.join(", ")}` +
+    `${x.type ? ` [${x.type}${x.where ? `, ${x.where}` : ""}]` : ""}, image ${x.image}` +
+    `${x.containers.length ? ` (container${x.containers.length > 1 ? "s" : ""}: ${x.containers.join(", ")})` : ""}`);
+  return `Look into these vulnerabilities from my Vulnerabilities page:\n${lines.join("\n")}\n\n` +
+    `For each one tell me:\n` +
+    `1. What it is and how it could be exploited, in plain words.\n` +
+    `2. Whether it is relevant for my container: what the container is used for, whether the vulnerable package or code ` +
+    `is actually used there, the platform, whether it is reachable from the network. Use vuln_findings (matched = what ` +
+    `the scanner compared, applies = whether it affects the container, locations, upstream) and vuln_images (containers, ` +
+    `platform, version).\n` +
+    `3. Whether and how I can fix it: the fixed version, whether a newer image is available (vuln_images.update_info), or ` +
+    `that I have to wait for the image maintainer.\n` +
+    `4. Your advice: update now, close it on the Vulnerabilities page as not relevant (say why), or keep watching.\n` +
+    `Say which conclusions come from my data and which are general knowledge.`;
+}
+const askBtn = document.getElementById("ask-ai");
+if (askBtn) askBtn.onclick = () => {
+  const items = [...picked.values()].filter(x => x.packages);
+  if (!items.length) return;
+  if (items.length > ASK_MAX && !confirm(`${items.length} selected - the AI is asked about the first ${ASK_MAX}. Continue?`)) return;
+  location.href = "/ai?q=" + encodeURIComponent(askAiQuestion(items.slice(0, ASK_MAX)));
 };
 document.getElementById("reopen-sel").onclick = async () => {
   const items = [...picked.values()]; if (!items.length) return;

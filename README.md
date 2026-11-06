@@ -851,6 +851,12 @@ affected range and fixed versions are plain release numbers, Looking Glass compa
 with them. If it is not affected, the finding is marked *not affected* and raises no alert. Real pre-releases
 (`-rc1`, `~beta`, `.dev2`) and fixes with their own distribution part (`1.3.1-2ubuntu3`) keep Grype's verdict.
 
+**Ask the AI about findings.** With the AI analyst set up, tick findings on the Vulnerabilities page and press
+**Ask AI** (up to 20 at a time). The AI analyst opens and asks, for each one: what it is and how it could be
+exploited, whether it is relevant for your container (what the container does, whether the vulnerable part is used,
+platform, network exposure - read from the scan data), whether and how you can fix it (fixed version, newer image),
+and what it advises: update, close as not relevant, or keep watching.
+
 **Closing findings.** On the Vulnerabilities page, tick the findings you've checked and press **Close selected**,
 for that image or for every image, optionally with why. A closed finding disappears from the lists, counts and
 alerts, and stays away after new scans and container updates. It is remembered by vulnerability (also its aliases),
