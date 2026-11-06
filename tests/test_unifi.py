@@ -144,3 +144,22 @@ def test_offline_alerts_wait_for_the_grace_time_and_close_by_themselves():
             await db.close()
 
     asyncio.run(main())
+
+
+def test_express_used_as_access_point():
+    """A UniFi Express (7) in AP mode keeps its console type ("udm"); only the gateway of the health data is a console."""
+    ux = lambda mac, **kw: {"mac": mac, "name": f"Express {mac[-1]}", "model": "UX7", "type": "udm",  # noqa: E731
+                            "vap_table": [{"essid": "Home"}], "radio_table_stats": [{"radio": "6e"}], **kw}
+    other_router = [{"subsystem": "wlan", "num_ap": 3}, {"subsystem": "wan", "status": "unknown"}]
+    assert unifi.gateway_macs(other_router) == set()
+    assert unifi.device_from_legacy(ux("aa:00:00:00:00:01"), unifi.gateway_macs(other_router))["kind"] == "access point"
+    # a UniFi gateway with Wi-Fi stays the console / gateway; the Express APs behind it are access points
+    unifi_gw = [{"subsystem": "wan", "gw_mac": "AA:00:00:00:00:09"}]
+    gws = unifi.gateway_macs(unifi_gw)
+    assert unifi.device_from_legacy(ux("aa:00:00:00:00:09"), gws)["kind"] == "console / gateway"
+    assert unifi.device_from_legacy(ux("aa:00:00:00:00:02"), gws)["kind"] == "access point"
+    # health unknown: a console whose WAN is up is the gateway
+    assert unifi.device_from_legacy(ux("aa:00:00:00:00:03", wan1={"ip": "84.1.2.3", "up": True}))["kind"] == "console / gateway"
+    assert unifi.device_from_legacy(ux("aa:00:00:00:00:04"))["kind"] == "access point"
+    # a console without Wi-Fi (Cloud Gateway / UDM Pro) is never an access point
+    assert unifi.device_from_legacy({"mac": "aa:00:00:00:00:05", "type": "ucg"}, set())["kind"] == "console / gateway"
