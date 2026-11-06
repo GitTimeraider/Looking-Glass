@@ -796,6 +796,11 @@ Looking Glass image, plus a few online sources. It is off by default.
    alert. Alerts are not changed: with alerts on, an alert still lists a hidden finding and says it is hidden on
    the page. Exceptions are always listed under *Exceptions*.
 
+   The *Alerts* section has the same kinds of filters for alerts, set separately: **No alerts for findings that
+   will not be fixed**, **No alerts for guesses by product name (CPE)** and **Packages not to alert on** (names,
+   source packages, `*` wildcards or types). These win over *actively exploited*. *Only alert when a fix exists*
+   covers findings without a fix; findings that are not affected never alert.
+
    The *Alerts* section also has **Create alerts for vulnerabilities** (**off by default**: no alerts at all, only the
    page), **Also alert on actively exploited vulnerabilities** (CISA KEV, whatever the score), **Also alert from EPSS
    chance** and **Only alert when a fix exists**. With alerts on you get one alert per image (rule *Vulnerable
@@ -888,7 +893,11 @@ what you checked (`CVE-… on fileflows  # Windows only`), optionally until a da
 2. **Looking Glass web UI** › *Settings › Container vulnerabilities* › tick **Scan container images for
    vulnerabilities** › *Save*. The first check starts within a few minutes. Grype's first database download takes a
    while (a few hundred MB, kept in `/data/vulnscan`).
-3. **Looking Glass › Vulnerabilities** shows every image, its findings (tabs: all / meets alert rules / actively
+3. **Looking Glass › Vulnerabilities** has two tabs. **Images & packages** lists every image (base OS, app
+   version, newer image) and every part found in it - operating system packages, libraries, language packages and
+   the programs they are built into - searchable by name, version, file, image or container (search `php` to see
+   what uses PHP) and filterable by type, language and image; the vulnerability count of a package opens its
+   findings. **Findings** shows the findings (tabs: all / meets alert rules / actively
    exploited / fix available / exceptions / closed by you), the app versions found and whether a newer image exists. The
    *Check now* and *Read all images again* buttons start a check right away.
    Want alerts too? Under *Settings › Container vulnerabilities › Alerts* tick **Create alerts for vulnerabilities**

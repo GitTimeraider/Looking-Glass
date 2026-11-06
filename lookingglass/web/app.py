@@ -1046,10 +1046,15 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         hidden_n = await db.pool().fetchval(
             "SELECT count(*) FROM (SELECT DISTINCT f.image_key, f.vuln FROM vuln_findings f JOIN vuln_images i "
             f"ON i.key = f.image_key WHERE {not_closed} AND NOT {shown}) x")
+        from ..vulnscan import image_inventory
+        images = db.records(rows)
+        for img in images:  # base OS and number of parts, from the stored package list (cached)
+            inv = await asyncio.to_thread(image_inventory, settings, img["key"])
+            img["distro"], img["parts"] = inv["distro"], len(inv["packages"])
         return {"enabled": settings.vuln_scan_enabled, "status": await db.kv_get("vulnscan:status", {}) or {},
                 "queued": await db.kv_get("vulnscan:request"),  # Check now pressed, the scanner has not picked it up yet
                 "now": time.time(),
-                "images": db.records(rows), "kev_count": len(kev), "closed_count": closed_n, "hidden_count": hidden_n,
+                "images": images, "kev_count": len(kev), "closed_count": closed_n, "hidden_count": hidden_n,
                 "hidden": {r["why"]: r["n"] for r in hidden},
                 "policy": {"min_cvss": settings.vuln_min_cvss, "kev_always": settings.vuln_kev_always,
                            "epss_min": settings.vuln_epss_min, "only_fixed": settings.vuln_only_fixed,
@@ -1086,6 +1091,40 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             f"WHERE {' AND '.join(cond)} ORDER BY f.kev DESC, f.cvss DESC NULLS LAST, f.epss DESC NULLS LAST, f.vuln, f.package "
             f"LIMIT 50000", *args)
         return group_findings(db.records(rows))[:limit]
+
+    @app.get("/api/vulns/packages")
+    async def vulns_packages(q: str | None = None, type: str | None = None, language: str | None = None,  # noqa: A002
+                             image: str | None = None, vulnerable: bool = False,
+                             limit: int = Query(1000, ge=1, le=20000)):
+        """Every part of every scanned image (Syft's package list): search and filter; per part its open findings."""
+        from ..vulnscan import image_inventory
+        images = db.records(await db.pool().fetch("SELECT key, image, containers FROM vuln_images ORDER BY image"))
+        counts = {(r["image_key"], r["package"], r["version"]): (r["n"], r["kev"]) for r in await db.pool().fetch(
+            "SELECT f.image_key, f.package, f.version, count(DISTINCT f.vuln) n, bool_or(f.kev) kev FROM vuln_findings f "
+            f"JOIN vuln_images i ON i.key = f.image_key WHERE {not_closed} AND {shown} GROUP BY 1, 2, 3")}
+        words = [w.lower() for w in (q or "").split() if w]
+        rows, types, langs, distros = [], {}, {}, {}
+        for img in images:
+            if image and img["key"] != image:
+                continue
+            inv = await asyncio.to_thread(image_inventory, settings, img["key"])
+            distros[img["key"]] = inv["distro"]
+            ctrs = [c.get("name") for c in img["containers"] or [] if c.get("name") and not str(c["name"]).startswith("(")]
+            for p in inv["packages"]:
+                n, kev = counts.get((img["key"], p["name"], p["version"]), (0, False))
+                text = " ".join([p["name"], p["version"], p["type"], p["language"], img["image"], *ctrs, *p["locations"]]).lower()
+                if words and not all(w in text for w in words):
+                    continue
+                if vulnerable and not n:
+                    continue
+                types[p["type"]] = types.get(p["type"], 0) + 1   # counted before the type / language filter
+                langs[p["language"]] = langs.get(p["language"], 0) + 1
+                if (type and p["type"] != type) or (language and p["language"] != language):
+                    continue
+                rows.append({**p, "image_key": img["key"], "image": img["image"], "containers": ctrs, "vulns": n, "kev": kev})
+        rows.sort(key=lambda r: (r["name"].lower(), r["version"], r["image"]))
+        return {"rows": rows[:limit], "total": len(rows), "types": types,
+                "languages": {k: v for k, v in langs.items() if k}, "distros": distros}
 
     async def vulns_closed_list() -> list[dict[str, Any]]:
         """Your closed findings, with the images they currently hide a finding in."""

@@ -40,7 +40,7 @@ SECTIONS = {
     "Vulnerabilities page": "What the Vulnerabilities page lists and counts (the page says how many are hidden, "
                             "and why). Does not change alerts: with alerts on, an alert still lists a hidden finding "
                             "and says it is hidden. Your exceptions are always listed under Exceptions.",
-    "Alerts": "When a finding raises an alert. Only used while 'Create alerts for vulnerabilities' is on; the findings "
+    "Alerts": "When a finding raises an alert. The same kinds of filters as for the page, set separately. Only used while 'Create alerts for vulnerabilities' is on; the findings "
               "that meet these rules are under 'Meets alert rules' on the Vulnerabilities page either way.",
     "Exceptions": "Findings you accept: no alert, listed under 'Exceptions' on the Vulnerabilities page. To hide "
                   "single findings for good, tick them on the Vulnerabilities page and press Close selected.",
@@ -380,6 +380,16 @@ FIELDS: list[Field] = [
     Field("vuln_only_fixed", "vulns", "Only alert when a fix exists", "bool", "Skip findings without a fixed version "
           "(Debian / Alpine 'will not fix', or not fixed yet) - there is nothing to update to. Actively exploited ones "
           "still alert when the switch above is on. They are always listed on the Vulnerabilities page.", section="Alerts"),
+    Field("vuln_alert_skip_wont_fix", "vulns", "No alerts for findings that will not be fixed", "bool", "The "
+          "distribution decided not to fix them (Debian / Ubuntu 'will not fix'). Also when actively exploited.",
+          section="Alerts"),
+    Field("vuln_alert_skip_cpe", "vulns", "No alerts for guesses by product name (CPE)", "bool", "Matches made only by "
+          "the product name, without a package database entry - wrong more often. Also when actively exploited.",
+          section="Alerts"),
+    Field("vuln_alert_skip_packages", "vulns", "Packages not to alert on", "list", "Like 'Packages not to show': "
+          "package names (also the source package), * as wildcard, or package types such as go-module. Also when "
+          "actively exploited. Findings that are not affected never alert.",
+          placeholder="chromium\ngo-module", section="Alerts"),
     Field("vuln_ignore", "vulns", "Exceptions", "text", "Findings you accept, one per line: a CVE / GHSA id (patterns "
           "with * allowed) or pkg:<package>, optionally 'on <containers or images>' and 'until <date>' - after that date "
           "it counts again. Still listed (marked) on the Vulnerabilities page. # starts a comment.",

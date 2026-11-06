@@ -701,7 +701,8 @@ def test_vulnerability_settings_are_grouped():
             seen.append(f.section)
             last = f.section
     alerts = [f.key for f in fs if f.section == "Alerts"]
-    assert alerts == ["vuln_alerts", "vuln_min_cvss", "vuln_kev_always", "vuln_epss_min", "vuln_only_fixed"]
+    assert alerts == ["vuln_alerts", "vuln_min_cvss", "vuln_kev_always", "vuln_epss_min", "vuln_only_fixed",
+                      "vuln_alert_skip_wont_fix", "vuln_alert_skip_cpe", "vuln_alert_skip_packages"]
     assert [f.key for f in fs if f.section == "Vulnerabilities page"] == [
         "vuln_show_min_cvss", "vuln_hide_wont_fix", "vuln_hide_no_fix", "vuln_hide_not_affected", "vuln_hide_cpe",
         "vuln_hide_types"]
@@ -867,6 +868,75 @@ def test_check_now_starts_without_waiting_for_the_start_delay(tmp_path):
             task.cancel()
             assert st["last_scan"] > time.time() - 60, st  # done within seconds, not after the 90 s start delay
             assert not await db.kv_get("vulnscan:request")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
+
+
+def test_alert_filters_like_the_page_filters():
+    chromium = {"vuln": "CVE-1", "cvss": 8.8, "package": "chromium-common", "upstream": "chromium", "pkg_type": "deb",
+                "fix_versions": ["2"], "fix_state": "fixed", "kev": True}
+    wont = {"vuln": "CVE-2", "cvss": 9.0, "package": "x", "pkg_type": "deb", "fix_versions": [], "fix_state": "wont-fix", "kev": False}
+    cpe = {"vuln": "CVE-3", "cvss": 9.0, "package": "y", "pkg_type": "binary", "fix_versions": ["2"], "kev": False,
+           "matched": {"type": "cpe-match"}}
+    every = Policy.of(Settings(vuln_only_fixed=False))
+    assert every.judge(chromium, ["x"])[0] and every.judge(wont, ["x"])[0] and every.judge(cpe, ["x"])[0]
+    pol = Policy.of(Settings(vuln_only_fixed=False, vuln_alert_skip_packages="chromium", vuln_alert_skip_wont_fix=True,
+                             vuln_alert_skip_cpe=True))
+    alert, _, why = pol.judge(chromium, ["x"])
+    assert not alert and why == "not alerted: package chromium (alert settings)"  # also over 'actively exploited'
+    assert pol.judge(wont, ["x"])[2] == "not alerted: will not be fixed (alert settings)"
+    assert pol.judge(cpe, ["x"])[2] == "not alerted: CPE guess (alert settings)"
+    # separate from the page: the page still shows them, and the page filters don't stop alerts
+    assert pol.hidden_by(chromium) is None
+    page = Policy.of(Settings(vuln_only_fixed=False, vuln_hide_types="chromium"))
+    assert page.hidden_by(chromium) and page.judge(chromium, ["x"])[0]
+    assert Policy.of(Settings(vuln_alert_skip_packages="go-*")).skipped_by({**cpe, "pkg_type": "go-module"}) == "package type go-module"
+
+
+@needs_db
+def test_packages_of_every_image(tmp_path):
+    from lookingglass.web.app import create_app
+    from lookingglass.vulnscan import safe_name
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            await _reset()
+            pool = db.pool()
+            s = Settings(data_dir=str(tmp_path))
+            for key, image, ctr, arts in (
+                    ("sha256:a", "nextcloud:30", "nextcloud", [("php8.2-cli", "8.2.20-1", "deb", "", "/var/lib/dpkg/status"),
+                                                              ("guzzlehttp/guzzle", "7.8.0", "php-composer", "php", "/var/www/composer.lock"),
+                                                              ("openssl", "3.0.11-1", "deb", "", "/var/lib/dpkg/status")]),
+                    ("sha256:b", "postgres:18", "db", [("openssl", "3.0.13-1", "deb", "", "/var/lib/dpkg/status")])):
+                await pool.execute("INSERT INTO vuln_images (key, image, repo, containers, status) VALUES ($1, $2, $2, $3, 'ok')",
+                                   key, image, [{"name": ctr, "server": "Tower"}])
+                d = tmp_path / "vulnscan" / "sbom"
+                d.mkdir(parents=True, exist_ok=True)
+                (d / f"{safe_name(key)}.json").write_text(json.dumps({
+                    "distro": {"prettyName": "Debian GNU/Linux 12 (bookworm)"},
+                    "artifacts": [{"name": n, "version": v, "type": t, "language": lang, "locations": [{"path": loc}]}
+                                  for n, v, t, lang, loc in arts]}))
+            await pool.execute("INSERT INTO vuln_findings (image_key, vuln, package, version, pkg_type, kev) VALUES "
+                               "('sha256:a', 'CVE-2024-1', 'openssl', '3.0.11-1', 'deb', true)")
+            ep = {r.path: r.endpoint for r in create_app(s, None).routes if getattr(r, "path", "").startswith("/api/vulns")}
+            call = lambda **kw: ep["/api/vulns/packages"](**{"q": None, "type": None, "language": None, "image": None,  # noqa: E731
+                                                              "vulnerable": False, "limit": 1000, **kw})
+            php = await call(q="php")
+            assert {r["name"] for r in php["rows"]} == {"php8.2-cli", "guzzlehttp/guzzle"}  # name and language
+            assert php["rows"][0]["containers"] == ["nextcloud"] and php["types"] == {"deb": 1, "php-composer": 1}
+            ssl = await call(q="openssl")
+            assert [(r["image"], r["vulns"], r["kev"]) for r in ssl["rows"]] == [("nextcloud:30", 1, True), ("postgres:18", 0, False)]
+            assert (await call(q="openssl", vulnerable=True))["total"] == 1
+            assert (await call(type="php-composer"))["total"] == 1 and (await call(language="php"))["total"] == 1
+            assert (await call(q="db"))["total"] == 1  # by container name
+            assert (await call(image="sha256:b"))["total"] == 1
+            assert (await call(q="php", limit=1))["total"] == 2
+            overview = await ep["/api/vulns"]()
+            assert {i["key"]: (i["distro"], i["parts"]) for i in overview["images"]} == {
+                "sha256:a": ("Debian GNU/Linux 12 (bookworm)", 3), "sha256:b": ("Debian GNU/Linux 12 (bookworm)", 1)}
         finally:
             await db.close()
 

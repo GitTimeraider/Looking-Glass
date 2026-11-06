@@ -11,12 +11,31 @@
   checked with Grype for known vulnerabilities in its packages, libraries and programs.</div>
 <div id="problems" class="card warn-box" hidden style="margin-bottom:14px"><h3>Problems</h3><ul id="problem-list" class="small"></ul></div>
 <div class="grid kpis" id="kpis"></div>
-<div class="card" style="margin-top:14px">
+<div class="tabs" id="vtabs" style="margin-top:14px">
+  <button data-t="findings" class="on">Findings</button><button data-t="images">Images &amp; packages</button>
+</div>
+<section data-v="images" hidden>
+<div class="card">
   <h3>Images <span class="muted small">click a row to show its findings</span></h3>
   <div id="images"></div>
 </div>
 <div class="card" style="margin-top:14px">
-  <h3>Findings <span class="muted small" id="f-note"></span></h3>
+  <h3>Packages <span class="muted small" id="p-count"></span></h3>
+  <p class="small muted">Everything found in the images: operating system packages, libraries, language packages and
+    the programs they are built into. Search by name, version, file, image or container, e.g. <i>php</i>.</p>
+  <div class="filters">
+    <input id="pq" placeholder="Search packages, files, images…" style="flex:1">
+    <select id="ptype"><option value="">every type</option></select>
+    <select id="plang"><option value="">every language</option></select>
+    <select id="pimg"><option value="">all images</option></select>
+    <label class="chk small"><input type="checkbox" id="pvuln"> only with vulnerabilities</label>
+  </div>
+  <div id="packages"></div>
+</div>
+</section>
+<section data-v="findings">
+<div class="card">
+  <h3>Findings</h3>
   <div class="filters">
     <div class="seg" id="show"><button data-v="all">All</button><button data-v="alerted" title="Findings that meet the alert rules (Settings › Container vulnerabilities › Alerts) - also while alerts are switched off">Meets alert rules</button><button data-v="kev">Actively exploited</button><button data-v="fixable">Fix available</button><button data-v="notaffected" title="Can't affect the container: other operating system, vulnerable code not in the program, or a version-format mistake - listed here also while hidden">Not affected</button><button data-v="ignored">Exceptions</button><button data-v="closed">Closed by you</button></div>
     <select id="img"><option value="">all images</option></select>
@@ -34,6 +53,7 @@
   </div>
   <div id="findings"></div>
 </div>
+</section>
 <div class="grid g2" style="margin-top:14px">
   <div class="card"><h3>Sources <span class="sp"></span><button class="small-btn" id="test">Test sources</button></h3>
     <p class="small muted">Addresses and formats: <a href="/settings#vulns">Settings › Container vulnerabilities › Sources</a>.</p>
@@ -97,20 +117,72 @@ async function load() {
     {k: "max_cvss", l: "Max CVSS", num: true, s: true, desc: true, f: v => score(v)},
     {k: "update_info", l: "Newer image", f: v => !v ? `<span class="muted" title="needs the exact digest (Docker API with IMAGES=1)">?</span>` : v.error ? `<span class="muted" title="${LG.esc(v.error)}">unknown</span>` : v.available ? `<span class="badge warn">yes</span>` : "no"},
     {k: "app", l: "App version", s: r => (r.version || {}).version, f: (v, r) => appCell(v, r.version)},
-    {k: "packages", l: "Packages", num: true},
+    {k: "distro", l: "Base OS", f: v => v ? LG.esc(v) : `<span class="muted">–</span>`},
+    {k: "packages", l: "Packages", num: true, f: (v, r) => `<a href="#images" data-parts="${LG.esc(r.key)}" title="List them below">${LG.num(r.parts || v)}</a>`},
     {k: "sbom_at", l: "Image read", f: (v, r) => v ? `<span title="${LG.esc(r.sbom_source || "")}">${LG.ago(v)}</span>` : "never"},
     {k: "matched_at", l: "Matched", f: v => v ? LG.ago(v) : "never"},
   ], imgs, D.enabled ? "No containers found yet (needs an Unraid server, or extra images in the settings)" : "", r => {
-    img = r.key; document.getElementById("img").value = img; findings();
-    document.getElementById("findings").scrollIntoView({ behavior: "smooth" });
+    img = r.key; document.getElementById("img").value = img; tab("findings"); findings();
   }, { sortAll: true });
+  document.querySelectorAll("#images [data-parts]").forEach(a => a.onclick = e => {
+    e.preventDefault(); e.stopPropagation();
+    document.getElementById("pimg").value = a.dataset.parts; packages();
+    document.getElementById("packages").scrollIntoView({ behavior: "smooth" });
+  });
   const sel = document.getElementById("img");
   sel.innerHTML = `<option value="">all images</option>` + imgs.map(i => `<option value="${LG.esc(i.key)}">${LG.esc(i.image)}</option>`).join("");
   sel.value = img;
+  const psel = document.getElementById("pimg"), pv = psel.value;
+  psel.innerHTML = `<option value="">all images</option>` + imgs.map(i => `<option value="${LG.esc(i.key)}">${LG.esc(i.image)}</option>`).join("");
+  psel.value = pv;
   sources(st);
   scanner(st);
-  await findings();
+  await (current === "images" ? packages() : findings());
 }
+/* tabs: Findings | Images & packages (kept in the address: /vulns#images) */
+let current = "findings";
+function tab(t) {
+  current = t === "images" ? "images" : "findings";
+  document.querySelectorAll("#vtabs button").forEach(b => b.classList.toggle("on", b.dataset.t === current));
+  document.querySelectorAll("section[data-v]").forEach(sec => sec.hidden = sec.dataset.v !== current);
+  history.replaceState(null, "", current === "images" ? "#images" : location.pathname + location.search);
+}
+document.querySelectorAll("#vtabs button").forEach(b => b.onclick = () => { tab(b.dataset.t); b.dataset.t === "images" ? packages() : findings(); });
+if (location.hash === "#images") tab("images");
+/* every part of every image, searchable */
+async function packages() {
+  const p = new URLSearchParams();
+  for (const [id, key] of [["pq", "q"], ["ptype", "type"], ["plang", "language"], ["pimg", "image"]]) {
+    const v = document.getElementById(id).value.trim(); if (v) p.set(key, v);
+  }
+  if (document.getElementById("pvuln").checked) p.set("vulnerable", "true");
+  const d = await LG.api("/api/vulns/packages?" + p);
+  const fill = (id, counts, all) => {
+    const el = document.getElementById(id), v = el.value;
+    el.innerHTML = `<option value="">${all}</option>` + Object.entries(counts).sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `<option value="${LG.esc(k)}">${LG.esc(k || "(none)")} (${LG.num(n)})</option>`).join("");
+    el.value = v;
+  };
+  fill("ptype", d.types, "every type"); fill("plang", d.languages, "every language");
+  document.getElementById("p-count").textContent = d.total > d.rows.length ? `${LG.num(d.total)} found, the first ${LG.num(d.rows.length)} shown - narrow the search` : `${LG.num(d.total)} found`;
+  LG.table("#packages", [
+    {k: "name", l: "Package", f: (v, r) => `<b>${LG.esc(v)}</b> <span class="muted">${LG.esc(r.version)}</span>`},
+    {k: "type", l: "Type"},
+    {k: "language", l: "Language", f: v => LG.esc(v || "")},
+    {k: "image", l: "Image", f: (v, r) => LG.esc(v) + (r.containers.length ? `<div class="small muted">${LG.esc(r.containers.join(", "))}</div>` : "")},
+    {k: "locations", l: "Where in the image", f: v => `<span class="small mono">${(v || []).slice(0, 2).map(LG.esc).join("<br>")}${(v || []).length > 2 ? `<br><span class="muted">… ${v.length - 2} more</span>` : ""}</span>`},
+    {k: "vulns", l: "Vulnerabilities", num: true, s: true, desc: true, f: (v, r) => v ? `<a href="#" data-vq="${LG.esc(r.name)}" data-vimg="${LG.esc(r.image_key)}" class="${r.kev ? "err" : ""}" title="Show them">${LG.num(v)}</a>` : `<span class="muted">0</span>`},
+  ], d.rows, "Nothing found. The package lists are made by the checks; try another search.", null, { sortAll: true });
+}
+document.getElementById("packages").addEventListener("click", e => {
+  const a = e.target.closest("[data-vq]"); if (!a) return;
+  e.preventDefault();
+  img = a.dataset.vimg; q = a.dataset.vq; document.getElementById("img").value = img; document.getElementById("q").value = q;
+  show = "all"; document.querySelectorAll("#show button").forEach(b => b.classList.toggle("on", b.dataset.v === "all"));
+  tab("findings"); findings();
+});
+let pqt; document.getElementById("pq").oninput = () => { clearTimeout(pqt); pqt = setTimeout(packages, 300); };
+for (const id of ["ptype", "plang", "pimg", "pvuln"]) document.getElementById(id).onchange = packages;
 function bulk() {
   const n = picked.size, closed = show === "closed";
   document.getElementById("bulk").hidden = !n;
@@ -146,14 +218,7 @@ function wirePicks() { bulk(); }
 async function findings() {
   const p = new URLSearchParams({ show }); if (img) p.set("image", img); if (q) p.set("q", q);
   rows = await LG.api("/api/vulns/findings?" + p);
-  const pol = D.policy || {};
   const hidden = Number(D.hidden_count || 0);
-  const why = Object.entries(D.hidden || {}).map(([k, n]) => `${n} ${k}`).join(", ");
-  document.getElementById("f-note").innerHTML = LG.esc(
-    (hidden ? `${hidden} hidden by your page settings (${why}) · ` : "") +
-    `alert rules: CVSS ≥ ${pol.min_cvss || 0}` + (pol.kev_always ? ", actively exploited always" : "") +
-    (pol.epss_min ? `, EPSS ≥ ${pol.epss_min}` : "") + (pol.only_fixed ? ", only with a fix" : "") +
-    (pol.alerts ? " · alerts on" : " · alerts off")) + ` <a href="/settings#vulns">change</a>`;
   if (show === "closed") {
     LG.table("#findings", [pickCol(),
       {k: "vuln", l: "Vulnerability"},

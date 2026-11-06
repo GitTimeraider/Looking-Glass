@@ -171,6 +171,9 @@ class Settings(BaseSettings):
     vuln_alerts: bool = False  # off by default: findings only on the Vulnerabilities page
     vuln_min_cvss: str = "7.0"        # alerts from this score
     vuln_show_min_cvss: str = "0"     # Vulnerabilities page lists from this score
+    vuln_alert_skip_wont_fix: bool = False  # alerts: not for 'will not fix' findings
+    vuln_alert_skip_cpe: bool = False       # alerts: not for matches by product name only (CPE guess)
+    vuln_alert_skip_packages: str = ""      # alerts: packages (names, source packages) or package types not to alert on
     vuln_hide_wont_fix: bool = False      # page: hide 'will not fix' findings
     vuln_hide_no_fix: bool = False        # page: hide findings without a fixed version yet
     vuln_hide_not_affected: bool = True   # page: hide 'not affected' (version-format mistakes, other OS, code not in the program)

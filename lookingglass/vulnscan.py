@@ -849,6 +849,8 @@ class Policy:
     show_min: float = 0.0         # the Vulnerabilities page lists findings from this score
     hide: frozenset[str] = frozenset()   # page: wont_fix, no_fix, not_affected, cpe
     hide_types: tuple[str, ...] = ()     # page: packages (name / source package) or package types not to show
+    skip: frozenset[str] = frozenset()   # alerts: wont_fix, cpe (no_fix = only_fixed; not affected never alerts)
+    skip_types: tuple[str, ...] = ()     # alerts: packages or package types not to alert on
 
     @classmethod
     def of(cls, s: Settings) -> "Policy":
@@ -860,27 +862,21 @@ class Policy:
                    parse_threshold(s.vuln_epss_min, "", 1), s.vuln_only_fixed, ignore, bool(s.vuln_alerts),
                    _threshold_or(s.vuln_show_min_cvss, 0.0),
                    frozenset(k for k in ("wont_fix", "no_fix", "not_affected", "cpe") if getattr(s, f"vuln_hide_{k}", False)),
-                   tuple(p.lower() for p in patterns(s.vuln_hide_types)))
+                   tuple(p.lower() for p in patterns(s.vuln_hide_types)),
+                   frozenset(k for k in ("wont_fix", "cpe") if getattr(s, f"vuln_alert_skip_{k}", False)),
+                   tuple(p.lower() for p in patterns(getattr(s, "vuln_alert_skip_packages", ""))))
 
     def hidden_by(self, f: dict[str, Any]) -> str | None:
         """Which page setting hides this finding, or None. Does not look at alerts (see ``shown``)."""
-        m = f.get("matched") or {}
-        has_fix = f.get("fix_state") == "fixed" or bool(f.get("fix_versions"))
-        if "not_affected" in self.hide and (m.get("probably_fixed") or (f.get("applies") or {}).get("status") in NOT_APPLYING):
-            return "not affected"
-        if "wont_fix" in self.hide and f.get("fix_state") == "wont-fix" and not has_fix:
-            return "will not be fixed"
-        if "no_fix" in self.hide and not has_fix:
-            return "no fix yet"
-        if "cpe" in self.hide and "cpe" in str(m.get("type") or "").lower():
-            return "CPE guess"
-        if self.hide_types:
-            for kind, value in (("package", f.get("package")), ("package", f.get("upstream")), ("package type", f.get("pkg_type"))):
-                if value and matches(list(self.hide_types), [str(value)]):
-                    return f"{kind} {value}"
+        if why := filtered_by(f, self.hide, self.hide_types):
+            return why
         if self.show_min > 0 and (score_of(f) or 0.0) < self.show_min:
             return f"CVSS below {self.show_min:g}"
         return None
+
+    def skipped_by(self, f: dict[str, Any]) -> str | None:
+        """Which alert setting keeps this finding from alerting (same kinds as the page settings), or None."""
+        return filtered_by(f, self.skip, self.skip_types)
 
     def shown(self, f: dict[str, Any], alert: bool = False) -> bool:
         """Listed on the Vulnerabilities page: unless a page setting hides it. Your page settings always win; an alert
@@ -901,6 +897,8 @@ class Policy:
             return False, None, ("not affected (Grype read a distribution suffix as an earlier version)"
                                  if "suffix" in str((f.get("matched") or {}).get("note") or "")
                                  else "already fixed (Grype compared a binary version with the source package's)")
+        if skip := self.skipped_by(f):  # your alert filters win, also over 'actively exploited'
+            return False, None, f"not alerted: {skip} (alert settings)"
         if f.get("kev") and self.kev_always:
             return True, None, "actively exploited (CISA KEV)"
         fixed = f.get("fix_state") == "fixed" or bool(f.get("fix_versions"))
@@ -911,6 +909,26 @@ class Policy:
         if self.epss_min is not None and (f.get("epss") or 0) >= self.epss_min:
             return True, None, f"EPSS {f['epss']:.0%} ≥ {self.epss_min:.0%}"
         return False, None, "below the threshold"
+
+
+def filtered_by(f: dict[str, Any], kinds: frozenset[str], packages: tuple[str, ...]) -> str | None:
+    """The filter (wont_fix, no_fix, not_affected, cpe, packages: names / source packages / types, * wildcards) that
+    matches finding ``f``, as words - or None. Used by the page settings and by the alert settings."""
+    m = f.get("matched") or {}
+    has_fix = f.get("fix_state") == "fixed" or bool(f.get("fix_versions"))
+    if "not_affected" in kinds and (m.get("probably_fixed") or (f.get("applies") or {}).get("status") in NOT_APPLYING):
+        return "not affected"
+    if "wont_fix" in kinds and f.get("fix_state") == "wont-fix" and not has_fix:
+        return "will not be fixed"
+    if "no_fix" in kinds and not has_fix:
+        return "no fix yet"
+    if "cpe" in kinds and "cpe" in str(m.get("type") or "").lower():
+        return "CPE guess"
+    if packages:
+        for kind, value in (("package", f.get("package")), ("package", f.get("upstream")), ("package type", f.get("pkg_type"))):
+            if value and matches(list(packages), [str(value)]):
+                return f"{kind} {value}"
+    return None
 
 
 def _threshold_or(value: Any, default: float) -> float:
@@ -1935,6 +1953,39 @@ def _docker_err(exc: BaseException) -> str:
                 f"› Edit › add a variable {need.split('=')[0]} with value 1 › Apply. Without it the registry's current "
                 "image for each tag is scanned instead of the exact one running")
     return f"{_err(exc)} - the registry's current image for each tag is scanned instead of the exact one running"
+
+
+# ------------------------------------------------- packages per image ---
+_INVENTORY: dict[str, tuple[float, dict[str, Any]]] = {}  # SBOM path -> (mtime, what is listed of it)
+
+
+def image_inventory(settings: Settings, key: str) -> dict[str, Any]:
+    """Every part Syft found in an image (Vulnerabilities page › Images & packages): {distro, packages: [{name,
+    version, type, language, locations}]}. Read from the stored package list, kept until that file changes."""
+    path = Path(settings.data_dir) / "vulnscan" / "sbom" / f"{safe_name(key)}.json"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {"distro": None, "packages": []}
+    cached = _INVENTORY.get(str(path))
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {"distro": None, "packages": []}
+    d = doc.get("distro") or {}
+    distro = d.get("prettyName") or " ".join(x for x in (d.get("name") or d.get("id"), d.get("versionID") or d.get("version")) if x) or None
+    pkgs = []
+    for a in doc.get("artifacts") or []:
+        if not a.get("name"):
+            continue
+        pkgs.append({"name": str(a["name"]), "version": str(a.get("version") or ""), "type": str(a.get("type") or ""),
+                     "language": str(a.get("language") or ""),
+                     "locations": list(dict.fromkeys(str(x.get("path")) for x in a.get("locations") or [] if x.get("path")))[:5]})
+    out = {"distro": distro, "packages": pkgs}
+    _INVENTORY[str(path)] = (mtime, out)
+    return out
 
 
 async def registry_digest(client: httpx.AsyncClient, name: ImageName, s: Settings) -> str:
