@@ -363,89 +363,19 @@ CREATE TABLE IF NOT EXISTS event_rollup_state (
 );
 INSERT INTO event_rollup_state (one) VALUES (true) ON CONFLICT DO NOTHING;
 
--- container vulnerabilities (vulnscan.py): one row per scanned image (digest, or image name when the digest is unknown)
-CREATE TABLE IF NOT EXISTS vuln_images (
-    key         TEXT PRIMARY KEY,
-    image       TEXT NOT NULL,                     -- as the containers use it: nextcloud:30-apache
-    repo        TEXT NOT NULL,                     -- docker.io/library/nextcloud (alerts are per repo)
-    digest      TEXT,
-    containers  JSONB NOT NULL DEFAULT '[]',       -- [{server, server_id, name, state}]
-    notes       JSONB NOT NULL DEFAULT '[]',
-    status      TEXT NOT NULL DEFAULT 'pending',   -- ok | error | pending
-    error       TEXT,
-    errors      INTEGER NOT NULL DEFAULT 0,        -- failed scans in a row
-    tried_at    TIMESTAMPTZ,
-    sbom_at     TIMESTAMPTZ,                       -- package list (Syft) made
-    sbom_source TEXT,                              -- registry (exact digest) | Docker API export | registry (tag)
-    sbom_tool   TEXT,
-    packages    INTEGER,
-    matched_at  TIMESTAMPTZ,                       -- last Grype match
-    db_built    TEXT,
-    app         JSONB,                             -- own app checks: [{line, check, from, version, error}]
-    update_info JSONB,                             -- {checked, running, latest, available, error}
-    seen_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS vuln_findings (
-    image_key    TEXT NOT NULL,
-    vuln         TEXT NOT NULL,                    -- CVE / GHSA / distro id
-    package      TEXT NOT NULL,
-    version      TEXT NOT NULL DEFAULT '',
-    pkg_type     TEXT,
-    aliases      TEXT[] NOT NULL DEFAULT '{}',
-    cves         TEXT[] NOT NULL DEFAULT '{}',
-    severity     TEXT,
-    cvss         REAL,
-    cvss_source  TEXT,
-    kev          BOOLEAN NOT NULL DEFAULT false,   -- actively exploited (CISA KEV)
-    epss         REAL,
-    epss_pct     REAL,
-    fix_versions TEXT[] NOT NULL DEFAULT '{}',
-    fix_state    TEXT,
-    url          TEXT,
-    description  TEXT,
-    locations    TEXT[] NOT NULL DEFAULT '{}',
-    source       TEXT,                             -- grype | app check (line n)
-    alerted      BOOLEAN,                          -- above your threshold
-    ignored      TEXT,                             -- the exception that matched
-    why          TEXT,
-    first_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (image_key, vuln, package, version)
-);
--- source package (Debian / Ubuntu: dotnet10 for dotnet-host-10.0) and how Grype matched: {type, searched, constraint,
--- namespace, distro} - findings of one source package are shown as one
-ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS upstream TEXT;
-ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS matched JSONB;
--- version of the software in the image, for every image: {version, raw, from} or {version: null, tried: [...]}
-ALTER TABLE vuln_images ADD COLUMN IF NOT EXISTS version JSONB;
--- listed on the Vulnerabilities page (Settings › Container vulnerabilities › Minimum CVSS score to show)
-ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS shown BOOLEAN NOT NULL DEFAULT true;
-ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS hidden_why TEXT;  -- the page setting that hides it
--- does it apply at all (applicability.py): {status: not_applicable | not_reachable | reachable, text}
-ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS applies JSONB;
-ALTER TABLE vuln_images ADD COLUMN IF NOT EXISTS platform JSONB;     -- {os, arch} of the image
--- looked-up EPSS / CVSS values per CVE
-CREATE TABLE IF NOT EXISTS vuln_cache (
-    kind    TEXT NOT NULL,
-    id      TEXT NOT NULL,
-    value   JSONB NOT NULL,
-    fetched TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (kind, id)
-);
--- findings you closed on the Vulnerabilities page: hidden and never alerted again. Per vulnerability (CVE / GHSA id,
--- also matched against aliases) + package (the source package where there is one) + image repository ('' = all images)
-CREATE TABLE IF NOT EXISTS vuln_closed (
-    vuln      TEXT NOT NULL,
-    grp       TEXT NOT NULL,                       -- source package (dotnet10) or package name
-    repo      TEXT NOT NULL DEFAULT '',            -- docker.io/library/nextcloud, '' = every image
-    note      TEXT,
-    closed_by TEXT,
-    closed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (vuln, grp, repo)
-);
--- images whose vulnerability matching you switched off on the Vulnerabilities page (per repository, so it stays off
--- for new tags and versions). Their package lists are still made; they get no findings and no alerts.
-CREATE TABLE IF NOT EXISTS vuln_repo_off (
-    repo       TEXT PRIMARY KEY,                   -- docker.io/library/nextcloud
-    changed_by TEXT,
-    changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+-- container packages (packages.py, Unraid › Packages): one row per image in use; its list is in /data/packages
+CREATE TABLE IF NOT EXISTS image_packages (
+    key        TEXT PRIMARY KEY,                   -- digest, or image id / name:tag when the digest is unknown
+    image      TEXT NOT NULL,                      -- as the containers use it
+    repo       TEXT NOT NULL,
+    digest     TEXT,
+    containers JSONB NOT NULL DEFAULT '[]',        -- [{server, name, state}]
+    status     TEXT NOT NULL DEFAULT 'pending',    -- ok | error | pending
+    error      TEXT,
+    read_at    TIMESTAMPTZ,
+    source     TEXT,                               -- registry (exact digest) | Docker API export | registry (tag)
+    packages   INTEGER,
+    distro     TEXT,
+    created    TEXT,                               -- when its containers were (re)created, when read
+    seen_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );

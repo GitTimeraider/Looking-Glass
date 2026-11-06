@@ -11,6 +11,7 @@
   <div class="tabs" id="tabs">
     <button data-t="overview" class="on">Overview</button><button data-t="storage">Array, pools &amp; disks</button>
     <button data-t="docker">Docker</button><button data-t="logs">Logs</button><button data-t="notifications">Notifications</button>
+    <button data-t="packages">Packages</button>
   </div>
   <section data-s="overview">
     <div class="grid g3">
@@ -89,6 +90,30 @@
     <div class="grid kpis" id="nt-kpis"></div>
     <div class="card" style="margin-top:14px"><h3>Unread notifications</h3><div id="notifs"></div></div>
   </section>
+  <section data-s="packages" hidden>
+    <div id="pk-off" class="card" hidden>Reading container packages is switched off. Switch it on under
+      <a href="/settings#unraid">Settings › Unraid servers › Container packages</a>: the image of every container is then
+      read once, and again only when it is updated or you press Update.</div>
+    <div class="card">
+      <h3>Images <span class="muted small">(containers of all Unraid servers)</span><span class="sp"></span>
+        <span class="muted small" id="pk-state"></span>
+        <button class="small-btn" id="pk-all" title="Read the package list of every image again">Update all</button></h3>
+      <div class="small muted" id="pk-problems"></div>
+      <div id="pk-images"></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>Packages <span class="muted small" id="p-count"></span></h3>
+      <p class="small muted">Everything found in the images: operating system packages, libraries, language packages and
+        the programs they are built into. Search by name, version, file, image or container, e.g. <i>php</i>.</p>
+      <div class="filters">
+        <input id="pq" placeholder="Search packages, files, images…" style="flex:1">
+        <select id="ptype"><option value="">every type</option></select>
+        <select id="plang"><option value="">every language</option></select>
+        <select id="pimg"><option value="">all images</option></select>
+      </div>
+      <div id="packages"></div>
+    </div>
+  </section>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -98,7 +123,8 @@ LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); charts
 document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
   tab = b.dataset.t; document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x === b));
   document.querySelectorAll("section[data-s]").forEach(s => s.hidden = s.dataset.s !== tab);
-  if (tab === "logs") logs(); else charts();
+  if (tab === "logs") logs(); else if (tab === "packages") pkImages(); else charts();
+  history.replaceState(null, "", tab === "packages" ? "#packages" : location.pathname);
 });
 const pct = v => Math.round(v) + "%";
 const D = k => (snap[k] || {}).data;
@@ -389,6 +415,75 @@ async function logs() {
 }
 document.getElementById("lg-go").onclick = logs;
 document.getElementById("lg-kind").onchange = logs;
-init(); LG.autoRefresh(() => { if (servers.length) { load(); if (tab === "logs") logs(); } }, 60000);
+/* ---------------------------------------------------------------- packages */
+let PK = {};
+async function pkImages() {
+  PK = await LG.api("/api/packages/images");
+  const st = PK.status || {}, imgs = PK.images || [];
+  document.getElementById("pk-off").hidden = PK.enabled;
+  document.getElementById("pk-all").hidden = !PK.enabled;
+  const queued = PK.queued && !st.running;
+  document.getElementById("pk-state").innerHTML = st.running ? `<span class="spinner"></span> ${LG.esc(st.phase || "reading")}`
+    : queued ? `<span class="spinner"></span> update requested – starting…`
+    : st.last_run ? `last update ${LG.ago(st.last_run)}` : "";
+  const probs = Object.values(st.inventory || {}).filter(i => i.ok === false || (i.docker_api && i.docker_api !== "ok"))
+    .map(i => `<b>${LG.esc(i.server)}</b>: ${LG.esc(i.error || "Docker API " + i.docker_api)}`);
+  if (st.error) probs.push(`<b>Last update</b> stopped: ${LG.esc(st.error)}`);
+  document.getElementById("pk-problems").innerHTML = probs.map(x => `<div>${x}</div>`).join("");
+  LG.table("#pk-images", [
+    {k: "image", l: "Image", f: (v, r) => `<b>${LG.esc(v)}</b>${r.digest ? `<div class="small muted mono" title="${LG.esc(r.digest)}">${LG.esc(r.digest.slice(0, 19))}…</div>` : ""}`},
+    {k: "containers", l: "Containers", f: v => (v || []).map(c => LG.esc(c.name) + (c.server ? ` <span class="muted small">(${LG.esc(c.server)})</span>` : "")).join("<br>")},
+    {k: "distro", l: "Base OS", f: v => v ? LG.esc(v) : `<span class="muted">–</span>`},
+    {k: "packages", l: "Packages", num: true, f: (v, r) => v != null ? `<a href="#packages" data-pk-show="${LG.esc(r.key)}" title="List them below">${LG.num(v)}</a>` : `<span class="muted">–</span>`},
+    {k: "status", l: "Read", f: (v, r) => v === "ok" ? `<span title="${LG.esc(r.source || "")}">${LG.ago(r.read_at)}</span>` : v === "error" ? `<span class="badge high" title="${LG.esc(r.error)}">error</span><div class="small err">${LG.esc((r.error || "").slice(0, 160))}</div>` : `<span class="muted">waiting</span>`},
+    {k: "key", l: "", f: (v) => PK.enabled ? `<button class="small-btn secondary" data-pk-one="${LG.esc(v)}" title="Read this image's packages again">Update</button>` : ""},
+  ], imgs, PK.enabled ? "No containers found yet (needs an Unraid server whose container list is read)." : "", null, { sortAll: true });
+  const sel = document.getElementById("pimg"), cur = sel.value;
+  sel.innerHTML = `<option value="">all images</option>` + imgs.map(i => `<option value="${LG.esc(i.key)}">${LG.esc(i.image)}</option>`).join("");
+  sel.value = cur;
+  await pkList();
+}
+async function pkList() {
+  const p = new URLSearchParams();
+  for (const [id, key] of [["pq", "q"], ["ptype", "type"], ["plang", "language"], ["pimg", "image"]]) {
+    const v = document.getElementById(id).value.trim(); if (v) p.set(key, v);
+  }
+  const d = await LG.api("/api/packages?" + p);
+  const fill = (id, counts, all) => {
+    const el = document.getElementById(id), v = el.value;
+    el.innerHTML = `<option value="">${all}</option>` + Object.entries(counts).sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `<option value="${LG.esc(k)}">${LG.esc(k || "(none)")} (${LG.num(n)})</option>`).join("");
+    el.value = v;
+  };
+  fill("ptype", d.types, "every type"); fill("plang", d.languages, "every language");
+  document.getElementById("p-count").textContent = d.total > d.rows.length ? `${LG.num(d.total)} found, the first ${LG.num(d.rows.length)} shown - narrow the search` : `${LG.num(d.total)} found`;
+  LG.table("#packages", [
+    {k: "name", l: "Package", f: (v, r) => `<b>${LG.esc(v)}</b> <span class="muted">${LG.esc(r.version)}</span>`},
+    {k: "type", l: "Type"},
+    {k: "language", l: "Language", f: v => LG.esc(v || "")},
+    {k: "image", l: "Image", f: (v, r) => LG.esc(v) + (r.containers.length ? `<div class="small muted">${LG.esc(r.containers.join(", "))}</div>` : "")},
+    {k: "locations", l: "Where in the image", f: v => `<span class="small mono">${(v || []).slice(0, 2).map(LG.esc).join("<br>")}${(v || []).length > 2 ? `<br><span class="muted">… ${v.length - 2} more</span>` : ""}</span>`},
+  ], d.rows, "Nothing found. Package lists are read when an image is new or updated, or with Update.", null, { sortAll: true });
+}
+document.getElementById("pk-images").addEventListener("click", async e => {
+  const one = e.target.closest("[data-pk-one]"), show = e.target.closest("[data-pk-show]");
+  if (show) { e.preventDefault(); document.getElementById("pimg").value = show.dataset.pkShow; pkList(); document.getElementById("packages").scrollIntoView({ behavior: "smooth" }); }
+  if (one) { await pkUpdate({ image: one.dataset.pkOne }); }
+});
+document.getElementById("pk-all").onclick = () => pkUpdate({});
+async function pkUpdate(body) {
+  try { await LG.api("/api/packages/update", { method: "POST", body }); }
+  catch (e) { return alert(e.message); }
+  // follow it every 2 s until it has run (at most 3 minutes), then the normal refresh takes over
+  const until = Date.now() + 180000;
+  const poll = async () => { await pkImages(); if ((PK.queued || (PK.status || {}).running) && Date.now() < until) setTimeout(poll, 2000); };
+  setTimeout(poll, 800);
+}
+let pqt; document.getElementById("pq").oninput = () => { clearTimeout(pqt); pqt = setTimeout(pkList, 300); };
+for (const id of ["ptype", "plang", "pimg"]) document.getElementById(id).onchange = pkList;
+if (location.hash === "#packages") document.querySelector('#tabs [data-t="packages"]').click();
+
+init(); LG.autoRefresh(() => { if (servers.length) { load(); if (tab === "logs") logs(); if (tab === "packages") pkImages(); } },
+  () => tab === "packages" && ((PK.status || {}).running || PK.queued) ? 10000 : 60000);
 </script>
 {% endblock %}

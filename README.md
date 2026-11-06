@@ -58,8 +58,6 @@ DNS tunneling, DGA domains, NXDOMAIN storms, malicious-domain lookups, internal 
 outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), new devices, UniFi access point / switch
 offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, gateway down, resources
 (disk/memory/states) high, stopped services, firmware updates available and "logs stopped arriving" (possible tampering).
-Optionally: **vulnerable container images** (known CVEs in what your containers run, see
-[Container vulnerabilities](#container-vulnerabilities)).
 
 **Logins on all systems**: OPNsense (web GUI, SSH, API, VPN), **Unraid** (web GUI and SSH, from its syslog) and the
 **UniFi controller** (admin logins with their address) all feed the same login rules: brute force, password spraying,
@@ -754,198 +752,26 @@ metrics, no alerts.
 > shows ZFS pools with capacity and member devices, and alerts on ZFS errors from the Unraid syslog (enable *collect
 > container & system logs*) and on Unraid's own notifications.
 
-## Container vulnerabilities
 
-Looking Glass can check the image of every container on your Unraid servers for known vulnerabilities (CVEs). That
-covers the operating system packages, the libraries (PHP Composer, npm, Python, Go, Java, Rust ...) and programs
-compiled from source, such as the `php` binary in the official PHP / Nextcloud images. It uses
-[Grype](https://github.com/anchore/grype) and [Syft](https://github.com/anchore/syft), which are included in the
-Looking Glass image, plus a few online sources. It is off by default.
+### Container packages (Unraid › Packages)
 
-**How it works**
+What is inside the image of every container on your Unraid servers: operating system packages, libraries, language
+packages (PHP Composer, Python, npm, Go, Java…) and the programs they are built into, read with
+[Syft](https://github.com/anchore/syft) (included in the Looking Glass image). Search it by name, version, file,
+image or container - search `php` to see which containers have PHP - and filter by type, language and image.
 
-1. **Which images.** Every container from the Unraid API, plus *Extra images to scan*. Containers that share an image
-   are scanned once. With a Docker API that allows `IMAGES=1` (below), the exact digest each container runs is known,
-   so exactly that image is scanned. Without it, the registry's current image for the tag is scanned, which can be
-   newer than the one running; the page says so.
-2. **Package list (SBOM).** Syft reads the image: from its registry by digest, or exported through the Docker API
-   (also works for images you built yourself). It does this again when a container runs a new image and every
-   *Read the images again every* days (default 7).
-3. **Matching.** Grype updates its vulnerability database (NVD, GitHub advisories and the Debian / Alpine / Ubuntu /
-   RHEL trackers) and matches the stored package lists against it every *Check against new vulnerabilities every*
-   hours (default 24). The images are not downloaded again, so a CVE published today for an image you pulled months
-   ago shows up the same day.
-4. **Extra information.** CISA's [Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
-   list (attacked in the wild), [EPSS](https://www.first.org/epss/) (the chance of exploitation in the next 30 days) and
-   an NVD lookup for findings without a CVSS score.
-5. **App version checks.** These cover the application itself (Nextcloud is not a "package" in its own image). The
-   version is read from an image label, environment variable, the tag or a package, and looked up in
-   [OSV](https://osv.dev). Nextcloud (official and linuxserver images) is built in; add your own, one line each:
-   `images | env NAME / label NAME / tag / package NAME [/regex/] | <OSV ecosystem> <package>`.
-6. **What you see and what alerts.** Two separate scores, both under *Settings › Container vulnerabilities*:
-
-   | Setting (section) | Decides | Default |
-   |---|---|---|
-   | **Minimum CVSS score to show** (*Vulnerabilities page*) | which findings the Vulnerabilities page lists and counts. Lower ones are hidden (the page says how many, and why) | 0 = everything |
-   | **Minimum CVSS score for an alert** (*Alerts*) | which findings raise an alert | 7.0 |
-
-   The *Vulnerabilities page* section can also hide findings that **will not be fixed**, findings **without a fix
-   yet**, findings that are **not affected** (on by default; see *Does it apply at all?* below), **guesses by product name (CPE)**, and **packages not to
-   show**: package names (also the source package, `*` as wildcard: `chromium`, `libx11-*`) or whole package types
-   (`go-module`). What you hide here is hidden on the page, also when it would raise an
-   alert. Alerts are not changed: with alerts on, an alert still lists a hidden finding and says it is hidden on
-   the page. Exceptions are always listed under *Exceptions*.
-
-   The *Alerts* section has the same kinds of filters for alerts, set separately: **No alerts for findings that
-   will not be fixed**, **No alerts for guesses by product name (CPE)** and **Packages not to alert on** (names,
-   source packages, `*` wildcards or types). These win over *actively exploited*. *Only alert when a fix exists*
-   covers findings without a fix; findings that are not affected never alert.
-
-   The *Alerts* section also has **Create alerts for vulnerabilities** (**off by default**: no alerts at all, only the
-   page), **Also alert on actively exploited vulnerabilities** (CISA KEV, whatever the score), **Also alert from EPSS
-   chance** and **Only alert when a fix exists**. With alerts on you get one alert per image (rule *Vulnerable
-   container image*), listing its findings and whether a newer image exists for the tag. The *Meets alert rules* tab
-   on the page shows what would alert, also while alerts are off. Without a CVSS score the severity word counts
-   (critical 9, high 7, medium 4, low 0.1).
-
-**When alerts close.** An image alert updates on every check (count, severity, list) and closes by itself once
-nothing of that image meets the alert rules any more: after you update the container, change the alert score or add
-an exception, or close the findings. Updating a container recreates it, which Looking Glass notices within about 10 minutes and checks right
-away, so the alert closes then, not at the next scheduled check. If it comes back (a new CVE), the alert opens again.
-An alert you closed by hand stays closed unless the image gets worse. Scan-problem alerts close as soon as that part
-works again.
-
-**Reading the findings.** Ubuntu and Debian file a fix under the *source* package (e.g. `dotnet10`), with that
-source package's version (`10.0.114-10.0.14-0ubuntu1~26.04.1` = SDK 10.0.114, runtime 10.0.14). Every binary package
-built from it (`dotnet-host-10.0`, `aspnetcore-runtime-10.0`, …) is then affected by the same CVE. The page shows such
-a CVE once, with all its packages, and each finding says what Grype compared ("compared: dotnet10 10.0.13-… vs <
-10.0.114-…", plus the distribution). When Grype only knew a binary package's own version
-(`10.0.14-0ubuntu1~26.04.1`), it compares it with the source-style fix version, and 10.0.14 sorts below 10.0.114 even
-though it is the fixed build. Looking Glass then compares the binary package's version with the fix's runtime part.
-If the package already has the fix, it is marked *already fixed* and raises no alert; otherwise the finding says
-"not fixed yet". `pkg:dotnet10` under *Exceptions* covers all packages of a source package. Matches made only by
-product name (*CPE guess*) are marked, because they are wrong more often.
-
-**Looks equal, but isn't.** `brotli 1.1.0-2 vs < 1.1.0-2+deb13u1` or `1.1.0-2build2 vs < 1.1.0-2ubuntu0.1` is a real
-finding: the release (1.1.0) is the same, but Debian / Ubuntu fixed the CVE in a *patched build* of it (`+deb13u1`,
-`ubuntu0.1`), and the image still has the build from before the patch. `dpkg` sorts these the same way. The page
-says so under the package. It is fixed by a newer image, or by the maintainer updating packages. The same goes for
-`golang.org/x/crypto v0.19.0 vs < 0.52.0 (go)`: a library compiled into a Go program in the image (the page shows
-which), fixed only when that program is rebuilt. Hide such findings with *Packages not to show* (`go-module`) if
-you can't act on them.
-
-**Does it apply at all?** With *Check whether vulnerabilities apply* (Settings › Container vulnerabilities ›
-Scanning, on by default) a finding is marked **not affected** when facts show it can't affect the container. It
-then raises no alert, is hidden by *Hide findings that are not affected*, and is listed under the **Not affected**
-tab with the reason:
-
-| Check | How | Example |
-|---|---|---|
-| Other operating system | The advisory itself says where the problem exists: Go advisories (OSV, `GO-…`) list the systems per vulnerable package; NVD records "running on Windows" or a Windows build of a program. Only when *every* such entry says "not Linux". Debian / Ubuntu / Alpine packages are left to their own trackers | `GO-2026-6604`: `os.Root.Mkdir` on Windows only |
-| Vulnerable code not in the program | Go advisories name the vulnerable functions. A Go program contains every function it can call (by name, also when stripped) and none it can't. Looking Glass downloads the one image layer that holds the program and looks for them - the check Go's own `govulncheck` does | `GO-2026-6612`: Syft contains no HTTP/2 server code |
-
-Anything that can't be decided stays a normal finding: no advisory data, an image only available through the Docker
-API, an unreadable or obfuscated program, or a program found in several places of which one contains the code. A
-description that merely *mentions* Windows is not used. Lookups use the `advisory` (OSV) and `platform` (NVD) lines
-under *Sources*, are cached (7 / 30 days) and spread over several runs; each image's program is read once.
-
-**"vs none (unknown)" / no fix yet.** For a Debian / Ubuntu / Alpine package this means the distribution lists
-every version as affected and has no fixed version yet - common for curl, glibc and the like, where the security
-team rated the CVE minor ("no-dsa", "unimportant") or postponed it. The page says so, and shows the distribution's
-own rating ("Debian rates it negligible"), which can be far lower than NVD's CVSS score. *Hide what the distribution
-rates negligible* (page) and *No alerts for what the distribution rates negligible* (alerts) act on that rating;
-*Hide findings without a fix yet* / *Only alert when a fix exists* act on the missing fix.
-
-**Distribution suffixes.** Distributions add their own part to a version: `1.3.1+ubuntu26`, `1.3.1-0ubuntu1`,
-`1.3.1-r2` (Alpine), `+deb12u1`, `+dfsg`. Some matchers (by product name, language packages, semver) read that part
-as a pre-release, so `1.3.1-0ubuntu1` counts as *older* than 1.3.1 and is reported for "fixed in 1.3.1". When the
-affected range and fixed versions are plain release numbers, Looking Glass compares the release number alone (1.3.1)
-with them. If it is not affected, the finding is marked *not affected* and raises no alert. Real pre-releases
-(`-rc1`, `~beta`, `.dev2`) and fixes with their own distribution part (`1.3.1-2ubuntu3`) keep Grype's verdict.
-
-**Ask the AI about findings.** With the AI analyst set up, tick findings on the Vulnerabilities page and press
-**Ask AI** (up to 20 at a time). The AI analyst opens and asks, for each one: what it is and how it could be
-exploited, whether it is relevant for your container (what the container does, whether the vulnerable part is used,
-platform, network exposure - read from the scan data), whether and how you can fix it (fixed version, newer image),
-and what it advises: update, close as not relevant, or keep watching.
-
-**Switching the scan off for one image.** In the Images table (Vulnerabilities › Images & packages) every image
-has an **On / Off** button under *Vulnerability scan*. Off: its findings are removed, its alert closes, and it is not
-matched against vulnerabilities any more - but its package list is still read, so it stays in the package search.
-This is remembered per image repository (`docker.io/library/nextcloud`), so it stays off when the image gets a new
-version or tag. On again: a check starts right away. *Containers / images not to scan* in the settings skips an image
-completely, package list included.
-
-**Closing findings.** On the Vulnerabilities page, tick the findings you've checked and press **Close selected**,
-for that image or for every image, optionally with why. A closed finding disappears from the lists, counts and
-alerts, and stays away after new scans and container updates. It is remembered by vulnerability (also its aliases),
-source package and image, not by version. Reopen it under the **Closed by you** tab. Changes apply within about
-20 seconds.
-
-**App version column.** Every image gets the version of the software inside it. It is read, top to bottom, from
-the image label `org.opencontainers.image.version`, linuxserver's `build_version`, `org.label-schema.version`, an
-environment variable named after the image (`FILEFLOWS_VERSION` for `revenz/fileflows`), `version`, `VERSION` or the
-tag (`latest` / `stable` hold no version). A label equal to the base image's OS release (Ubuntu labels itself
-`26.04`) is skipped. Change the order or add your own under *Settings › Container vulnerabilities › Where image
-versions are read*. This only shows the version. CVEs of the application itself are looked up only for images with
-an *App version check* line (marked "app CVEs checked"); for the others the packages inside are checked, not the
-app itself.
-
-**What it can't tell.** Grype decides by package name and version. It can't see whether the vulnerable code is
-used, configured or reachable in your container: a Windows-only bug in a library that ships in a Linux image, an
-optional module that is switched off, or a package that is installed but never runs still count. The checks above
-remove the version-format mistake and mark name-only (CPE) matches. For the rest, the *Exceptions* setting records
-what you checked (`CVE-… on fileflows  # Windows only`), optionally until a date.
-
-**Set it up**
-
-1. **Unraid web UI** › *Docker* tab › your `docker-socket-proxy` container › *Edit* › *Add another Path, Port,
-   Variable…* › Variable, key `IMAGES`, value `1` › *Apply*. It must also have `CONTAINERS=1`; `POST=0` keeps it
-   read-only. Don't have one yet? Start [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml)
-   on Unraid, then in **Looking Glass › Settings › Unraid servers** › your server › *Docker API* enter
-   `http://<unraid-ip>:2375`. This step is optional, but without it the exact running image is not known.
-2. **Looking Glass web UI** › *Settings › Container vulnerabilities* › tick **Scan container images for
-   vulnerabilities** › *Save*. The first check starts within a few minutes. Grype's first database download takes a
-   while (a few hundred MB, kept in `/data/vulnscan`).
-3. **Looking Glass › Vulnerabilities** has two tabs. **Images & packages** lists every image (base OS, app
-   version, newer image) and every part found in it - operating system packages, libraries, language packages and
-   the programs they are built into - searchable by name, version, file, image or container (search `php` to see
-   what uses PHP) and filterable by type, language and image; the vulnerability count of a package opens its
-   findings. **Findings** shows the findings (tabs: all / meets alert rules / actively
-   exploited / fix available / exceptions / closed by you), the app versions found and whether a newer image exists. The
-   *Check now* and *Read all images again* buttons start a check right away.
-   Want alerts too? Under *Settings › Container vulnerabilities › Alerts* tick **Create alerts for vulnerabilities**
-   (off by default) and set the **Minimum CVSS score for an alert**.
-4. Optional, under *Settings › Container vulnerabilities*:
-   * a **registry login**: Docker Hub limits anonymous pulls; private registries need one.
-   * an **NVD API key**: more CVSS lookups per minute.
-   * **Exceptions**: findings you accept, e.g. `CVE-2023-45853 on mariadb*` or `pkg:perl-base`, optionally
-     `until 2026-12-31`.
-
-**Nothing is hard-wired.** Every address and response format can be changed in *Settings › Container
-vulnerabilities*:
-
-| Setting | What you can change |
-|---|---|
-| *Sources* | one line per source, `kind: [POST] address \| format`, tried top to bottom per kind until one answers; `kind: off` switches a kind off; empty = the built-in list. `kev`: `json <path>`, `csv <column>` or `text` (every CVE id in the answer, survives most format changes). `epss`: `json <rows> <cve> <score> [<percentile>]` or `csv ...`; `{cves}` in the address = 100 at a time, without it = one full download (`.gz` is unpacked). `cvss`: an address with `{cve}` and `json <path>, <path>`. `osv`: any OSV-compatible query API. Paths look like `vulnerabilities[].cveID` (`[]` = every item, `*` = every value). **Test sources** on the Vulnerabilities page tries every line and shows what it got |
-| *App version checks* | which images, where their version is, which OSV package |
-| *Grype database address* | a mirror, or Anchore's new address if it moves |
-| *Grype / Syft program*, *extra arguments*, *extra environment* | another binary, `--exclude`, `--platform`, any `GRYPE_*` / `SYFT_*` setting, a proxy |
-
-**When something fails, you are told.** Every problem appears at the top of the Vulnerabilities page with the exact
-error, and under *Setup & status*. A problem that leaves you blind also raises its own alert (rule *Vulnerability scan
-problem*), which closes by itself once it works again:
-
-| Problem | Alert |
-|---|---|
-| Grype or Syft can't run | medium |
-| the vulnerability database can't be updated and is older than 3 days | medium |
-| an image fails to scan twice in a row (registry down, login needed, image gone) | low, per image |
-| no source of a kind answers for 2 days (KEV, OSV) or 3 days (EPSS, CVSS) | low, per kind |
-
-In each case the last good results are kept. The page also shows a Docker API that refuses (and which variable is
-missing), an app check that finds no version, and a mistake in your own source list (the built-in list is used
-meanwhile).
+* **Switch it on:** Looking Glass web UI › *Settings › Unraid servers* › *Container packages* › tick **Read the
+  packages of container images** › *Save*.
+* **When an image is read:** once when it is new, again only when it is updated (a container runs a new image) - and
+  only that image - or when you press **Update all** / **Update** on one image under *Unraid › Packages*. Never on a
+  schedule.
+* **Exact image:** with a Docker API for the server (docker-socket-proxy with `CONTAINERS=1` and `IMAGES=1`, see
+  [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml)) the exact
+  image each container runs is read, and locally built images can be exported. Without it, the registry's current
+  image of the tag is read.
+* Optional under *Container packages*: a registry login (Docker Hub limits anonymous pulls; private registries need
+  one), containers / images not to read, and Syft's path, arguments, environment and time limit.
+* Package lists are kept in `/data/packages`.
 
 ## Adding a UniFi controller
 
@@ -1122,8 +948,7 @@ CrowdSec, DHCP leases), the [Unraid API](https://github.com/unraid/api) schema a
 UniFi Network controller OpenAPI specs 9.0–11.0 ([beezly/unifi-apis](https://github.com/beezly/unifi-apis)),
 [aiounifi](https://github.com/Kane610/aiounifi), [unpoller](https://github.com/unpoller/unifi) and the
 [Art-of-WiFi UniFi API client](https://github.com/Art-of-WiFi/UniFi-API-client),
-[docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy), [Grype](https://github.com/anchore/grype) /
-[Syft](https://github.com/anchore/syft) (JSON output models of v0.120 / v1.55), the [OSV API](https://google.github.io/osv.dev/api/) and Anthropic's
+[docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) and Anthropic's
 [OpenAI SDK compatibility](https://platform.claude.com/docs/en/api/openai-sdk) docs.
 
 ## Development

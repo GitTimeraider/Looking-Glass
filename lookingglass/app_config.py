@@ -31,24 +31,6 @@ class Field:
     min: int | None = None
     max: int | None = None
     placeholder: str = ""
-    section: str = ""  # sub-heading inside the group (fields of one section are listed together)
-
-
-# what a section is for, shown under its heading
-SECTIONS = {
-    "Scanning": "What is scanned and how often.",
-    "Vulnerabilities page": "What the Vulnerabilities page lists and counts (the page says how many are hidden, "
-                            "and why). Does not change alerts: with alerts on, an alert still lists a hidden finding "
-                            "and says it is hidden. Your exceptions are always listed under Exceptions.",
-    "Alerts": "When a finding raises an alert. The same kinds of filters as for the page, set separately. Only used while 'Create alerts for vulnerabilities' is on; the findings "
-              "that meet these rules are under 'Meets alert rules' on the Vulnerabilities page either way.",
-    "Exceptions": "Findings you accept: no alert, listed under 'Exceptions' on the Vulnerabilities page. To hide "
-                  "single findings for good, tick them on the Vulnerabilities page and press Close selected.",
-    "Application versions": "The App version column, and CVE checks for the application itself.",
-    "Data sources": "Where scores and 'actively exploited' come from.",
-    "Registry login": "Optional: for pulling images (Docker Hub limits anonymous pulls; private registries need one).",
-    "Advanced: Grype and Syft": "Only change these when you know you need to.",
-}
 
 
 GROUPS = {
@@ -63,7 +45,7 @@ GROUPS = {
     "display": "Display",
     "behavior": "Behaviour & ML",
     "intel": "Threat intel & traps",
-    "vulns": "Container vulnerabilities",
+    "packages": "Container packages",
 }
 
 FIELDS: list[Field] = [
@@ -323,126 +305,30 @@ FIELDS: list[Field] = [
     Field("unraid_log_error_minutes", "data", "Unraid: … within (minutes)", "int", "", min=1, max=1440),
     Field("geoip_db", "data", "GeoIP database path", "str", "MaxMind GeoLite2-City or -Country .mmdb inside the data volume.",
           placeholder="/data/GeoLite2-City.mmdb"),
-    # container vulnerabilities (vulnscan.py), shown in these sections
-    Field("vuln_scan_enabled", "vulns", "Scan container images for vulnerabilities", "bool",
-          "Every container of your Unraid servers (and the extra images below) is checked with Grype / Syft for known "
-          "vulnerabilities in the operating system packages, libraries and programs inside the image. Results: "
-          "Vulnerabilities page.", section="Scanning"),
-    Field("vuln_recheck_hours", "vulns", "Check against new vulnerabilities every (hours)", "int", "Updates Grype's "
-          "database and matches the stored package lists of all images again - fast, the images are not downloaded.",
-          min=1, max=168, section="Scanning"),
-    Field("vuln_rescan_days", "vulns", "Read the images again every (days)", "int", "The package list of an image is "
-          "made again after this many days (and always when a container runs a new image).", min=1, max=90, section="Scanning"),
-    Field("vuln_image_source", "vulns", "Image source", "choice", "auto = from the registry by the exact digest the "
-          "container runs (Docker API with IMAGES=1 needed to know it), else exported through the Docker API, else the "
-          "registry's current image of the tag; registry = only from the registry; docker = only through the Docker API "
-          "(also for images built locally).", choices=("auto", "registry", "docker"), section="Scanning"),
-    Field("vuln_images", "vulns", "Extra images to scan", "list", "Images that do not run on an Unraid server Looking "
-          "Glass knows, e.g. on another Docker host. Scanned from their registry.",
-          placeholder="ghcr.io/gittimeraider/looking-glass:latest\npostgres:18", section="Scanning"),
-    Field("vuln_check_applies", "vulns", "Check whether vulnerabilities apply", "bool", "Marks a finding 'not "
-          "affected' when the advisory itself says it only exists on Windows / macOS / another system (Go advisories, "
-          "NVD), or when a Go program does not contain the vulnerable functions (read from the program, like Go's "
-          "govulncheck; downloads the one image layer that holds it). Undecided findings stay normal findings.",
-          section="Scanning"),
-    Field("vuln_exclude", "vulns", "Containers / images not to scan", "list", "Not read at all (no package list "
-          "either). Names or images, * as wildcard. To only stop the vulnerability scan of an image and keep its "
-          "package list, use its On / Off button on the Vulnerabilities page (Images & packages).",
-          placeholder="my-test-*\nlocalhost/*", section="Scanning"),
-    Field("vuln_show_min_cvss", "vulns", "Minimum CVSS score to show", "str", "Findings below this score are not shown "
-          "on the Vulnerabilities page (nor counted there). 0 = show everything.", placeholder="0", section="Vulnerabilities page"),
-    Field("vuln_hide_wont_fix", "vulns", "Hide findings that will not be fixed", "bool", "The distribution decided "
-          "not to fix them (Debian / Ubuntu 'will not fix', usually minor or not exploitable in practice).",
-          section="Vulnerabilities page"),
-    Field("vuln_hide_no_fix", "vulns", "Hide findings without a fix yet", "bool", "No fixed version exists yet, so "
-          "there is nothing to update to (includes 'will not fix').", section="Vulnerabilities page"),
-    Field("vuln_hide_not_affected", "vulns", "Hide findings that are not affected", "bool", "Findings that can't "
-          "affect the container: a version-format mistake of the scanner, a vulnerability that only exists on another "
-          "operating system, or vulnerable code that is not in the program (see 'Check whether vulnerabilities apply'). "
-          "They never alert. Untick to see them, marked green.", section="Vulnerabilities page"),
-    Field("vuln_hide_cpe", "vulns", "Hide guesses by product name (CPE)", "bool", "Matches made only by the product "
-          "name, without a package database entry - wrong more often. Marked 'CPE guess' on the page.",
-          section="Vulnerabilities page"),
-    Field("vuln_hide_negligible", "vulns", "Hide what the distribution rates negligible", "bool", "Debian / Ubuntu / Alpine rate each CVE for their own package in their security tracker; 'unimportant' (shown as negligible) means no real risk in their build, whatever the CVSS score. Only for "
-          "their own packages.", section="Vulnerabilities page"),
-    Field("vuln_hide_types", "vulns", "Packages not to show", "list", "Package names (also the source package, e.g. "
-          "dotnet10 for dotnet-host-10.0) or package types, * as wildcard: chromium, libx11-*, or a type such as "
-          "go-module (libraries compiled into Go programs), java-archive, npm, python, deb. Name and type are shown in "
-          "the Package column of the page.", placeholder="chromium\ngo-module", section="Vulnerabilities page"),
-    Field("vuln_alerts", "vulns", "Create alerts for vulnerabilities", "bool", "Off by default. On = one alert per "
-          "container image for the findings that meet the rules below. Off = findings are only listed on the "
-          "Vulnerabilities page (open alerts are closed). Scan problems alert either way.", section="Alerts"),
-    Field("vuln_min_cvss", "vulns", "Minimum CVSS score for an alert", "str", "A finding with this CVSS base score or "
-          "higher raises an alert. 7.0 = high and critical; 9.0 = critical only. Without a score the severity word "
-          "counts (critical 9, high 7, medium 4, low 0.1).", placeholder="7.0", section="Alerts"),
-    Field("vuln_kev_always", "vulns", "Also alert on actively exploited vulnerabilities", "bool",
-          "A CVE on CISA's Known Exploited Vulnerabilities list is attacked in the wild: alert (critical) whatever its "
-          "CVSS score, also when no fixed version exists yet.", section="Alerts"),
-    Field("vuln_epss_min", "vulns", "Also alert from EPSS chance", "str", "EPSS = the chance a CVE gets exploited in the next "
-          "30 days (0-1 or a percentage). Findings at or above it alert even below the minimum CVSS score. Empty = not used.",
-          placeholder="0.1 or 10%", section="Alerts"),
-    Field("vuln_only_fixed", "vulns", "Only alert when a fix exists", "bool", "Skip findings without a fixed version "
-          "(Debian / Alpine 'will not fix', or not fixed yet) - there is nothing to update to. Actively exploited ones "
-          "still alert when the switch above is on. They are always listed on the Vulnerabilities page.", section="Alerts"),
-    Field("vuln_alert_skip_wont_fix", "vulns", "No alerts for findings that will not be fixed", "bool", "The "
-          "distribution decided not to fix them (Debian / Ubuntu 'will not fix'). Also when actively exploited.",
-          section="Alerts"),
-    Field("vuln_alert_skip_cpe", "vulns", "No alerts for guesses by product name (CPE)", "bool", "Matches made only by "
-          "the product name, without a package database entry - wrong more often. Also when actively exploited.",
-          section="Alerts"),
-    Field("vuln_alert_skip_negligible", "vulns", "No alerts for what the distribution rates negligible", "bool",
-          "Debian / Ubuntu / Alpine rate each CVE for their own package in their security tracker; 'unimportant' (shown as negligible) means no real risk in their build, whatever the CVSS score. Only for "
-          "their own packages. Also when actively exploited.", section="Alerts"),
-    Field("vuln_alert_skip_packages", "vulns", "Packages not to alert on", "list", "Like 'Packages not to show': "
-          "package names (also the source package), * as wildcard, or package types such as go-module. Also when "
-          "actively exploited. Findings that are not affected never alert.",
-          placeholder="chromium\ngo-module", section="Alerts"),
-    Field("vuln_ignore", "vulns", "Exceptions", "text", "Findings you accept, one per line: a CVE / GHSA id (patterns "
-          "with * allowed) or pkg:<package>, optionally 'on <containers or images>' and 'until <date>' - after that date "
-          "it counts again. Still listed (marked) on the Vulnerabilities page. # starts a comment.",
-          placeholder="CVE-2023-45853 on mariadb*  # not reachable\npkg:perl-base\nCVE-2024-* on test-* until 2026-12-31", section="Exceptions"),
-    Field("vuln_version_sources", "vulns", "Where image versions are read", "text", "For the App version column of "
-          "every image, tried top to bottom: label NAME, env NAME, tag or package NAME, optionally followed by a /regex/ "
-          "(first group = the version; default: the first number like 1.2.3). {NAME} / {name} = the image's own name "
-          "(env {NAME}_VERSION -> FILEFLOWS_VERSION for revenz/fileflows). A tag like latest or stable holds no version. "
-          "Only shown - CVEs of the application itself are looked up by the App version checks. Empty = the built-in "
-          "list.", section="Application versions"),
-    Field("vuln_app_checks", "vulns", "App version checks", "text", "Own checks for the application itself, which package "
-          "scanners often miss: one per line 'images | version source | OSV ecosystem package'. Version source: env NAME, "
-          "label NAME, tag or package NAME (from the image's package list), optionally followed by a /regex/ whose first "
-          "group is the version (default: the first number like 30.0.2). The version is looked up with the osv source "
-          "below. Ecosystems: osv.dev/list (Packagist, npm, PyPI, Go, Maven, ...). # = comment.", section="Application versions"),
-    Field("vuln_sources", "vulns", "Sources", "text", "Where extra information comes from - change an address or format "
-          "when a provider moves or changes its format, or add a mirror. One per line 'kind: [POST] address | format'; "
-          "per kind tried top to bottom until one answers. kev (actively exploited CVEs): '| json <path>', '| csv "
-          "<column>' or '| text' (every CVE id in the answer). epss: '| json <rows> <cve field> <score field> "
-          "[<percentile field>]' or '| csv <cve column> <score column> [...]' - {cves} in the address = asked 100 at a "
-          "time, without it = one full download (.gz is unpacked). cvss (for findings without a score): address with "
-          "{cve}, '| json <path>, <path>' (highest number found). osv: OSV-compatible query API. Paths: a.b[].c ([] = "
-          "every list item, * = every value). 'kind: off' switches a kind off. Empty = the built-in list. Test sources "
-          "tries every line.", section="Data sources"),
-    Field("vuln_nvd_api_key", "vulns", "NVD API key", "secret", "Optional: more CVSS lookups per minute. Free at "
-          "nvd.nist.gov › Developers › Request an API Key. Only sent to nvd.nist.gov.", section="Data sources"),
-    Field("vuln_registry_host", "vulns", "Registry login: registry", "str", "Optional login for pulling images (Docker "
-          "Hub limits anonymous pulls; private registries need one).", placeholder="docker.io", section="Registry login"),
-    Field("vuln_registry_user", "vulns", "Registry login: user", "str", "", section="Registry login"),
-    Field("vuln_registry_password", "vulns", "Registry login: password / token", "secret", "Docker Hub: Account "
-          "settings › Personal access tokens › Generate (read-only).", section="Registry login"),
-    Field("vuln_grype_path", "vulns", "Grype program", "str", "Included in the image; change only to use another one.",
-          placeholder="grype", section="Advanced: Grype and Syft"),
-    Field("vuln_syft_path", "vulns", "Syft program", "str", "Included in the image.", placeholder="syft", section="Advanced: Grype and Syft"),
-    Field("vuln_grype_db_url", "vulns", "Grype database address", "str", "Where Grype downloads its vulnerability "
-          "database (the listing / latest.json URL); empty = Grype's own. For a mirror or when Anchore moves it.",
-          placeholder="https://grype.anchore.io/databases", section="Advanced: Grype and Syft"),
-    Field("vuln_grype_args", "vulns", "Extra Grype arguments", "str", "Added to every match, e.g. --only-fixed or "
-          "--exclude '/usr/share/**'.", placeholder="--exclude /usr/share/doc/**", section="Advanced: Grype and Syft"),
-    Field("vuln_syft_args", "vulns", "Extra Syft arguments", "str", "Added to every image read, e.g. --platform "
-          "linux/arm64 or --scope all-layers.", placeholder="--scope squashed", section="Advanced: Grype and Syft"),
-    Field("vuln_tool_env", "vulns", "Extra environment for Grype / Syft", "text", "NAME=value per line - any Grype / "
-          "Syft setting (GRYPE_DB_MAX_ALLOWED_BUILT_AGE=240h, HTTPS_PROXY=..., GRYPE_DB_CA_CERT=...).",
-          placeholder="GRYPE_DB_MAX_ALLOWED_BUILT_AGE=240h", section="Advanced: Grype and Syft"),
-    Field("vuln_scan_timeout", "vulns", "Time limit per run (minutes)", "int", "For one image read or database update; "
-          "large images over a slow connection need longer.", min=2, max=240, section="Advanced: Grype and Syft"),
+    # container packages (packages.py; shown under Settings › Unraid servers)
+    Field("pkg_enabled", "packages", "Read the packages of container images", "bool",
+          "Lists what is inside the image of every container on your Unraid servers (Unraid › Packages): operating "
+          "system packages, libraries, language packages and the programs they are built into. An image is read when "
+          "it is new or updated, or when you press Update - never on a schedule."),
+    Field("pkg_image_source", "packages", "Image source", "choice", "auto = from the registry by the exact digest the "
+          "container runs (needs the Docker API with IMAGES=1 to know it), else exported through the Docker API, else "
+          "the registry's current image of the tag; registry = only from the registry; docker = only through the Docker "
+          "API (also for images built locally).", choices=("auto", "registry", "docker")),
+    Field("pkg_exclude", "packages", "Containers / images not to read", "list", "Names or images, * as wildcard.",
+          placeholder="my-test-*\nlocalhost/*"),
+    Field("pkg_registry_host", "packages", "Registry login: registry", "str", "Optional login for pulling images (Docker "
+          "Hub limits anonymous pulls; private registries need one).", placeholder="docker.io"),
+    Field("pkg_registry_user", "packages", "Registry login: user", "str", ""),
+    Field("pkg_registry_password", "packages", "Registry login: password / token", "secret", "Docker Hub: Account "
+          "settings › Personal access tokens › Generate (read-only)."),
+    Field("pkg_syft_path", "packages", "Syft program", "str", "Included in the image; change only to use another one.",
+          placeholder="syft"),
+    Field("pkg_syft_args", "packages", "Extra Syft arguments", "str", "Added to every image read, e.g. --platform "
+          "linux/arm64 or --scope all-layers.", placeholder="--scope squashed"),
+    Field("pkg_tool_env", "packages", "Extra environment for Syft", "text", "NAME=value per line - any Syft setting "
+          "(HTTPS_PROXY=..., SYFT_REGISTRY_INSECURE_USE_HTTP=true).", placeholder="HTTPS_PROXY=http://proxy:3128"),
+    Field("pkg_timeout", "packages", "Time limit per image (minutes)", "int", "Large images over a slow connection "
+          "need longer.", min=2, max=240),
 ]
 BY_KEY = {f.key: f for f in FIELDS}
 SECRET_KEYS = {f.key for f in FIELDS if f.kind == "secret"}
@@ -495,6 +381,18 @@ def _coerce(f: Field, value: Any) -> Any:
                 ipaddress.ip_network(part.strip(), strict=False)
             except ValueError as exc:
                 raise SettingsError(f"{f.label}: '{part.strip()}' is not an IP address or CIDR") from exc
+    if f.key == "pkg_tool_env" and v:
+        from .packages import parse_env
+        try:
+            parse_env(v)
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: {exc}") from exc
+    if f.key == "pkg_syft_args" and v:
+        import shlex
+        try:
+            shlex.split(v)
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: {exc}") from exc
     if f.key == "timezone" and v:
         try:
             ZoneInfo(v)
@@ -524,33 +422,6 @@ def _coerce(f: Field, value: Any) -> Any:
             recipients(v)
         except ValueError as exc:
             raise SettingsError(f"{f.label}: {exc}") from exc
-    if f.key.startswith("vuln_") and v:
-        from . import vulnscan
-        try:
-            if f.key == "vuln_min_cvss":
-                vulnscan.parse_threshold(v, f.label, 10)
-            elif f.key == "vuln_show_min_cvss":
-                vulnscan.parse_threshold(v, f.label, 10)
-            elif f.key == "vuln_epss_min":
-                vulnscan.parse_threshold(v, f.label, 1)
-            elif f.key == "vuln_sources":
-                vulnscan.parse_sources(v)
-            elif f.key == "vuln_app_checks":
-                vulnscan.parse_app_checks(v)
-            elif f.key == "vuln_version_sources":
-                vulnscan.parse_version_sources(v)
-            elif f.key == "vuln_ignore":
-                vulnscan.parse_ignore(v)
-            elif f.key == "vuln_tool_env":
-                vulnscan.parse_env(v)
-            elif f.key in ("vuln_grype_args", "vuln_syft_args"):
-                import shlex
-                shlex.split(v)
-            elif f.key == "vuln_grype_db_url" and not v.startswith(("http://", "https://")):
-                raise ValueError("must start with http:// or https://")
-        except ValueError as exc:
-            msg = str(exc)
-            raise SettingsError(msg if msg.startswith(f.label) else f"{f.label}: {msg}") from exc
     if f.key == "opnsense_ca_pem" and v and "BEGIN CERTIFICATE" not in v:
         raise SettingsError(f"{f.label}: paste a PEM certificate (-----BEGIN CERTIFICATE-----)")
     return v
@@ -631,14 +502,13 @@ def public_view(settings: Settings) -> dict[str, Any]:
     for f in FIELDS:
         v = getattr(settings, f.key)
         item = {"key": f.key, "group": f.group, "label": f.label, "kind": f.kind, "help": f.help,
-                "choices": list(f.choices), "min": f.min, "max": f.max, "placeholder": f.placeholder,
-                "section": f.section}
+                "choices": list(f.choices), "min": f.min, "max": f.max, "placeholder": f.placeholder}
         if f.kind == "secret":
             item["is_set"] = bool(v)
         else:
             item["value"] = v
         out.append(item)
-    return {"groups": GROUPS, "fields": out, "sections": SECTIONS, "version": STATE.version}
+    return {"groups": GROUPS, "fields": out, "version": STATE.version}
 
 
 def signature(settings: Settings, group: str) -> tuple:

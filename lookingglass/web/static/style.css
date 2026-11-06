@@ -245,10 +245,6 @@ td .msgtxt { white-space: normal; }
 td { max-width: 520px; }
 .settings-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px 24px; }
 .settings-form .setting { display: grid; gap: 4px; align-content: start; }
-/* a sub-heading inside a settings tab: spans the whole row, the fields of that section follow */
-.settings-form .setting-section { grid-column: 1 / -1; border-top: 1px solid var(--border); padding-top: 14px; margin-top: 6px; }
-.settings-form .setting-section:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
-.settings-form .setting-section h4 { margin: 0 0 2px; font-size: 14px; }
 .settings-form textarea { font-family: var(--mono); font-size: 12px; }
 input[type=checkbox] { width: auto; min-width: 0; padding: 0; flex: none; }
 label.chk { white-space: nowrap; flex: none; }

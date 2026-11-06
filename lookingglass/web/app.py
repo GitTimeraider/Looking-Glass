@@ -63,7 +63,6 @@ PAGES = {
     "/alerts": ("alerts.html", "Alerts"),
     "/system": ("system.html", "OPNsense"),
     "/devices": ("devices.html", "Devices"),
-    "/vulns": ("vulns.html", "Vulnerabilities"),
     "/unraid": ("unraid.html", "Unraid"),
     "/unifi": ("unifi.html", "UniFi"),
     "/reports": ("reports.html", "Reports"),
@@ -1008,211 +1007,6 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         await Intel(settings).update(force=True)
         return await intel_status()
 
-    # --------------------------------------------- container vulnerabilities ---
-    # a finding the user closed (vuln_closed): by its id or an alias, its source package (else package) and the image
-    # repository or every image ('')
-    not_closed = ("NOT EXISTS (SELECT 1 FROM vuln_closed c WHERE (c.vuln = f.vuln OR c.vuln = ANY(f.aliases)) "
-                  "AND c.grp = coalesce(nullif(f.upstream, ''), f.package) AND c.repo IN ('', i.repo))")
-
-    # listed on the page: not hidden by Settings › Container vulnerabilities › Vulnerabilities page. The Exceptions
-    # tab lists every finding your exceptions cover, hidden or not.
-    shown = "f.shown"
-
-    async def _vulns_reevaluate() -> None:
-        """Ask the scanner to judge the stored findings again (alerts follow within ~20 s), without a new scan."""
-        await db.kv_set("vulnscan:reevaluate", {"at": time.time()})
-        scanner = getattr(app.state, "vulnscan", None)
-        if scanner is not None:
-            scanner.wake.set()
-
-    @app.get("/api/vulns")
-    async def vulns_overview():
-        rows = await db.pool().fetch(
-            # distinct vulnerabilities: one CVE in a source package is one finding, however many packages it built;
-            # findings you closed, and those below 'Minimum CVSS score to show', do not count
-            "SELECT i.*, count(DISTINCT f.vuln) total, count(DISTINCT f.vuln) FILTER (WHERE f.alerted) alerted, "
-            "count(DISTINCT f.vuln) FILTER (WHERE f.kev AND f.ignored IS NULL) kev, "
-            "count(DISTINCT f.vuln) FILTER (WHERE f.ignored IS NOT NULL) ignored_n, "
-            "max(f.cvss) FILTER (WHERE f.ignored IS NULL) max_cvss, "
-            "count(DISTINCT f.vuln) FILTER (WHERE coalesce(f.cvss, 0) >= 9 AND f.ignored IS NULL) crit, "
-            "count(DISTINCT f.vuln) FILTER (WHERE f.cvss >= 7 AND f.cvss < 9 AND f.ignored IS NULL) high "
-            f"FROM vuln_images i LEFT JOIN vuln_findings f ON f.image_key = i.key AND {not_closed} AND {shown} "
-            "GROUP BY i.key ORDER BY alerted DESC, i.image")
-        kev = await db.kv_get("vulnscan:kev", []) or []
-        closed_n = await db.pool().fetchval("SELECT count(*) FROM vuln_closed")
-        off = {r["repo"] for r in await db.pool().fetch("SELECT repo FROM vuln_repo_off")}
-        hidden = await db.pool().fetch(
-            "SELECT coalesce(f.hidden_why, 'hidden') why, count(DISTINCT (f.image_key, f.vuln)) n FROM vuln_findings f "
-            f"JOIN vuln_images i ON i.key = f.image_key WHERE {not_closed} AND NOT {shown} GROUP BY 1 ORDER BY 2 DESC")
-        hidden_n = await db.pool().fetchval(
-            "SELECT count(*) FROM (SELECT DISTINCT f.image_key, f.vuln FROM vuln_findings f JOIN vuln_images i "
-            f"ON i.key = f.image_key WHERE {not_closed} AND NOT {shown}) x")
-        from ..vulnscan import image_inventory
-        images = db.records(rows)
-        for img in images:  # base OS and number of parts, from the stored package list (cached)
-            inv = await asyncio.to_thread(image_inventory, settings, img["key"])
-            img["distro"], img["parts"] = inv["distro"], len(inv["packages"])
-            img["scan_off"] = img["repo"] in off
-        return {"enabled": settings.vuln_scan_enabled, "status": await db.kv_get("vulnscan:status", {}) or {},
-                "queued": await db.kv_get("vulnscan:request"),  # Check now pressed, the scanner has not picked it up yet
-                "now": time.time(),
-                "images": images, "kev_count": len(kev), "closed_count": closed_n, "hidden_count": hidden_n,
-                "hidden": {r["why"]: r["n"] for r in hidden},
-                "policy": {"min_cvss": settings.vuln_min_cvss, "kev_always": settings.vuln_kev_always,
-                           "epss_min": settings.vuln_epss_min, "only_fixed": settings.vuln_only_fixed,
-                           "alerts": settings.vuln_alerts, "show_min_cvss": settings.vuln_show_min_cvss}}
-
-    @app.get("/api/vulns/findings")
-    async def vulns_findings(image: str | None = None, show: str = "all", q: str | None = None,
-                             limit: int = Query(1000, ge=1, le=10000)):
-        if show == "closed":
-            return await vulns_closed_list()
-        cond, args = [not_closed] + ([] if show in ("ignored", "notaffected") else [shown]), []
-        if image:
-            args.append(image)
-            cond.append(f"f.image_key = ${len(args)}")
-        if show == "alerted":
-            cond.append("f.alerted")
-        elif show == "kev":
-            cond.append("f.kev")
-        elif show == "ignored":
-            cond.append("f.ignored IS NOT NULL")
-        elif show == "notaffected":  # listed here also while 'Hide findings that are not affected' hides them
-            cond.append("(f.applies->>'status' IN ('not_applicable', 'not_reachable') "
-                        "OR coalesce((f.matched->>'probably_fixed')::boolean, false))")
-        elif show == "fixable":
-            cond.append("(f.fix_state = 'fixed' OR cardinality(f.fix_versions) > 0)")
-        if q:
-            args.append(f"%{q}%")
-            cond.append(f"(f.vuln ILIKE ${len(args)} OR f.package ILIKE ${len(args)} OR f.upstream ILIKE ${len(args)} "
-                        f"OR array_to_string(f.aliases, ' ') "
-                        f"ILIKE ${len(args)} OR i.image ILIKE ${len(args)})")
-        from ..vulnscan import group_findings
-        rows = await db.pool().fetch(
-            "SELECT f.*, i.image, i.repo, i.containers FROM vuln_findings f JOIN vuln_images i ON i.key = f.image_key "
-            f"WHERE {' AND '.join(cond)} ORDER BY f.kev DESC, f.cvss DESC NULLS LAST, f.epss DESC NULLS LAST, f.vuln, f.package "
-            f"LIMIT 50000", *args)
-        return group_findings(db.records(rows))[:limit]
-
-    @app.get("/api/vulns/packages")
-    async def vulns_packages(q: str | None = None, type: str | None = None, language: str | None = None,  # noqa: A002
-                             image: str | None = None, vulnerable: bool = False,
-                             limit: int = Query(1000, ge=1, le=20000)):
-        """Every part of every scanned image (Syft's package list): search and filter; per part its open findings."""
-        from ..vulnscan import image_inventory
-        images = db.records(await db.pool().fetch("SELECT key, image, containers FROM vuln_images ORDER BY image"))
-        counts = {(r["image_key"], r["package"], r["version"]): (r["n"], r["kev"]) for r in await db.pool().fetch(
-            "SELECT f.image_key, f.package, f.version, count(DISTINCT f.vuln) n, bool_or(f.kev) kev FROM vuln_findings f "
-            f"JOIN vuln_images i ON i.key = f.image_key WHERE {not_closed} AND {shown} GROUP BY 1, 2, 3")}
-        words = [w.lower() for w in (q or "").split() if w]
-        rows, types, langs, distros = [], {}, {}, {}
-        for img in images:
-            if image and img["key"] != image:
-                continue
-            inv = await asyncio.to_thread(image_inventory, settings, img["key"])
-            distros[img["key"]] = inv["distro"]
-            ctrs = [c.get("name") for c in img["containers"] or [] if c.get("name") and not str(c["name"]).startswith("(")]
-            for p in inv["packages"]:
-                n, kev = counts.get((img["key"], p["name"], p["version"]), (0, False))
-                text = " ".join([p["name"], p["version"], p["type"], p["language"], img["image"], *ctrs, *p["locations"]]).lower()
-                if words and not all(w in text for w in words):
-                    continue
-                if vulnerable and not n:
-                    continue
-                types[p["type"]] = types.get(p["type"], 0) + 1   # counted before the type / language filter
-                langs[p["language"]] = langs.get(p["language"], 0) + 1
-                if (type and p["type"] != type) or (language and p["language"] != language):
-                    continue
-                rows.append({**p, "image_key": img["key"], "image": img["image"], "containers": ctrs, "vulns": n, "kev": kev})
-        rows.sort(key=lambda r: (r["name"].lower(), r["version"], r["image"]))
-        return {"rows": rows[:limit], "total": len(rows), "types": types,
-                "languages": {k: v for k, v in langs.items() if k}, "distros": distros}
-
-    async def vulns_closed_list() -> list[dict[str, Any]]:
-        """Your closed findings, with the images they currently hide a finding in."""
-        rows = db.records(await db.pool().fetch(
-            "SELECT c.*, (SELECT array_agg(DISTINCT i.image ORDER BY i.image) FROM vuln_findings f JOIN vuln_images i "
-            "ON i.key = f.image_key WHERE (c.vuln = f.vuln OR c.vuln = ANY(f.aliases)) "
-            "AND c.grp = coalesce(nullif(f.upstream, ''), f.package) AND c.repo IN ('', i.repo)) images "
-            "FROM vuln_closed c ORDER BY c.closed_at DESC"))
-        return rows
-
-    @app.post("/api/vulns/close")
-    async def vulns_close(request: Request, payload: dict = Body(...)):
-        """Close findings: [{vuln, group, repo}], scope 'image' (that image repository) or 'all' (every image)."""
-        items = payload.get("items") or []
-        if not isinstance(items, list) or not items:
-            raise HTTPException(400, "Select the findings to close first.")
-        if len(items) > 5000:
-            raise HTTPException(400, "At most 5000 findings at once.")
-        everywhere = payload.get("scope") == "all"
-        note = str(payload.get("note") or "").strip()[:500] or None
-        rows = set()
-        for it in items:
-            vuln, grp = str((it or {}).get("vuln") or "").strip(), str((it or {}).get("group") or "").strip()
-            repo = "" if everywhere else str((it or {}).get("repo") or "").strip()
-            if not vuln or not grp or (not everywhere and not repo):
-                raise HTTPException(400, "Each finding needs its vulnerability, package and image.")
-            rows.add((vuln[:200], grp[:300], repo[:500]))
-        await db.pool().executemany(
-            "INSERT INTO vuln_closed (vuln, grp, repo, note, closed_by) VALUES ($1, $2, $3, $4, $5) "
-            "ON CONFLICT (vuln, grp, repo) DO UPDATE SET note = coalesce(EXCLUDED.note, vuln_closed.note), "
-            "closed_by = EXCLUDED.closed_by, closed_at = now()",
-            [(*r, note, _author(request)) for r in sorted(rows)])
-        await _vulns_reevaluate()
-        return {"ok": True, "closed": len(rows)}
-
-    @app.post("/api/vulns/image-scan")
-    async def vulns_image_scan(request: Request, payload: dict = Body(...)):
-        """Switch vulnerability matching of an image repository off / on (stays for new tags and versions). Off: its
-        findings are removed and its alert closes; the package list is still made. On: a check starts right away."""
-        repo = str(payload.get("repo") or "").strip()[:500]
-        if not repo or not await db.pool().fetchval("SELECT 1 FROM vuln_images WHERE repo = $1 LIMIT 1", repo):
-            raise HTTPException(400, "Unknown image.")
-        if payload.get("enabled"):
-            await db.pool().execute("DELETE FROM vuln_repo_off WHERE repo = $1", repo)
-            await db.kv_set("vulnscan:request", {"at": time.time(), "rebuild": False})  # match it again now
-            scanner = getattr(app.state, "vulnscan", None)
-            if scanner is not None:
-                scanner.wake.set()
-        else:
-            async with db.pool().acquire() as con, con.transaction():
-                await con.execute("INSERT INTO vuln_repo_off (repo, changed_by) VALUES ($1, $2) ON CONFLICT (repo) DO "
-                                  "UPDATE SET changed_by = EXCLUDED.changed_by, changed_at = now()", repo, _author(request))
-                await con.execute("DELETE FROM vuln_findings WHERE image_key IN (SELECT key FROM vuln_images WHERE repo = $1)", repo)
-                await con.execute("UPDATE vuln_images SET app = NULL WHERE repo = $1", repo)
-            await _vulns_reevaluate()  # closes its alert
-        return {"ok": True, "repo": repo, "enabled": bool(payload.get("enabled"))}
-
-    @app.post("/api/vulns/reopen")
-    async def vulns_reopen(payload: dict = Body(...)):
-        items = payload.get("items") or []
-        if not isinstance(items, list) or not items:
-            raise HTTPException(400, "Select the closed findings to reopen first.")
-        keys = [(str(i.get("vuln") or ""), str(i.get("grp") or ""), str(i.get("repo") or "")) for i in items
-                if isinstance(i, dict)]
-        await db.pool().executemany("DELETE FROM vuln_closed WHERE vuln = $1 AND grp = $2 AND repo = $3", keys)
-        await _vulns_reevaluate()
-        return {"ok": True, "reopened": len(keys)}
-
-    @app.post("/api/vulns/scan")
-    async def vulns_scan(payload: dict = Body(default={})):
-        if not settings.vuln_scan_enabled:
-            raise HTTPException(400, "Switch scanning on first: Settings › Container vulnerabilities")
-        await db.kv_set("vulnscan:request", {"at": time.time(), "rebuild": bool(payload.get("rebuild"))})
-        scanner = getattr(app.state, "vulnscan", None)
-        if scanner is not None:
-            scanner.wake.set()
-        return {"ok": True}
-
-    @app.post("/api/vulns/test-sources")
-    async def vulns_test_sources(payload: dict = Body(default={})):
-        from ..vulnscan import test_sources
-        try:
-            return await test_sources(settings, payload.get("text"))
-        except ValueError as exc:
-            raise HTTPException(400, f"Sources: {exc}") from exc
-
     @app.get("/api/feedback/suggestions")
     async def feedback_suggestions():
         from ..behavior import Behavior
@@ -1260,6 +1054,50 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         d = db.jsonable(dict(r))
         d["api_key"] = "set" if d.get("api_key") else ""  # never returned, not even partially
         return d
+
+    # ------------------------------------------------- container packages ---
+    @app.get("/api/packages/images")
+    async def packages_images():
+        """The images in use, with how their package list was read (Unraid › Packages)."""
+        rows = db.records(await db.pool().fetch("SELECT * FROM image_packages ORDER BY image"))
+        return {"enabled": settings.pkg_enabled, "status": await db.kv_get("packages:status", {}) or {},
+                "queued": await db.kv_get("packages:request"), "now": time.time(), "images": rows}
+
+    @app.get("/api/packages")
+    async def packages_list(q: str | None = None, type: str | None = None, language: str | None = None,  # noqa: A002
+                            image: str | None = None, limit: int = Query(1000, ge=1, le=20000)):
+        """Every part of every image in use: search (all words, in name / version / type / language / image /
+        containers / files) and filter by type, language and image; counts per type and language for the filters."""
+        from ..packages import listed
+        words = [w.lower() for w in (q or "").split() if w]
+        rows, types, langs = [], {}, {}
+        for img in db.records(await db.pool().fetch("SELECT key, image, containers FROM image_packages ORDER BY image")):
+            if image and img["key"] != image:
+                continue
+            ctrs = [c.get("name") for c in img["containers"] or [] if c.get("name")]
+            for p in (await asyncio.to_thread(listed, settings, img["key"]))["packages"]:
+                text = " ".join([p["name"], p["version"], p["type"], p["language"], img["image"], *ctrs, *p["locations"]]).lower()
+                if words and not all(w in text for w in words):
+                    continue
+                types[p["type"]] = types.get(p["type"], 0) + 1  # counted before the type / language filter
+                langs[p["language"]] = langs.get(p["language"], 0) + 1
+                if (type and p["type"] != type) or (language and p["language"] != language):
+                    continue
+                rows.append({**p, "image_key": img["key"], "image": img["image"], "containers": ctrs})
+        rows.sort(key=lambda r: (r["name"].lower(), r["version"], r["image"]))
+        return {"rows": rows[:limit], "total": len(rows), "types": types, "languages": {k: v for k, v in langs.items() if k}}
+
+    @app.post("/api/packages/update")
+    async def packages_update(payload: dict = Body(default={})):
+        """Read the package lists again: of every image, or of one ({"image": key})."""
+        if not settings.pkg_enabled:
+            raise HTTPException(400, "Switch it on first: Settings › Unraid servers › Container packages")
+        one = str(payload.get("image") or "") or None
+        await db.kv_set("packages:request", {"at": time.time(), **({"image": one} if one else {"all": True})})
+        reader = getattr(app.state, "packages", None)
+        if reader is not None:
+            reader.wake.set()
+        return {"ok": True}
 
     @app.get("/api/unraid/servers")
     async def unraid_servers():
@@ -1426,8 +1264,6 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             changed = await app_config.save(settings, payload.get("values") or {})
         except app_config.SettingsError as exc:
             raise HTTPException(400, str(exc)) from exc
-        if any(str(k).startswith("vuln_") for k in changed or []):
-            await _vulns_reevaluate()  # new thresholds / alert level / exceptions apply right away
         return {"ok": True, "changed": changed}
 
     def _candidate(values: dict) -> Any:

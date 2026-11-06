@@ -58,19 +58,6 @@ device_profile(key /*MAC or IP*/, kind /*country|port|domain|tls|hour*/, value, 
 risk_scores(entity /*IP*/, score, parts jsonb [{rule, severity, points}], updated)  -- alerts add points that fade
 intel_indicators(kind /*domain|ip|ja3*/, value, feed /*urlhaus|threatfox|feodo|sslbl_ja3|tor_relay|tor_exit*/, info)
 seen_domains(domain, first_seen, first_client, registered /*RDAP*/)  -- first lookup of each domain on the network
-vuln_images(key, image, repo, digest, containers jsonb [{server, name, state}], status /*ok|error|pending*/, error,
-       sbom_at, sbom_source, packages, matched_at, db_built, app jsonb, update_info jsonb {available, latest, running},
-       version jsonb {version, from} /*the app's version*/, platform jsonb {os, arch})
-       -- container images scanned for vulnerabilities (Grype / Syft)
-vuln_findings(image_key /*vuln_images.key*/, vuln /*CVE / GHSA id*/, package, version, pkg_type, aliases text[], cves text[],
-       severity, cvss, kev bool /*actively exploited, CISA KEV*/, epss /*0-1*/, fix_versions text[], fix_state, url,
-       description, source /*grype | app check*/, alerted bool /*meets the user's alert rules*/, ignored /*exception*/,
-       why /*why it does (not) meet the alert rules*/, locations text[] /*files in the image*/, upstream /*source package*/,
-       matched jsonb {type, searched, constraint, distro, note} /*how Grype matched: what it compared*/,
-       applies jsonb {status: not_applicable|not_reachable|reachable, text} /*does it affect the container: other OS, or
-       vulnerable Go code not in the program*/, first_seen)
-vuln_closed(vuln, grp /*source package or package*/, repo /*image repo, '' = all*/, note, closed_by, closed_at)
-       -- findings the user closed: hidden and never alerted (match vuln_findings by vuln or alias, package group, repo)
 snapshots(key, ts, data jsonb)  keys: system, activity (top processes), gateways, interfaces, services, firmware, arp,
        leases_kea / leases_dnsmasq / leases_isc, unbound_totals, crowdsec_decisions, qfeeds_stats, poller_status,
        unifi:devices (APs / switches: state, model, firmware, upgradable, cpu, mem, clients, ports[], radios[]),

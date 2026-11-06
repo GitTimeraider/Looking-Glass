@@ -1,6 +1,5 @@
-# vulnerability scanning (Settings › Container vulnerabilities): Grype and Syft, copied from their official images
-# (static binaries, linux/amd64 + linux/arm64); Dependabot keeps these tags current
-FROM anchore/grype:v0.121.1 AS grype
+# container packages (Unraid › Packages): Syft, copied from its official image (static binary, linux/amd64 + arm64);
+# Dependabot keeps this tag current
 FROM anchore/syft:v1.56.0 AS syft
 
 FROM python:3.15-slim AS base
@@ -14,7 +13,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY --from=grype /grype /usr/local/bin/grype
 COPY --from=syft /syft /usr/local/bin/syft
 COPY lookingglass ./lookingglass
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

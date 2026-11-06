@@ -206,6 +206,11 @@ async def amain() -> None:
         await db.close()
         return
     await app_config.load(settings)
+    from .packages import PackageReader, remove_vulnerability_scanner_leftovers
+    try:  # once: the removed vulnerability scanner's tables, settings, alerts and files
+        await remove_vulnerability_scanner_leftovers(settings)
+    except Exception:  # noqa: BLE001 - never keeps Looking Glass from starting; tried again next start
+        log.exception("could not clean up the leftovers of the removed vulnerability scanner")
     if not settings.secret_key:
         # persist a generated cookie key so logins survive restarts
         settings.secret_key = await db.kv_get("secret_key") or secrets.token_urlsafe(48)
@@ -236,12 +241,11 @@ async def amain() -> None:
     tasks.append(asyncio.create_task(notify.notifier(settings), name="notifier"))
     from .intel import Intel
     tasks.append(asyncio.create_task(Intel(settings).updater(), name="threat_feeds"))
-    from .vulnscan import VulnScanner
-    scanner = VulnScanner(settings)
-    tasks.append(asyncio.create_task(scanner.run(), name="vulnscan"))
+    packages = PackageReader(settings)
+    tasks.append(asyncio.create_task(packages.run(), name="container_packages"))
 
     app = create_app(settings, analyst)
-    app.state.vulnscan = scanner
+    app.state.packages = packages
     server = uvicorn.Server(uvicorn.Config(app, host=settings.web_host, port=settings.web_port, log_level="warning",
                                            proxy_headers=True, forwarded_allow_ips="*"))
     server.install_signal_handlers = lambda: None  # we handle signals ourselves

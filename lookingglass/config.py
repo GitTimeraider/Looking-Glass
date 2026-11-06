@@ -155,6 +155,17 @@ class Settings(BaseSettings):
     report_every_days: int = 1
     report_mail_to: str = ""
     geoip_db: str = "/data/GeoLite2-City.mmdb"
+    # container packages (Settings › Unraid servers › Container packages, packages.py)
+    pkg_enabled: bool = False
+    pkg_image_source: str = "auto"
+    pkg_exclude: str = ""
+    pkg_registry_host: str = "docker.io"
+    pkg_registry_user: str = ""
+    pkg_registry_password: str = ""
+    pkg_syft_path: str = "syft"
+    pkg_syft_args: str = ""
+    pkg_tool_env: str = ""
+    pkg_timeout: int = 30  # minutes per image
     retention_days: int = 30
     device_remove_days: int = 0
     metrics_retention_days: int = 90
@@ -166,69 +177,6 @@ class Settings(BaseSettings):
     unraid_restart_minutes: int = 15
     unraid_log_error_count: int = 50  # default log rule: error lines in unraid_log_error_minutes (0 = off)
     unraid_log_error_minutes: int = 10
-    # container vulnerabilities (Settings › Container vulnerabilities, vulnscan.py)
-    vuln_scan_enabled: bool = False
-    vuln_alerts: bool = False  # off by default: findings only on the Vulnerabilities page
-    vuln_min_cvss: str = "7.0"        # alerts from this score
-    vuln_show_min_cvss: str = "0"     # Vulnerabilities page lists from this score
-    vuln_alert_skip_wont_fix: bool = False  # alerts: not for 'will not fix' findings
-    vuln_alert_skip_cpe: bool = False       # alerts: not for matches by product name only (CPE guess)
-    vuln_alert_skip_negligible: bool = False  # alerts: not when the distribution rates it negligible
-    vuln_alert_skip_packages: str = ""      # alerts: packages (names, source packages) or package types not to alert on
-    vuln_hide_wont_fix: bool = False      # page: hide 'will not fix' findings
-    vuln_hide_no_fix: bool = False        # page: hide findings without a fixed version yet
-    vuln_hide_not_affected: bool = True   # page: hide 'not affected' (version-format mistakes, other OS, code not in the program)
-    vuln_check_applies: bool = True       # check other-OS advisories and whether Go programs contain the vulnerable code
-    vuln_hide_cpe: bool = False           # page: hide matches by product name only (CPE guess)
-    vuln_hide_negligible: bool = False    # page: hide what the distribution rates negligible
-    vuln_hide_types: str = ""             # page: packages (names, source packages) or package types not to show
-    vuln_kev_always: bool = True
-    vuln_epss_min: str = ""
-    vuln_only_fixed: bool = True
-    vuln_recheck_hours: int = 24
-    vuln_rescan_days: int = 7
-    vuln_image_source: str = "auto"
-    vuln_images: str = ""
-    vuln_exclude: str = ""
-    vuln_ignore: str = ""
-    vuln_app_checks: str = (
-        "# images | where the version is | OSV ecosystem and package\n"
-        "nextcloud, */library/nextcloud | env NEXTCLOUD_VERSION | Packagist nextcloud/server\n"
-        "*/linuxserver/nextcloud, linuxserver/nextcloud | label org.opencontainers.image.version | Packagist nextcloud/server\n"
-    )
-    vuln_version_sources: str = (
-        "label org.opencontainers.image.version\n"
-        "label build_version\n"
-        "label org.label-schema.version\n"
-        "env {NAME}_VERSION\n"
-        "label version\n"
-        "env VERSION\n"
-        "tag\n"
-    )
-    vuln_sources: str = (
-        "# kind: [POST] address | format - per kind tried top to bottom until one answers\n"
-        "kev: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json | json vulnerabilities[].cveID\n"
-        "kev: https://raw.githubusercontent.com/cisagov/kev-data/main/known_exploited_vulnerabilities.json | json vulnerabilities[].cveID\n"
-        "epss: https://api.first.org/data/v1/epss?cve={cves} | json data[] cve epss percentile\n"
-        "cvss: https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve} | json "
-        "vulnerabilities[].cve.metrics.cvssMetricV40[].cvssData.baseScore, "
-        "vulnerabilities[].cve.metrics.cvssMetricV31[].cvssData.baseScore, "
-        "vulnerabilities[].cve.metrics.cvssMetricV30[].cvssData.baseScore\n"
-        "osv: https://api.osv.dev/v1/query\n"
-        "advisory: https://api.osv.dev/v1/vulns/{id}\n"
-        "platform: https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve}\n"
-    )
-    vuln_nvd_api_key: str = ""
-    vuln_registry_host: str = "docker.io"
-    vuln_registry_user: str = ""
-    vuln_registry_password: str = ""
-    vuln_grype_path: str = "grype"
-    vuln_syft_path: str = "syft"
-    vuln_grype_db_url: str = ""
-    vuln_grype_args: str = ""
-    vuln_syft_args: str = ""
-    vuln_tool_env: str = ""
-    vuln_scan_timeout: int = 30  # minutes per Grype / Syft run
 
     # legacy: only imported once into the Unraid server list (Settings -> Integrations)
     unraid_name: str = "Unraid"
