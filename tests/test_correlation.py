@@ -688,3 +688,37 @@ def test_zenarmor_ip_duplicate_merged_into_device_with_mac():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_deleted_device_not_brought_back_by_its_old_lease():
+    from lookingglass.detections import delete_devices, track_devices
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE devices, device_profile, device_hourly")
+            await pool.execute("DELETE FROM kv WHERE key = 'devices:dismissed'")
+            gone, kept = "aa:00:00:00:00:31", "aa:00:00:00:00:32"
+            lease = lambda mac, exp: {"mac": mac, "ip": "192.168.1.31", "hostname": "old-phone", "lease_expires": exp}  # noqa: E731
+            await track_devices([lease(gone, "1767000000"), lease(kept, "1767000000")], origin="dhcp-dnsmasq")
+            await delete_devices([gone])
+            macs = lambda: pool.fetch("SELECT mac FROM devices")  # noqa: E731
+            # OPNsense still lists the same lease: it stays gone
+            await track_devices([lease(gone, "1767000000"), lease(kept, "1767000000")], origin="dhcp-dnsmasq")
+            assert {r["mac"] for r in await macs()} == {kept}
+            # the lease was renewed: the device is really back
+            await track_devices([lease(gone, "1767090000")], origin="dhcp-dnsmasq")
+            assert gone in {r["mac"] for r in await macs()}
+            # deleted again, then seen in the ARP table: back too, and the old lease no longer hides it
+            await delete_devices([gone])
+            await track_devices([{"mac": gone, "ip": "192.168.1.31"}], origin="arp")
+            assert gone in {r["mac"] for r in await macs()}
+            assert gone not in (await db.kv_get("devices:dismissed") or {})
+            await pool.execute("TRUNCATE devices, device_profile, device_hourly")
+            await pool.execute("DELETE FROM kv WHERE key = 'devices:dismissed'")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
