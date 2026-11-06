@@ -19,7 +19,7 @@ from lookingglass.vulnscan import (Policy, Source, VulnScanner, cvss3_score, ext
 
 DSN = os.environ.get("TEST_DATABASE_URL")
 needs_db = pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
-ALL_OFF = "kev: off\nepss: off\ncvss: off\nosv: off"
+ALL_OFF = "kev: off\nepss: off\ncvss: off\nosv: off\nadvisory: off\nplatform: off"
 
 
 def test_json_paths():

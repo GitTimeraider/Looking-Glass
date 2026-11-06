@@ -790,7 +790,7 @@ Looking Glass image, plus a few online sources. It is off by default.
    | **Minimum CVSS score for an alert** (*Alerts*) | which findings raise an alert | 7.0 |
 
    The *Vulnerabilities page* section can also hide findings that **will not be fixed**, findings **without a fix
-   yet**, findings that are **not affected** (on by default), **guesses by product name (CPE)**, and **packages not to
+   yet**, findings that are **not affected** (on by default; see *Does it apply at all?* below), **guesses by product name (CPE)**, and **packages not to
    show**: package names (also the source package, `*` as wildcard: `chromium`, `libx11-*`) or whole package types
    (`go-module`). What you hide here is hidden on the page, also when it would raise an
    alert. Alerts are not changed: with alerts on, an alert still lists a hidden finding and says it is hidden on
@@ -828,6 +828,21 @@ says so under the package. It is fixed by a newer image, or by the maintainer up
 `golang.org/x/crypto v0.19.0 vs < 0.52.0 (go)`: a library compiled into a Go program in the image (the page shows
 which), fixed only when that program is rebuilt. Hide such findings with *Packages not to show* (`go-module`) if
 you can't act on them.
+
+**Does it apply at all?** With *Check whether vulnerabilities apply* (Settings › Container vulnerabilities ›
+Scanning, on by default) a finding is marked **not affected** when facts show it can't affect the container. It
+then raises no alert, is hidden by *Hide findings that are not affected*, and is listed under the **Not affected**
+tab with the reason:
+
+| Check | How | Example |
+|---|---|---|
+| Other operating system | The advisory itself says where the problem exists: Go advisories (OSV, `GO-…`) list the systems per vulnerable package; NVD records "running on Windows" or a Windows build of a program. Only when *every* such entry says "not Linux". Debian / Ubuntu / Alpine packages are left to their own trackers | `GO-2026-6604`: `os.Root.Mkdir` on Windows only |
+| Vulnerable code not in the program | Go advisories name the vulnerable functions. A Go program contains every function it can call (by name, also when stripped) and none it can't. Looking Glass downloads the one image layer that holds the program and looks for them - the check Go's own `govulncheck` does | `GO-2026-6612`: Syft contains no HTTP/2 server code |
+
+Anything that can't be decided stays a normal finding: no advisory data, an image only available through the Docker
+API, an unreadable or obfuscated program, or a program found in several places of which one contains the code. A
+description that merely *mentions* Windows is not used. Lookups use the `advisory` (OSV) and `platform` (NVD) lines
+under *Sources*, are cached (7 / 30 days) and spread over several runs; each image's program is read once.
 
 **Distribution suffixes.** Distributions add their own part to a version: `1.3.1+ubuntu26`, `1.3.1-0ubuntu1`,
 `1.3.1-r2` (Alpine), `+deb12u1`, `+dfsg`. Some matchers (by product name, language packages, semver) read that part

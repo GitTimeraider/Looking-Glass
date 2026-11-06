@@ -173,7 +173,8 @@ class Settings(BaseSettings):
     vuln_show_min_cvss: str = "0"     # Vulnerabilities page lists from this score
     vuln_hide_wont_fix: bool = False      # page: hide 'will not fix' findings
     vuln_hide_no_fix: bool = False        # page: hide findings without a fixed version yet
-    vuln_hide_not_affected: bool = True   # page: hide 'not affected' / 'already fixed' (version-format mistakes)
+    vuln_hide_not_affected: bool = True   # page: hide 'not affected' (version-format mistakes, other OS, code not in the program)
+    vuln_check_applies: bool = True       # check other-OS advisories and whether Go programs contain the vulnerable code
     vuln_hide_cpe: bool = False           # page: hide matches by product name only (CPE guess)
     vuln_hide_types: str = ""             # page: packages (names, source packages) or package types not to show
     vuln_kev_always: bool = True
@@ -209,6 +210,8 @@ class Settings(BaseSettings):
         "vulnerabilities[].cve.metrics.cvssMetricV31[].cvssData.baseScore, "
         "vulnerabilities[].cve.metrics.cvssMetricV30[].cvssData.baseScore\n"
         "osv: https://api.osv.dev/v1/query\n"
+        "advisory: https://api.osv.dev/v1/vulns/{id}\n"
+        "platform: https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve}\n"
     )
     vuln_nvd_api_key: str = ""
     vuln_registry_host: str = "docker.io"

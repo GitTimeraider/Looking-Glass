@@ -340,6 +340,11 @@ FIELDS: list[Field] = [
     Field("vuln_images", "vulns", "Extra images to scan", "list", "Images that do not run on an Unraid server Looking "
           "Glass knows, e.g. on another Docker host. Scanned from their registry.",
           placeholder="ghcr.io/gittimeraider/looking-glass:latest\npostgres:18", section="Scanning"),
+    Field("vuln_check_applies", "vulns", "Check whether vulnerabilities apply", "bool", "Marks a finding 'not "
+          "affected' when the advisory itself says it only exists on Windows / macOS / another system (Go advisories, "
+          "NVD), or when a Go program does not contain the vulnerable functions (read from the program, like Go's "
+          "govulncheck; downloads the one image layer that holds it). Undecided findings stay normal findings.",
+          section="Scanning"),
     Field("vuln_exclude", "vulns", "Containers / images not to scan", "list", "Names or images, * as wildcard.",
           placeholder="my-test-*\nlocalhost/*", section="Scanning"),
     Field("vuln_show_min_cvss", "vulns", "Minimum CVSS score to show", "str", "Findings below this score are not shown "
@@ -349,9 +354,10 @@ FIELDS: list[Field] = [
           section="Vulnerabilities page"),
     Field("vuln_hide_no_fix", "vulns", "Hide findings without a fix yet", "bool", "No fixed version exists yet, so "
           "there is nothing to update to (includes 'will not fix').", section="Vulnerabilities page"),
-    Field("vuln_hide_not_affected", "vulns", "Hide findings that are not affected", "bool", "Findings Looking Glass "
-          "found to be a version-format mistake of the scanner ('not affected' / 'already fixed'). They never alert.",
-          section="Vulnerabilities page"),
+    Field("vuln_hide_not_affected", "vulns", "Hide findings that are not affected", "bool", "Findings that can't "
+          "affect the container: a version-format mistake of the scanner, a vulnerability that only exists on another "
+          "operating system, or vulnerable code that is not in the program (see 'Check whether vulnerabilities apply'). "
+          "They never alert. Untick to see them, marked green.", section="Vulnerabilities page"),
     Field("vuln_hide_cpe", "vulns", "Hide guesses by product name (CPE)", "bool", "Matches made only by the product "
           "name, without a package database entry - wrong more often. Marked 'CPE guess' on the page.",
           section="Vulnerabilities page"),

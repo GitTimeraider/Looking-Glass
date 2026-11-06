@@ -18,7 +18,7 @@
 <div class="card" style="margin-top:14px">
   <h3>Findings <span class="muted small" id="f-note"></span></h3>
   <div class="filters">
-    <div class="seg" id="show"><button data-v="all">All</button><button data-v="alerted" title="Findings that meet the alert rules (Settings › Container vulnerabilities › Alerts) - also while alerts are switched off">Meets alert rules</button><button data-v="kev">Actively exploited</button><button data-v="fixable">Fix available</button><button data-v="ignored">Exceptions</button><button data-v="closed">Closed by you</button></div>
+    <div class="seg" id="show"><button data-v="all">All</button><button data-v="alerted" title="Findings that meet the alert rules (Settings › Container vulnerabilities › Alerts) - also while alerts are switched off">Meets alert rules</button><button data-v="kev">Actively exploited</button><button data-v="fixable">Fix available</button><button data-v="notaffected" title="Can't affect the container: other operating system, vulnerable code not in the program, or a version-format mistake - listed here also while hidden">Not affected</button><button data-v="ignored">Exceptions</button><button data-v="closed">Closed by you</button></div>
     <select id="img"><option value="">all images</option></select>
     <input id="q" placeholder="CVE, package or image…" style="flex:1">
   </div>
@@ -196,7 +196,9 @@ function pkgCell(r) {
   const loc = (ps[0].locations || [])[0];
   const m = r.matched || {};
   const how = m.searched ? `<div class="small muted" title="${LG.esc([m.type, m.matcher, m.namespace, m.distro].filter(Boolean).join(" · "))}">compared: ${LG.esc(m.searched)}${m.constraint ? " vs " + LG.esc(m.constraint) : ""}${m.distro ? ` (${LG.esc(m.distro)})` : ""}${m.note ? `<div class="${m.probably_fixed ? "ok-msg" : ""}">${LG.esc(m.note)}</div>` : ""}${/cpe/i.test(m.type || "") ? ` <span class="badge warn" title="matched by product name (CPE) only - more often wrong">CPE guess</span>` : ""}</div>` : "";
-  return head + list + `<div class="small muted">${LG.esc(r.pkg_type || "")}${loc ? ` · ${LG.esc(loc)}` : ""}</div>` + how;
+  const ap = r.applies || {};
+  const applies = ap.text ? `<div class="small ${ap.status === "reachable" ? "muted" : "ok-msg"}">${ap.status === "reachable" ? "" : "<b>Not affected:</b> "}${LG.esc(ap.text)}</div>` : "";
+  return head + list + `<div class="small muted">${LG.esc(r.pkg_type || "")}${loc ? ` · ${LG.esc(loc)}` : ""}</div>` + applies + how;
 }
 function sources(st) {
   const rows = Object.entries(st.sources || {}).map(([k, s]) => ({ kind: k, ...s }));

@@ -420,6 +420,9 @@ ALTER TABLE vuln_images ADD COLUMN IF NOT EXISTS version JSONB;
 -- listed on the Vulnerabilities page (Settings › Container vulnerabilities › Minimum CVSS score to show)
 ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS shown BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS hidden_why TEXT;  -- the page setting that hides it
+-- does it apply at all (applicability.py): {status: not_applicable | not_reachable | reachable, text}
+ALTER TABLE vuln_findings ADD COLUMN IF NOT EXISTS applies JSONB;
+ALTER TABLE vuln_images ADD COLUMN IF NOT EXISTS platform JSONB;     -- {os, arch} of the image
 -- looked-up EPSS / CVSS values per CVE
 CREATE TABLE IF NOT EXISTS vuln_cache (
     kind    TEXT NOT NULL,

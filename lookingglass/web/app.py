@@ -1060,7 +1060,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                              limit: int = Query(1000, ge=1, le=10000)):
         if show == "closed":
             return await vulns_closed_list()
-        cond, args = [not_closed] + ([] if show == "ignored" else [shown]), []
+        cond, args = [not_closed] + ([] if show in ("ignored", "notaffected") else [shown]), []
         if image:
             args.append(image)
             cond.append(f"f.image_key = ${len(args)}")
@@ -1070,6 +1070,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             cond.append("f.kev")
         elif show == "ignored":
             cond.append("f.ignored IS NOT NULL")
+        elif show == "notaffected":  # listed here also while 'Hide findings that are not affected' hides them
+            cond.append("(f.applies->>'status' IN ('not_applicable', 'not_reachable') "
+                        "OR coalesce((f.matched->>'probably_fixed')::boolean, false))")
         elif show == "fixable":
             cond.append("(f.fix_state = 'fixed' OR cardinality(f.fix_versions) > 0)")
         if q:

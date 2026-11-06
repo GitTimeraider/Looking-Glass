@@ -54,11 +54,17 @@ SOURCE_KINDS = {
     "epss": "exploit prediction scores (FIRST EPSS)",
     "cvss": "CVSS score of a CVE without one (NVD)",
     "osv": "OSV query API for the app checks",
+    "advisory": "OSV advisory by id: on which systems a Go vulnerability exists and in which functions",
+    "platform": "NVD CVE record: whether a CVE only exists on Windows / macOS / ...",
 }
 FORMATS = ("json", "csv", "text")
 USER_AGENT = "Looking-Glass (self-hosted security monitor)"
 # a source of this kind failing this long raises a 'vulnerability scan problem' alert
-SOURCE_GRACE = {"kev": 2 * 86400, "epss": 3 * 86400, "cvss": 3 * 86400, "osv": 2 * 86400}
+SOURCE_GRACE = {"kev": 2 * 86400, "epss": 3 * 86400, "cvss": 3 * 86400, "osv": 2 * 86400, "advisory": 3 * 86400,
+                "platform": 3 * 86400}
+NOT_APPLYING = ("not_applicable", "not_reachable")  # applicability.verdict: does not affect this container
+ADVISORY_DAYS, PLATFORM_DAYS = 7, 30   # how long a looked-up advisory / NVD platform answer is kept
+ADVISORY_LOOKUPS_PER_RUN, PLATFORM_LOOKUPS_PER_RUN, PROGRAMS_PER_RUN = 300, 40, 15
 KEV_HOURS, EPSS_HOURS, CVSS_DAYS, UPDATE_CHECK_HOURS = 24, 24, 14, 12
 CVSS_LOOKUPS_PER_RUN = 40
 SEVERITY_SCORE = {"critical": 9.0, "high": 7.0, "medium": 4.0, "moderate": 4.0, "low": 0.1, "negligible": 0.0}
@@ -168,6 +174,8 @@ def parse_sources(text: str) -> dict[str, list[Source]]:
         fmt = fmt.strip()
         if kind == "osv":
             src.method = "POST"
+        elif kind in ("advisory", "platform"):
+            pass  # JSON, read by applicability.py
         elif fmt:
             ftype, _, fargs = fmt.partition(" ")
             src.fmt = ftype.lower()
@@ -183,19 +191,28 @@ def parse_sources(text: str) -> dict[str, list[Source]]:
                 raise ValueError(f"line {n}: {kind} sources can't use the {src.fmt} format")
             if len(src.args) < need:
                 raise ValueError(f"line {n}: {kind} with {src.fmt} needs {need} argument(s) - see the help text")
-        if kind == "cvss" and "{cve}" not in target:
-            raise ValueError(f"line {n}: a cvss address needs {{cve}} where the CVE id goes")
+        if kind in ("cvss", "platform") and "{cve}" not in target:
+            raise ValueError(f"line {n}: a {kind} address needs {{cve}} where the CVE id goes")
+        if kind == "advisory" and "{id}" not in target:
+            raise ValueError(f"line {n}: an advisory address needs {{id}} where the advisory id (GO-2026-1234) goes")
         out[kind].append(src)
     return {k: [] if k in off else out.get(k, []) for k in SOURCE_KINDS}
 
 
 def sources(settings: Settings) -> tuple[dict[str, list[Source]], str | None]:
     """The sources to use: yours, or the built-in list when the field is empty; (sources, error of your list)."""
-    text = settings.vuln_sources if (settings.vuln_sources or "").strip() else Settings.model_fields["vuln_sources"].default
+    default = Settings.model_fields["vuln_sources"].default
+    text = settings.vuln_sources if (settings.vuln_sources or "").strip() else default
     try:
-        return parse_sources(text), None
+        out, err = parse_sources(text), None
     except ValueError as exc:  # saved before validation existed / edited in the database: built-in list
-        return parse_sources(Settings.model_fields["vuln_sources"].default), str(exc)
+        out, err = parse_sources(default), str(exc)
+    # kinds added later: your own list without a line for them (not even 'kind: off') gets the built-in ones
+    built_in = parse_sources(default)
+    for kind in ("advisory", "platform"):
+        if not re.search(rf"(?im)^\s*{kind}\s*:", text):
+            out[kind] = built_in[kind]
+    return out, err
 
 
 def extract_kev(src: Source, body: bytes) -> set[str]:
@@ -849,7 +866,7 @@ class Policy:
         """Which page setting hides this finding, or None. Does not look at alerts (see ``shown``)."""
         m = f.get("matched") or {}
         has_fix = f.get("fix_state") == "fixed" or bool(f.get("fix_versions"))
-        if "not_affected" in self.hide and m.get("probably_fixed"):
+        if "not_affected" in self.hide and (m.get("probably_fixed") or (f.get("applies") or {}).get("status") in NOT_APPLYING):
             return "not affected"
         if "wont_fix" in self.hide and f.get("fix_state") == "wont-fix" and not has_fix:
             return "will not be fixed"
@@ -876,6 +893,10 @@ class Policy:
             if r.applies(f, names, today or date.today()):
                 return False, r.text, "ignored"
         s = score_of(f)
+        applies = f.get("applies") or {}
+        if applies.get("status") in NOT_APPLYING:
+            return False, None, ("not affected: other operating system" if applies["status"] == "not_applicable"
+                                 else "not affected: the vulnerable code is not in the program")
         if (f.get("matched") or {}).get("probably_fixed"):
             return False, None, ("not affected (Grype read a distribution suffix as an earlier version)"
                                  if "suffix" in str((f.get("matched") or {}).get("note") or "")
@@ -1508,6 +1529,7 @@ class VulnScanner:
                             how, n = await self.build_sbom(t)
                             cols.update(sbom_at=datetime.now(timezone.utc), sbom_source=how, sbom_tool=tool_ver, packages=n)
                         cols["version"] = self.version_of(t)
+                        cols["platform"] = self.platform_of(t)
                         if not db_ok:
                             cols.update(status="pending", error="waiting for the vulnerability database (see Problems)")
                             await self.store(t, [], **cols)
@@ -1533,6 +1555,8 @@ class VulnScanner:
                                                severity="low")
                 await self.save_status(phase="looking up EPSS and CVSS scores")
                 await self.enrich(client, srcs)
+                await self.save_status(phase="checking whether the vulnerabilities apply")
+                await self.check_applies(client, srcs)
             await self.forget(targets)
             await self.save_status(last_scan=time.time(), duration=round(time.time() - started), phase=None)
             await self.evaluate()
@@ -1549,6 +1573,149 @@ class VulnScanner:
         missing = {c for (c,) in await pool.fetch(
             "SELECT DISTINCT unnest(cves) FROM vuln_findings WHERE cvss IS NULL AND NOT kev")}
         await self.enrich_cvss(client, srcs.get("cvss", []), missing)
+
+    # ------------------------------------------------- does it apply at all ---
+    async def lookup(self, client: httpx.AsyncClient, srcs: list[Source], kind: str, ids: list[str], slot: str,
+                     days: int, budget: int, pause: float, keep: Any) -> None:
+        """Look ``ids`` up at the ``kind`` sources (address with ``slot``), keep ``keep(json)`` in vuln_cache. A 404 is
+        an answer too (nothing known), kept as such. At most ``budget`` per run; the rest follow next runs."""
+        if not srcs or not ids:
+            return
+        known = {r["id"] for r in await db.pool().fetch(
+            "SELECT id FROM vuln_cache WHERE kind = $1 AND id = ANY($2::text[]) AND fetched > now() - make_interval(days => $3)",
+            kind, ids, days)}
+        todo = [i for i in ids if i not in known][:budget]
+        done, errors = 0, []
+        for vid in todo:
+            last = None
+            for src in srcs:
+                try:
+                    try:
+                        value = keep(json.loads(decode(await self.fetch(client, src, src.url.replace(slot, vid)))))
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code != 404:
+                            raise
+                        value = {"missing": True}
+                    await db.pool().execute(
+                        "INSERT INTO vuln_cache (kind, id, value, fetched) VALUES ($1, $2, $3, now()) "
+                        "ON CONFLICT (kind, id) DO UPDATE SET value = EXCLUDED.value, fetched = now()", kind, vid, value)
+                    done, last = done + 1, None
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last = f"line {src.line} {src.label()}: {_err(exc)}"
+            if last:
+                errors.append(f"{vid}: {last}")
+                if len(errors) >= 3 and not done:
+                    break
+            if pause:
+                await asyncio.sleep(pause)
+        if errors and not done:
+            await self.source_status(kind, False, error="; ".join(errors)[:900])
+        elif todo:
+            await self.source_status(kind, True, count=done, url=srcs[0].url,
+                                     note=f"{len(errors)} lookup(s) failed" if errors else None)
+
+    async def check_applies(self, client: httpx.AsyncClient, srcs: dict[str, list[Source]]) -> None:
+        """Facts for 'not affected' (applicability.py): Go advisories, NVD platforms, and the Go programs themselves."""
+        from . import applicability as ap
+        if not self.s.vuln_check_applies:
+            return
+        pool = db.pool()
+        rows = [dict(r) for r in await pool.fetch(
+            "SELECT image_key, vuln, aliases, cves, package, version, pkg_type, locations FROM vuln_findings")]
+        go = [r for r in rows if r["pkg_type"] == "go-module"]
+        await self.lookup(client, srcs.get("advisory", []), "advisory", sorted({i for r in go for i in ap.go_ids(r)}),
+                          "{id}", ADVISORY_DAYS, ADVISORY_LOOKUPS_PER_RUN, 0.05,
+                          lambda doc: {"packages": ap.osv_go_packages(doc)})
+        cves = sorted({c for r in rows if r["pkg_type"] not in ap.DISTRO_TYPES and r["pkg_type"] != "go-module"
+                       for c in r["cves"]})
+        await self.lookup(client, srcs.get("platform", []), "platform", cves, "{cve}", PLATFORM_DAYS,
+                          PLATFORM_LOOKUPS_PER_RUN, 1.0 if self.s.vuln_nvd_api_key else 6.5,
+                          lambda doc: {"other_os": ap.nvd_other_os(doc)})
+        await self.check_programs(client, go)
+
+    async def check_programs(self, client: httpx.AsyncClient, go: list[dict[str, Any]]) -> None:
+        """For Go findings: read each affected program from its image layer and see which vulnerable functions it
+        contains. One download per layer, kept per image (digest) and program; read again only for new functions."""
+        from . import applicability as ap
+        pool = db.pool()
+        adv = {r["id"]: r["value"] for r in await pool.fetch("SELECT id, value FROM vuln_cache WHERE kind = 'advisory'")}
+        done = {r["id"]: (r["value"], r["fetched"]) for r in await pool.fetch(
+            "SELECT id, value, fetched FROM vuln_cache WHERE kind = 'program'")}
+        images = {r["key"]: dict(r) for r in await pool.fetch("SELECT key, image, digest, sbom_source, platform FROM vuln_images")}
+        need: dict[tuple[str, str], dict[str, Any]] = {}
+        for r in go:
+            img = images.get(r["image_key"])
+            if not img:
+                continue
+            imports = [i for gid in ap.go_ids(r) for i in ((adv.get(gid) or {}).get("packages") or {}).get(r["package"], [])]
+            plat = img.get("platform") or {}
+            live, _ = ap.go_platform(imports, str(plat.get("os") or "linux"), plat.get("arch"))
+            if not live:
+                continue
+            for loc in r["locations"] or []:
+                n = need.setdefault((r["image_key"], loc), {"wanted": set(), "pkg": (r["package"], r["version"])})
+                n["wanted"] |= set(ap.wanted_symbols(live))
+        todo: dict[tuple[str, str], list[tuple[str, set[str]]]] = {}  # (image, layer blob) -> [(program, wanted)]
+        notes = {}
+        for (key, loc), n in need.items():
+            cid = f"{key}|{loc}"
+            old, fetched = done.get(cid, ({}, None))
+            wanted = n["wanted"] | set(old.get("checked") or []) if old.get("valid") else n["wanted"]
+            if old and (n["wanted"] <= set(old.get("checked") or []) or
+                        (old.get("error") and fetched and (datetime.now(timezone.utc) - fetched).days < 1)):
+                continue  # known, or failed less than a day ago
+            img = images[key]
+            try:
+                if not img.get("digest") or str(img.get("sbom_source") or "").startswith("Docker API"):
+                    raise RuntimeError("the image is only available through the Docker API, not from its registry")
+                doc = json.loads((self.base / "sbom" / f"{safe_name(key)}.json").read_text())
+                layer = ap.program_layers(doc, n["pkg"][0], n["pkg"][1], [loc]).get(loc)
+                blob = ap.blob_of(ap.sbom_image(doc), layer) if layer else None
+                if not blob:
+                    raise RuntimeError("the package list does not say which image layer holds the program")
+                todo.setdefault((key, blob), []).append((loc, wanted))
+            except (OSError, ValueError, RuntimeError) as exc:
+                notes[cid] = {"valid": False, "checked": sorted(wanted), "present": [], "error": str(exc)[:300]}
+        for cid, value in notes.items():
+            await self._keep_program(cid, value)
+        tmp = self.base / "tmp"
+        tmp.mkdir(parents=True, exist_ok=True)
+        for n_done, ((key, blob), progs) in enumerate(todo.items()):
+            if n_done >= PROGRAMS_PER_RUN:
+                break
+            await self.save_status(phase=f"checking which code is in the programs ({n_done + 1}/{min(len(todo), PROGRAMS_PER_RUN)})")
+            name = parse_image(images[key]["image"])
+            path = tmp / f"{safe_name(key)}-{blob.split(':')[-1][:16]}.layer"
+            try:
+                await ap.registry_get(client, name.registry, name.repo, f"blobs/{blob}", self.s, stream_to=path)
+                files = await asyncio.to_thread(ap.read_programs, path, [p for p, _ in progs])
+                for loc, wanted in progs:
+                    data = files.get(loc)
+                    value = ap.scan_go_program(data, sorted(wanted)) if data else {
+                        "valid": False, "checked": sorted(wanted), "present": [],
+                        "error": "not a regular file in its layer (a link?)"}
+                    await self._keep_program(f"{key}|{loc}", value)
+            except Exception as exc:  # noqa: BLE001 - one image must not stop the others
+                for loc, wanted in progs:
+                    await self._keep_program(f"{key}|{loc}", {"valid": False, "checked": sorted(wanted), "present": [],
+                                                              "error": _err(exc)[:300]})
+                log.info("could not read %s from %s: %s", ", ".join(p for p, _ in progs), images[key]["image"], exc)
+            finally:
+                path.unlink(missing_ok=True)
+
+    async def _keep_program(self, cid: str, value: dict[str, Any]) -> None:
+        await db.pool().execute(
+            "INSERT INTO vuln_cache (kind, id, value, fetched) VALUES ('program', $1, $2, now()) "
+            "ON CONFLICT (kind, id) DO UPDATE SET value = EXCLUDED.value, fetched = now()", cid, value)
+
+    def platform_of(self, t: Target) -> dict[str, Any]:
+        from .applicability import sbom_image
+        try:
+            img = sbom_image(json.loads(self.sbom_path(t).read_text()))
+        except (OSError, ValueError):
+            return {"os": "linux", "arch": None}
+        return {"os": img["os"], "arch": img["arch"]}
 
     async def forget(self, targets: list[Target]) -> None:
         """Images no container uses any more: removed right away when every server they ran on was listed fine in
@@ -1581,6 +1748,11 @@ class VulnScanner:
         cvss = {r["id"]: r["value"] for r in await pool.fetch("SELECT id, value FROM vuln_cache WHERE kind = 'cvss'")}
         images = [dict(r) for r in await pool.fetch("SELECT * FROM vuln_images ORDER BY image")]
         closed = [dict(r) for r in await pool.fetch("SELECT vuln, grp, repo FROM vuln_closed")]
+        caches: dict[str, dict[str, Any]] = {"advisory": {}, "platform": {}, "program": {}}
+        if self.s.vuln_check_applies:
+            for r in await pool.fetch("SELECT kind, id, value FROM vuln_cache WHERE kind IN ('advisory', 'platform', 'program')"):
+                caches[r["kind"]][r["id"]] = r["value"]
+        from .applicability import verdict
         today = date.today()
         by_repo: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for img in images:
@@ -1601,19 +1773,21 @@ class VulnScanner:
                         if sc:
                             f["cvss"], f["cvss_source"] = max(sc), "NVD lookup"
                     f["kev"] = bool(f["kev"] or any(c in kev for c in f["cves"]))
+                    f["applies"] = verdict(f, img["key"], img.get("platform"), caches["advisory"], caches["platform"],
+                                           caches["program"]) if self.s.vuln_check_applies else None
                     if is_closed(f, img["repo"], closed):
                         alert, ignored, why = False, None, "closed by you"
                     else:
                         alert, ignored, why = pol.judge(f, names, today)
                     updates.append((img["key"], f["vuln"], f["package"], f["version"], f["epss"], f["epss_pct"], f["cvss"],
                                     f["cvss_source"], f["kev"], alert, ignored, why, pol.shown(f),
-                                    pol.hidden_by(f)))
+                                    pol.hidden_by(f), f["applies"]))
                     f["hidden_why"] = pol.hidden_by(f)
                     if alert:
                         hits.append((img, f, why))
                 await pool.executemany(
                     "UPDATE vuln_findings SET epss = $5, epss_pct = $6, cvss = $7, cvss_source = $8, kev = $9, alerted = $10, "
-                    "ignored = $11, why = $12, shown = $13, hidden_why = $14 WHERE image_key = $1 AND vuln = $2 AND package = $3 AND version = $4", updates)
+                    "ignored = $11, why = $12, shown = $13, hidden_why = $14, applies = $15 WHERE image_key = $1 AND vuln = $2 AND package = $3 AND version = $4", updates)
             await self.alert(repo, imgs, hits, pol)
         await self.save_status(last_eval=time.time())
 
@@ -1816,6 +1990,17 @@ async def test_sources(settings: Settings, text: str | None = None) -> list[dict
                     elif kind == "cvss":
                         sc = extract_cvss(src, await scanner.fetch(client, src, src.url.replace("{cve}", probe_cve)))
                         entry.update(ok=sc is not None, result=f"{probe_cve}: CVSS {sc}" if sc is not None else "no score at those paths")
+                    elif kind == "advisory":
+                        from .applicability import osv_go_packages
+                        doc = json.loads(decode(await scanner.fetch(client, src, src.url.replace("{id}", "GO-2022-0969"))))
+                        pk = osv_go_packages(doc)
+                        entry.update(ok=bool(pk), result=f"GO-2022-0969: {', '.join(pk) or 'no Go packages'}")
+                    elif kind == "platform":
+                        from .applicability import nvd_other_os
+                        doc = json.loads(decode(await scanner.fetch(client, src, src.url.replace("{cve}", "CVE-2021-1675"))))
+                        other = nvd_other_os(doc)
+                        entry.update(ok=bool(doc.get("vulnerabilities")),
+                                     result="CVE-2021-1675 (PrintNightmare): " + (f"only {', '.join(other)}" if other else "applies everywhere"))
                     else:
                         body = {"package": {"ecosystem": "Maven", "name": "org.apache.logging.log4j:log4j-core"}, "version": "2.14.1"}
                         doc = json.loads(decode(await scanner.fetch(client, src, src.url, body)))
