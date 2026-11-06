@@ -206,6 +206,7 @@ async def amain() -> None:
         await db.close()
         return
     await app_config.load(settings)
+    from .packages import PackageReader
     if not settings.secret_key:
         # persist a generated cookie key so logins survive restarts
         settings.secret_key = await db.kv_get("secret_key") or secrets.token_urlsafe(48)
@@ -236,8 +237,11 @@ async def amain() -> None:
     tasks.append(asyncio.create_task(notify.notifier(settings), name="notifier"))
     from .intel import Intel
     tasks.append(asyncio.create_task(Intel(settings).updater(), name="threat_feeds"))
+    packages = PackageReader(settings)
+    tasks.append(asyncio.create_task(packages.run(), name="container_packages"))
 
     app = create_app(settings, analyst)
+    app.state.packages = packages
     server = uvicorn.Server(uvicorn.Config(app, host=settings.web_host, port=settings.web_port, log_level="warning",
                                            proxy_headers=True, forwarded_allow_ips="*"))
     server.install_signal_handlers = lambda: None  # we handle signals ourselves

@@ -28,7 +28,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 | ![Firewall dashboard](docs/screenshots/firewall.png) | ![Devices](docs/screenshots/devices.png) |
 | **OPNsense** - hardware, load, temperatures, gateways, interfaces and services | **UniFi** - access points, switches, Wi-Fi and wired clients, neighbouring Wi-Fi |
 | ![OPNsense](docs/screenshots/opnsense.png) | ![UniFi](docs/screenshots/unifi.png) |
-| **Unraid** - array, disks (never woken up), Docker, VMs, UPS | **Reports** - daily / weekly / monthly, with an AI analysis |
+| **Unraid** - array, disks (never woken up), Docker, VMs, UPS, packages inside every container | **Reports** - daily / weekly / monthly, with an AI analysis |
 | ![Unraid](docs/screenshots/unraid.png) | ![Report](docs/screenshots/report.png) |
 | **Setup & status** - checks every data source and says exactly what to change where | **Settings** - everything in the web UI (secrets encrypted), every detection with its own switches and exceptions |
 | ![Setup & status](docs/screenshots/setup-status.png) | ![Settings](docs/screenshots/settings-behaviour.png) |
@@ -48,7 +48,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 | DHCP leases (Kea, dnsmasq, ISC) + ARP | API + syslog | **device list**: name, IP, MAC, vendor, interface, lease, online state, per-device activity; **new/rogue device** alerts |
 | System / hardware | API | CPU %, load, memory, swap, ZFS ARC, disks, temperatures, states, interface throughput/errors, gateways, services, top processes, firmware updates |
 | **UniFi** | UniFi Network API (API key or local account) | access points, switches (ports, PoE, errors), consoles: state, firmware/updates, load; **Wi-Fi / wired clients** with AP or switch port, SSID, signal, experience, traffic; health; client connects / roams, device offline, **rogue / evil-twin APs, rogue DHCP**; and *where* every device is connected, shown in alerts and the device list |
-| **Unraid** | Unraid API (GraphQL) + optional Docker socket proxy | CPU/cores, memory, temperatures, network, array/parity, disks (temp, errors, SMART), shares, **Docker containers** (state, CPU/mem) and **their logs**, Unraid syslog, **notifications**, VMs, UPS (Unraid UPS service, or the **NUT plugin** via upsd port 3493) |
+| **Unraid** | Unraid API (GraphQL) + optional Docker socket proxy | CPU/cores, memory, temperatures, network, array/parity, disks (temp, errors, SMART), shares, **Docker containers** (state, CPU/mem) and **their logs**, Unraid syslog, **notifications**, VMs, UPS (Unraid UPS service, or the **NUT plugin** via upsd port 3493), **packages inside every container image** (Syft, optional) |
 
 ## Built-in detections
 
@@ -371,7 +371,7 @@ Other ready-made compose files are in [`examples/`](examples):
 | [`examples/docker-compose.all-in-one.yml`](examples/docker-compose.all-in-one.yml) | Portainer / Dockge stacks: no files next to the stack |
 | [`examples/docker-compose.secrets.yml`](examples/docker-compose.secrets.yml) | unattended install without the wizard (database + first login from Docker secret files) |
 | [`examples/docker-compose.build.yml`](examples/docker-compose.build.yml) | build the image from source |
-| [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml) | run **on Unraid** for per-container CPU/memory on Unraid API older than 4.29 |
+| [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml) | run **on Unraid**: a read-only Docker API for per-container CPU/memory on Unraid API older than 4.29, and (with `IMAGES=1`) the exact image of each container for *Unraid › Packages* |
 | [`examples/unraid/looking-glass.xml`](examples/unraid/looking-glass.xml) | run Looking Glass itself **on Unraid** as a Docker template |
 
 ### 3. Optional: `.env` (shell on your Docker host, in `~/looking-glass`)
@@ -674,6 +674,8 @@ Things to know:
    Unraid page). Only on an older API: on Unraid start
    [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml)
    (a read-only Docker API) and enter `http://<unraid-ip>:2375` as *Docker API* for that server.
+   The same Docker API (with `IMAGES=1`) also lets *Unraid › Packages* read exactly the image each container runs -
+   see [Container packages](#container-packages-unraid--packages).
 
 The **Unraid** page then shows:
 * **Overview**: CPU/cores, memory, temperatures, network, VMs, UPS.
@@ -683,6 +685,8 @@ The **Unraid** page then shows:
 * **Docker**: containers, state (with an *unhealthy* mark when the container's health check fails), updates, CPU/memory, restarts in the last hour, and the **log alert rules** (below). Container CPU is the share of the whole CPU (all threads), like the server's own CPU graph - not `docker stats`' 100 % per thread.
 * **Logs**: container logs and the Unraid syslog, searchable.
 * **Notifications**.
+* **Packages** (optional, switched on under *Settings › Unraid servers › Container packages*): every image in use and
+  every package inside it, searchable - see [Container packages](#container-packages-unraid--packages).
 
 These become Looking Glass alerts: disk errors or overheating, stopped auto-start containers, containers that keep
 restarting, unhealthy containers (their Docker health check keeps failing), too many errors in a container log, array problems, ZFS
@@ -751,6 +755,82 @@ metrics, no alerts.
 > ZFS pool health (`zpool status`: vdev layout, scrub results) is not available through the Unraid API. Looking Glass
 > shows ZFS pools with capacity and member devices, and alerts on ZFS errors from the Unraid syslog (enable *collect
 > container & system logs*) and on Unraid's own notifications.
+
+
+### Container packages (Unraid › Packages)
+
+What is inside the image of every container on your Unraid servers: operating system packages (deb / rpm / apk),
+libraries, language packages (PHP Composer, Python, npm, Go modules, Java…) and the programs they are built into.
+Read with [Syft](https://github.com/anchore/syft), which is included in the Looking Glass image. It only lists the
+parts - there is no vulnerability checking.
+
+**Set it up**
+
+1. Optional, but recommended: a read-only Docker API on each Unraid server, so the exact image each container runs
+   is read. **Unraid web UI** › *Docker* tab › your `docker-socket-proxy` container › *Edit* › *Add another Path,
+   Port, Variable…* › Variable, key `IMAGES`, value `1` › *Apply* (it also needs `CONTAINERS=1`; `POST=0` keeps it
+   read-only). No proxy yet? Start
+   [`examples/docker-compose.unraid-socket-proxy.yml`](examples/docker-compose.unraid-socket-proxy.yml) on Unraid,
+   then enter `http://<unraid-ip>:2375` as *Docker API* under **Looking Glass › Settings › Unraid servers** › your
+   server.
+2. **Looking Glass web UI** › *Settings › Unraid servers* › card **Container packages** › tick **Read the packages
+   of container images** › *Save*.
+3. **Looking Glass › Unraid › Packages** (`/unraid#packages`): every image is read once (they are all new), which
+   can take a few minutes; the state is shown at the top of the tab.
+
+**What the tab shows**
+
+* **Images** - every image in use on all your Unraid servers: its containers, base OS (e.g. *Debian GNU/Linux 13*),
+  number of packages, when and how it was read (or the error), an **Update** button per image and **Update all**.
+  Clicking the number of packages lists them below.
+* **Packages** - every package of every image: name, version, type, language, image and containers, and where in
+  the image it is. **Search** looks in all of that (every word must match): `php` shows every container with PHP
+  inside, `openssl nextcloud` the OpenSSL of Nextcloud. Filters for **type**, **language** and **image** (with how
+  many packages each has). At most 1000 rows are shown at a time; the count says when to narrow the search.
+
+**When an image is read** - only:
+
+* when it is **new** (a container you just added),
+* when it is **updated** (a container runs a new image: a new digest, or - without a Docker API - the container was
+  recreated by Unraid), and then **only that image**,
+* when you press **Update** on one image or **Update all**.
+
+Never on a schedule. Images no container uses any more are removed from the list.
+
+**Image source** (*Settings › Unraid servers › Container packages › Image source*) - where Syft gets the image:
+
+| Source | How | Use when |
+|---|---|---|
+| **auto** (default) | from the registry by the exact digest the container runs; without a known digest through the Docker API; without a Docker API the registry's current image of the tag | always works; exact whenever a Docker API with `IMAGES=1` is set up |
+| **docker** | exported through the server's Docker API (needs `IMAGES=1`) | every server has a Docker API, and you want nothing downloaded from the internet |
+| **registry** | only from the registry (by digest when known, else the tag) | no Docker API, and images are only from public registries |
+
+The package list is **the same** with *docker* and with *auto* / *registry* by digest: Syft reads the same image
+files either way. *docker* is always the image that actually runs (also when the digest is unknown, and for the
+processor your server has) and also reads images you built yourself, which are in no registry. Keep in mind:
+
+* with *docker*, a server **without** a Docker API can't be read at all (an error per image); *auto* falls back to
+  the registry,
+* the whole image goes over your network from Unraid to Looking Glass each time it is read, and Unraid does the
+  export work - very large images may need a higher **Time limit per image**.
+
+**Connections it makes** - only when an image is read:
+
+* the **Docker API** of your Unraid server (in your own network): which image each container runs, and the image
+  export with source *docker* or *auto*,
+* the image's **registry** (Docker Hub, ghcr.io, lscr.io, …) with source *auto* or *registry*: Syft downloads the
+  image to read it - the same registries Unraid pulls the images from. With **Registry login** set, it logs in
+  there (Docker Hub limits anonymous pulls; private registries need a login).
+
+Nothing else: no vulnerability or package databases, and Syft's own update check is switched off. With source
+*docker* nothing goes to the internet at all; switched off, it makes no connections.
+
+**Other settings** under *Container packages*: **Containers / images not to read** (names or images, `*` as
+wildcard), **Syft program** (included; change only to use another one), **Extra Syft arguments** (e.g.
+`--platform linux/arm64`), **Extra environment for Syft** (`NAME=value` per line, e.g. a proxy) and **Time limit per
+image** (default 30 minutes).
+
+The package lists are kept in `/data/packages` (one small file per image).
 
 ## Adding a UniFi controller
 
@@ -874,7 +954,8 @@ How UniFi and OPNsense data are combined:
 secret / TLS verification / custom CA / poll interval / per-source pulls · UniFi URL / API key / username / password /
 site / TLS verification / poll interval / events · AI base URL / API key / model / limits /
 scheduled report (every N days, hour, mail recipients) · Zenarmor stream username / password / allowed senders · syslog allowed senders, extra internal
-networks, time zone · retention, detection interval, GeoIP path · Unraid servers (URL, API key, Docker API).
+networks, time zone · retention, detection interval, GeoIP path · Unraid servers (URL, API key, Docker API) · container packages (on/off, image source, exclusions, registry
+login, Syft options).
 
 **In the setup wizard (first start, stored encrypted in `/data/database.conf`):** database host / port / name /
 user / password / SSL mode · first account.

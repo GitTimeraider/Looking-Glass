@@ -362,3 +362,20 @@ CREATE TABLE IF NOT EXISTS event_rollup_state (
     seen BIGINT NOT NULL DEFAULT 0
 );
 INSERT INTO event_rollup_state (one) VALUES (true) ON CONFLICT DO NOTHING;
+
+-- container packages (packages.py, Unraid › Packages): one row per image in use; its list is in /data/packages
+CREATE TABLE IF NOT EXISTS image_packages (
+    key        TEXT PRIMARY KEY,                   -- digest, or image id / name:tag when the digest is unknown
+    image      TEXT NOT NULL,                      -- as the containers use it
+    repo       TEXT NOT NULL,
+    digest     TEXT,
+    containers JSONB NOT NULL DEFAULT '[]',        -- [{server, name, state}]
+    status     TEXT NOT NULL DEFAULT 'pending',    -- ok | error | pending
+    error      TEXT,
+    read_at    TIMESTAMPTZ,
+    source     TEXT,                               -- registry (exact digest) | Docker API export | registry (tag)
+    packages   INTEGER,
+    distro     TEXT,
+    created    TEXT,                               -- when its containers were (re)created, when read
+    seen_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);

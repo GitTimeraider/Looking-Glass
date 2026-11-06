@@ -155,6 +155,16 @@
     </ol>
   </details>
 </div>
+<div class="card" style="margin-top:14px">
+  <h3>Container packages</h3>
+  <p class="small muted">What is inside the image of every container: shown and searchable under
+    <a href="/unraid#packages">Unraid › Packages</a>. Read with Syft (included in the image) when an image is new or
+    updated, or when you press Update there - never on a schedule. For the exact image each container runs, the
+    server needs a Docker API (docker-socket-proxy with CONTAINERS=1 and IMAGES=1, above).</p>
+  <form class="settings-form" data-group="packages"></form>
+  <div class="filters" style="margin-top:12px"><button type="button" data-save="packages">Save</button></div>
+  <div class="small" id="msg-packages"></div>
+</div>
 </section>
 <section data-s="filters" hidden>
   <div class="card">

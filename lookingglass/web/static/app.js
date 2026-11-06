@@ -35,10 +35,28 @@ const LG = {
   /** Run ``fn`` every ``every`` ms (a number, or a function returning one) - but only while the tab is visible: a tab
    *  in the background refreshes nothing, and refreshes right away when it is shown again if a refresh was due.
    *  Returns { touch() }: call it after loading by hand (e.g. another period was picked) to restart the wait. */
+  /** Redraw ``el`` with ``fn`` without moving what you are looking at: the page's scroll position and that of every
+   *  scroll box inside ``el`` (a long table, an alert's details) are put back afterwards. */
+  keepScroll(el, fn) {
+    if (!el) return fn();
+    const boxes = el2 => [...el2.querySelectorAll(".table-wrap, pre, .msg, .logview, [data-keep-scroll]")];
+    const key = (b, i) => b.id || b.dataset.keepScroll || i;
+    const before = new Map(boxes(el).map((b, i) => [key(b, i), [b.scrollTop, b.scrollLeft]]).filter(([, v]) => v[0] || v[1]));
+    if (el.matches && el.matches(".table-wrap") && (el.scrollTop || el.scrollLeft)) before.set("_self", [el.scrollTop, el.scrollLeft]);
+    const x = window.scrollX, y = window.scrollY;
+    const out = fn();
+    boxes(el).forEach((b, i) => { const v = before.get(key(b, i)); if (v) { b.scrollTop = v[0]; b.scrollLeft = v[1]; } });
+    if (before.has("_self")) [el.scrollTop, el.scrollLeft] = before.get("_self");
+    if (window.scrollX !== x || window.scrollY !== y) window.scrollTo(x, y);
+    return out;
+  },
   autoRefresh(fn, every) {
-    let last = Date.now();
+    let last = Date.now(), active = 0;
+    // not while you are scrolling, typing or clicking: a redraw then would move things under your hand
+    for (const ev of ["scroll", "wheel", "touchmove", "keydown", "pointerdown"])
+      window.addEventListener(ev, () => { active = Date.now(); }, { passive: true, capture: true });
     const ms = () => (typeof every === "function" ? every() : every);
-    const due = () => !document.hidden && Date.now() - last >= ms() - 1000;
+    const due = () => !document.hidden && Date.now() - last >= ms() - 1000 && Date.now() - active > 4000;
     const run = () => { last = Date.now(); fn(); };
     setInterval(() => { if (due()) run(); }, 5000);
     document.addEventListener("visibilitychange", () => { if (due()) run(); });
@@ -97,7 +115,8 @@ const LG = {
   table(el, cols, rows, empty = "No data", onRow, opts = {}) {
     if (typeof el === "string") el = document.querySelector(el);
     if (!rows || !rows.length) { el.innerHTML = `<div class="empty">${LG.esc(empty)}</div>`; return; }
-    cols = cols.map(c => c.s || !opts.sortAll || !c.l ? c : { ...c, s: true });
+    if (!opts._kept) return LG.keepScroll(el, () => LG.table(el, cols, rows, empty, onRow, { ...opts, _kept: true }));
+    cols = cols.map(c => c.s || !opts.sortAll || !c.l || c.raw ? c : { ...c, s: true });  // raw: c.l is HTML (a checkbox)
     const all = rows, st = el._sort, sc = st && cols[st.i];
     if (sc && sc.s) {
       const val = r => LG.sortKey(sc.s === true ? r[sc.k] : sc.s(r));
@@ -112,11 +131,11 @@ const LG = {
     const mark = st ? st : opts.order ? { i: cols.findIndex(c => c.k === opts.order.k && c.s), dir: opts.order.dir } : null;
     const head = cols.map((c, i) => c.s
       ? `<th class="${c.num ? "num " : ""}sortable" data-sort="${i}" title="Sort by ${LG.esc(c.l)}">${LG.esc(c.l)}<span class="arrow">${mark && mark.i === i ? (mark.dir > 0 ? "▲" : "▼") : ""}</span></th>`
-      : `<th class="${c.num ? "num" : ""}">${LG.esc(c.l)}</th>`).join("");
+      : `<th class="${c.num ? "num" : ""}">${c.raw ? c.l : LG.esc(c.l)}</th>`).join("");
     const body = rows.map((r, i) => `<tr${onRow ? ` class="clickable" data-row="${i}" title="Show matching events"` : ""}>` + cols.map(c => {
       const v = r[c.k];
       const html = c.f ? c.f(v, r) : (c.num ? LG.num(v) : LG.esc(Array.isArray(v) ? v.join(", ") : v));
-      return `<td class="${c.num ? "num" : ""}" data-label="${LG.esc(c.l || "")}">${html}</td>`;
+      return `<td class="${c.num ? "num" : ""}" data-label="${c.raw ? "" : LG.esc(c.l || "")}">${html}</td>`;
     }).join("") + "</tr>").join("");
     el.innerHTML = `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
     LG.fit(el.querySelector(".table-wrap"));

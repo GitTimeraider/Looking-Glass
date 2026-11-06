@@ -1055,6 +1055,50 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         d["api_key"] = "set" if d.get("api_key") else ""  # never returned, not even partially
         return d
 
+    # ------------------------------------------------- container packages ---
+    @app.get("/api/packages/images")
+    async def packages_images():
+        """The images in use, with how their package list was read (Unraid › Packages)."""
+        rows = db.records(await db.pool().fetch("SELECT * FROM image_packages ORDER BY image"))
+        return {"enabled": settings.pkg_enabled, "status": await db.kv_get("packages:status", {}) or {},
+                "queued": await db.kv_get("packages:request"), "now": time.time(), "images": rows}
+
+    @app.get("/api/packages")
+    async def packages_list(q: str | None = None, type: str | None = None, language: str | None = None,  # noqa: A002
+                            image: str | None = None, limit: int = Query(1000, ge=1, le=20000)):
+        """Every part of every image in use: search (all words, in name / version / type / language / image /
+        containers / files) and filter by type, language and image; counts per type and language for the filters."""
+        from ..packages import listed
+        words = [w.lower() for w in (q or "").split() if w]
+        rows, types, langs = [], {}, {}
+        for img in db.records(await db.pool().fetch("SELECT key, image, containers FROM image_packages ORDER BY image")):
+            if image and img["key"] != image:
+                continue
+            ctrs = [c.get("name") for c in img["containers"] or [] if c.get("name")]
+            for p in (await asyncio.to_thread(listed, settings, img["key"]))["packages"]:
+                text = " ".join([p["name"], p["version"], p["type"], p["language"], img["image"], *ctrs, *p["locations"]]).lower()
+                if words and not all(w in text for w in words):
+                    continue
+                types[p["type"]] = types.get(p["type"], 0) + 1  # counted before the type / language filter
+                langs[p["language"]] = langs.get(p["language"], 0) + 1
+                if (type and p["type"] != type) or (language and p["language"] != language):
+                    continue
+                rows.append({**p, "image_key": img["key"], "image": img["image"], "containers": ctrs})
+        rows.sort(key=lambda r: (r["name"].lower(), r["version"], r["image"]))
+        return {"rows": rows[:limit], "total": len(rows), "types": types, "languages": {k: v for k, v in langs.items() if k}}
+
+    @app.post("/api/packages/update")
+    async def packages_update(payload: dict = Body(default={})):
+        """Read the package lists again: of every image, or of one ({"image": key})."""
+        if not settings.pkg_enabled:
+            raise HTTPException(400, "Switch it on first: Settings › Unraid servers › Container packages")
+        one = str(payload.get("image") or "") or None
+        await db.kv_set("packages:request", {"at": time.time(), **({"image": one} if one else {"all": True})})
+        reader = getattr(app.state, "packages", None)
+        if reader is not None:
+            reader.wake.set()
+        return {"ok": True}
+
     @app.get("/api/unraid/servers")
     async def unraid_servers():
         rows = await db.pool().fetch("SELECT * FROM unraid_servers ORDER BY id")

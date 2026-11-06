@@ -155,6 +155,17 @@ class Settings(BaseSettings):
     report_every_days: int = 1
     report_mail_to: str = ""
     geoip_db: str = "/data/GeoLite2-City.mmdb"
+    # container packages (Settings › Unraid servers › Container packages, packages.py)
+    pkg_enabled: bool = False
+    pkg_image_source: str = "auto"
+    pkg_exclude: str = ""
+    pkg_registry_host: str = "docker.io"
+    pkg_registry_user: str = ""
+    pkg_registry_password: str = ""
+    pkg_syft_path: str = "syft"
+    pkg_syft_args: str = ""
+    pkg_tool_env: str = ""
+    pkg_timeout: int = 30  # minutes per image
     retention_days: int = 30
     device_remove_days: int = 0
     metrics_retention_days: int = 90

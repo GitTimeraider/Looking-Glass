@@ -45,6 +45,7 @@ GROUPS = {
     "display": "Display",
     "behavior": "Behaviour & ML",
     "intel": "Threat intel & traps",
+    "packages": "Container packages",
 }
 
 FIELDS: list[Field] = [
@@ -304,6 +305,30 @@ FIELDS: list[Field] = [
     Field("unraid_log_error_minutes", "data", "Unraid: … within (minutes)", "int", "", min=1, max=1440),
     Field("geoip_db", "data", "GeoIP database path", "str", "MaxMind GeoLite2-City or -Country .mmdb inside the data volume.",
           placeholder="/data/GeoLite2-City.mmdb"),
+    # container packages (packages.py; shown under Settings › Unraid servers)
+    Field("pkg_enabled", "packages", "Read the packages of container images", "bool",
+          "Lists what is inside the image of every container on your Unraid servers (Unraid › Packages): operating "
+          "system packages, libraries, language packages and the programs they are built into. An image is read when "
+          "it is new or updated, or when you press Update - never on a schedule."),
+    Field("pkg_image_source", "packages", "Image source", "choice", "auto = from the registry by the exact digest the "
+          "container runs (needs the Docker API with IMAGES=1 to know it), else exported through the Docker API, else "
+          "the registry's current image of the tag; registry = only from the registry; docker = only through the Docker "
+          "API (also for images built locally).", choices=("auto", "registry", "docker")),
+    Field("pkg_exclude", "packages", "Containers / images not to read", "list", "Names or images, * as wildcard.",
+          placeholder="my-test-*\nlocalhost/*"),
+    Field("pkg_registry_host", "packages", "Registry login: registry", "str", "Optional login for pulling images (Docker "
+          "Hub limits anonymous pulls; private registries need one).", placeholder="docker.io"),
+    Field("pkg_registry_user", "packages", "Registry login: user", "str", ""),
+    Field("pkg_registry_password", "packages", "Registry login: password / token", "secret", "Docker Hub: Account "
+          "settings › Personal access tokens › Generate (read-only)."),
+    Field("pkg_syft_path", "packages", "Syft program", "str", "Included in the image; change only to use another one.",
+          placeholder="syft"),
+    Field("pkg_syft_args", "packages", "Extra Syft arguments", "str", "Added to every image read, e.g. --platform "
+          "linux/arm64 or --scope all-layers.", placeholder="--scope squashed"),
+    Field("pkg_tool_env", "packages", "Extra environment for Syft", "text", "NAME=value per line - any Syft setting "
+          "(HTTPS_PROXY=..., SYFT_REGISTRY_INSECURE_USE_HTTP=true).", placeholder="HTTPS_PROXY=http://proxy:3128"),
+    Field("pkg_timeout", "packages", "Time limit per image (minutes)", "int", "Large images over a slow connection "
+          "need longer.", min=2, max=240),
 ]
 BY_KEY = {f.key: f for f in FIELDS}
 SECRET_KEYS = {f.key for f in FIELDS if f.kind == "secret"}
@@ -356,6 +381,18 @@ def _coerce(f: Field, value: Any) -> Any:
                 ipaddress.ip_network(part.strip(), strict=False)
             except ValueError as exc:
                 raise SettingsError(f"{f.label}: '{part.strip()}' is not an IP address or CIDR") from exc
+    if f.key == "pkg_tool_env" and v:
+        from .packages import parse_env
+        try:
+            parse_env(v)
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: {exc}") from exc
+    if f.key == "pkg_syft_args" and v:
+        import shlex
+        try:
+            shlex.split(v)
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: {exc}") from exc
     if f.key == "timezone" and v:
         try:
             ZoneInfo(v)
