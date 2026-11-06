@@ -566,12 +566,41 @@ async def delete_devices(keys: list[str]) -> None:
         await con.execute("DELETE FROM devices WHERE mac = ANY($1::text[])", keys)
 
 
+async def merge_ip_duplicates() -> int:
+    """``ip:`` entries (Zenarmor saw the client without a MAC) whose IP a device with a MAC (ARP / DHCP / UniFi) now
+    holds are the same device: they are merged into it. Zenarmor can see a client on a new IP before the next lease /
+    ARP poll knows it there (new APs, a renewed lease), and the duplicate would otherwise stay. A name, trusted mark or
+    notes you gave the ``ip:`` entry move along when the device has none. Returns the number merged."""
+    pool = db.pool()
+    rows = await pool.fetch(
+        "SELECT DISTINCT ON (d.mac) d.mac dup, host(d.ip) ip, m.mac owner FROM devices d "
+        "JOIN devices m ON m.mac NOT LIKE 'ip:%' AND NOT (m.sources <@ ARRAY['zenarmor']) "
+        "AND d.ip = ANY(coalesce(m.ips, '{}'::inet[]) || m.ip) "
+        "WHERE d.mac LIKE 'ip:%' AND d.ip IS NOT NULL ORDER BY d.mac, m.last_seen DESC")
+    for r in rows:
+        await pool.execute(
+            "UPDATE devices m SET "
+            "hostname = CASE WHEN d.hostname IS NOT NULL AND (m.hostname IS NULL OR d.name_rank > m.name_rank) "
+            "THEN d.hostname ELSE m.hostname END, "
+            "name_source = CASE WHEN d.hostname IS NOT NULL AND (m.hostname IS NULL OR d.name_rank > m.name_rank) "
+            "THEN d.name_source ELSE m.name_source END, name_rank = GREATEST(m.name_rank, d.name_rank), "
+            "trusted = m.trusted OR d.trusted, notes = COALESCE(NULLIF(btrim(m.notes), ''), d.notes), "
+            "vendor = COALESCE(m.vendor, d.vendor), first_seen = LEAST(m.first_seen, d.first_seen), "
+            "sources = (SELECT array_agg(DISTINCT s) FROM unnest(m.sources || d.sources) s) "
+            "FROM devices d WHERE m.mac = $1 AND d.mac = $2", r["owner"], r["dup"])
+        await absorb_ip_devices(r["owner"], [r["ip"]], [r["dup"]])
+        _zen_seen.pop(r["dup"], None)
+        log.info("merged %s into %s (same IP)", r["dup"], r["owner"])
+    return len(rows)
+
+
 async def device_upkeep(remove_days: int) -> tuple[int, int]:
     """Clients without a MAC that went quiet -> offline; with ``remove_days`` > 0, devices not seen for that long are
     removed - except the ones you marked trusted, named yourself, wrote notes for or gave their own alert limits, and
     OPNsense's own interfaces.
     Returns (marked offline, removed)."""
     pool = db.pool()
+    await merge_ip_duplicates()
     offline = await pool.execute(
         "UPDATE devices SET online = false WHERE online AND mac LIKE 'ip:%' "
         "AND last_seen < now() - make_interval(mins => $1)", IPLESS_OFFLINE_MINUTES)

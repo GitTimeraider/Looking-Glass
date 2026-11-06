@@ -648,3 +648,43 @@ def test_device_upkeep_offline_and_removal():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_zenarmor_ip_duplicate_merged_into_device_with_mac():
+    """Zenarmor saw a client (no MAC) on an IP before the lease poll knew it there: the ip: entry is merged into the
+    device with the MAC once that one holds the IP - with what was learned and what you set on it."""
+    from lookingglass import detections
+    from lookingglass.detections import device_upkeep, track_devices, zenarmor_device_listener
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE devices, device_profile, device_hourly")
+            detections._zen_seen.clear()
+            mac = "aa:00:00:00:00:21"
+            await track_devices([{"mac": mac, "ip": "192.168.1.50", "hostname": "P1-meter"}], origin="dhcp-dnsmasq")
+            await track_devices([{"mac": "aa:00:00:00:00:22", "ip": "192.168.1.60"}], origin="arp")
+            # the lease moved to .51; Zenarmor sees it there first
+            await zenarmor_device_listener([{"source": "zenarmor", "src_ip": "192.168.1.51",
+                                             "data": {"src_hostname": "P1-meter"}},
+                                            {"source": "zenarmor", "src_ip": "10.8.0.2",
+                                             "data": {"src_hostname": "phone-wg", "interface": "wg0"}}])
+            await pool.execute("UPDATE devices SET trusted = true, notes = 'meter cupboard' WHERE mac = 'ip:192.168.1.51'")
+            await pool.execute("INSERT INTO device_profile (key, kind, value, hits) VALUES ('ip:192.168.1.51', 'port', '443', 4)")
+            assert await pool.fetchval("SELECT count(*) FROM devices") == 4
+            await device_upkeep(0)
+            assert await pool.fetchval("SELECT count(*) FROM devices") == 4  # nothing holds .51 with a MAC yet
+            await track_devices([{"mac": mac, "ip": "192.168.1.51", "hostname": "P1-meter"}], origin="dhcp-dnsmasq")
+            await device_upkeep(0)
+            rows = {r["mac"]: r for r in await pool.fetch("SELECT * FROM devices")}
+            assert set(rows) == {mac, "aa:00:00:00:00:22", "ip:10.8.0.2"}  # the WireGuard peer stays
+            assert rows[mac]["hostname"] == "P1-meter" and rows[mac]["trusted"] and rows[mac]["notes"] == "meter cupboard"
+            assert "zenarmor" in rows[mac]["sources"]
+            assert await pool.fetchval("SELECT key FROM device_profile") == mac
+            await pool.execute("TRUNCATE devices, device_profile, device_hourly")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
