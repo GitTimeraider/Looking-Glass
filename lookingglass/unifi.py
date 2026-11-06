@@ -37,7 +37,10 @@ DEVICE_STATES = {0: "offline", 1: "online", 2: "pending adoption", 3: "firmware 
                  10: "adoption failed", 11: "isolated"}
 DEVICE_TYPES = {"uap": "access point", "usw": "switch", "ugw": "gateway", "udm": "console / gateway", "uxg": "gateway",
                 "ucg": "console / gateway", "uck": "cloud key", "ubb": "building bridge", "usp": "smart power",
-                "uas": "application server", "uph": "phone"}
+                "uas": "application server", "uph": "phone", "ux": "console / gateway"}
+# console types that can also run as a plain access point (UniFi Express / Express 7 in AP mode, a UDM as mesh AP):
+# the controller keeps reporting their console type
+CONSOLE_TYPES = ("udm", "ucg", "ux")
 RADIOS = {"ng": "2.4 GHz", "na": "5 GHz", "6e": "6 GHz", "ad": "60 GHz"}
 
 # classic event keys -> (action, severity); everything else is kept as "event"
@@ -100,7 +103,28 @@ def _ts(value: Any) -> datetime:
 
 
 # ---------------------------------------------------------------- normalising ---
-def device_from_legacy(d: dict[str, Any]) -> dict[str, Any]:
+def gateway_macs(health: Any) -> set[str] | None:
+    """MAC(s) of the UniFi gateway from ``stat/health`` (the "wan" subsystem); empty when UniFi has no gateway (another
+    router, e.g. OPNsense, does the routing), None when the health is unknown."""
+    if not isinstance(health, list):
+        return None
+    return {str(h.get("gw_mac")).lower() for h in health
+            if isinstance(h, dict) and h.get("subsystem") == "wan" and h.get("gw_mac")}
+
+
+def legacy_kind(d: dict[str, Any], gateways: set[str] | None = None) -> str:
+    kind = DEVICE_TYPES.get(d.get("type"), d.get("type") or "device")
+    if d.get("type") not in CONSOLE_TYPES or not (d.get("radio_table") or d.get("radio_table_stats") or d.get("vap_table")):
+        return kind
+    mac = (d.get("mac") or "").lower()
+    if gateways is not None:
+        return kind if mac in gateways else "access point"
+    # health unknown: only a console that clearly routes (its WAN is up with an address) counts as the gateway
+    wan = d.get("wan1") if isinstance(d.get("wan1"), dict) else {}
+    return kind if wan.get("ip") and wan.get("up", True) else "access point"
+
+
+def device_from_legacy(d: dict[str, Any], gateways: set[str] | None = None) -> dict[str, Any]:
     stats = d.get("system-stats") or {}
     up = d.get("uplink") or {}
     state = d.get("state")
@@ -115,7 +139,7 @@ def device_from_legacy(d: dict[str, Any]) -> dict[str, Any]:
               for r in d.get("radio_table_stats") or []]
     return {
         "mac": (d.get("mac") or "").lower(), "name": d.get("name") or d.get("model") or d.get("mac"),
-        "model": d.get("model"), "kind": DEVICE_TYPES.get(d.get("type"), d.get("type") or "device"), "type": d.get("type"),
+        "model": d.get("model"), "kind": legacy_kind(d, gateways), "type": d.get("type"),
         "state": DEVICE_STATES.get(state, str(state)) if isinstance(state, int) else str(state or "unknown").lower(),
         "adopted": d.get("adopted", True), "ip": d.get("ip"), "version": d.get("displayable_version") or d.get("version"),
         "upgradable": bool(d.get("upgradable")), "uptime": d.get("uptime"),
@@ -447,14 +471,16 @@ class UnifiPoller:
         devices: list[dict[str, Any]] = []
         clients: list[dict[str, Any]] = []
         if c.legacy:
-            raw = await self.section("devices", c.legacy_get("stat/device")) or []
-            devices = [device_from_legacy(d) for d in raw]
-            by_mac = {d["mac"]: d for d in devices}
-            raw = await self.section("clients", c.legacy_get("stat/sta")) or []
-            clients = [client_from_legacy(x, by_mac) for x in raw]
+            # health first: it names the gateway, which tells a console from one used as an access point
             health = await self.section("health", c.legacy_get("stat/health"))
             if health is not None:
                 await db.set_snapshot("unifi:health", health)
+            raw = await self.section("devices", c.legacy_get("stat/device")) or []
+            gateways = gateway_macs(health)
+            devices = [device_from_legacy(d, gateways) for d in raw]
+            by_mac = {d["mac"]: d for d in devices}
+            raw = await self.section("clients", c.legacy_get("stat/sta")) or []
+            clients = [client_from_legacy(x, by_mac) for x in raw]
             if self.due("sysinfo", 600):
                 info = await self.section("sysinfo", c.legacy_get("stat/sysinfo"))
                 if info:
