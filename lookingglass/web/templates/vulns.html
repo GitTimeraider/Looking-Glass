@@ -280,10 +280,15 @@ function pkgCell(r) {
     `${LG.esc(p.name)} <span class="muted">${LG.esc(p.version)}</span>${p.fixed ? ` <span class="ok-msg">already fixed</span>` : ""}`).join("<br>")}${ps.length > 6 ? `<br><span class="muted">… ${ps.length - 6} more</span>` : ""}</div>` : "";
   const loc = (ps[0].locations || [])[0];
   const m = r.matched || {};
-  const how = m.searched ? `<div class="small muted" title="${LG.esc([m.type, m.matcher, m.namespace, m.distro].filter(Boolean).join(" · "))}">compared: ${LG.esc(m.searched)}${m.constraint ? " vs " + LG.esc(m.constraint) : ""}${m.distro ? ` (${LG.esc(m.distro)})` : ""}${m.note ? `<div class="${m.probably_fixed ? "ok-msg" : ""}">${LG.esc(m.note)}</div>` : ""}${/cpe/i.test(m.type || "") ? ` <span class="badge warn" title="matched by product name (CPE) only - more often wrong">CPE guess</span>` : ""}</div>` : "";
+  // Grype's "none (unknown)": the distribution lists every version as affected - say so
+  const cons = /^none\b/.test(m.constraint || "") ? "every version (no fix yet)" : m.constraint;
+  const distro = (m.distro || "").split(" ")[0], sev = String(r.severity || "").toLowerCase();
+  const rating = ["deb", "rpm", "apk"].includes(r.pkg_type) && sev && sev !== "unknown"
+    ? `<div class="small">${LG.esc(distro ? distro[0].toUpperCase() + distro.slice(1) : "The distribution")} rates it <b class="${sev === "negligible" || sev === "low" ? "ok-msg" : ""}">${LG.esc(sev)}</b></div>` : "";
+  const how = m.searched ? `<div class="small muted" title="${LG.esc([m.type, m.matcher, m.namespace, m.distro].filter(Boolean).join(" · "))}">compared: ${LG.esc(m.searched)}${cons ? " vs " + LG.esc(cons) : ""}${m.distro ? ` (${LG.esc(m.distro)})` : ""}${m.note ? `<div class="${m.probably_fixed ? "ok-msg" : ""}">${LG.esc(m.note)}</div>` : ""}${/cpe/i.test(m.type || "") ? ` <span class="badge warn" title="matched by product name (CPE) only - more often wrong">CPE guess</span>` : ""}</div>` : "";
   const ap = r.applies || {};
   const applies = ap.text ? `<div class="small ${ap.status === "reachable" ? "muted" : "ok-msg"}">${ap.status === "reachable" ? "" : "<b>Not affected:</b> "}${LG.esc(ap.text)}</div>` : "";
-  return head + list + `<div class="small muted">${LG.esc(r.pkg_type || "")}${loc ? ` · ${LG.esc(loc)}` : ""}</div>` + applies + how;
+  return head + list + `<div class="small muted">${LG.esc(r.pkg_type || "")}${loc ? ` · ${LG.esc(loc)}` : ""}</div>` + rating + applies + how;
 }
 function sources(st) {
   const rows = Object.entries(st.sources || {}).map(([k, s]) => ({ kind: k, ...s }));

@@ -173,12 +173,14 @@ class Settings(BaseSettings):
     vuln_show_min_cvss: str = "0"     # Vulnerabilities page lists from this score
     vuln_alert_skip_wont_fix: bool = False  # alerts: not for 'will not fix' findings
     vuln_alert_skip_cpe: bool = False       # alerts: not for matches by product name only (CPE guess)
+    vuln_alert_skip_negligible: bool = False  # alerts: not when the distribution rates it negligible
     vuln_alert_skip_packages: str = ""      # alerts: packages (names, source packages) or package types not to alert on
     vuln_hide_wont_fix: bool = False      # page: hide 'will not fix' findings
     vuln_hide_no_fix: bool = False        # page: hide findings without a fixed version yet
     vuln_hide_not_affected: bool = True   # page: hide 'not affected' (version-format mistakes, other OS, code not in the program)
     vuln_check_applies: bool = True       # check other-OS advisories and whether Go programs contain the vulnerable code
     vuln_hide_cpe: bool = False           # page: hide matches by product name only (CPE guess)
+    vuln_hide_negligible: bool = False    # page: hide what the distribution rates negligible
     vuln_hide_types: str = ""             # page: packages (names, source packages) or package types not to show
     vuln_kev_always: bool = True
     vuln_epss_min: str = ""

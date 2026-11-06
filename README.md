@@ -849,6 +849,13 @@ API, an unreadable or obfuscated program, or a program found in several places o
 description that merely *mentions* Windows is not used. Lookups use the `advisory` (OSV) and `platform` (NVD) lines
 under *Sources*, are cached (7 / 30 days) and spread over several runs; each image's program is read once.
 
+**"vs none (unknown)" / no fix yet.** For a Debian / Ubuntu / Alpine package this means the distribution lists
+every version as affected and has no fixed version yet - common for curl, glibc and the like, where the security
+team rated the CVE minor ("no-dsa", "unimportant") or postponed it. The page says so, and shows the distribution's
+own rating ("Debian rates it negligible"), which can be far lower than NVD's CVSS score. *Hide what the distribution
+rates negligible* (page) and *No alerts for what the distribution rates negligible* (alerts) act on that rating;
+*Hide findings without a fix yet* / *Only alert when a fix exists* act on the missing fix.
+
 **Distribution suffixes.** Distributions add their own part to a version: `1.3.1+ubuntu26`, `1.3.1-0ubuntu1`,
 `1.3.1-r2` (Alpine), `+deb12u1`, `+dfsg`. Some matchers (by product name, language packages, semver) read that part
 as a pre-release, so `1.3.1-0ubuntu1` counts as *older* than 1.3.1 and is reported for "fixed in 1.3.1". When the

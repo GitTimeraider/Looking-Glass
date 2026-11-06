@@ -702,10 +702,11 @@ def test_vulnerability_settings_are_grouped():
             last = f.section
     alerts = [f.key for f in fs if f.section == "Alerts"]
     assert alerts == ["vuln_alerts", "vuln_min_cvss", "vuln_kev_always", "vuln_epss_min", "vuln_only_fixed",
-                      "vuln_alert_skip_wont_fix", "vuln_alert_skip_cpe", "vuln_alert_skip_packages"]
+                      "vuln_alert_skip_wont_fix", "vuln_alert_skip_cpe", "vuln_alert_skip_negligible",
+                      "vuln_alert_skip_packages"]
     assert [f.key for f in fs if f.section == "Vulnerabilities page"] == [
         "vuln_show_min_cvss", "vuln_hide_wont_fix", "vuln_hide_no_fix", "vuln_hide_not_affected", "vuln_hide_cpe",
-        "vuln_hide_types"]
+        "vuln_hide_negligible", "vuln_hide_types"]
     view = app_config.public_view(Settings())
     assert view["sections"]["Alerts"] and next(x for x in view["fields"] if x["key"] == "vuln_min_cvss")["section"] == "Alerts"
 
@@ -990,3 +991,32 @@ def test_vulnerability_scan_off_per_image(tmp_path):
             await db.close()
 
     asyncio.run(main())
+
+
+def test_unfixed_distribution_findings_and_their_rating():
+    """curl 8.14.1-2+deb13u7 vs none (unknown): Debian lists every version as affected, no fix - said in words, and
+    Debian's own rating (often 'negligible' while NVD's CVSS is high) can hide it / keep it from alerting."""
+    def match(name, version, upstream, sev):
+        return {"vulnerability": {"id": "CVE-2026-3333", "severity": sev, "fix": {"versions": [], "state": "not-fixed"},
+                                  "cvss": [{"source": "nvd@nist.gov", "version": "3.1", "metrics": {"baseScore": 9.8}}]},
+                "matchDetails": [{"type": "exact-indirect-match", "searchedBy": {"package": {"name": upstream, "version": version},
+                                                                                "distro": {"type": "debian", "version": "13.7"}},
+                                  "found": {"versionConstraint": "none (unknown)"}}],
+                "artifact": {"name": name, "version": version, "type": "deb", "upstreams": [{"name": upstream}]}}
+    f = parse_grype({"matches": [match("libcurl4t64", "8.14.1-2+deb13u7", "curl", "Negligible")]})[0]
+    note = f["matched"]["note"]
+    assert note.startswith("Debian lists every version of curl as affected and has no fixed version yet - it rates this negligible")
+    assert "probably_fixed" not in f["matched"]  # a real finding, only explained
+    from lookingglass.vulnscan import distro_rating
+    assert distro_rating(f) == "negligible" and distro_rating({**f, "pkg_type": "go-module"}) is None
+    assert distro_rating({**f, "severity": "Unknown"}) is None
+    page = Policy.of(Settings(vuln_hide_negligible=True))
+    assert page.hidden_by(f) == "rated negligible by the distribution"
+    assert page.hidden_by({**f, "severity": "Medium"}) is None
+    alerts = Policy.of(Settings(vuln_only_fixed=False, vuln_alert_skip_negligible=True))
+    assert alerts.judge({**f, "kev": True}, ["x"])[2] == "not alerted: rated negligible by the distribution (alert settings)"
+    assert Policy.of(Settings(vuln_only_fixed=False)).judge(f, ["x"])[0]  # off by default: CVSS 9.8 alerts
+    # with a fixed version the constraint is a real range: no such note
+    g = parse_grype({"matches": [{**match("curl", "8.14.1-2", "curl", "High"),
+                                  "vulnerability": {"id": "CVE-1", "severity": "High", "fix": {"versions": ["8.14.1-2+deb13u8"], "state": "fixed"}}}]})[0]
+    assert "every version" not in (g["matched"].get("note") or "")

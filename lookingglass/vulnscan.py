@@ -574,7 +574,7 @@ def parse_grype(doc: dict[str, Any]) -> list[dict[str, Any]]:
     for f in found.values():
         if note := version_note(f) or suffix_note(f):
             f["matched"] = {**f["matched"], "note": note["text"], "probably_fixed": note["fixed"]}
-        elif text := patch_note(f) or built_in_note(f):
+        elif text := patch_note(f) or built_in_note(f) or unfixed_note(f):
             f["matched"] = {**f["matched"], "note": text}  # explains a real finding; not marked as fixed
     return list(found.values())
 
@@ -729,6 +729,31 @@ def _upstream_part(v: str) -> str:
     return v.rsplit("-", 1)[0] if "-" in v else v
 
 
+DISTRO_PKG = ("deb", "rpm", "apk")
+
+
+def distro_rating(f: dict[str, Any]) -> str | None:
+    """The distribution's own rating of a finding in one of its packages (Debian: unimportant -> Negligible, low,
+    medium, high), as Grype reports it from the distribution's tracker; None for other packages / unknown."""
+    sev = str(f.get("severity") or "").strip().lower()
+    if f.get("pkg_type") not in DISTRO_PKG or sev in ("", "unknown"):
+        return None
+    return sev
+
+
+def unfixed_note(f: dict[str, Any]) -> str | None:
+    """'curl 8.14.1-2+deb13u7 vs none (unknown)': the distribution lists every version as affected, no fix yet."""
+    m = f.get("matched") or {}
+    if f.get("pkg_type") not in DISTRO_PKG or f.get("fix_versions") or not str(m.get("constraint") or "").startswith("none"):
+        return None
+    distro = (m.get("distro") or "the distribution").split(" ")[0].capitalize()
+    name = f.get("upstream") or f.get("package")
+    rating = distro_rating(f)
+    return (f"{distro} lists every version of {name} as affected and has no fixed version yet"
+            + (f" - it rates this {rating}" if rating else "") + ". Often the fix is minor or postponed ('no-dsa', "
+            "'postponed', 'unimportant' in its tracker; the link shows why). Nothing to update to until it has one.")
+
+
 def patch_note(f: dict[str, Any]) -> str | None:
     """1.1.0-2 against 'fixed in 1.1.0-2+deb13u1': the same upstream release, patched by the distribution. Looks equal
     but is not - the image has the build from before the security patch."""
@@ -861,9 +886,9 @@ class Policy:
         return cls(parse_threshold(s.vuln_min_cvss, "", 10) or 0.0, s.vuln_kev_always,
                    parse_threshold(s.vuln_epss_min, "", 1), s.vuln_only_fixed, ignore, bool(s.vuln_alerts),
                    _threshold_or(s.vuln_show_min_cvss, 0.0),
-                   frozenset(k for k in ("wont_fix", "no_fix", "not_affected", "cpe") if getattr(s, f"vuln_hide_{k}", False)),
+                   frozenset(k for k in ("wont_fix", "no_fix", "not_affected", "cpe", "negligible") if getattr(s, f"vuln_hide_{k}", False)),
                    tuple(p.lower() for p in patterns(s.vuln_hide_types)),
-                   frozenset(k for k in ("wont_fix", "cpe") if getattr(s, f"vuln_alert_skip_{k}", False)),
+                   frozenset(k for k in ("wont_fix", "cpe", "negligible") if getattr(s, f"vuln_alert_skip_{k}", False)),
                    tuple(p.lower() for p in patterns(getattr(s, "vuln_alert_skip_packages", ""))))
 
     def hidden_by(self, f: dict[str, Any]) -> str | None:
@@ -924,6 +949,8 @@ def filtered_by(f: dict[str, Any], kinds: frozenset[str], packages: tuple[str, .
         return "no fix yet"
     if "cpe" in kinds and "cpe" in str(m.get("type") or "").lower():
         return "CPE guess"
+    if "negligible" in kinds and distro_rating(f) in ("negligible", "unimportant"):
+        return "rated negligible by the distribution"
     if packages:
         for kind, value in (("package", f.get("package")), ("package", f.get("upstream")), ("package type", f.get("pkg_type"))):
             if value and matches(list(packages), [str(value)]):

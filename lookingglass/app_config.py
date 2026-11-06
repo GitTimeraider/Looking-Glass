@@ -363,6 +363,8 @@ FIELDS: list[Field] = [
     Field("vuln_hide_cpe", "vulns", "Hide guesses by product name (CPE)", "bool", "Matches made only by the product "
           "name, without a package database entry - wrong more often. Marked 'CPE guess' on the page.",
           section="Vulnerabilities page"),
+    Field("vuln_hide_negligible", "vulns", "Hide what the distribution rates negligible", "bool", "Debian / Ubuntu / Alpine rate each CVE for their own package in their security tracker; 'unimportant' (shown as negligible) means no real risk in their build, whatever the CVSS score. Only for "
+          "their own packages.", section="Vulnerabilities page"),
     Field("vuln_hide_types", "vulns", "Packages not to show", "list", "Package names (also the source package, e.g. "
           "dotnet10 for dotnet-host-10.0) or package types, * as wildcard: chromium, libx11-*, or a type such as "
           "go-module (libraries compiled into Go programs), java-archive, npm, python, deb. Name and type are shown in "
@@ -388,6 +390,9 @@ FIELDS: list[Field] = [
     Field("vuln_alert_skip_cpe", "vulns", "No alerts for guesses by product name (CPE)", "bool", "Matches made only by "
           "the product name, without a package database entry - wrong more often. Also when actively exploited.",
           section="Alerts"),
+    Field("vuln_alert_skip_negligible", "vulns", "No alerts for what the distribution rates negligible", "bool",
+          "Debian / Ubuntu / Alpine rate each CVE for their own package in their security tracker; 'unimportant' (shown as negligible) means no real risk in their build, whatever the CVSS score. Only for "
+          "their own packages. Also when actively exploited.", section="Alerts"),
     Field("vuln_alert_skip_packages", "vulns", "Packages not to alert on", "list", "Like 'Packages not to show': "
           "package names (also the source package), * as wildcard, or package types such as go-module. Also when "
           "actively exploited. Findings that are not affected never alert.",
