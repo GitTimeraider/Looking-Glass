@@ -455,6 +455,15 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
     without a MAC (``ip:`` keys) are never in the ARP table and keep their state.
     """
     pool = db.pool()
+    if dismissed := await db.kv_get(DISMISSED_KEY):
+        # devices you deleted: the same old lease that OPNsense still lists does not bring them back; any real sign of
+        # them (ARP, UniFi, Zenarmor, a DHCP request, a renewed or new lease) does
+        keep = [d for d in devices if not (origin.startswith("dhcp-") and d["mac"] in dismissed
+                                            and dismissed[d["mac"]] == (d.get("lease_expires") or ""))]
+        back = {d["mac"] for d in keep} & set(dismissed)
+        if back:
+            await db.kv_set(DISMISSED_KEY, {k: v for k, v in dismissed.items() if k not in back})
+        devices = keep
     if mark_online:
         await pool.execute("UPDATE devices SET online = false WHERE online AND NOT (mac = ANY($1::text[])) "
                            "AND mac NOT LIKE 'ip:%'",
@@ -556,10 +565,20 @@ async def absorb_ip_devices(mac: str, ips: list[str], old_keys: list[str] | tupl
 IPLESS_OFFLINE_MINUTES = 20
 
 
+# kv key: MAC -> the lease expiry it had when you deleted it ("" = none). That lease does not bring the device back.
+DISMISSED_KEY = "devices:dismissed"
+
+
 async def delete_devices(keys: list[str]) -> None:
-    """Remove devices and what was learned about them (a device that comes back starts as a new one)."""
+    """Remove devices and what was learned about them (a device that comes back starts as a new one). A DHCP lease
+    OPNsense keeps listing for a device that is gone does not bring it back; a renewed / new lease does."""
     if not keys:
         return
+    leases = {r["mac"]: r["lease_expires"] or "" for r in await db.pool().fetch(
+        "SELECT mac, lease_expires FROM devices WHERE mac = ANY($1::text[]) AND mac NOT LIKE 'ip:%' "
+        "AND mac NOT LIKE 'if:%' AND EXISTS (SELECT 1 FROM unnest(sources) s WHERE s LIKE 'dhcp-%')", keys)}
+    if leases:
+        await db.kv_set(DISMISSED_KEY, {**(await db.kv_get(DISMISSED_KEY) or {}), **leases})
     async with db.pool().acquire() as con, con.transaction():
         await con.execute("DELETE FROM device_profile WHERE key = ANY($1::text[])", keys)
         await con.execute("DELETE FROM device_hourly WHERE key = ANY($1::text[])", keys)
