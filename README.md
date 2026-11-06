@@ -862,6 +862,13 @@ exploited, whether it is relevant for your container (what the container does, w
 platform, network exposure - read from the scan data), whether and how you can fix it (fixed version, newer image),
 and what it advises: update, close as not relevant, or keep watching.
 
+**Switching the scan off for one image.** In the Images table (Vulnerabilities › Images & packages) every image
+has an **On / Off** button under *Vulnerability scan*. Off: its findings are removed, its alert closes, and it is not
+matched against vulnerabilities any more - but its package list is still read, so it stays in the package search.
+This is remembered per image repository (`docker.io/library/nextcloud`), so it stays off when the image gets a new
+version or tag. On again: a check starts right away. *Containers / images not to scan* in the settings skips an image
+completely, package list included.
+
 **Closing findings.** On the Vulnerabilities page, tick the findings you've checked and press **Close selected**,
 for that image or for every image, optionally with why. A closed finding disappears from the lists, counts and
 alerts, and stays away after new scans and container updates. It is remembered by vulnerability (also its aliases),

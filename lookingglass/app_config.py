@@ -345,7 +345,9 @@ FIELDS: list[Field] = [
           "NVD), or when a Go program does not contain the vulnerable functions (read from the program, like Go's "
           "govulncheck; downloads the one image layer that holds it). Undecided findings stay normal findings.",
           section="Scanning"),
-    Field("vuln_exclude", "vulns", "Containers / images not to scan", "list", "Names or images, * as wildcard.",
+    Field("vuln_exclude", "vulns", "Containers / images not to scan", "list", "Not read at all (no package list "
+          "either). Names or images, * as wildcard. To only stop the vulnerability scan of an image and keep its "
+          "package list, use its On / Off button on the Vulnerabilities page (Images & packages).",
           placeholder="my-test-*\nlocalhost/*", section="Scanning"),
     Field("vuln_show_min_cvss", "vulns", "Minimum CVSS score to show", "str", "Findings below this score are not shown "
           "on the Vulnerabilities page (nor counted there). 0 = show everything.", placeholder="0", section="Vulnerabilities page"),

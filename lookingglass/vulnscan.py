@@ -1536,6 +1536,7 @@ class VulnScanner:
                 tool_ver = (self.status.get("tools") or {}).get("syft", {}).get("version")
                 # no usable database: the package lists are still made, matching waits (the database alert says why)
                 db_ok = bool((self.status.get("db") or {}).get("valid"))
+                off = {r["repo"] for r in await db.pool().fetch("SELECT repo FROM vuln_repo_off")}
                 for i, t in enumerate(targets, 1):
                     await self.save_status(phase=f"scanning {t.image} ({i}/{len(targets)})")
                     row = rows.get(t.key) or {}
@@ -1548,6 +1549,12 @@ class VulnScanner:
                             cols.update(sbom_at=datetime.now(timezone.utc), sbom_source=how, sbom_tool=tool_ver, packages=n)
                         cols["version"] = self.version_of(t)
                         cols["platform"] = self.platform_of(t)
+                        if t.name.full in off:  # switched off on the page: the package list only, no matching
+                            upd = await self.update_check(client, t, row.get("update_info"))
+                            cols.update(status="ok", error=None, errors=0, app=None, update_info=upd)
+                            await self.store(t, [], **cols)  # [] removes its findings
+                            await self.problem(f"image:{t.key}", True)
+                            continue
                         if not db_ok:
                             cols.update(status="pending", error="waiting for the vulnerability database (see Problems)")
                             await self.store(t, [], **cols)

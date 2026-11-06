@@ -112,7 +112,10 @@ async function load() {
       (r.notes || []).map(n => `<div class="small muted">${LG.esc(n)}</div>`).join("")},
     {k: "containers", l: "Containers", f: v => (v || []).map(c => LG.esc(c.name) + (c.server ? ` <span class="muted small">(${LG.esc(c.server)})</span>` : "")).join("<br>")},
     {k: "status", l: "Scan", f: (v, r) => v === "ok" ? `<span class="badge ok">ok</span>` : v === "error" ? `<span class="badge high" title="${LG.esc(r.error)}">error</span>` : `<span class="muted">waiting</span>`},
-    {k: "alerted", l: "Meets alert rules", num: true, s: true, desc: true, f: (v, r) => `<b class="${v ? "err" : ""}">${LG.num(v)}</b> <span class="muted small">of ${LG.num(r.total)}</span>`},
+    {k: "scan_off", l: "Vulnerability scan", s: r => r.scan_off ? 1 : 0, f: (v, r) => `<button type="button" class="small-btn ${v ? "secondary" : ""}" data-scan-repo="${LG.esc(r.repo)}" data-scan-on="${v ? 1 : 0}" title="${v
+      ? "Switched off: only its package list is read. Click to scan it for vulnerabilities again."
+      : "Click to stop scanning this image for vulnerabilities (also its next versions and tags). Its packages are still listed."}">${v ? "Off" : "On"}</button>`},
+    {k: "alerted", l: "Meets alert rules", num: true, s: true, desc: true, f: (v, r) => r.scan_off ? `<span class="muted">–</span>` : `<b class="${v ? "err" : ""}">${LG.num(v)}</b> <span class="muted small">of ${LG.num(r.total)}</span>`},
     {k: "kev", l: "Exploited", num: true, s: true, desc: true, f: v => v ? `<span class="badge critical">${v}</span>` : "0"},
     {k: "max_cvss", l: "Max CVSS", num: true, s: true, desc: true, f: v => score(v)},
     {k: "update_info", l: "Newer image", f: v => !v ? `<span class="muted" title="needs the exact digest (Docker API with IMAGES=1)">?</span>` : v.error ? `<span class="muted" title="${LG.esc(v.error)}">unknown</span>` : v.available ? `<span class="badge warn">yes</span>` : "no"},
@@ -174,6 +177,16 @@ async function packages() {
     {k: "vulns", l: "Vulnerabilities", num: true, s: true, desc: true, f: (v, r) => v ? `<a href="#" data-vq="${LG.esc(r.name)}" data-vimg="${LG.esc(r.image_key)}" class="${r.kev ? "err" : ""}" title="Show them">${LG.num(v)}</a>` : `<span class="muted">0</span>`},
   ], d.rows, "Nothing found. The package lists are made by the checks; try another search.", null, { sortAll: true });
 }
+// the On / Off button of an image: one listener, the table is redrawn on every refresh
+document.getElementById("images").addEventListener("click", async e => {
+  const b = e.target.closest("[data-scan-repo]"); if (!b) return;
+  e.stopPropagation();  // not the row click (which opens its findings)
+  const repo = b.dataset.scanRepo, enable = b.dataset.scanOn === "1";
+  if (!enable && !confirm(`Stop scanning ${repo} for vulnerabilities?\n\nIts findings are removed and its alert closes. Its package list is still read, and this stays off when the image gets a new version or tag. You can switch it on again here.`)) return;
+  b.disabled = true;
+  try { await LG.api("/api/vulns/image-scan", { method: "POST", body: { repo, enabled: enable } }); await load(); }
+  catch (err) { alert(err.message); b.disabled = false; }
+}, true);
 document.getElementById("packages").addEventListener("click", e => {
   const a = e.target.closest("[data-vq]"); if (!a) return;
   e.preventDefault();

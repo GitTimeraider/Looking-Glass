@@ -941,3 +941,52 @@ def test_packages_of_every_image(tmp_path):
             await db.close()
 
     asyncio.run(main())
+
+
+@needs_db
+def test_vulnerability_scan_off_per_image(tmp_path):
+    """Off on the page: findings removed, alert closed, package list still made - also for the next tag of the image.
+    On again: matched in the next check."""
+    from lookingglass.web.app import create_app
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            await _reset()
+            await db.pool().execute("TRUNCATE vuln_repo_off")
+            pool = db.pool()
+            sid = await pool.fetchval("INSERT INTO unraid_servers (name, url, api_key) VALUES ('Tower', 'http://t', 'k') RETURNING id")
+            await db.set_snapshot(f"unraid:{sid}:docker", [{"names": ["/app"], "image": "team/app:1", "state": "RUNNING"}])
+            s = Settings(vuln_scan_enabled=True, vuln_alerts=True, vuln_sources=ALL_OFF, vuln_app_checks="", **_tools(tmp_path))
+            sc = VulnScanner(s)
+            await sc.cycle()
+            assert await pool.fetchval("SELECT count(*) FROM vuln_findings") == 3
+            assert await pool.fetchval("SELECT status FROM alerts WHERE rule = 'container_vulnerable'") == "open"
+            ep = {r.path: r.endpoint for r in create_app(s, None).routes if getattr(r, "path", "").startswith("/api/vulns")}
+            req = _Req()
+            with pytest.raises(Exception, match="Unknown image"):
+                await ep["/api/vulns/image-scan"](req, {"repo": "nope", "enabled": False})
+            await ep["/api/vulns/image-scan"](req, {"repo": "docker.io/team/app", "enabled": False})
+            assert await pool.fetchval("SELECT count(*) FROM vuln_findings") == 0  # removed right away
+            await sc.tick()  # the re-evaluation closes the alert
+            assert await pool.fetchval("SELECT status FROM alerts WHERE rule = 'container_vulnerable'") == "closed"
+            overview = await ep["/api/vulns"]()
+            assert overview["images"][0]["scan_off"] and overview["images"][0]["parts"] == 1
+            # a new tag of the same image: still off, the package list is made, nothing matched
+            await db.set_snapshot(f"unraid:{sid}:docker", [{"names": ["/app"], "image": "team/app:2", "state": "RUNNING"}])
+            await sc.cycle(rebuild=True)
+            img = await pool.fetchrow("SELECT image, status, sbom_at FROM vuln_images WHERE image = 'team/app:2'")
+            assert img["status"] == "ok" and img["sbom_at"] is not None
+            assert await pool.fetchval("SELECT count(*) FROM vuln_findings") == 0
+            assert (await ep["/api/vulns/packages"](q="php", type=None, language=None, image=None, vulnerable=False,
+                                                    limit=10))["total"] == 1  # its packages are still listed
+            # on again: a check is requested and matches it
+            await ep["/api/vulns/image-scan"](req, {"repo": "docker.io/team/app", "enabled": True})
+            assert await db.kv_get("vulnscan:request")
+            await sc.tick()
+            assert await pool.fetchval("SELECT count(*) FROM vuln_findings") == 3
+            assert not (await ep["/api/vulns"]())["images"][0]["scan_off"]
+        finally:
+            await db.close()
+
+    asyncio.run(main())

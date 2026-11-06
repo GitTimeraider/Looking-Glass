@@ -1040,6 +1040,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "GROUP BY i.key ORDER BY alerted DESC, i.image")
         kev = await db.kv_get("vulnscan:kev", []) or []
         closed_n = await db.pool().fetchval("SELECT count(*) FROM vuln_closed")
+        off = {r["repo"] for r in await db.pool().fetch("SELECT repo FROM vuln_repo_off")}
         hidden = await db.pool().fetch(
             "SELECT coalesce(f.hidden_why, 'hidden') why, count(DISTINCT (f.image_key, f.vuln)) n FROM vuln_findings f "
             f"JOIN vuln_images i ON i.key = f.image_key WHERE {not_closed} AND NOT {shown} GROUP BY 1 ORDER BY 2 DESC")
@@ -1051,6 +1052,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         for img in images:  # base OS and number of parts, from the stored package list (cached)
             inv = await asyncio.to_thread(image_inventory, settings, img["key"])
             img["distro"], img["parts"] = inv["distro"], len(inv["packages"])
+            img["scan_off"] = img["repo"] in off
         return {"enabled": settings.vuln_scan_enabled, "status": await db.kv_get("vulnscan:status", {}) or {},
                 "queued": await db.kv_get("vulnscan:request"),  # Check now pressed, the scanner has not picked it up yet
                 "now": time.time(),
@@ -1159,6 +1161,28 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             [(*r, note, _author(request)) for r in sorted(rows)])
         await _vulns_reevaluate()
         return {"ok": True, "closed": len(rows)}
+
+    @app.post("/api/vulns/image-scan")
+    async def vulns_image_scan(request: Request, payload: dict = Body(...)):
+        """Switch vulnerability matching of an image repository off / on (stays for new tags and versions). Off: its
+        findings are removed and its alert closes; the package list is still made. On: a check starts right away."""
+        repo = str(payload.get("repo") or "").strip()[:500]
+        if not repo or not await db.pool().fetchval("SELECT 1 FROM vuln_images WHERE repo = $1 LIMIT 1", repo):
+            raise HTTPException(400, "Unknown image.")
+        if payload.get("enabled"):
+            await db.pool().execute("DELETE FROM vuln_repo_off WHERE repo = $1", repo)
+            await db.kv_set("vulnscan:request", {"at": time.time(), "rebuild": False})  # match it again now
+            scanner = getattr(app.state, "vulnscan", None)
+            if scanner is not None:
+                scanner.wake.set()
+        else:
+            async with db.pool().acquire() as con, con.transaction():
+                await con.execute("INSERT INTO vuln_repo_off (repo, changed_by) VALUES ($1, $2) ON CONFLICT (repo) DO "
+                                  "UPDATE SET changed_by = EXCLUDED.changed_by, changed_at = now()", repo, _author(request))
+                await con.execute("DELETE FROM vuln_findings WHERE image_key IN (SELECT key FROM vuln_images WHERE repo = $1)", repo)
+                await con.execute("UPDATE vuln_images SET app = NULL WHERE repo = $1", repo)
+            await _vulns_reevaluate()  # closes its alert
+        return {"ok": True, "repo": repo, "enabled": bool(payload.get("enabled"))}
 
     @app.post("/api/vulns/reopen")
     async def vulns_reopen(payload: dict = Body(...)):

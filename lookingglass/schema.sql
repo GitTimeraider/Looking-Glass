@@ -442,3 +442,10 @@ CREATE TABLE IF NOT EXISTS vuln_closed (
     closed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (vuln, grp, repo)
 );
+-- images whose vulnerability matching you switched off on the Vulnerabilities page (per repository, so it stays off
+-- for new tags and versions). Their package lists are still made; they get no findings and no alerts.
+CREATE TABLE IF NOT EXISTS vuln_repo_off (
+    repo       TEXT PRIMARY KEY,                   -- docker.io/library/nextcloud
+    changed_by TEXT,
+    changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
