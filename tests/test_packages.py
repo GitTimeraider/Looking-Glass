@@ -1,5 +1,5 @@
 """Container packages (Unraid › Packages): read with Syft only for new / updated images or when asked, listed and
-searchable; and the one-time cleanup of the removed vulnerability scanner."""
+searchable."""
 import asyncio
 import os
 import stat
@@ -14,7 +14,6 @@ from lookingglass.packages import (
     PackageReader,
     compact,
     parse_image,
-    remove_vulnerability_scanner_leftovers,
 )
 
 DSN = os.environ.get("TEST_DATABASE_URL")
@@ -134,44 +133,6 @@ def test_read_only_new_or_updated_images_or_when_asked(tmp_path):
             s.pkg_enabled = False
             with pytest.raises(Exception, match="Switch it on"):
                 await ep["/api/packages/update"]({})
-        finally:
-            await db.close()
-
-    asyncio.run(main())
-
-
-@needs_db
-def test_vulnerability_scanner_leftovers_removed_once(tmp_path):
-    async def main():
-        await db.connect(DSN)
-        try:
-            pool = db.pool()
-            await pool.execute("DELETE FROM kv WHERE key = 'cleanup:vulnscan-removed'")
-            await pool.execute("CREATE TABLE IF NOT EXISTS vuln_findings (x int)")
-            await pool.execute("CREATE TABLE IF NOT EXISTS vuln_repo_off (repo text)")
-            await db.kv_set("vulnscan:status", {"running": False})
-            await pool.execute("INSERT INTO app_settings (key, value) VALUES ('vuln_min_cvss', '\"7\"'), ('vulnerable_other', '\"x\"') "
-                               "ON CONFLICT (key) DO NOTHING")
-            await pool.execute("INSERT INTO alerts (rule, severity, title, fingerprint, status) VALUES "
-                               "('container_vulnerable', 'high', 'Container app: 2 vulnerabilities', 'vuln:x', 'open')")
-            left = tmp_path / "vulnscan" / "grype-db"
-            left.mkdir(parents=True)
-            (left / "vulnerability.db").write_text("x")
-            await remove_vulnerability_scanner_leftovers(Settings(data_dir=str(tmp_path)))
-            assert not await pool.fetchval("SELECT to_regclass('vuln_findings')") and not await pool.fetchval("SELECT to_regclass('vuln_repo_off')")
-            assert not await db.kv_get("vulnscan:status")
-            assert not await pool.fetchval("SELECT count(*) FROM app_settings WHERE key = 'vuln_min_cvss'")
-            assert await pool.fetchval("SELECT count(*) FROM app_settings WHERE key = 'vulnerable_other'")  # vuln\\_ only
-            a = await pool.fetchrow("SELECT status, description FROM alerts WHERE fingerprint = 'vuln:x'")
-            assert a["status"] == "closed" and "scanning was removed" in a["description"]
-            assert not (tmp_path / "vulnscan").exists()
-            # once: a second start does nothing (the flag is set)
-            await pool.execute("CREATE TABLE vuln_findings (x int)")
-            await remove_vulnerability_scanner_leftovers(Settings(data_dir=str(tmp_path)))
-            assert await pool.fetchval("SELECT to_regclass('vuln_findings')")
-            await pool.execute("DROP TABLE vuln_findings")
-            await pool.execute("DELETE FROM app_settings WHERE key = 'vulnerable_other'")
-            await pool.execute("DELETE FROM alerts WHERE fingerprint = 'vuln:x'")
         finally:
             await db.close()
 

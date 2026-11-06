@@ -3,7 +3,7 @@ libraries, language packages and the programs they are built into - read with Sy
 
 An image's list is read only when you ask for it (Update all / Update on one image) or when the image changes
 (a container runs a new image: new digest, or recreated when the digest is unknown). Nothing is read on a schedule.
-Only the parts are listed; there is no vulnerability matching.
+Only the parts are listed.
 """
 from __future__ import annotations
 
@@ -14,10 +14,8 @@ import logging
 import os
 import re
 import shlex
-import shutil
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -418,26 +416,3 @@ def listed(settings: Settings, key: str) -> dict[str, Any]:
         return {"distro": None, "packages": []}
     _LISTS[str(path)] = (mtime, data)
     return data
-
-
-# ---------------------------------------------- one-time cleanup (removed) ---
-async def remove_vulnerability_scanner_leftovers(settings: Settings) -> None:
-    """Once: what the removed container vulnerability scanner stored - its tables, settings and state, its open alerts
-    (closed, kept for reference like other closed alerts) and /data/vulnscan (Grype's database, package lists)."""
-    if await db.kv_get("cleanup:vulnscan-removed"):
-        return
-    pool = db.pool()
-    async with pool.acquire() as con, con.transaction():
-        for table in ("vuln_findings", "vuln_images", "vuln_cache", "vuln_closed", "vuln_repo_off"):
-            await con.execute(f"DROP TABLE IF EXISTS {table}")
-        await con.execute("DELETE FROM kv WHERE key LIKE 'vulnscan:%'")
-        await con.execute("DELETE FROM app_settings WHERE key LIKE 'vuln\\_%'")
-        await con.execute(
-            "UPDATE alerts SET status = 'closed', close_reason = 'resolved', "
-            "description = coalesce(description, '') || E'\\n\\nClosed: container vulnerability scanning was removed.' "
-            "WHERE rule IN ('container_vulnerable', 'vuln_scan_problem') AND status <> 'closed'")
-    leftovers = Path(settings.data_dir) / "vulnscan"
-    if leftovers.is_dir():
-        await asyncio.to_thread(shutil.rmtree, leftovers, True)
-        log.info("removed %s (left over from the removed vulnerability scanner)", leftovers)
-    await db.kv_set("cleanup:vulnscan-removed", {"at": datetime.now(timezone.utc).isoformat()})

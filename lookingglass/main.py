@@ -206,11 +206,7 @@ async def amain() -> None:
         await db.close()
         return
     await app_config.load(settings)
-    from .packages import PackageReader, remove_vulnerability_scanner_leftovers
-    try:  # once: the removed vulnerability scanner's tables, settings, alerts and files
-        await remove_vulnerability_scanner_leftovers(settings)
-    except Exception:  # noqa: BLE001 - never keeps Looking Glass from starting; tried again next start
-        log.exception("could not clean up the leftovers of the removed vulnerability scanner")
+    from .packages import PackageReader
     if not settings.secret_key:
         # persist a generated cookie key so logins survive restarts
         settings.secret_key = await db.kv_get("secret_key") or secrets.token_urlsafe(48)
