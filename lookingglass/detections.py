@@ -75,6 +75,14 @@ INTERNAL_CHAIN = [("Threat sign", {"threat_intel_outbound", "zenarmor_threat", "
                                          "internal_blocked_outbound", "tor"}),
                   ("Spreading / theft", {"port_scan", "host_sweep", "lateral_movement", "password_spray", "brute_force",
                                          "large_upload", "canary", "arp_spoofing", "volume_spike"})]
+# signs of a compromise on their own: one of these (at any severity) makes a chain worth an alert. The other chain rules
+# are behaviour heuristics (beaconing, traffic spike, new behaviour ...): a chain of only those needs one of them rated
+# high or critical. Not medium: two of them on one device lift each other to medium ("also seen: open alerts"), and a
+# time server checked every few minutes plus a game download is not "a compromised device".
+STRONG_CHAIN_RULES = {"threat_intel_outbound", "zenarmor_threat", "dns_malicious_blocked", "dns_dga", "ids", "threat_feed",
+                      "malicious_tls", "crypto_mining", "dns_tunnel", "tor", "lateral_movement", "canary", "arp_spoofing",
+                      "port_scan", "host_sweep", "password_spray", "brute_force", "web_attack", "crowdsec",
+                      "distributed_brute_force", "success_after_failures", "login_new_location", "threat_intel_inbound"}
 
 # a name from a better source replaces one from a worse source, never the other way round
 NAME_RANK = {"manual": 100, "opnsense": 90, "unifi-alias": 70, "dnsmasq-static": 60, "unifi": 45, "dhcp": 50, "dns": 30, "zenarmor": 25, "arp": 20}
@@ -184,7 +192,8 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
             "AND coalesce(data->>'security', data->>'security_tags', '') <> '') AS zen "
             "FROM events WHERE src_ip = $1::inet AND ts > now() - make_interval(hours => $2)", ip, hours)
         others = await pool.fetch(
-            "SELECT DISTINCT rule FROM alerts WHERE (src_ip = $1::inet OR dst_ip = $1::inet) AND status <> 'closed' "
+            # acknowledged = you looked at it and know it: no longer a sign that something else is wrong
+            "SELECT DISTINCT rule FROM alerts WHERE (src_ip = $1::inet OR dst_ip = $1::inet) AND status = 'open' "
             "AND NOT (rule = ANY($2::text[])) AND last_seen > now() - make_interval(hours => $3) "
             "AND rule NOT IN ('new_device', 'admin_login', 'config_change', 'port_scan', 'host_sweep', 'attack_chain', 'risk_score')",
             ip, sorted(next((f for f in RULE_FAMILIES if rule in f), {rule})), hours)
@@ -1541,21 +1550,33 @@ class DetectionEngine:
     async def attack_chains(self) -> None:
         """Connect the dots: separate alerts about one address that together tell a story (MITRE ATT&CK stages).
         Outside → in: reconnaissance, then an attack, then access. Inside: a threat sign, then command & control or
-        spreading - a compromised device."""
+        spreading - a compromised device.
+
+        Only OPEN alerts count: one you acknowledged or closed is known to you. Nor does a rule you closed as false
+        positive for the same address in the last 30 days, and a chain needs at least one strong link: a rule that is
+        a sign of compromise on its own (STRONG_CHAIN_RULES) or a behaviour alert rated high or critical."""
         rows = await db.pool().fetch(
-            "SELECT host(coalesce(src_ip, dst_ip)) AS ip, array_agg(DISTINCT rule) AS rules, min(created_at) AS first, "
-            "array_agg(id ORDER BY id) AS ids, bool_and(coalesce((data->>'blocked')::boolean, false)) AS all_blocked "
-            "FROM alerts WHERE status <> 'closed' AND last_seen > now() - interval '24 hours' "
-            "AND coalesce(src_ip, dst_ip) IS NOT NULL AND rule <> 'attack_chain' GROUP BY 1")
+            "SELECT host(coalesce(a.src_ip, a.dst_ip)) AS ip, array_agg(DISTINCT a.rule) AS rules, "
+            "array_agg(DISTINCT a.rule) FILTER (WHERE a.severity IN ('high', 'critical')) AS serious, "
+            "min(a.created_at) AS first, array_agg(a.id ORDER BY a.id) AS ids, "
+            "bool_and(coalesce((a.data->>'blocked')::boolean, false)) AS all_blocked "
+            "FROM alerts a WHERE a.status = 'open' AND a.last_seen > now() - interval '24 hours' "
+            "AND coalesce(a.src_ip, a.dst_ip) IS NOT NULL AND a.rule <> 'attack_chain' "
+            "AND NOT EXISTS (SELECT 1 FROM alerts f WHERE f.rule = a.rule AND f.close_reason = 'false_positive' "
+            "AND coalesce(f.src_ip, f.dst_ip) = coalesce(a.src_ip, a.dst_ip) AND f.last_seen > now() - interval '30 days') "
+            "GROUP BY 1")
         for r in rows:
             ip, rules = r["ip"], set(r["rules"])
             internal = self.internal(ip)
             chain = INTERNAL_CHAIN if internal else EXTERNAL_CHAIN
+            members_all = set().union(*(m for _, m in chain))
             stages = [name for name, members in chain if rules & members]
             if not internal and "Access" not in stages:
                 continue  # scans and attacks from the internet that got nowhere: background noise
             if len(stages) < 2:
                 continue  # one kind of signal is what the alert of that rule already says
+            if not (rules & STRONG_CHAIN_RULES & members_all or set(r["serious"] or ()) & members_all):
+                continue  # only weak, low-severity behaviour signs (beaconing to a time server + a big download)
             sev = "critical" if len(stages) >= 3 else "high"
             if internal and await db.pool().fetchval(
                     "SELECT 1 FROM devices WHERE ip = $1::inet AND first_seen > now() - interval '48 hours' AND NOT trusted "

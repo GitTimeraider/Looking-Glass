@@ -722,3 +722,55 @@ def test_deleted_device_not_brought_back_by_its_old_lease():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_attack_chain_needs_a_strong_link_and_skips_known_alerts():
+    from lookingglass.detections import evidence
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events, alerts, alert_filters, devices")
+
+            async def add(rule, sev, ip, status="open", reason=None, fp=None):
+                await pool.execute("INSERT INTO alerts (rule, severity, title, fingerprint, src_ip, status, close_reason) "
+                                   "VALUES ($1, $2, $1, $3, $4::inet, $5, $6)", rule, sev, fp or f"{rule}:{ip}:{status}", ip,
+                                   status, reason)
+
+            async def chains():
+                await DetectionEngine(Settings()).attack_chains()
+                return {c["ip"] for c in await alerts(pool, "attack_chain")}
+
+            # NTP every 9 min + a Steam download, lifted to medium by each other: no "compromised device"
+            await add("beaconing", "medium", "192.168.3.3")
+            await add("volume_spike", "medium", "192.168.3.3")
+            assert await chains() == set()
+            # a behaviour alert rated high (more than the other alert's lift) is a strong link
+            await pool.execute("UPDATE alerts SET severity = 'high' WHERE rule = 'volume_spike'")
+            assert await chains() == {"192.168.3.3"}
+            await pool.execute("TRUNCATE alerts")
+
+            # a real sign of compromise is enough, even at low severity
+            await add("beaconing", "low", "192.168.3.4")
+            await add("lateral_movement", "low", "192.168.3.4")
+            # acknowledged: you know it, it no longer builds a chain (nor counts as corroboration)
+            await add("beaconing", "low", "192.168.3.5")
+            await add("lateral_movement", "high", "192.168.3.5", status="acknowledged")
+            # the same rule for the same address closed as false positive: skipped while it keeps coming back
+            await add("beaconing", "low", "192.168.3.6", status="closed", reason="false_positive")
+            await add("beaconing", "low", "192.168.3.6", fp="beacon:new")
+            await add("port_scan", "medium", "192.168.3.6")
+            # ... but closed as resolved still counts
+            await add("beaconing", "low", "192.168.3.7", status="closed", reason="resolved")
+            await add("beaconing", "low", "192.168.3.7", fp="beacon:new7")
+            await add("port_scan", "medium", "192.168.3.7")
+            assert await chains() == {"192.168.3.4", "192.168.3.7"}
+            assert (await evidence("192.168.3.5", "beaconing"))["other_alerts"] == []
+            assert (await evidence("192.168.3.4", "beaconing"))["other_alerts"] == ["lateral_movement"]
+            await pool.execute("TRUNCATE events, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())

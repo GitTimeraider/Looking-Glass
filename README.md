@@ -75,7 +75,7 @@ login after failures, logins from the internet and logins from a new country. Al
 | Lateral movement | one device reaching SSH / SMB / RDP / WinRM / VNC / Docker API on 5+ internal hosts in 15 min (T1021) |
 | DNS bypass | devices using DNS servers on the internet directly, past your resolver and blocklists |
 | Unusual upload | 1 GB+ sent to the internet in an hour and 5× more than the device's 7-day average (Zenarmor; T1048) |
-| Attack chain | ties alerts about one address together: outside *recon → attack → access*, or inside *threat sign → command & control → spreading* (plus "new device"); high or critical |
+| Attack chain | ties **open** alerts about one address together: outside *recon → attack → access*, or inside *threat sign → command & control → spreading* (plus "new device"); needs one strong link (threat intel, IDS, lateral movement, scan, canary … or a behaviour alert rated high), so e.g. beaconing to a time server plus a big download is no chain; acknowledged alerts and a rule you closed as false positive for that address (30 days) are left out; high or critical |
 
 *NAT redirects*: a port forward that sends DNS / NTP (or any port) to your own server, e.g. *VLAN_IoT TCP/UDP to !RFC1918 port domain ⇒ VLAN_IoT address*, answers those packets locally, but Zenarmor (it sees packets before NAT) and the firewall's pass log still show the original destination. DNS bypass, Tor and threat-feed alerts therefore skip traffic on redirected ports that the firewall never logged leaving towards the internet - e.g. an NTP query to a pool server that is also a Tor relay. Looking Glass knows the redirects from the API (privilege *Firewall: NAT: Port Forward*) or from the NAT rule's own log lines (tick *Log* on it).
 
@@ -156,7 +156,7 @@ excludes devices from all of them.
 | **Traffic spike** | connections, DNS lookups or upload of one hour N× the device's median | factor (0 = off); per device on the Devices page |
 | **Machine learning** | an Isolation Forest (one per pair of 8 features, pure Python, nothing leaves the server) scores each device-hour against the device's own history; alerts name the features that were off ("connections 9,000, normally ~100") | sensitivity low / medium / high; per device (incl. off) on the Devices page |
 | **Hour of the week** | network totals (blocks, failed logins, DNS, NXDOMAIN, per log source) against the same hour in previous weeks | sensitivity, metrics to ignore |
-| **Risk score** | every alert adds points (info 1 … critical 40, once per rule) that fade with a half-life; one alert when a device's total is high; shown on the Devices page | threshold, half-life, addresses to skip; threshold per device on the Devices page |
+| **Risk score** | every open alert (not acknowledged / closed) adds points (info 1 … critical 40, once per rule) that fade with a half-life; one alert when a device's total is high; shown on the Devices page | threshold, half-life, addresses to skip; threshold per device on the Devices page |
 | **Learning from false positives** | **Close as false positive** on the Alerts page; the same rule + address 3× in 30 days becomes a suggestion (mute / lower to info), or in *auto* mode a "Learned: …" severity rule (visible and removable under Alert filters) | suggest / auto / off, how many |
 
 **Devices › Learned** shows what was learned for a device and lets you forget it (per kind or everything). The
