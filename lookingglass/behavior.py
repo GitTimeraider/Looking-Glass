@@ -538,7 +538,7 @@ class Behavior:
             return
         pool = db.pool()
         rows = await pool.fetch(
-            "SELECT host(coalesce(src_ip, dst_ip)) ent, rule, severity, last_seen FROM alerts WHERE status <> 'closed' "
+            "SELECT host(coalesce(src_ip, dst_ip)) ent, rule, severity, last_seen FROM alerts WHERE status = 'open' "
             "AND last_seen > now() - interval '7 days' AND coalesce(src_ip, dst_ip) IS NOT NULL "
             "AND rule NOT IN ('risk_score')")
         excl, never = Matcher(self.s.risk_exclude), self.excluded()
