@@ -88,7 +88,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     # page stays while syslog delivered Suricata lines in the last day
     def dash_hidden() -> set[str]:
         hidden = set() if settings.zenarmor_enabled else {"zenarmor"}
-        if not (settings.ids_pull and settings.opnsense_enabled) and time.time() - STATS.last_by_source.get("suricata", 0) > 86400:
+        if not settings.ids_pull and time.time() - STATS.last_by_source.get("suricata", 0) > 86400:
             hidden.add("suricata")
         return hidden
     templates.env.globals["dash_hidden"] = dash_hidden

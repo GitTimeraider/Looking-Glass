@@ -76,11 +76,11 @@ FIELDS: list[Field] = [
           "Suricata rates every signature priority 1 (most severe) to 3. 1 = only priority 1 becomes an alert, 2 = "
           "priority 1 and 2, 3 = all. Lower-priority hits still show on the Suricata and Threats dashboards.", min=1, max=3),
     Field("ids_ignore_sids", "opnsense", "Suricata: SIDs that never raise an alert", "list",
-          "Signature IDs (the SID column on the Suricata dashboard), one per line. Their hits are still stored and shown.",
+          "Signature IDs (the SID column on the Suricata dashboard). Their hits are still stored and shown.",
           placeholder="2210050"),
     Field("zenarmor_enabled", "opnsense", "Receive Zenarmor data", "bool",
-          "Off: Zenarmor records (Elasticsearch stream and syslog) are discarded and the Zenarmor overview widget and "
-          "dashboard link are hidden. Stored Zenarmor events are kept."),
+          "Off: Zenarmor records (Elasticsearch stream and syslog) are discarded and the Zenarmor overview widget, "
+          "menu entry and settings tab are hidden. Stored Zenarmor events are kept."),
     Field("nginx_pull", "opnsense", "Pull nginx access / error logs", "bool",
           "nginx plugin: its access logs are never sent by OPNsense remote syslog, so they are read via the API."),
     Field("vpn_pull", "opnsense", "Pull VPN status (WireGuard, OpenVPN, IPsec)", "bool",
