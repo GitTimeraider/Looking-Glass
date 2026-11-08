@@ -922,7 +922,8 @@ How UniFi and OPNsense data are combined:
   time, direction, countries, ports, blocked IPs), *Q-Feeds* (hits in / out over time, interfaces, matches, internal
   hosts contacting listed addresses, ports) and *Suricata* (alerts by priority, alerted vs dropped, classifications,
   app protocols, countries, signatures with SID, interfaces, sources, targeted hosts, internal hosts alerting, TLS
-  JA3/JA4 fingerprints and SNI). A tab of a source you switched off (and that sent nothing) is hidden;
+  JA3/JA4 fingerprints and SNI). Switching a source off (Settings › OPNsense › Pull …) hides its tab, its tiles
+  and its Overview widgets right away;
   */dash/threats#suricata* opens a tab directly,
   *Zenarmor* (record types, applications and app categories, web categories, DNS/TLS/HTTP, hosts and devices, blocked
   destinations, threats, top talkers),

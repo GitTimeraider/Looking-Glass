@@ -194,6 +194,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
                    "nginx": settings.nginx_pull, "unbound": settings.unbound_query_pull}
         enabled = {k: (v and settings.opnsense_enabled) or k in has for k, v in enabled.items()}
+        for k, on in (("suricata", settings.ids_pull), ("crowdsec", settings.crowdsec_pull), ("qfeeds", settings.qfeeds_pull)):
+            if not on:  # switched off: hidden like its Threats tab, even with older data in the period
+                enabled[k] = False
         # Settings › OPNsense › Receive Zenarmor data off: hidden even while older Zenarmor events are in the period
         enabled["zenarmor"] = settings.zenarmor_enabled and (optional_sources.zenarmor() or "zenarmor" in has)
         return {
@@ -882,12 +885,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return await results.get(("dash", name, hours, tab), ttl_for(hours), lambda: dash_compute(name, hours, tab))
 
     async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
-        # an optional source whose pull is off and that has no data in the period: its tiles and panels are hidden
+        # Threats sources: switched off in Settings › OPNsense -> its tab and tiles are hidden, even with older data in
+        # the period; with OPNsense not set up (yet) they show only when there is data
         pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull}
         has = {r["s"] for r in await db.pool().fetch(
             "SELECT s FROM unnest($1::text[]) s WHERE EXISTS (SELECT 1 FROM events WHERE source = s "
             "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
-        off = {k for k, on in pulls.items() if not (on and settings.opnsense_enabled) and k not in has}
+        off = {k for k, on in pulls.items() if not on or (not settings.opnsense_enabled and k not in has)}
         return await run_dashboard(name, hours, off, tab)
 
     @app.get("/api/unifi")
@@ -1280,6 +1284,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             changed = await app_config.save(settings, payload.get("values") or {})
         except app_config.SettingsError as exc:
             raise HTTPException(400, str(exc)) from exc
+        if changed:  # e.g. a source switched off: pages show it at once, not after the cached results expire
+            results.clear()
         return {"ok": True, "changed": changed}
 
     def _candidate(values: dict) -> Any:

@@ -62,7 +62,8 @@ FIELDS: list[Field] = [
     Field("firewall_log_pull", "opnsense", "Pull firewall log via API", "choice",
           "auto = only when no filterlog arrives via syslog.", choices=("auto", "always", "never")),
     Field("unbound_query_pull", "opnsense", "Pull Unbound DNS queries", "bool", "Needs Reporting › Settings › Unbound DNS statistics."),
-    Field("crowdsec_pull", "opnsense", "Pull CrowdSec alerts & decisions", "bool"),
+    Field("crowdsec_pull", "opnsense", "Pull CrowdSec alerts & decisions", "bool",
+          "Off also hides the CrowdSec tab under Threats and its Overview widgets."),
     Field("blocklist_aliases", "opnsense", "Blocklist aliases", "text", "The firewall aliases (pf tables) of blocking "
           "tools, one tool per line: Name: alias, alias - * matches any characters. For each line Looking Glass finds the "
           "rules that use these aliases (the tool's own and yours), counts the addresses in them and the packets the "
@@ -70,8 +71,10 @@ FIELDS: list[Field] = [
           "it when a plugin renames its aliases. Needs the privileges 'Firewall: Alias: Edit' (sizes) and "
           "'Diagnostics: Firewall statistics' (rules).",
           placeholder="CrowdSec: crowdsec_blocklists, crowdsec6_blocklists\nQ-Feeds: __qfeeds_*"),
-    Field("qfeeds_pull", "opnsense", "Pull Q-Feeds events", "bool"),
-    Field("ids_pull", "opnsense", "Pull Suricata alerts", "bool"),
+    Field("qfeeds_pull", "opnsense", "Pull Q-Feeds events", "bool",
+          "Off also hides the Q-Feeds tab under Threats and its Overview widgets."),
+    Field("ids_pull", "opnsense", "Pull Suricata alerts", "bool",
+          "Off also hides the Suricata tab under Threats and its Overview widgets (also when Suricata sends syslog)."),
     Field("ids_alert_priority", "opnsense", "Suricata: raise alerts up to priority", "int",
           "Suricata rates every signature priority 1 (most severe) to 3. 1 = only priority 1 becomes an alert, 2 = "
           "priority 1 and 2, 3 = all. Lower-priority hits still show under Threats › Suricata.", min=1, max=3),
