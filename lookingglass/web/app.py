@@ -931,7 +931,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def devices(hours: float = Query(24, gt=0)):
         rows = await db.pool().fetch(
             "SELECT d.mac, d.hwaddr, host(d.ip) ip, d.hostname, d.name_source, d.vendor, d.interface, d.sources, d.lease_type, d.lease_expires, "
-            "d.online, d.trusted, d.notes, d.first_seen, d.last_seen, d.conn_type, d.conn_where, d.conn_signal, d.limits, "
+            "d.online, d.trusted, d.notes, d.first_seen, d.last_seen, d.conn_type, d.conn_where, d.conn_signal, d.limits, d.device_type, "
             "coalesce((d.limits->>'risk_threshold')::int, $2) risk_threshold, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = ANY(d.all_ips) AND e.ts > now() - make_interval(secs => $1)) events, "
             "(SELECT count(*) FROM events e WHERE e.src_ip = ANY(d.all_ips) AND e.action = 'block' AND e.ts > now() - make_interval(secs => $1)) blocked, "
@@ -947,11 +947,15 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     @app.get("/api/devices/limits")
     async def device_limit_defaults():
         """The global values a device without its own limits uses (Settings › Behaviour & ML)."""
-        return {"volume_factor": settings.behavior_volume_factor if settings.behavior_enabled else 0,
-                "ml_sensitivity": settings.anomaly_ml_sensitivity
-                if settings.behavior_enabled and settings.anomaly_ml_enabled else "off",
-                "risk_threshold": settings.risk_threshold if settings.risk_enabled else 0,
-                "behavior_enabled": settings.behavior_enabled, "risk_enabled": settings.risk_enabled}
+        from ..behavior import DEVICE_TYPES, LIMITS, global_limit
+        out = {key: global_limit(settings, key) for key in LIMITS}
+        out["types"] = DEVICE_TYPES  # each type's defaults sit between the device's own settings and these
+        out.update({"volume_factor": settings.behavior_volume_factor if settings.behavior_enabled else 0,
+                    "ml_sensitivity": settings.anomaly_ml_sensitivity
+                    if settings.behavior_enabled and settings.anomaly_ml_enabled else "off",
+                    "risk_threshold": settings.risk_threshold if settings.risk_enabled else 0,
+                    "behavior_enabled": settings.behavior_enabled, "risk_enabled": settings.risk_enabled})
+        return out
 
     @app.get("/api/devices/{mac}/profile")
     async def device_profile(mac: str):
@@ -1026,13 +1030,20 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def update_device(mac: str, payload: dict = Body(...)):
         pool = db.pool()
         if "limits" in payload:
-            # the device's own alert limits (traffic spike, machine learning, risk score); {} = global settings again
+            # the device's own alert limits (behaviour.LIMITS); a key left out / {} = the global setting again
             from ..behavior import clean_limits
             try:
                 limits = clean_limits(payload["limits"])
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
             await pool.execute("UPDATE devices SET limits = $2 WHERE mac = $1", mac.lower(), limits)
+        if "device_type" in payload:
+            from ..behavior import clean_type
+            try:
+                dtype = clean_type(payload["device_type"])
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            await pool.execute("UPDATE devices SET device_type = $2 WHERE mac = $1", mac.lower(), dtype)
         await pool.execute("UPDATE devices SET trusted = COALESCE($2, trusted), notes = COALESCE($3, notes) WHERE mac = $1",
                            mac.lower(), payload.get("trusted"), payload.get("notes"))
         if "hostname" in payload:

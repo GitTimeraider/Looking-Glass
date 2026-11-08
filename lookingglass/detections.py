@@ -64,6 +64,9 @@ def verdict(passed: bool, fw_blocked: int = 0, rule: str | None = None) -> str:
 LATERAL_PORTS = {22: "SSH", 23: "telnet", 135: "RPC", 139: "NetBIOS", 445: "SMB", 3389: "RDP", 5900: "VNC",
                  5985: "WinRM", 5986: "WinRM", 2375: "Docker API", 2376: "Docker API"}
 
+# alerts that count for combinations (corroboration, attack chains, risk score): open ones, and the ones a device
+# keeps silent (Devices page › settings: stored closed with close_reason 'muted', never shown as open)
+COUNTS_SQL = "(status = 'open' OR close_reason = 'muted')"
 # attack stages for attack_chains (rule names per stage, in order)
 EXTERNAL_CHAIN = [("Recon", {"port_scan", "host_sweep", "web_scanner", "threat_intel_inbound"}),
                   ("Attack", {"web_attack", "ids", "crowdsec", "brute_force", "password_spray", "distributed_brute_force"}),
@@ -98,13 +101,14 @@ async def device_info(ip: str | None) -> dict[str, Any] | None:
         return None
     try:
         row = await db.pool().fetchrow(
-            "SELECT mac, hostname, vendor, notes, conn_type, conn_where, conn_signal FROM devices "
+            "SELECT mac, hostname, vendor, notes, device_type, conn_type, conn_where, conn_signal FROM devices "
             "WHERE ip = $1::inet OR $1::inet = ANY(ips) ORDER BY mac LIKE 'ip:%', last_seen DESC LIMIT 1", ip)
     except Exception:  # noqa: BLE001 - invalid ip text etc.
         return None
     if not row:
         return None
-    return {k: row[k] for k in ("mac", "hostname", "vendor", "notes", "conn_type", "conn_where", "conn_signal") if row[k]}
+    return {k: row[k] for k in ("mac", "hostname", "vendor", "notes", "device_type", "conn_type", "conn_where", "conn_signal")
+            if row[k]}
 
 
 def who(ip: str | None, dev: dict[str, Any] | None = None) -> str:
@@ -193,7 +197,7 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
             "FROM events WHERE src_ip = $1::inet AND ts > now() - make_interval(hours => $2)", ip, hours)
         others = await pool.fetch(
             # acknowledged = you looked at it and know it: no longer a sign that something else is wrong
-            "SELECT DISTINCT rule FROM alerts WHERE (src_ip = $1::inet OR dst_ip = $1::inet) AND status = 'open' "
+            f"SELECT DISTINCT rule FROM alerts WHERE (src_ip = $1::inet OR dst_ip = $1::inet) AND {COUNTS_SQL} "
             "AND NOT (rule = ANY($2::text[])) AND last_seen > now() - make_interval(hours => $3) "
             "AND rule NOT IN ('new_device', 'admin_login', 'config_change', 'port_scan', 'host_sweep', 'attack_chain', 'risk_score')",
             ip, sorted(next((f for f in RULE_FAMILIES if rule in f), {rule})), hours)
@@ -274,7 +278,7 @@ async def alert_ports(filters: dict[str, Any] | None, since: datetime) -> dict[s
 async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint: str, description: str = "",
                       src_ip: str | None = None, dst_ip: str | None = None, data: dict | None = None,
                       count: int = 1, mode: str = "add", events: dict[str, Any] | None = None,
-                      span: tuple[Any, Any] | None = None, blocked: bool | str = False) -> None:
+                      span: tuple[Any, Any] | None = None, blocked: bool | str = False, silent: bool = False) -> None:
     """Create an alert or update the matching open one (dedupe by fingerprint within 24h).
 
     ``severity``: a level, or a Rating whose reasons are added to the description. A Rating of a windowed rule is
@@ -285,7 +289,10 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
     ``span``: (first, last) time of the events behind it, when they can lie outside the alert's own time span - events
     pulled from an API carry the time the tool saw them, which can be long before Looking Glass raised the alert.
     ``blocked``: the traffic behind it was blocked (True, or the reason: "Zenarmor blocked it") - never critical then,
-    however much confirms it; only your own severity rules (Settings › Alert filters) can still set critical."""
+    however much confirms it; only your own severity rules (Settings › Alert filters) can still set critical.
+    ``silent``: the device has this kind of alert set to "silent" (Devices page): stored as closed (close_reason
+    'muted') so it is never shown as open or notified, but it still counts for combinations - corroboration
+    (``evidence``), attack chains and the risk score read muted alerts too (COUNTS_SQL)."""
     pool = db.pool()
     data = dict(data or {})
     if blocked:
@@ -318,7 +325,7 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
                 f"Connected to: {dev['conn_where']}{signal} (UniFi). To cut it off quickly: UniFi Network › Client Devices › "
                 f"{name or dev.get('mac')} › Block, or an OPNsense firewall rule for {src_ip}.")
     row = await pool.fetchrow(
-        "SELECT id, severity, status, data ? 'filter' OR data ? 'auto_closed' AS by_filter, "
+        "SELECT id, severity, status, data ? 'filter' OR data ? 'auto_closed' OR data ? 'silent' AS by_filter, "
         "data->>'events_from' AS ev_from, data->>'events_to' AS ev_to, data->'ports' AS ports, created_at "
         "FROM alerts WHERE fingerprint = $1 "
         "AND last_seen > now() - interval '24 hours' ORDER BY id DESC LIMIT 1", fingerprint)
@@ -352,12 +359,25 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
             severity = ov["set_severity"]
             keep_max = False  # your choice replaces the stored level, also downwards
     status = "open"
+    if silent:
+        data["silent"] = True
+        if row and row["status"] != "closed":
+            silent = False  # already open (muted later): leave the alert you see as it is
+        else:
+            status = "closed"
     if flt := await alert_filters.check(rule, severity, title, description, src_ip, dst_ip, ports=data.get("ports")):
         if flt["action"] == "suppress":
             log.debug("alert '%s' stopped by filter %s", title, flt["id"])
             return
         status = "closed"  # "create as closed": kept for reference, never shown as open
         data["filter"] = {"id": flt["id"], "name": flt.get("name")}
+    if silent and row:  # a muted alert that keeps happening (or one you closed): collect the sightings, stays closed
+        count_sql = "count + $2" if mode == "add" else "GREATEST(count, $2)"
+        await pool.execute(f"UPDATE alerts SET last_seen = now(), count = {count_sql}, severity = $3, description = $4, "
+                           "data = $5, close_reason = coalesce(close_reason, 'muted') WHERE id = $1",
+                           row["id"], count, max(row["severity"], severity, key=SEVERITIES.index) if keep_max else severity,
+                           description, data)
+        return
     if row and row["status"] == "closed" and status != "closed":
         # You closed it: it stays closed while it keeps happening (it only collects the new sightings), unless it gets
         # WORSE than when you closed it. After 24 quiet hours it can come back as a new alert. A mute filter that closed
@@ -369,7 +389,8 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
             return
         if worse:
             description += (f"\n\nRe-opened: the severity rose from {row['severity']} to {severity} after it was closed.")
-        await pool.execute("UPDATE alerts SET status = 'open', close_reason = NULL, data = data - 'filter' - 'auto_closed' WHERE id = $1", row["id"])
+        await pool.execute("UPDATE alerts SET status = 'open', close_reason = NULL, "
+                           "data = data - 'filter' - 'auto_closed' - 'silent' WHERE id = $1", row["id"])
         log.info("ALERT re-opened [%s] %s", severity, title)
     if row:
         sev = max(row["severity"], severity, key=SEVERITIES.index) if keep_max else severity
@@ -383,10 +404,10 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
             row["id"], count, sev, description, data, status, title)
         return
     await pool.execute(
-        "INSERT INTO alerts (rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data, status) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-        rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data, status)
-    log.info("ALERT [%s] %s", severity, title)
+        "INSERT INTO alerts (rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data, status, close_reason) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data, status, "muted" if silent else None)
+    log.info("ALERT%s [%s] %s", " (silent)" if silent else "", severity, title)
 
 
 async def close_alerts(rule: str, fingerprints: list[str], why: str) -> None:
@@ -553,6 +574,13 @@ async def absorb_ip_devices(mac: str, ips: list[str], old_keys: list[str] | tupl
     if not keys:
         return
     async with db.pool().acquire() as con, con.transaction():
+        # a device type / own settings you gave a merged entry (a WireGuard peer) move along when the device has none
+        await con.execute(
+            "UPDATE devices m SET device_type = COALESCE(m.device_type, (SELECT d.device_type FROM devices d WHERE "
+            "d.mac = ANY($2::text[]) AND d.mac <> $1 AND d.device_type IS NOT NULL ORDER BY d.last_seen DESC LIMIT 1)), "
+            "limits = CASE WHEN m.limits <> '{}'::jsonb THEN m.limits ELSE COALESCE((SELECT d.limits FROM devices d "
+            "WHERE d.mac = ANY($2::text[]) AND d.mac <> $1 AND d.limits <> '{}'::jsonb ORDER BY d.last_seen DESC LIMIT 1), "
+            "m.limits) END WHERE m.mac = $1", mac, keys)
         await con.execute(
             "INSERT INTO device_profile (key, kind, value, first_seen, last_seen, hits) "
             "SELECT $1, kind, value, min(first_seen), max(last_seen), sum(hits) FROM device_profile "
@@ -597,8 +625,8 @@ async def delete_devices(keys: list[str]) -> None:
 async def merge_ip_duplicates() -> int:
     """``ip:`` entries (Zenarmor saw the client without a MAC) whose IP a device with a MAC (ARP / DHCP / UniFi) now
     holds are the same device: they are merged into it. Zenarmor can see a client on a new IP before the next lease /
-    ARP poll knows it there (new APs, a renewed lease), and the duplicate would otherwise stay. A name, trusted mark or
-    notes you gave the ``ip:`` entry move along when the device has none. Returns the number merged."""
+    ARP poll knows it there (new APs, a renewed lease), and the duplicate would otherwise stay. A name, trusted mark,
+    notes, device type or own settings you gave the ``ip:`` entry move along when the device has none. Returns the number merged."""
     pool = db.pool()
     rows = await pool.fetch(
         "SELECT DISTINCT ON (d.mac) d.mac dup, host(d.ip) ip, m.mac owner FROM devices d "
@@ -613,6 +641,8 @@ async def merge_ip_duplicates() -> int:
             "name_source = CASE WHEN d.hostname IS NOT NULL AND (m.hostname IS NULL OR d.name_rank > m.name_rank) "
             "THEN d.name_source ELSE m.name_source END, name_rank = GREATEST(m.name_rank, d.name_rank), "
             "trusted = m.trusted OR d.trusted, notes = COALESCE(NULLIF(btrim(m.notes), ''), d.notes), "
+            "device_type = COALESCE(m.device_type, d.device_type), "
+            "limits = CASE WHEN m.limits = '{}'::jsonb THEN d.limits ELSE m.limits END, "
             "vendor = COALESCE(m.vendor, d.vendor), first_seen = LEAST(m.first_seen, d.first_seen), "
             "sources = (SELECT array_agg(DISTINCT s) FROM unnest(m.sources || d.sources) s) "
             "FROM devices d WHERE m.mac = $1 AND d.mac = $2", r["owner"], r["dup"])
@@ -624,7 +654,7 @@ async def merge_ip_duplicates() -> int:
 
 async def device_upkeep(remove_days: int) -> tuple[int, int]:
     """Clients without a MAC that went quiet -> offline; with ``remove_days`` > 0, devices not seen for that long are
-    removed - except the ones you marked trusted, named yourself, wrote notes for or gave their own alert limits, and
+    removed - except the ones you marked trusted, named yourself, wrote notes for, gave a type or their own settings, and
     OPNsense's own interfaces.
     Returns (marked offline, removed)."""
     pool = db.pool()
@@ -636,7 +666,7 @@ async def device_upkeep(remove_days: int) -> tuple[int, int]:
     if remove_days > 0:
         removed = [r["mac"] for r in await pool.fetch(
             "SELECT mac FROM devices WHERE last_seen < now() - make_interval(days => $1) AND NOT trusted "
-            "AND name_source IS DISTINCT FROM 'manual' AND coalesce(btrim(notes), '') = '' AND limits = '{}' "
+            "AND name_source IS DISTINCT FROM 'manual' AND coalesce(btrim(notes), '') = '' AND limits = '{}' AND device_type IS NULL "
             "AND mac NOT LIKE 'if:%'",
             remove_days)]
         await delete_devices(removed)
@@ -1552,7 +1582,7 @@ class DetectionEngine:
         Outside → in: reconnaissance, then an attack, then access. Inside: a threat sign, then command & control or
         spreading - a compromised device.
 
-        Only OPEN alerts count: one you acknowledged or closed is known to you. Nor does a rule you closed as false
+        Only OPEN alerts count (and muted ones of devices set to "silent"): one you acknowledged or closed is known to you. Nor does a rule you closed as false
         positive for the same address in the last 30 days, and a chain needs at least one strong link: a rule that is
         a sign of compromise on its own (STRONG_CHAIN_RULES) or a behaviour alert rated high or critical."""
         rows = await db.pool().fetch(
@@ -1560,7 +1590,7 @@ class DetectionEngine:
             "array_agg(DISTINCT a.rule) FILTER (WHERE a.severity IN ('high', 'critical')) AS serious, "
             "min(a.created_at) AS first, array_agg(a.id ORDER BY a.id) AS ids, "
             "bool_and(coalesce((a.data->>'blocked')::boolean, false)) AS all_blocked "
-            "FROM alerts a WHERE a.status = 'open' AND a.last_seen > now() - interval '24 hours' "
+            "FROM alerts a WHERE (a.status = 'open' OR a.close_reason = 'muted') AND a.last_seen > now() - interval '24 hours' "
             "AND coalesce(a.src_ip, a.dst_ip) IS NOT NULL AND a.rule <> 'attack_chain' "
             "AND NOT EXISTS (SELECT 1 FROM alerts f WHERE f.rule = a.rule AND f.close_reason = 'false_positive' "
             "AND coalesce(f.src_ip, f.dst_ip) = coalesce(a.src_ip, a.dst_ip) AND f.last_seen > now() - interval '30 days') "

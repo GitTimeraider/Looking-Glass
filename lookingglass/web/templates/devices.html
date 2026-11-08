@@ -22,28 +22,28 @@
   <div class="dlg-head"><h3 id="prof-title">Learned behaviour</h3><button class="secondary" id="prof-close">Close</button></div>
   <div id="prof-body"></div>
 </dialog>
-<dialog id="lim" class="dlg" style="width:min(640px, calc(100vw - 32px))">
-  <div class="dlg-head"><h3 id="lim-title">Alert limits</h3><button class="secondary" id="lim-close">Close</button></div>
-  <p class="small muted">This device's own limits. Raise them for devices that are busy at random (a PC that downloads
-    games, a backup server), lower them for very steady devices (cameras, plugs, TVs) so a small change already counts.
-    Empty = the global setting under Settings › Behaviour &amp; ML.</p>
-  <form id="lim-form" class="filter-form">
-    <label>Traffic spike: alert at N times the device's normal hour
-      <input type="number" name="volume_factor" min="0" max="1000" step="1"><span class="small muted" data-def="volume_factor"></span></label>
-    <label>Machine learning (unusual activity): sensitivity
-      <select name="ml_sensitivity"><option value="">default</option><option value="off">off</option><option value="low">low - only very rare hours</option><option value="medium">medium</option><option value="high">high - more alerts</option></select>
-      <span class="small muted" data-def="ml_sensitivity"></span></label>
-    <label>Risk score: alert from
-      <input type="number" name="risk_threshold" min="0" max="1000" step="1"><span class="small muted" data-def="risk_threshold"></span></label>
-    <div class="full small muted">Traffic spike: connections, DNS lookups or upload in one hour compared to the device's median for
-      that hour; 0 = no spike alerts for this device. Risk score: 0 = never alert for this device (the score is still kept).</div>
-    <div class="full small" id="lim-err" style="color:var(--bad, #c33)"></div>
-    <div class="full"><button type="submit">Save</button> <button type="button" class="secondary" id="lim-reset">Use global settings</button></div>
+<dialog id="lim" class="dlg" style="width:min(720px, calc(100vw - 32px))">
+  <div class="dlg-head"><h3 id="lim-title">Device settings</h3><button class="secondary" id="lim-close">Close</button></div>
+  <p class="small muted">This device's own settings. Loosen them for devices that are busy at random (a PC that downloads
+    games, a backup server), tighten them for very steady devices (cameras, plugs, TVs) so a small change already counts.
+    Ticked "Use default" = the device follows its type's default, else Settings › Behaviour &amp; ML - also when that
+    changes later.
+    "Silent" keeps an alert type out of your alert list and notifications, but it still counts for combined alerts
+    (attack chains, the risk score) - you only hear about it when it adds up.</p>
+  <form id="lim-form">
+    <div class="lim-row lim-type"><label for="lim-type" class="lim-l"><b>Device type</b><span class="small muted">Laptops / desktops
+      and phones / tablets reach new countries, domains and apps all the time (travel, VPN, updates): their "new …"
+      alerts are silent or off by default. Also for devices without a MAC address, such as WireGuard peers.</span></label>
+      <span></span><div class="lim-v"><select id="lim-type"></select></div></div>
+    <div id="lim-rows"></div>
+    <div class="small" id="lim-err" style="color:var(--bad, #c33)"></div>
+    <div class="lim-actions"><button type="submit">Save</button> <button type="button" class="secondary" id="lim-reset"
+      title="Tick every &quot;Use default&quot; box and save (the device type stays)">Use defaults for everything</button></div>
   </form>
 </dialog>
 <p class="small muted">Risk: points from this device's alerts that fade over time (Settings › Behaviour &amp; ML). Learned: what
-  Looking Glass knows as normal for the device - click it to see or forget it. Limits: this device's own alert limits for
-  traffic spikes, machine learning and the risk score (⚙ = set).</p>
+  Looking Glass knows as normal for the device - click it to see or forget it. Settings: this device's own alert settings
+  (device type, traffic spikes, machine learning, risk score, "new …" alerts; ⚙ = the device has its own).</p>
 <p class="small muted">Sources: OPNsense ARP table (online state), DHCP leases (Kea, dnsmasq or ISC DHCP via the API) and DHCP log
   messages. Mark known devices as trusted; new MACs raise a "new device" alert.</p>
 {% endblock %}
@@ -75,17 +75,18 @@ async function load() {
   LG.barChart("c-active", [...devs].sort((a, b) => b.events - a.events).slice(0, 10).map(d => ({ label: d.hostname || d.ip || d.mac, v: d.events })), true);
   render();
 }
+const TYPE_SHORT = { computer: "computer", phone: "phone", server: "server", iot: "IoT", network: "network", other: "other" };
 const NAME_SRC = {manual: "Name set by you - never replaced automatically", "dnsmasq-static": "From a dnsmasq Hosts entry (static reservation)",
   "dhcp-dnsmasq": "Host name the device sent with its dnsmasq DHCP request", "dhcp-kea": "From the Kea DHCP lease", "dhcp-isc": "From the ISC DHCP lease",
   dhcp: "From the DHCP log", "unifi-alias": "Name given in UniFi", unifi: "Host name reported by UniFi", dns: "Name Unbound DNS shows for this IP", arp: "From the ARP table (reverse DNS)", zenarmor: "From Zenarmor device detection"};
 function render() {
   const f = document.getElementById("filter").value.toLowerCase(), week = Date.now() - 7 * 864e5;
-  const rows = devs.filter(d => (!f || [d.hostname, d.ip, d.mac, d.vendor, d.interface, d.notes, d.conn_where].join(" ").toLowerCase().includes(f)) &&
+  const rows = devs.filter(d => (!f || [d.hostname, d.ip, d.mac, d.vendor, d.interface, d.notes, d.conn_where, d.device_type].join(" ").toLowerCase().includes(f)) &&
     (show === "all" || (show === "online" && d.online) || (show === "new" && new Date(d.first_seen) > week) || (show === "untrusted" && !d.trusted) || (show === "alerts" && d.alerts > 0)));
   document.getElementById("info").textContent = `${rows.length} shown`;
   LG.table("#list", [
     {k: "online", l: "", f: v => `<span class="dot ${v ? "ok" : ""}" title="${v ? "online" : "offline"}"></span>`},
-    {k: "hostname", l: "Name", f: (v, r) => `<b class="cell-clip" title="${LG.esc(v || "")}">${LG.esc(v || "–")}</b>${v && r.name_source ? ` <span class="small muted" title="${LG.esc(NAME_SRC[r.name_source] || r.name_source)}">${LG.esc(r.name_source === "manual" ? "✎" : r.name_source)}</span>` : ""}${r.notes ? `<div class="small muted cell-clip" title="${LG.esc(r.notes)}">${LG.esc(r.notes)}</div>` : ""}`},
+    {k: "hostname", l: "Name", f: (v, r) => `<b class="cell-clip" title="${LG.esc(v || "")}">${LG.esc(v || "–")}</b>${v && r.name_source ? ` <span class="small muted" title="${LG.esc(NAME_SRC[r.name_source] || r.name_source)}">${LG.esc(r.name_source === "manual" ? "✎" : r.name_source)}</span>` : ""}${r.device_type ? ` <span class="pill" title="Device type (settings)">${LG.esc(TYPE_SHORT[r.device_type] || r.device_type)}</span>` : ""}${r.notes ? `<div class="small muted cell-clip" title="${LG.esc(r.notes)}">${LG.esc(r.notes)}</div>` : ""}`},
     {k: "ip", l: "IP / MAC", f: (v, r) => `${LG.ip(v)}${(r.other_ips || []).map(x => `<div>${LG.ip(x)}</div>`).join("")}<div class="muted">${r.mac.startsWith("ip:") ? "no MAC (VPN / routed)" : r.mac.startsWith("if:") ? LG.mac(r.hwaddr) : LG.mac(r.mac)}</div>`},
     {k: "vendor", l: "Vendor / interface", f: (v, r) => `${v ? `<span class="cell-clip" title="${LG.esc(v)}">${LG.esc(v)}</span>` : ""}${r.interface ? `<div class="small muted">${LG.esc(r.interface)}</div>` : ""}`},
     {k: "conn_where", l: "Connected to", f: (v, r) => v ? `<span class="cell-clip" title="${LG.esc(v)}">${LG.esc(v)}</span>${r.conn_signal ? `<div class="small muted">${r.conn_signal} dBm</div>` : ""}` : ""},
@@ -94,7 +95,7 @@ function render() {
     {k: "risk", l: "Alerts / risk", f: (v, r) => `${r.alerts ? `<a href="/alerts" class="badge high">${r.alerts}</a> ` : ""}${v ? `<span class="badge ${riskClass(v, r.risk_threshold)}" title="Risk score${r.risk_threshold ? ` (alert from ${r.risk_threshold})` : " (never alerted for this device)"}">${Math.round(v)}</span>` : ""}`},
     {k: "learned", l: "Learned", f: (v, r) => `<a href="#" data-prof="${LG.esc(r.mac)}" title="What is normal for this device">${v ? `${LG.num(v)} items` : "–"}</a>`},
     {k: "last_seen", l: "Seen", f: (v, r) => `<span class="small">${LG.ago(v)}<div class="muted" title="First seen">since ${LG.time(r.first_seen)}</div></span>`},
-    {k: "trusted", l: "Trusted", f: (v, r) => `<input type="checkbox" data-trust="${LG.esc(r.mac)}" ${v ? "checked" : ""}> <a href="#" data-edit="${LG.esc(r.mac)}">edit</a> <a href="#" data-lim="${LG.esc(r.mac)}" title="${LG.esc(limitsText(r.limits) || "This device's own alert limits")}">${Object.keys(r.limits || {}).length ? "⚙ limits" : "limits"}</a> <a href="#" class="small muted" data-del="${LG.esc(r.mac)}" title="Remove from the list">delete</a>`},
+    {k: "trusted", l: "Trusted", f: (v, r) => `<input type="checkbox" data-trust="${LG.esc(r.mac)}" ${v ? "checked" : ""}> <a href="#" data-edit="${LG.esc(r.mac)}">edit</a> <a href="#" data-lim="${LG.esc(r.mac)}" title="${LG.esc(limitsText(r.limits) || (r.device_type ? "Defaults of its device type" : "This device's own alert settings (now all global)"))}">${Object.keys(r.limits || {}).length || r.device_type ? "⚙ settings" : "settings"}</a> <a href="#" class="small muted" data-del="${LG.esc(r.mac)}" title="Remove from the list">delete</a>`},
   ], rows, "No devices yet - they appear from the ARP table / DHCP leases once the OPNsense API is connected.");
   fitList();
   document.querySelectorAll("[data-prof]").forEach(a => a.onclick = e => { e.preventDefault(); profile(a.dataset.prof); });
@@ -117,38 +118,96 @@ function riskClass(v, limit) {
   const t = Number(limit) || 60;  // 0 = never alerted: colour as with the default
   return Number(v) >= t ? "high" : Number(v) >= t / 3 ? "medium" : "low";
 }
-const LIM_LABEL = { volume_factor: "traffic spike", ml_sensitivity: "machine learning", risk_threshold: "risk score" };
+/* per-device settings (behaviour.LIMITS): a ticked "Use global" leaves the key out, so the device follows the global
+   setting - also after it is changed later */
+const MODE = [["alert", "alert"], ["silent", "silent"], ["off", "off - not detected"]];
+const ALERT_SILENT = [["alert", "alert"], ["silent", "silent"]];
+const modeFmt = v => v === "silent" ? "silent" : v === "off" ? "off" : "alert";
+const LIM = [
+  { group: "Alert limits" },
+  { k: "volume_factor", l: "Traffic spike: alert at N times the device's normal hour", t: "int", min: 0, max: 1000,
+    fmt: v => v ? v + "×" : "off", hint: "Connections, DNS lookups or upload in one hour against the device's median for that hour. 0 = no spike alerts." },
+  { k: "volume_alerts", l: "Traffic spike alerts", t: "choice", opts: ALERT_SILENT, fmt: modeFmt,
+    hint: "silent = stored, never shown or notified, but it counts for attack chains and the risk score." },
+  { k: "ml_sensitivity", l: "Machine learning (unusual activity)", t: "choice",
+    opts: [["off", "off"], ["low", "low - only very rare hours"], ["medium", "medium"], ["high", "high - more alerts"]], fmt: v => v },
+  { k: "ml_alerts", l: "Machine learning alerts", t: "choice", opts: ALERT_SILENT, fmt: modeFmt,
+    hint: "silent = stored, never shown or notified, but it counts for attack chains and the risk score." },
+  { k: "risk_threshold", l: "Risk score: alert from", t: "int", min: 0, max: 1000,
+    fmt: v => v ? "from " + v : "never", hint: "0 = never alert for this device (the score is still kept)." },
+  { group: "New behaviour alerts", hint: "silent = stored but never shown or notified; it still counts for attack chains, the risk score and other alerts about this device" },
+  { k: "new_country", l: "First contact with a new country", t: "choice", opts: MODE, fmt: modeFmt },
+  { k: "new_port", l: "First use of a new port / protocol", t: "choice", opts: MODE, fmt: modeFmt },
+  { k: "new_domain", l: "First lookup of a new domain", t: "choice", opts: MODE, fmt: modeFmt },
+  { k: "new_tls", l: "New TLS program (JA3/JA4)", t: "choice", opts: MODE, fmt: modeFmt },
+  { k: "odd_hours", l: "Activity at hours the device is never active", t: "choice", opts: MODE, fmt: modeFmt },
+  { k: "stable_max", l: "Predictable: max. new things per day", t: "int", min: 0, max: 1000, fmt: v => v ? String(v) : "0 (judge always)",
+    hint: "\"New …\" alerts only while the device picked up at most this many new things a day. 0 = always judge this device." },
+  { k: "min_days", l: "Quiet period before judging (days)", t: "int", min: 1, max: 60, fmt: v => v + " d",
+    hint: "No \"new …\" alerts until the device has been learned this long." },
+];
+const LIM_LABEL = Object.fromEntries(LIM.filter(x => x.k).map(x => [x.k, x]));
 function limitsText(l) {
-  return Object.entries(l || {}).map(([k, v]) => `${LIM_LABEL[k] || k}: ${k === "volume_factor" ? (v ? v + "×" : "off") : k === "risk_threshold" ? (v ? "from " + v : "never") : v}`).join(" · ");
+  return Object.entries(l || {}).map(([k, v]) => { const x = LIM_LABEL[k]; return x ? `${x.l}: ${x.fmt(v === true ? "alert" : v === false ? "off" : v)}` : `${k}: ${v}`; }).join(" · ");
 }
-let limMac = null;
+const toField = (x, v) => x.opts === MODE ? modeFmt(v === true ? "alert" : v === false ? "off" : v) : String(v ?? "");
+/* the value a device uses when "Use default" is ticked: its type's default (DEVICE_TYPES), else the global setting */
+let limMac = null, limDef = {};
+const limType = () => document.getElementById("lim-type").value;
+function inherited(k) {
+  const t = (limDef.types || {})[limType()], v = t && t.limits[k];
+  return v !== undefined ? { v, from: t.label.split(" (")[0].toLowerCase() } : { v: limDef[k], from: "global" };
+}
+function limRow(x, own) {
+  const id = "lim-" + x.k, isOwn = own[x.k] !== undefined && own[x.k] !== null, start = toField(x, isOwn ? own[x.k] : inherited(x.k).v);
+  const input = x.t === "int"
+    ? `<input type="number" id="${id}" data-own="${x.k}" min="${x.min}" max="${x.max}" step="1" value="${LG.esc(start)}">`
+    : `<select id="${id}" data-own="${x.k}">${x.opts.map(([v, l]) =>
+        `<option value="${v}" ${v === start ? "selected" : ""}>${LG.esc(l)}</option>`).join("")}</select>`;
+  return `<div class="lim-row${isOwn ? " own" : ""}"><label for="${id}" class="lim-l">${LG.esc(x.l)}${x.hint ? `<span class="small muted">${LG.esc(x.hint)}</span>` : ""}</label>
+    <label class="lim-g small"><input type="checkbox" data-global="${x.k}" ${isOwn ? "" : "checked"}> Use default <span class="muted" data-from="${x.k}"></span></label>
+    <div class="lim-v">${input}</div></div>`;
+}
+function syncRow(cb) {  // "Use default" ticked: the field shows the type's / global value and cannot be edited
+  const x = LIM_LABEL[cb.dataset.global], el = document.querySelector(`[data-own="${x.k}"]`), inh = inherited(x.k);
+  el.disabled = cb.checked; cb.closest(".lim-row").classList.toggle("own", !cb.checked);
+  document.querySelector(`[data-from="${x.k}"]`).textContent = `(${x.fmt(inh.v)} · ${inh.from})`;
+  if (cb.checked) el.value = toField(x, inh.v);
+}
 async function limits(mac) {
-  const d = devs.find(x => x.mac === mac) || {}, def = await LG.api("/api/devices/limits"), form = document.getElementById("lim-form");
-  limMac = mac;
-  document.getElementById("lim-title").textContent = `Alert limits: ${d.hostname || d.ip || mac}`;
-  document.getElementById("lim-err").textContent = "";
-  const own = d.limits || {};
-  for (const k of ["volume_factor", "ml_sensitivity", "risk_threshold"]) form.elements[k].value = own[k] ?? "";
-  const g = { volume_factor: def.volume_factor ? `${def.volume_factor}×` : "off",
-    ml_sensitivity: def.ml_sensitivity, risk_threshold: def.risk_threshold ? `from ${def.risk_threshold}` : "off" };
-  form.querySelectorAll("[data-def]").forEach(el => el.textContent = `Global setting: ${g[el.dataset.def]}`);
-  form.elements.volume_factor.placeholder = def.volume_factor || "off";
-  form.elements.risk_threshold.placeholder = def.risk_threshold || "off";
-  if (!def.behavior_enabled) document.getElementById("lim-err").textContent = "Learn device behaviour is off (Settings › Behaviour & ML): traffic spike and machine learning limits have no effect until it is on.";
-  else if (!def.risk_enabled) document.getElementById("lim-err").textContent = "The risk score is off (Settings › Behaviour & ML): the risk limit has no effect until it is on.";
+  const d = devs.find(x => x.mac === mac) || {}, own = d.limits || {};
+  limDef = await LG.api("/api/devices/limits"); limMac = mac;
+  document.getElementById("lim-title").textContent = `Device settings: ${d.hostname || d.ip || mac}`;
+  const sel = document.getElementById("lim-type");
+  sel.innerHTML = `<option value="">not set - global settings</option>` + Object.entries(limDef.types || {}).map(([k, t]) =>
+    `<option value="${k}">${LG.esc(t.label)}</option>`).join("");
+  sel.value = d.device_type || "";
+  document.getElementById("lim-rows").innerHTML = LIM.map(x => x.group ? `<h4 class="lim-group">${x.group}${x.hint ? ` <span class="small muted">${LG.esc(x.hint)}</span>` : ""}</h4>` : limRow(x, own)).join("");
+  const sync = () => document.querySelectorAll("#lim-rows [data-global]").forEach(syncRow);
+  document.querySelectorAll("#lim-rows [data-global]").forEach(cb => cb.onchange = () => syncRow(cb));
+  sel.onchange = sync; sync();
+  const err = document.getElementById("lim-err");
+  err.textContent = !limDef.behavior_enabled ? "Learn device behaviour is off (Settings › Behaviour & ML): only the risk score setting has an effect until it is on."
+    : !limDef.risk_enabled ? "The risk score is off (Settings › Behaviour & ML): the risk setting has no effect until it is on." : "";
   document.getElementById("lim").showModal();
 }
 async function saveLimits(body) {
   try {
-    await LG.api(`/api/devices/${encodeURIComponent(limMac)}`, { method: "POST", body: { limits: body } });
+    await LG.api(`/api/devices/${encodeURIComponent(limMac)}`, { method: "POST", body: { limits: body, device_type: limType() } });
     document.getElementById("lim").close(); load();
   } catch (err) { document.getElementById("lim-err").textContent = err.message; }
 }
 document.getElementById("lim-form").onsubmit = e => {
-  e.preventDefault(); const f = e.target.elements;
-  saveLimits({ volume_factor: f.volume_factor.value, ml_sensitivity: f.ml_sensitivity.value, risk_threshold: f.risk_threshold.value });
+  e.preventDefault(); const body = {};
+  document.querySelectorAll("#lim-rows [data-global]").forEach(cb => {
+    if (!cb.checked) body[cb.dataset.global] = document.querySelector(`[data-own="${cb.dataset.global}"]`).value;
+  });
+  saveLimits(body);
 };
-document.getElementById("lim-reset").onclick = () => saveLimits({});
+document.getElementById("lim-reset").onclick = () => {
+  document.querySelectorAll("#lim-rows [data-global]").forEach(cb => { cb.checked = true; syncRow(cb); });
+  saveLimits({});
+};
 document.getElementById("lim-close").onclick = () => document.getElementById("lim").close();
 const KIND = { country: "Countries", port: "Ports / protocols", domain: "Domains", tls: "TLS programs (JA3/JA4)", hour: "Active hours" };
 async function profile(mac) {

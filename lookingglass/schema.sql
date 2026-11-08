@@ -139,8 +139,14 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_where TEXT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_signal INTEGER;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS conn_seen TIMESTAMPTZ;
 -- per-device alert limits set on the Devices page; a missing key = the global setting (Settings › Behaviour & ML):
--- {"volume_factor": 0..1000 (0 = off), "ml_sensitivity": off|low|medium|high, "risk_threshold": 0..1000 (0 = never)}
+-- {"volume_factor": 0..1000 (0 = off), "ml_sensitivity": off|low|medium|high, "risk_threshold": 0..1000 (0 = never),
+--  "volume_alerts" / "ml_alerts": alert|silent, "new_country" / "new_port" / "new_domain" / "new_tls" / "odd_hours":
+--  alert|silent|off, "stable_max": 0..1000, "min_days": 1..60}  (behavior.LIMITS). silent = the alert is stored closed
+-- with close_reason 'muted': never shown as open, but it counts for attack chains, corroboration and the risk score
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS limits JSONB NOT NULL DEFAULT '{}';
+-- the kind of device, set on the Devices page (behavior.DEVICE_TYPES): its defaults sit between the device's own
+-- limits and the global settings - a laptop or phone does not get "new country" alerts like a camera. NULL = not set
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_type TEXT;
 -- every address of a device with several (OPNsense: one MAC for a port and its VLANs); ip is the main one
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS ips INET[];
 -- the hardware address of a device not keyed by it (OPNsense interface "if:vlan0.20": VLANs share the port's MAC)

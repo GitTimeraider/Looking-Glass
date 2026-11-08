@@ -136,7 +136,8 @@ function portList(a, side) {
 const expanded = new Set();
 function statusPills(a) {
   return `<span class="pill st-${LG.esc(a.status)}">${LG.esc(a.status)}</span>` +
-    (a.close_reason === "false_positive" ? `<span class="pill" title="Closed as false positive">false positive</span>` : "");
+    (a.close_reason === "false_positive" ? `<span class="pill" title="Closed as false positive">false positive</span>` : "") +
+    (a.close_reason === "muted" ? `<span class="pill" title="This device has this alert type set to silent (Devices › settings): stored, never shown as open, but it counts for attack chains and the risk score">silent</span>` : "");
 }
 function details(a) {
   const ev = eventsUrl(a), d = desc(a);
