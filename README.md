@@ -917,7 +917,7 @@ How UniFi and OPNsense data are combined:
   *Firewall* (actions, interfaces, protocols, ports, countries, rules, allowed inbound, internal hosts being blocked),
   *DNS* (queries vs. blocked, types, rcodes, blocklists, clients, NXDOMAIN, tunneling candidates),
   *Web server* (status classes, attack patterns over time, vhosts, paths, 4xx probing, user agents, clients),
-  *Threats* (Suricata, CrowdSec, Q-Feeds, alerts by rule/severity, top attackers across all sources, active bans),
+  *Threats* (Suricata, CrowdSec, Q-Feeds, alerts by rule/severity, top attackers across all sources),
   *Suricata IDS* (alerts by priority, alerted vs dropped, classifications, app protocols, countries, signatures with
   SID, interfaces, sources, targeted hosts, internal hosts alerting, TLS JA3/JA4 fingerprints and SNI),
   *Zenarmor* (record types, applications and app categories, web categories, DNS/TLS/HTTP, hosts and devices, blocked

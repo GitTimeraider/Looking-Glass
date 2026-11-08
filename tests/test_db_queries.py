@@ -69,7 +69,7 @@ def test_threats_dashboard_crowdsec_and_switched_off_sources():
             # Suricata switched off and without data: its tiles and panels are left out, the rest stays
             res = await run_dashboard("threats", 24, off={"suricata"})
             by = {p["id"]: p for p in res["panels"]}
-            assert "cls" not in by and "sigs" not in by and "cs" in by
+            assert "cls" not in by and "sigs" not in by and "csfw" in by
             assert "Suricata events" not in by["kpi"]["rows"][0] and "CrowdSec alerts" in by["kpi"]["rows"][0]
         finally:
             await db.pool().execute("TRUNCATE events")
@@ -94,9 +94,8 @@ def test_crowdsec_alert_pulled_late_counts_in_the_period():
             await pool.execute("UPDATE events SET received_at = now() - interval '2 days'")
             by = {p["id"]: p for p in (await run_dashboard("threats", 24 * 7))["panels"]}
             assert by["kpi"]["rows"][0]["CrowdSec alerts"] == 1
-            assert by["cs"]["rows"][0]["scenario"] == "firewallservices/pf-scan-multi_ports"
             by = {p["id"]: p for p in (await run_dashboard("threats", 24))["panels"]}  # neither happened nor arrived today
-            assert by["kpi"]["rows"][0]["CrowdSec alerts"] == 0 and not by["cs"]["rows"]
+            assert by["kpi"]["rows"][0]["CrowdSec alerts"] == 0
         finally:
             await db.pool().execute("TRUNCATE events")
             await db.close()
