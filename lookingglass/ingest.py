@@ -193,6 +193,9 @@ class SyslogServer:
             return
         if ev is None:
             return
+        if ev.get("source") == "zenarmor" and not self.settings.zenarmor_enabled:
+            STATS.dropped += 1
+            return
         STATS.parsed += 1
         if isinstance(ev.get("ts"), datetime):
             ev["ts"] = self.skew.correct(sender, ev["ts"], datetime.now(timezone.utc))

@@ -23,7 +23,7 @@
 <div class="layout">
   <nav class="side" id="side">
     <div class="brand">Looking<span>Glass</span></div>
-    {% macro dash_links(group) %}{% for key, label, grp in dash_nav() if grp == group %}<a href="/dash/{{ key }}" class="{{ 'active' if path == '/dash/' ~ key }}">{{ label }}</a>{% endfor %}{% endmacro %}
+    {% macro dash_links(group) %}{% for key, label, grp in dash_nav() if grp == group and key not in dash_hidden() %}<a href="/dash/{{ key }}" class="{{ 'active' if path == '/dash/' ~ key }}">{{ label }}</a>{% endfor %}{% endmacro %}
     <div class="grp">General</div>
     <a href="/" class="{{ 'active' if path == '/' }}">Overview</a>
     <a href="/alerts" class="{{ 'active' if path == '/alerts' }}">Alerts</a>

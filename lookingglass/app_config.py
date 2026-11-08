@@ -72,6 +72,9 @@ FIELDS: list[Field] = [
           placeholder="CrowdSec: crowdsec_blocklists, crowdsec6_blocklists\nQ-Feeds: __qfeeds_*"),
     Field("qfeeds_pull", "opnsense", "Pull Q-Feeds events", "bool"),
     Field("ids_pull", "opnsense", "Pull Suricata IDS alerts", "bool"),
+    Field("zenarmor_enabled", "opnsense", "Receive Zenarmor data", "bool",
+          "Off: Zenarmor records (Elasticsearch stream and syslog) are discarded and the Zenarmor overview widget and "
+          "dashboard link are hidden. Stored Zenarmor events are kept."),
     Field("nginx_pull", "opnsense", "Pull nginx access / error logs", "bool",
           "nginx plugin: its access logs are never sent by OPNsense remote syslog, so they are read via the API."),
     Field("vpn_pull", "opnsense", "Pull VPN status (WireGuard, OpenVPN, IPsec)", "bool",

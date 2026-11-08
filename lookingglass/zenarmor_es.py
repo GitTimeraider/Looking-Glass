@@ -107,6 +107,9 @@ def create_es_app(settings: Settings, writer: EventWriter) -> Starlette:
 
     async def bulk(request: Request, path: str) -> Response:
         started = time.monotonic()
+        if not settings.zenarmor_enabled:  # switched off: answer OK so Zenarmor doesn't queue and retry, keep nothing
+            await request.body()
+            return es_json({"took": 0, "errors": False, "items": []})
         body = await request.body()
         if len(body) > MAX_BODY:
             return es_json({"error": "body too large"}, 413)
