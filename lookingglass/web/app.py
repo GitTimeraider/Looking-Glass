@@ -84,14 +84,8 @@ def _background(coro) -> None:
 
 def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, Any] | None = None) -> FastAPI:
     templates.env.globals["time_format"] = lambda: settings.time_format  # live setting, read per page
-    # sidebar dashboards of sources that are switched off (live as well); Suricata also arrives by syslog, so its
-    # page stays while syslog delivered Suricata lines in the last day
-    def dash_hidden() -> set[str]:
-        hidden = set() if settings.zenarmor_enabled else {"zenarmor"}
-        if not settings.ids_pull and time.time() - STATS.last_by_source.get("suricata", 0) > 86400:
-            hidden.add("suricata")
-        return hidden
-    templates.env.globals["dash_hidden"] = dash_hidden
+    # sidebar dashboards of sources that are switched off (live as well)
+    templates.env.globals["dash_hidden"] = lambda: set() if settings.zenarmor_enabled else {"zenarmor"}
     templates.env.globals["theme_attrs"] = lambda: Markup(  # <html> attributes for the theme (style.css), live as well
         f' data-theme="{escape(settings.theme)}" data-mode="{"light" if settings.theme == "light" else "dark"}" '
         f'data-accent="{escape(settings.accent)}"')
@@ -873,6 +867,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     # ------------------------------------------------- function dashboards ---
     @app.get("/dash/{name}", response_class=HTMLResponse)
     async def dash_page(request: Request, name: str):
+        if name == "suricata":  # Suricata is a tab of the Threats page
+            return RedirectResponse("/dash/threats#suricata")
         if name not in DASHBOARDS:
             raise HTTPException(404)
         return templates.TemplateResponse(request, "dash.html", {
@@ -880,19 +876,19 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "ai_enabled": settings.ai_enabled, "user": request.session.get("user")})
 
     @app.get("/api/dash/{name}")
-    async def dash_data(name: str, hours: float = Query(24, gt=0, le=24 * 90)):
+    async def dash_data(name: str, hours: float = Query(24, gt=0, le=24 * 90), tab: str | None = Query(None, max_length=40)):
         if name not in DASHBOARDS:
             raise HTTPException(404)
-        return await results.get(("dash", name, hours), ttl_for(hours), lambda: dash_compute(name, hours))
+        return await results.get(("dash", name, hours, tab), ttl_for(hours), lambda: dash_compute(name, hours, tab))
 
-    async def dash_compute(name: str, hours: float) -> dict[str, Any]:
+    async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
         # an optional source whose pull is off and that has no data in the period: its tiles and panels are hidden
         pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull}
         has = {r["s"] for r in await db.pool().fetch(
             "SELECT s FROM unnest($1::text[]) s WHERE EXISTS (SELECT 1 FROM events WHERE source = s "
             "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
         off = {k for k, on in pulls.items() if not (on and settings.opnsense_enabled) and k not in has}
-        return await run_dashboard(name, hours, off)
+        return await run_dashboard(name, hours, off, tab)
 
     @app.get("/api/unifi")
     async def unifi_data():

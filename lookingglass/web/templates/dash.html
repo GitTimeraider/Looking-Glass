@@ -7,6 +7,7 @@
     <button data-v="1">1h</button><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button>
   </div>
 </header>
+<div class="tabs" id="dtabs" hidden></div>
 <div class="grid g3" id="panels" style="grid-auto-flow: row dense"></div>
 {% endblock %}
 {% block scripts %}
@@ -20,6 +21,24 @@ const FMT = {
   num: LG.num,
 };
 let built = false, step = 3600;
+// dashboards with tabs (Threats): the tab is in the address (#suricata), only its panels are loaded
+let tab = decodeURIComponent(location.hash.slice(1)), builtTab = null;
+function drawTabs(d) {
+  const el = document.getElementById("dtabs");
+  el.hidden = !(d.tabs && d.tabs.length);
+  if (el.hidden) return;
+  el.innerHTML = d.tabs.map(t => `<button type="button" data-t="${LG.esc(t.id)}" class="${t.id === d.tab ? "on" : ""}">${LG.esc(t.title)}</button>`).join("");
+  el.querySelectorAll("button").forEach(b => b.onclick = () => {
+    if (b.dataset.t === tab && built) return;
+    tab = b.dataset.t;
+    history.replaceState(null, "", "#" + tab);
+    el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+    document.getElementById("panels").innerHTML = `<div class="card span3 muted">Loading…</div>`;
+    built = false;
+    load();
+  });
+}
+window.addEventListener("hashchange", () => { const h = decodeURIComponent(location.hash.slice(1)); if (h && h !== tab) { tab = h; built = false; load(); } });
 
 /* ---- click-through: every chart element, table row and tile opens Event search with matching filters ----
    panel.drill = {base: {...}, by: "param" | {param: column}, series: "param", tiles: {"Tile": {...} | null}, url}
@@ -116,8 +135,10 @@ function render(d, only) {
 
 async function load() {
   try {
-    const d = await LG.api(`/api/dash/${NAME}?hours=${hours}`);
-    if (!built) build(d);
+    const d = await LG.api(`/api/dash/${NAME}?hours=${hours}${tab ? `&tab=${encodeURIComponent(tab)}` : ""}`);
+    if (d.tab && tab && d.tab !== tab) { tab = d.tab; history.replaceState(null, "", "#" + tab); }  // that tab's source is off
+    drawTabs(d);
+    if (!built || d.tab !== builtTab) { build(d); builtTab = d.tab; }
     render(d);
     document.getElementById("updated").textContent = "updated " + LG.clock();
   } catch (e) { document.getElementById("panels").innerHTML = `<div class="card">Failed to load: ${LG.esc(e.message)}</div>`; built = false; }

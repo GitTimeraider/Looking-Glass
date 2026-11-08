@@ -46,19 +46,19 @@ QUERIES: dict[str, str] = {
     "auth_success": "SELECT host(src_ip) ip, username, program, count(*) n, max(ts) last FROM events WHERE action = 'login_success' "
                     "AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2, 3 ORDER BY 5 DESC LIMIT 15",
     "ids_signatures": "SELECT message signature, max(data->>'classification') classification, count(*) n, count(DISTINCT src_ip) sources FROM events "
-                      "WHERE source = 'suricata' AND ts > now() - make_interval(secs => $1) AND action IS NOT NULL AND action <> 'tls' GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
+                      "WHERE source = 'suricata' AND ts > now() - make_interval(secs => $1) AND action IN ('alert', 'drop', 'blocked', 'reject') GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
     "ids_top_sources": "SELECT host(src_ip) ip, max(src_country) country, count(DISTINCT message) sigs, count(*) n FROM events "
-                       "WHERE source = 'suricata' AND action IS NOT NULL AND action <> 'tls' AND src_ip IS NOT NULL "
+                       "WHERE source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject') AND src_ip IS NOT NULL "
                        "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 4 DESC LIMIT 15",
     "ids_top_targets": "SELECT host(dst_ip) ip, dst_port port, count(DISTINCT src_ip) sources, count(*) n FROM events "
-                       "WHERE source = 'suricata' AND action IS NOT NULL AND action <> 'tls' AND dst_ip IS NOT NULL "
+                       "WHERE source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject') AND dst_ip IS NOT NULL "
                        "AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 4 DESC LIMIT 15",
     "ids_classifications": "SELECT coalesce(data->>'classification', data->>'category', '?') classification, count(*) n, "
                            "count(*) FILTER (WHERE action IN ('drop', 'blocked')) dropped FROM events "
-                           "WHERE source = 'suricata' AND action IS NOT NULL AND action <> 'tls' "
+                           "WHERE source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject') "
                            "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
     "ids_internal_hosts": "SELECT host(src_ip) ip, count(DISTINCT message) sigs, count(*) n FROM events "
-                          "WHERE source = 'suricata' AND action IS NOT NULL AND action <> 'tls' AND (src_ip << '10.0.0.0/8' "
+                          "WHERE source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject') AND (src_ip << '10.0.0.0/8' "
                           "OR src_ip << '172.16.0.0/12' OR src_ip << '192.168.0.0/16' OR src_ip << 'fc00::/7') "
                           "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
     "crowdsec_scenarios": "SELECT coalesce(data->>'scenario', data->>'reason') scenario, count(*) n, count(DISTINCT src_ip) ips FROM events "

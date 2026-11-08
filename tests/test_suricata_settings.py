@@ -32,15 +32,18 @@ def test_ids_alert_priority_ignored_sids_and_tls():
                    for sig, sid, prio in (("P1", 1, 1), ("P3", 3, 3), ("Ignored", 2210050, 1))]
             evs.append(suricata_from_eve({"timestamp": now.isoformat(), "event_type": "tls", "src_ip": "192.168.1.20",
                                           "dest_ip": "198.51.100.7", "tls": {"sni": "example.com"}}, now))
+            evs.append(suricata_from_eve({"timestamp": now.isoformat(), "event_type": "flow", "src_ip": "192.168.1.20",
+                                          "dest_ip": "198.51.100.7"}, now))
             for e in evs:
                 await pool.execute("INSERT INTO events (ts, source, severity, action, src_ip, dst_ip, message, domain, data) "
                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", e["ts"], e["source"], e.get("severity"),
                                    e.get("action"), e.get("src_ip"), e.get("dst_ip"), e.get("message"), e.get("domain"), e.get("data"))
             await DetectionEngine(Settings(ids_alert_priority=2, ids_ignore_sids="2210050")).ids_alerts()
             assert [r["title"] for r in await pool.fetch("SELECT title FROM alerts")] == ["Suricata: P1"]
-            out = await dashboards.run_dashboard("suricata", 24)
+            out = await dashboards.run_dashboard("threats", 24, tab="suricata")
+            assert out["tab"] == "suricata" and out["source"] == "suricata"
             assert not [p for p in out["panels"] if "error" in p]
-            kpi = next(p for p in out["panels"] if p["id"] == "kpi")["rows"][0]
+            kpi = next(p for p in out["panels"] if p["id"] == "ids_kpi")["rows"][0]
             assert kpi["Alerts"] == 3 and kpi["TLS records"] == 1
         finally:
             await db.close()

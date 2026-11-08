@@ -24,7 +24,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 |---|---|
 | **Alerts** - every alert says why it got its severity, which device it is and where it is connected; mute, re-rate or ask the AI | **AI analyst** - asks the database itself and answers with findings and actions |
 | ![Alerts](docs/screenshots/alerts.png) | ![AI analyst](docs/screenshots/ai-analyst.png) |
-| **Firewall dashboard** - one of ten dashboards (DNS, web server, threats, Suricata, Zenarmor, logins, VPN, Wi-Fi, logs) | **Devices** - inventory from ARP, DHCP, UniFi and Zenarmor, with risk score and learned behaviour |
+| **Firewall dashboard** - one of nine dashboards (DNS, web server, threats, Zenarmor, logins, VPN, Wi-Fi, logs) | **Devices** - inventory from ARP, DHCP, UniFi and Zenarmor, with risk score and learned behaviour |
 | ![Firewall dashboard](docs/screenshots/firewall.png) | ![Devices](docs/screenshots/devices.png) |
 | **OPNsense** - hardware, load, temperatures, gateways, interfaces and services | **UniFi** - access points, switches, Wi-Fi and wired clients, neighbouring Wi-Fi |
 | ![OPNsense](docs/screenshots/opnsense.png) | ![UniFi](docs/screenshots/unifi.png) |
@@ -917,9 +917,13 @@ How UniFi and OPNsense data are combined:
   *Firewall* (actions, interfaces, protocols, ports, countries, rules, allowed inbound, internal hosts being blocked),
   *DNS* (queries vs. blocked, types, rcodes, blocklists, clients, NXDOMAIN, tunneling candidates),
   *Web server* (status classes, attack patterns over time, vhosts, paths, 4xx probing, user agents, clients),
-  *Threats* (CrowdSec, Q-Feeds, alerts by rule/severity, top attackers across all sources),
-  *Suricata* (alerts by priority, alerted vs dropped, classifications, app protocols, countries, signatures with
-  SID, interfaces, sources, targeted hosts, internal hosts alerting, TLS JA3/JA4 fingerprints and SNI),
+  *Threats* with four tabs: *Main* (all three sources together: key figures, threat events and blocks per source,
+  alerts by rule/severity, top attackers, blocklists, live log), *CrowdSec* (alerts, decisions, blocklist blocks over
+  time, direction, countries, ports, blocked IPs), *Q-Feeds* (hits in / out over time, interfaces, matches, internal
+  hosts contacting listed addresses, ports) and *Suricata* (alerts by priority, alerted vs dropped, classifications,
+  app protocols, countries, signatures with SID, interfaces, sources, targeted hosts, internal hosts alerting, TLS
+  JA3/JA4 fingerprints and SNI). A tab of a source you switched off (and that sent nothing) is hidden;
+  */dash/threats#suricata* opens a tab directly,
   *Zenarmor* (record types, applications and app categories, web categories, DNS/TLS/HTTP, hosts and devices, blocked
   destinations, threats, top talkers),
   *Authentication* (failed/successful logins, IPs with failed logins, usernames tried, config changes),

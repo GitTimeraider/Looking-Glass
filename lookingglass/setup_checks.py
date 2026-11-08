@@ -199,12 +199,12 @@ async def run(settings: Settings) -> dict[str, Any]:
         check("ids", "Suricata", "duplicate", ["API", "syslog"], "Alerts arrive via the API and via syslog.",
               ["OPNsense › Services › Intrusion Detection › Administration: untick 'Enable syslog alerts' / 'Enable eve syslog "
                "output' (the API already pulls every alert), or switch off Looking Glass › Settings › OPNsense › Pull Suricata alerts."],
-              count=ids_api, last_seen=last("suricata"), link="/dash/suricata")
+              count=ids_api, last_seen=last("suricata"), link="/dash/threats#suricata")
     elif ij.get("ok") and settings.ids_pull:
         check("ids", "Suricata", "ok", ["API"], "Alerts pulled via the API." + ("" if ids_api else " No alerts in 24 hours."),
-              avoid=["'Enable syslog alerts' in Intrusion Detection (would duplicate)."], count=ids_api, last_seen=last("suricata"), link="/dash/suricata")
+              avoid=["'Enable syslog alerts' in Intrusion Detection (would duplicate)."], count=ids_api, last_seen=last("suricata"), link="/dash/threats#suricata")
     elif ids_sys:
-        check("ids", "Suricata", "ok", ["syslog"], "Alerts via syslog.", count=ids_sys, last_seen=last("suricata"), link="/dash/suricata")
+        check("ids", "Suricata", "ok", ["syslog"], "Alerts via syslog.", count=ids_sys, last_seen=last("suricata"), link="/dash/threats#suricata")
     elif ij.get("forbidden"):
         check("ids", "Suricata", "action", [], "The API user may not read Suricata alerts.",
               [f"{PRIV}: add 'Services: Intrusion Detection' (or 'GUI - All pages')."])
@@ -224,7 +224,7 @@ async def run(settings: Settings) -> dict[str, Any]:
             continue  # _crowdsec_check
         if j.get("ok") and pulled:
             check(key, name, "ok", ["API"], "Pulled via the API (no syslog needed)." + ("" if n(key) else f" Nothing in 24 hours.{hint}"),
-                  count=n(key), last_seen=last(key), link="/dash/threats")
+                  count=n(key), last_seen=last(key), link=f"/dash/threats#{key}")
         elif j.get("forbidden"):
             check(key, name, "action", [], f"The API user may not read {name}.", [f"{PRIV}: add '{page}' (or 'GUI - All pages')."])
         else:
@@ -501,4 +501,4 @@ async def _crowdsec_check(check: Any, own_events: int, own_last: Any) -> None:
                 todo.append(f"{fw['unnamed']:,} blocked lines in 24 hours have no rule name: the rule names are read from "
                             f"the API every 10 minutes - if this stays, add 'Diagnostics: Firewall sessions' to the API user ({PRIV}).")
     check("crowdsec", "CrowdSec", "action" if todo else "ok", ["API"], " · ".join(lines), todo,
-          count=own_events + fw["cs"], last_seen=own_last, link="/dash/threats")
+          count=own_events + fw["cs"], last_seen=own_last, link="/dash/threats#crowdsec")

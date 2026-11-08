@@ -1049,7 +1049,7 @@ class DetectionEngine:
             "SELECT src_ip, dst_ip, message, min(severity) AS sev, count(*) AS hits, max(data->>'classification') AS cls, "
             "min(ts) AS first, max(ts) AS last, "
             "bool_and(action IN ('drop', 'blocked')) AS all_blocked "
-            "FROM events WHERE id > $1 AND id <= $2 AND source = 'suricata' AND action IS NOT NULL AND action <> 'tls' "
+            "FROM events WHERE id > $1 AND id <= $2 AND source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject') "
             # Settings › OPNsense: priority limit (prio 1/2/3 are stored as severity 2/3/4, unknown 5) and ignored SIDs
             "AND severity <= $3 AND NOT coalesce(data->>'sid', '') = ANY($4::text[]) "
             "GROUP BY src_ip, dst_ip, message", last, current,

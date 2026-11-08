@@ -74,9 +74,9 @@ FIELDS: list[Field] = [
     Field("ids_pull", "opnsense", "Pull Suricata alerts", "bool"),
     Field("ids_alert_priority", "opnsense", "Suricata: raise alerts up to priority", "int",
           "Suricata rates every signature priority 1 (most severe) to 3. 1 = only priority 1 becomes an alert, 2 = "
-          "priority 1 and 2, 3 = all. Lower-priority hits still show on the Suricata and Threats dashboards.", min=1, max=3),
+          "priority 1 and 2, 3 = all. Lower-priority hits still show under Threats › Suricata.", min=1, max=3),
     Field("ids_ignore_sids", "opnsense", "Suricata: SIDs that never raise an alert", "list",
-          "Signature IDs (the SID column on the Suricata dashboard). Their hits are still stored and shown.",
+          "Signature IDs (the SID column under Threats › Suricata). Their hits are still stored and shown.",
           placeholder="2210050"),
     Field("zenarmor_enabled", "opnsense", "Receive Zenarmor data", "bool",
           "Off: Zenarmor records (Elasticsearch stream and syslog) are discarded and the Zenarmor overview widget, "
