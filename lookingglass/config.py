@@ -122,6 +122,8 @@ class Settings(BaseSettings):
     qfeeds_pull: bool = True
     ids_pull: bool = True
     zenarmor_enabled: bool = True
+    ids_alert_priority: int = 3
+    ids_ignore_sids: str = ""
     nginx_pull: bool = True
     vpn_pull: bool = True
     unifi_url: str = ""

@@ -84,8 +84,14 @@ def _background(coro) -> None:
 
 def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, Any] | None = None) -> FastAPI:
     templates.env.globals["time_format"] = lambda: settings.time_format  # live setting, read per page
-    # sidebar dashboards of sources that are switched off (live as well)
-    templates.env.globals["dash_hidden"] = lambda: set() if settings.zenarmor_enabled else {"zenarmor"}
+    # sidebar dashboards of sources that are switched off (live as well); Suricata also arrives by syslog, so its
+    # page stays while syslog delivered Suricata lines in the last day
+    def dash_hidden() -> set[str]:
+        hidden = set() if settings.zenarmor_enabled else {"zenarmor"}
+        if not (settings.ids_pull and settings.opnsense_enabled) and time.time() - STATS.last_by_source.get("suricata", 0) > 86400:
+            hidden.add("suricata")
+        return hidden
+    templates.env.globals["dash_hidden"] = dash_hidden
     templates.env.globals["theme_attrs"] = lambda: Markup(  # <html> attributes for the theme (style.css), live as well
         f' data-theme="{escape(settings.theme)}" data-mode="{"light" if settings.theme == "light" else "dark"}" '
         f'data-accent="{escape(settings.accent)}"')

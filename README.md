@@ -24,7 +24,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 |---|---|
 | **Alerts** - every alert says why it got its severity, which device it is and where it is connected; mute, re-rate or ask the AI | **AI analyst** - asks the database itself and answers with findings and actions |
 | ![Alerts](docs/screenshots/alerts.png) | ![AI analyst](docs/screenshots/ai-analyst.png) |
-| **Firewall dashboard** - one of nine dashboards (DNS, web server, threats, Zenarmor, logins, VPN, Wi-Fi, logs) | **Devices** - inventory from ARP, DHCP, UniFi and Zenarmor, with risk score and learned behaviour |
+| **Firewall dashboard** - one of ten dashboards (DNS, web server, threats, Suricata, Zenarmor, logins, VPN, Wi-Fi, logs) | **Devices** - inventory from ARP, DHCP, UniFi and Zenarmor, with risk score and learned behaviour |
 | ![Firewall dashboard](docs/screenshots/firewall.png) | ![Devices](docs/screenshots/devices.png) |
 | **OPNsense** - hardware, load, temperatures, gateways, interfaces and services | **UniFi** - access points, switches, Wi-Fi and wired clients, neighbouring Wi-Fi |
 | ![OPNsense](docs/screenshots/opnsense.png) | ![UniFi](docs/screenshots/unifi.png) |
@@ -330,7 +330,7 @@ decide it for every rule:
 | Admin (GUI / SSH / API) login from the internet / VPN login from the internet / any login from inside | high / low / info |
 | Web attack: RCE / SQLi, path traversal / sensitive file, scanner signatures | medium, low, info - one step up if a request got a successful response or comes from inside |
 | Web scanning (many 4xx) from the internet / from inside | low / medium |
-| IDS | Suricata's priority (1 = critical … 4 = low), one step down when IPS mode dropped it, up when confirmed |
+| IDS | Suricata's priority (1 = critical … 4 = low), one step down when IPS mode dropped it, up when confirmed. *Settings › OPNsense*: which priorities raise alerts and SIDs that never do |
 | CrowdSec decision for an internet IP / for an internal IP | low (it is handled) / high |
 | Internal device contacted a threat-intel address (blocked by Q-Feeds) / internet address of a threat list probes you | low - medium / high when other sources confirm it or the device keeps coming back (blocked threat traffic in 6+ separate 10-minute periods, or to 5+ different sites, in 24h - retries and subdomains of one page visit count once) / info |
 | Zenarmor malware / C2 / phishing: blocked / NOT blocked; other categories: blocked / not blocked | blocked: **no alert** on its own (a blocked ad or link is Zenarmor doing its job) - medium / high when the device keeps trying or other sources confirm it; NOT blocked: critical; other categories: none / medium (blocked ones per *Settings › Zenarmor › Alert on traffic Zenarmor blocked*: threats = only repeated or confirmed (default), every_threat, all or never) |
@@ -905,6 +905,9 @@ How UniFi and OPNsense data are combined:
   **Customize** (top right) lets you drag widgets around (or use ◀ ▶), make them ⅓ / ⅔ / full width and normal or
   tall, remove them and add others (e.g. *Firewall system*); *Done* saves the layout for your account, *Reset to
   default* brings back the standard one. Widgets of sources you switched off (e.g. Suricata) hide themselves.
+  Extra Suricata widgets (top sources, targeted hosts, classifications, internal hosts alerting) are under
+  *+ Add widget…*. *Settings › OPNsense › Receive Zenarmor data* off discards Zenarmor records and hides its
+  widget, menu entry and settings tab.
 * **Menu**: *General* (overview, alerts, event search over all sources), *OPNsense security* (the OPNsense security
   dashboards; other security products get their own group), *Infrastructure* (OPNsense and Unraid hardware & status,
   devices), *Tools* (system logs, reports, AI analyst) and *Admin*.
@@ -915,6 +918,8 @@ How UniFi and OPNsense data are combined:
   *DNS* (queries vs. blocked, types, rcodes, blocklists, clients, NXDOMAIN, tunneling candidates),
   *Web server* (status classes, attack patterns over time, vhosts, paths, 4xx probing, user agents, clients),
   *Threats* (Suricata, CrowdSec, Q-Feeds, alerts by rule/severity, top attackers across all sources, active bans),
+  *Suricata IDS* (alerts by priority, alerted vs dropped, classifications, app protocols, countries, signatures with
+  SID, interfaces, sources, targeted hosts, internal hosts alerting, TLS JA3/JA4 fingerprints and SNI),
   *Zenarmor* (record types, applications and app categories, web categories, DNS/TLS/HTTP, hosts and devices, blocked
   destinations, threats, top talkers),
   *Authentication* (failed/successful logins, IPs with failed logins, usernames tried, config changes),
