@@ -41,7 +41,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 | nginx plugin | syslog (access via nginx *SYSLOG Targets*, errors automatically) | requests, status codes, attack patterns (SQLi, RCE, traversal, scanners), WAF / rate limit |
 | Unbound DNS | API (reporting DB) and/or syslog (`log-queries`) | per-client queries, blocklist hits, NXDOMAIN, DNS tunneling / DGA detection |
 | CrowdSec | API (alerts + decisions) + syslog | scenarios, bans |
-| Suricata IDS/IPS | API + syslog | signatures, classifications |
+| Suricata | API + syslog | signatures, classifications |
 | Zenarmor | built-in Elasticsearch-compatible receiver (**works on the free edition**) or syslog (paid editions) | flows, DNS, TLS/SNI, HTTP, threat alerts, apps/categories, traffic volume, **device fingerprints** (name, vendor, OS) |
 | Q-Feeds | API (events + stats) | threat-intel matches, especially **internal hosts contacting malicious IPs** (needs logged block rules, see step 5) |
 | SSH / web GUI / OpenVPN / IPsec | syslog | failed and successful logins, config changes |
@@ -917,8 +917,8 @@ How UniFi and OPNsense data are combined:
   *Firewall* (actions, interfaces, protocols, ports, countries, rules, allowed inbound, internal hosts being blocked),
   *DNS* (queries vs. blocked, types, rcodes, blocklists, clients, NXDOMAIN, tunneling candidates),
   *Web server* (status classes, attack patterns over time, vhosts, paths, 4xx probing, user agents, clients),
-  *Threats* (Suricata, CrowdSec, Q-Feeds, alerts by rule/severity, top attackers across all sources),
-  *Suricata IDS* (alerts by priority, alerted vs dropped, classifications, app protocols, countries, signatures with
+  *Threats* (CrowdSec, Q-Feeds, alerts by rule/severity, top attackers across all sources),
+  *Suricata* (alerts by priority, alerted vs dropped, classifications, app protocols, countries, signatures with
   SID, interfaces, sources, targeted hosts, internal hosts alerting, TLS JA3/JA4 fingerprints and SNI),
   *Zenarmor* (record types, applications and app categories, web categories, DNS/TLS/HTTP, hosts and devices, blocked
   destinations, threats, top talkers),

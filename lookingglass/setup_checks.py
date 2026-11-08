@@ -198,13 +198,13 @@ async def run(settings: Settings) -> dict[str, Any]:
     if ids_api and ids_sys:
         check("ids", "Suricata", "duplicate", ["API", "syslog"], "Alerts arrive via the API and via syslog.",
               ["OPNsense › Services › Intrusion Detection › Administration: untick 'Enable syslog alerts' / 'Enable eve syslog "
-               "output' (the API already pulls every alert), or switch off Looking Glass › Settings › OPNsense › Pull Suricata IDS alerts."],
-              count=ids_api, last_seen=last("suricata"), link="/dash/threats")
+               "output' (the API already pulls every alert), or switch off Looking Glass › Settings › OPNsense › Pull Suricata alerts."],
+              count=ids_api, last_seen=last("suricata"), link="/dash/suricata")
     elif ij.get("ok") and settings.ids_pull:
         check("ids", "Suricata", "ok", ["API"], "Alerts pulled via the API." + ("" if ids_api else " No alerts in 24 hours."),
-              avoid=["'Enable syslog alerts' in Intrusion Detection (would duplicate)."], count=ids_api, last_seen=last("suricata"), link="/dash/threats")
+              avoid=["'Enable syslog alerts' in Intrusion Detection (would duplicate)."], count=ids_api, last_seen=last("suricata"), link="/dash/suricata")
     elif ids_sys:
-        check("ids", "Suricata", "ok", ["syslog"], "Alerts via syslog.", count=ids_sys, last_seen=last("suricata"))
+        check("ids", "Suricata", "ok", ["syslog"], "Alerts via syslog.", count=ids_sys, last_seen=last("suricata"), link="/dash/suricata")
     elif ij.get("forbidden"):
         check("ids", "Suricata", "action", [], "The API user may not read Suricata alerts.",
               [f"{PRIV}: add 'Services: Intrusion Detection' (or 'GUI - All pages')."])

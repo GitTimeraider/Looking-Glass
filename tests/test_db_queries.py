@@ -62,15 +62,15 @@ def test_threats_dashboard_crowdsec_and_switched_off_sources():
             res = await run_dashboard("threats", 24)
             by = {p["id"]: p for p in res["panels"]}
             kpi = by["kpi"]["rows"][0]
-            assert kpi["Suricata events"] == 0 and kpi["CrowdSec active decisions"] == 2 and kpi["CrowdSec firewall blocks"] == 1
+            assert "Suricata events" not in kpi and kpi["CrowdSec active decisions"] == 2 and kpi["CrowdSec firewall blocks"] == 1
             assert {r["series"] for r in by["src"]["rows"]} == {"crowdsec", "qfeeds"}  # blocks count as CrowdSec
             assert by["src"]["drill"]["series_drill"]["crowdsec"] == {"source": "firewall", "d_blocklist": "CrowdSec"}
-            assert "Suricata signatures" in {p.get("title") for p in res["panels"]}
-            # Suricata switched off and without data: its tiles and panels are left out, the rest stays
-            res = await run_dashboard("threats", 24, off={"suricata"})
+            assert not [p for p in res["panels"] if p.get("needs") == "suricata"]  # Suricata has its own page
+            # CrowdSec switched off and without data: its tiles and panels are left out, the rest stays
+            res = await run_dashboard("threats", 24, off={"crowdsec"})
             by = {p["id"]: p for p in res["panels"]}
-            assert "cls" not in by and "sigs" not in by and "csfw" in by
-            assert "Suricata events" not in by["kpi"]["rows"][0] and "CrowdSec alerts" in by["kpi"]["rows"][0]
+            assert "csfw" not in by and "qf" in by
+            assert "CrowdSec alerts" not in by["kpi"]["rows"][0] and "Q-Feeds hits" in by["kpi"]["rows"][0]
         finally:
             await db.pool().execute("TRUNCATE events")
             await db.pool().execute("DELETE FROM snapshots WHERE key = 'crowdsec_decisions'")

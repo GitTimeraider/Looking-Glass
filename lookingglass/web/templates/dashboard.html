@@ -238,10 +238,10 @@ function render(d) {
   drawWeb(r);
   T("#t-web-tags", [{k: "tag", l: "Pattern"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Requests", num: true}], r.web_attack_tags, "No attack patterns seen");
   T("#t-web-clients", [{k: "ip", l: "Client", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "errors", l: "4xx/5xx", num: true}, {k: "n", l: "Req", num: true}], r.web_top_clients);
-  T("#t-ids", [{k: "signature", l: "Signature"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_signatures, "No IDS alerts");
-  T("#t-ids-src", [{k: "ip", l: "Source", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "sigs", l: "Sigs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_top_sources, "No IDS alerts");
-  T("#t-ids-dst", [{k: "ip", l: "Destination", f: LG.ip}, {k: "port", l: "Port"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_top_targets, "No IDS alerts");
-  T("#t-ids-cls", [{k: "classification", l: "Classification"}, {k: "dropped", l: "Dropped", num: true}, {k: "n", l: "Hits", num: true}], r.ids_classifications, "No IDS alerts");
+  T("#t-ids", [{k: "signature", l: "Signature"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_signatures, "No Suricata alerts");
+  T("#t-ids-src", [{k: "ip", l: "Source", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "sigs", l: "Sigs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_top_sources, "No Suricata alerts");
+  T("#t-ids-dst", [{k: "ip", l: "Destination", f: LG.ip}, {k: "port", l: "Port"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_top_targets, "No Suricata alerts");
+  T("#t-ids-cls", [{k: "classification", l: "Classification"}, {k: "dropped", l: "Dropped", num: true}, {k: "n", l: "Hits", num: true}], r.ids_classifications, "No Suricata alerts");
   T("#t-ids-int", [{k: "ip", l: "Host", f: LG.ip}, {k: "sigs", l: "Sigs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_internal_hosts, "No internal host triggered Suricata");
   T("#t-cs", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}], r.crowdsec_scenarios);
   T("#t-qf", [{k: "src", l: "Source", f: LG.ip}, {k: "dst", l: "Destination", f: LG.ip}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}], r.qfeeds_hits);

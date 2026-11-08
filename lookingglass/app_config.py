@@ -71,7 +71,7 @@ FIELDS: list[Field] = [
           "'Diagnostics: Firewall statistics' (rules).",
           placeholder="CrowdSec: crowdsec_blocklists, crowdsec6_blocklists\nQ-Feeds: __qfeeds_*"),
     Field("qfeeds_pull", "opnsense", "Pull Q-Feeds events", "bool"),
-    Field("ids_pull", "opnsense", "Pull Suricata IDS alerts", "bool"),
+    Field("ids_pull", "opnsense", "Pull Suricata alerts", "bool"),
     Field("ids_alert_priority", "opnsense", "Suricata: raise alerts up to priority", "int",
           "Suricata rates every signature priority 1 (most severe) to 3. 1 = only priority 1 becomes an alert, 2 = "
           "priority 1 and 2, 3 = all. Lower-priority hits still show on the Suricata and Threats dashboards.", min=1, max=3),
