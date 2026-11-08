@@ -84,6 +84,14 @@ def _background(coro) -> None:
 
 def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, Any] | None = None) -> FastAPI:
     templates.env.globals["time_format"] = lambda: settings.time_format  # live setting, read per page
+    # sidebar dashboards of sources that are switched off (live as well); Suricata also arrives by syslog, so its
+    # page stays while syslog delivered Suricata lines in the last day
+    def dash_hidden() -> set[str]:
+        hidden = set() if settings.zenarmor_enabled else {"zenarmor"}
+        if not settings.ids_pull and time.time() - STATS.last_by_source.get("suricata", 0) > 86400:
+            hidden.add("suricata")
+        return hidden
+    templates.env.globals["dash_hidden"] = dash_hidden
     templates.env.globals["theme_attrs"] = lambda: Markup(  # <html> attributes for the theme (style.css), live as well
         f' data-theme="{escape(settings.theme)}" data-mode="{"light" if settings.theme == "light" else "dark"}" '
         f'data-accent="{escape(settings.accent)}"')
@@ -192,7 +200,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
                    "nginx": settings.nginx_pull, "unbound": settings.unbound_query_pull}
         enabled = {k: (v and settings.opnsense_enabled) or k in has for k, v in enabled.items()}
-        enabled["zenarmor"] = optional_sources.zenarmor() or "zenarmor" in has
+        # Settings › OPNsense › Receive Zenarmor data off: hidden even while older Zenarmor events are in the period
+        enabled["zenarmor"] = settings.zenarmor_enabled and (optional_sources.zenarmor() or "zenarmor" in has)
         return {
             "sources": enabled,
             "kpi": {**kpi, "open_alerts": {r["severity"]: r["n"] for r in alerts},

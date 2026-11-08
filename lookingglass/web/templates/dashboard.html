@@ -46,6 +46,10 @@ const WIDGETS = [
   { id: "web-tags", title: "Web attack patterns", w: 1, body: "table", el: "web-tags", src: "nginx" },
   { id: "web-clients", title: "Web top clients", w: 1, body: "table", el: "web-clients", src: "nginx" },
   { id: "ids", title: "Suricata signatures", w: 1, body: "table", el: "ids", src: "suricata" },
+  { id: "ids-src", title: "Suricata: top sources", w: 1, body: "table", el: "ids-src", src: "suricata", optional: true },
+  { id: "ids-dst", title: "Suricata: targeted hosts", w: 1, body: "table", el: "ids-dst", src: "suricata", optional: true },
+  { id: "ids-cls", title: "Suricata classifications", w: 1, body: "table", el: "ids-cls", src: "suricata", optional: true },
+  { id: "ids-int", title: "Suricata: internal hosts alerting", w: 1, body: "table", el: "ids-int", src: "suricata", optional: true },
   { id: "cs", title: "CrowdSec scenarios", w: 1, body: "table", el: "cs", src: "crowdsec" },
   { id: "qf", title: "Q-Feeds threat-intel hits", w: 1, body: "table", el: "qf", src: "qfeeds" },
   { id: "zen", title: "Zenarmor", w: 1, body: "table", el: "zen", src: "zenarmor" },
@@ -235,6 +239,10 @@ function render(d) {
   T("#t-web-tags", [{k: "tag", l: "Pattern"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Requests", num: true}], r.web_attack_tags, "No attack patterns seen");
   T("#t-web-clients", [{k: "ip", l: "Client", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "errors", l: "4xx/5xx", num: true}, {k: "n", l: "Req", num: true}], r.web_top_clients);
   T("#t-ids", [{k: "signature", l: "Signature"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_signatures, "No IDS alerts");
+  T("#t-ids-src", [{k: "ip", l: "Source", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "sigs", l: "Sigs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_top_sources, "No IDS alerts");
+  T("#t-ids-dst", [{k: "ip", l: "Destination", f: LG.ip}, {k: "port", l: "Port"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_top_targets, "No IDS alerts");
+  T("#t-ids-cls", [{k: "classification", l: "Classification"}, {k: "dropped", l: "Dropped", num: true}, {k: "n", l: "Hits", num: true}], r.ids_classifications, "No IDS alerts");
+  T("#t-ids-int", [{k: "ip", l: "Host", f: LG.ip}, {k: "sigs", l: "Sigs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_internal_hosts, "No internal host triggered Suricata");
   T("#t-cs", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}], r.crowdsec_scenarios);
   T("#t-qf", [{k: "src", l: "Source", f: LG.ip}, {k: "dst", l: "Destination", f: LG.ip}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}], r.qfeeds_hits);
   T("#t-zen", [{k: "app", l: "App / category"}, {k: "action", l: "Action"}, {k: "n", l: "Events", num: true}], r.zenarmor_top);

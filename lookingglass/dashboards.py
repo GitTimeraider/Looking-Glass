@@ -36,6 +36,33 @@ CS_SEEN = ("(source = 'crowdsec' AND (ts > now() - make_interval(secs => $1) "
 BL = "(SELECT data->'{0}' FROM snapshots WHERE key = 'blocklists')"
 
 
+# Suricata alerts (eve "tls" records are fingerprints, not alerts)
+IDS = "(source = 'suricata' AND action IS NOT NULL AND action <> 'tls')"
+IDS_DROP = "action IN ('drop', 'blocked')"
+IDS_PRIO = "coalesce('priority ' || (data->>'priority'), '?')"
+# Suricata panels shown on both the Threats page and the Suricata page
+IDS_PANELS = {
+    "time": {"id": "ids_time", "title": "Suricata alerts over time by priority", "type": "timeseries", "span": 2, "needs": "suricata",
+             "drill": {"base": {"source": "suricata"}},
+             "sql": f"SELECT {B} t, {IDS_PRIO} series, count(*) v FROM events WHERE {IDS} AND {W} GROUP BY 1, 2 ORDER BY 1"},
+    "src": {"id": "ids_src", "title": "Suricata: top sources", "type": "table", "needs": "suricata",
+            "drill": {"base": {"source": "suricata"}, "by": {"src": "ip"}},
+            "cols": [["ip", "Source", "ip"], ["country", "", "flag"], ["sigs", "Sigs", "num"], ["n", "Hits", "num"], ["last", "Last", "ago"]],
+            "sql": f"SELECT host(src_ip) ip, max(src_country) country, count(DISTINCT message) sigs, count(*) n, max(ts) last "
+                   f"FROM events WHERE {IDS} AND src_ip IS NOT NULL AND {W} GROUP BY 1 ORDER BY 4 DESC LIMIT 25"},
+    "dst": {"id": "ids_dst", "title": "Suricata: targeted hosts & ports", "type": "table", "needs": "suricata",
+            "drill": {"base": {"source": "suricata"}, "by": {"dst": "ip", "port": "port"}},
+            "cols": [["ip", "Destination", "ip"], ["port", "Port"], ["proto", "Proto"], ["srcs", "Sources", "num"], ["n", "Hits", "num"]],
+            "sql": f"SELECT host(dst_ip) ip, dst_port port, proto, count(DISTINCT src_ip) srcs, count(*) n "
+                   f"FROM events WHERE {IDS} AND dst_ip IS NOT NULL AND {W} GROUP BY 1, 2, 3 ORDER BY 5 DESC LIMIT 25"},
+    "internal": {"id": "ids_internal", "title": "Suricata: internal hosts triggering alerts", "type": "table", "needs": "suricata",
+                 "drill": {"base": {"source": "suricata"}, "by": {"src": "ip"}},
+                 "cols": [["ip", "Host", "ip"], ["sigs", "Sigs", "num"], ["dsts", "Peers", "num"], ["n", "Hits", "num"], ["last", "Last", "ago"]],
+                 "sql": f"SELECT host(src_ip) ip, count(DISTINCT message) sigs, count(DISTINCT dst_ip) dsts, count(*) n, max(ts) last "
+                        f"FROM events WHERE {IDS} AND {PRIV} AND {W} GROUP BY 1 ORDER BY 4 DESC LIMIT 25"},
+}
+
+
 def log_panel(where: str, title: str = "Live log", limit: int = 150) -> dict[str, Any]:
     return {"id": "log", "title": title, "type": "log", "span": 3,
             "sql": f"SELECT ts, source, action, host(src_ip) src_ip, src_port, host(dst_ip) dst_ip, dst_port, domain, "
@@ -187,7 +214,8 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
              "drill": {"base": {"source": "suricata"}},
              "sql": f"SELECT coalesce(data->>'classification', data->>'category', '?') label, count(*) v, data->>'classification' o_d_classification, data->>'category' o_d_category FROM events WHERE source = 'suricata' AND {W} GROUP BY 1, 3, 4 ORDER BY 2 DESC LIMIT 8"},
             {"id": "sigs", "title": "Suricata signatures", "type": "table", "needs": "suricata", "drill": {"base": {"source": "suricata"}, "by": {"q": "sig"}}, "cols": [["sig", "Signature"], ["srcs", "Sources", "num"], ["n", "Hits", "num"], ["last", "Last", "ago"]],
-             "sql": f"SELECT message sig, count(DISTINCT src_ip) srcs, count(*) n, max(ts) last FROM events WHERE source = 'suricata' AND action IS NOT NULL AND {W} GROUP BY 1 ORDER BY 3 DESC LIMIT 25"},
+             "sql": f"SELECT message sig, count(DISTINCT src_ip) srcs, count(*) n, max(ts) last FROM events WHERE {IDS} AND {W} GROUP BY 1 ORDER BY 3 DESC LIMIT 25"},
+            IDS_PANELS["time"], IDS_PANELS["src"], IDS_PANELS["dst"], IDS_PANELS["internal"],
             {"id": "cs", "title": "CrowdSec scenarios", "type": "table", "needs": "crowdsec", "cols": [["scenario", "Scenario"], ["ips", "IPs", "num"], ["n", "Events", "num"]],
              "drill": {"base": {"source": "crowdsec", "hours": 24 * 90}},
              "sql": f"SELECT coalesce(data->>'scenario', data->>'reason', '?') scenario, count(DISTINCT src_ip) ips, count(*) n, data->>'scenario' o_d_scenario, data->>'reason' o_d_reason FROM events WHERE {CS_SEEN} GROUP BY 1, 4, 5 ORDER BY 3 DESC LIMIT 25"},
@@ -217,6 +245,52 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
              "sql": "SELECT regexp_replace(coalesce(d->>'scope_value', d->>'value'), '^[A-Za-z_]*[g-zG-Z_][A-Za-z_]*:', '') value, coalesce(d->>'action', d->>'type') type, coalesce(d->>'reason', d->>'scenario') reason, coalesce(d->>'origin', d->>'source') origin, coalesce(d->>'expiration', d->>'duration') expiration "
                     "FROM snapshots, jsonb_array_elements(CASE WHEN jsonb_typeof(data) = 'array' THEN data ELSE '[]'::jsonb END) d WHERE key = 'crowdsec_decisions' AND $1::float8 > 0 LIMIT 200"},
             log_panel("source IN ('suricata', 'crowdsec', 'qfeeds')"),
+        ]},
+    "suricata": {
+        "title": "Suricata IDS", "source": "suricata", "group": "opnsense", "panels": [
+            {"id": "kpi", "type": "stat", "span": 3, "needs": "suricata", "sql":
+                f"SELECT count(*) FILTER (WHERE {IDS}) AS \"Alerts\", "
+                f"count(*) FILTER (WHERE {IDS} AND {IDS_DROP}) AS \"Dropped (IPS)\", "
+                f"count(*) FILTER (WHERE {IDS} AND data->>'priority' = '1') AS \"Priority 1\", "
+                f"count(DISTINCT message) FILTER (WHERE {IDS}) AS \"Signatures\", "
+                f"count(DISTINCT src_ip) FILTER (WHERE {IDS}) AS \"Source IPs\", "
+                f"count(DISTINCT src_ip) FILTER (WHERE {IDS} AND {PRIV}) AS \"Internal hosts alerting\", "
+                f"count(*) FILTER (WHERE action = 'tls') AS \"TLS records\", "
+                "(SELECT count(*) FROM alerts WHERE status = 'open' AND rule = 'ids') AS \"Open Suricata alerts\" "
+                f"FROM events WHERE source = 'suricata' AND {W}",
+             "drill": {"tiles": {"Dropped (IPS)": {"action": "drop,blocked"}, "Priority 1": {"d_priority": "1"},
+                                 "TLS records": {"action": "tls"}, "Open Suricata alerts": {"url": "/alerts"}}}},
+            IDS_PANELS["time"],
+            {"id": "act", "title": "Alerted vs dropped", "type": "pie", "needs": "suricata", "drill": {"by": "action"},
+             "sql": f"SELECT action label, count(*) v FROM events WHERE {IDS} AND {W} GROUP BY 1 ORDER BY 2 DESC"},
+            {"id": "cls", "title": "Classifications", "type": "pie", "needs": "suricata",
+             "sql": f"SELECT coalesce(data->>'classification', data->>'category', '?') label, count(*) v, data->>'classification' o_d_classification, data->>'category' o_d_category FROM events WHERE {IDS} AND {W} GROUP BY 1, 3, 4 ORDER BY 2 DESC LIMIT 10"},
+            {"id": "app", "title": "Application protocols", "type": "hbar", "needs": "suricata", "drill": {"by": "d_app_proto"},
+             "sql": f"SELECT coalesce(data->>'app_proto', proto, '?') label, count(*) v FROM events WHERE {IDS} AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 12"},
+            {"id": "countries", "title": "Source countries", "type": "hbar", "needs": "suricata", "drill": {"by": "country"},
+             "sql": f"SELECT src_country label, count(*) v FROM events WHERE {IDS} AND src_country IS NOT NULL AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 12"},
+            {"id": "sigs", "title": "Signatures", "type": "table", "span": 2, "needs": "suricata",
+             "drill": {"by": {"q": "sig"}},
+             "cols": [["sig", "Signature"], ["sid", "SID"], ["prio", "Prio"], ["cls", "Classification"], ["srcs", "Srcs", "num"],
+                      ["dropped", "Dropped", "num"], ["n", "Hits", "num"], ["last", "Last", "ago"]],
+             "sql": f"SELECT message sig, max(data->>'sid') sid, min(data->>'priority') prio, "
+                    f"max(coalesce(data->>'classification', data->>'category')) cls, count(DISTINCT src_ip) srcs, "
+                    f"count(*) FILTER (WHERE {IDS_DROP}) dropped, count(*) n, max(ts) last "
+                    f"FROM events WHERE {IDS} AND {W} GROUP BY 1 ORDER BY 7 DESC LIMIT 50"},
+            {"id": "iface", "title": "Interfaces", "type": "pie", "needs": "suricata", "drill": {"by": "iface"},
+             "sql": f"SELECT coalesce(interface, '?') label, count(*) v FROM events WHERE {IDS} AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 8"},
+            IDS_PANELS["src"], IDS_PANELS["dst"], IDS_PANELS["internal"],
+            {"id": "ja", "title": "TLS client fingerprints (JA3 / JA4)", "type": "table", "needs": "suricata",
+             "drill": {"base": {"action": "tls"}, "by": {"d_ja3": "ja3"}},
+             "cols": [["ja4", "JA4"], ["ja3", "JA3"], ["clients", "Clients", "num"], ["n", "Records", "num"]],
+             "sql": f"SELECT data->>'ja4' ja4, data->>'ja3' ja3, count(DISTINCT src_ip) clients, count(*) n FROM events "
+                    f"WHERE source = 'suricata' AND action = 'tls' AND {W} GROUP BY 1, 2 ORDER BY 4 DESC LIMIT 25"},
+            {"id": "sni", "title": "TLS server names (SNI)", "type": "table", "needs": "suricata",
+             "drill": {"base": {"action": "tls"}, "by": {"domain": "sni"}},
+             "cols": [["sni", "Server name"], ["clients", "Clients", "num"], ["n", "Records", "num"]],
+             "sql": f"SELECT domain sni, count(DISTINCT src_ip) clients, count(*) n FROM events "
+                    f"WHERE source = 'suricata' AND action = 'tls' AND domain IS NOT NULL AND {W} GROUP BY 1 ORDER BY 3 DESC LIMIT 25"},
+            log_panel(IDS),
         ]},
     "zenarmor": {
         # field names: Zenarmor ES/syslog stream (see parsers/security.py). Only conn records carry app_name /
