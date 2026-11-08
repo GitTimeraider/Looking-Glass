@@ -199,10 +199,11 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
              "sql": "SELECT rule label, count(*) v FROM alerts WHERE last_seen > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 10"},
             {"id": "sev", "tab": "main", "title": "Alerts over time by severity", "type": "timeseries", "span": 2, "drill": {"url": "/alerts"},
              "sql": "SELECT to_timestamp(floor(extract(epoch FROM created_at) / $2) * $2) t, severity series, count(*) v FROM alerts WHERE created_at > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 1"},
-            {"id": "attackers", "tab": "main", "title": "Top attackers across all sources", "type": "table", "drill": {"base": {"source": ""}, "by": {"ip": "ip"}},
+            {**log_panel(f"({IDS} OR source IN ('crowdsec', 'qfeeds'))"), "tab": "main"},
+            {"id": "attackers", "tab": "main", "title": "Top attackers across all sources", "type": "table", "span": 3, "drill": {"base": {"source": ""}, "by": {"ip": "ip"}},
              "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["sources", "Seen by"], ["n", "Events", "num"], ["last", "Last", "ago"]],
              "sql": f"SELECT host(src_ip) ip, max(src_country) country, array_agg(DISTINCT source) sources, count(*) n, max(ts) last FROM events WHERE {W} AND src_ip IS NOT NULL AND NOT {PRIV} AND ({IDS} OR source IN ('crowdsec', 'qfeeds') OR action IN ('block', 'login_failed', 'waf_block')) GROUP BY 1 ORDER BY 4 DESC LIMIT 25"},
-            {"id": "blocklists", "tab": "main", "title": "Blocklists (Settings › OPNsense › Blocklist aliases)", "type": "table", "span": 2,
+            {"id": "blocklists", "tab": "main", "title": "Blocklists (Settings › OPNsense › Blocklist aliases)", "type": "table", "span": 3,
              "drill": {"base": {"source": "firewall"}, "by": {"d_blocklist": "name"}},
              "cols": [["name", "Blocklist"], ["aliases", "Aliases"], ["size", "Addresses", "num"], ["rules", "Rules", "num"],
                       ["packets", "Blocked packets", "num"], ["logged", "Logged blocks", "num"]],
@@ -212,7 +213,6 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                     "AND e.data->>'blocklist' = b.value->>'name' AND e.ts > now() - make_interval(secs => $1)) logged "
                     "FROM snapshots s, jsonb_each(CASE WHEN jsonb_typeof(s.data) = 'object' THEN s.data ELSE '{}'::jsonb END) b "
                     "WHERE s.key = 'blocklists' ORDER BY 1"},
-            {**log_panel(f"({IDS} OR source IN ('crowdsec', 'qfeeds'))"), "tab": "main"},
             # -------------------------------------------------------------------------------------- CrowdSec ---
             {"id": "cs_kpi", "tab": "crowdsec", "type": "stat", "span": 3, "sql":
                 f"SELECT (SELECT count(*) FROM events WHERE {CS_SEEN} AND action = 'alert') AS \"Alerts\", "
