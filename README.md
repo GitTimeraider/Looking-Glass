@@ -149,7 +149,7 @@ excludes devices from all of them.
 
 | Check | What it does | Tune it with |
 |---|---|---|
-| **Device profiles** | learns per device (MAC) which countries, ports, domains, TLS programs (JA3/JA4) and hours are normal; alerts on the first use of something new | learning period, quiet period for new devices, one switch per kind |
+| **Device profiles** | learns per device (MAC) which countries, ports, domains, TLS programs (JA3/JA4) and hours are normal; alerts on the first use of something new | learning period, quiet period for new devices, one switch per kind; per device / device type on the Devices page |
 | **Predictable devices only** | "new …" alerts only for devices that rarely pick up anything new (cameras, TVs, plugs) - PCs and phones are skipped automatically | *max. new things per day* (0 = all devices) |
 | **Similar devices** | devices of the same vendor form a group: what the others do too is normal, what none of them do weighs heavier - unless other devices on the network do it too (a phone and a PC both using WhatsApp or IMAP) | on / off |
 | **Odd hours** | activity at an hour the device has never been active | on / off |
@@ -162,14 +162,29 @@ excludes devices from all of them.
 **Devices › Learned** shows what was learned for a device and lets you forget it (per kind or everything). The
 **Delete collected data** option in Settings can also clear all learned behaviour.
 
-**Per-device limits** - **Devices › limits** (next to *edit*) gives one device its own alert limits instead of the
-global ones above: the **traffic spike** factor (0 = no spike alerts for it), the **machine learning** sensitivity (off /
-low / medium / high) and the **risk score** threshold (0 = never alert, the score is still kept). Raise them for devices
-that are busy at random (a gaming PC, a backup or download server), lower them for very steady ones (cameras, plugs, TVs)
-so smaller changes already alert. Empty fields use the global setting; *Use global settings* clears them all. Devices
-with their own limits show *⚙ limits*, the alerts they raise say which limit was used, and they are never removed
-automatically. A device limit also works when the global switch is off (e.g. traffic spikes only for your cameras), as
-long as *Learn device behaviour* (spike, machine learning) or the *Risk score* is on.
+**Per-device settings** - **Devices › settings** (next to *edit*) gives one device its own settings instead of the
+global ones above. Every setting has a **Use default** box: ticked, the device follows its device type's default, else
+the global setting (also when that changes later); unticked, the value next to it is the device's own.
+
+* **Device type** - *Laptop / desktop*, *Phone / tablet*, *Server / NAS*, *IoT*, *Network equipment* or *Other*, for
+  every device, also clients without a MAC address such as WireGuard peers. Laptops / desktops and phones / tablets
+  reach new countries, domains and apps all the time (travel, a VPN, updates), so their *new country*, *new port* and
+  *odd hours* alerts are **silent** and *new domain* / *new TLS program* **off** by default. The other types use the
+  global settings. A device's own setting wins over its type.
+* **Alert limits** - the **traffic spike** factor (0 = no spike alerts for it), the **machine learning** sensitivity
+  (off / low / medium / high) and the **risk score** threshold (0 = never alert, the score is still kept). Raise them
+  for devices that are busy at random (a gaming PC, a backup or download server), lower them for very steady ones
+  (cameras, plugs, TVs) so smaller changes already alert.
+* **Alert modes** - per kind (*new country*, *new port*, *new domain*, *new TLS program*, *odd hours*: alert / silent
+  / off; *traffic spike*, *machine learning*: alert / silent). **Silent** alerts are stored closed (marked *silent* on
+  the Alerts page), never shown as open and never notified. They still count for combined alerts: attack chains, the
+  risk score and the corroboration of other alerts about the device. You hear about them only when they add up.
+* Also per device: **predictable** (max. new things per day) and the **quiet period** before a device is judged.
+
+*Use defaults for everything* clears the device's own settings (its type stays). Devices with their own settings or a
+type show *⚙ settings*, the alerts they raise say which limit was used, and they are never removed automatically. A
+device setting also works when the global switch is off (e.g. traffic spikes only for your cameras), as long as *Learn
+device behaviour* (spike, machine learning, new things) or the *Risk score* is on.
 
 ### Threat intel & traps
 
@@ -929,7 +944,7 @@ How UniFi and OPNsense data are combined:
   Offline: a device with a MAC once it leaves the ARP table; one without a MAC after 20 minutes without traffic.
   Devices stay on the list until you **delete** them (Devices page, next to *edit*; what was learned about them goes
   too) or *Settings › Data & detection › Remove devices not seen for (days)* removes them (default 0 = never; trusted
-  devices, devices you named, devices with notes and devices with their own alert limits are kept).
+  devices, devices you named, devices with notes and devices with a type or their own settings are kept).
 * **Unraid** – see above.
 * **Settings › Data & detection › Delete collected data** – wipe logs/events, alerts, graphs, reports, AI conversations
   and optionally the device list to start over. Settings, credentials, accounts/MFA, Unraid servers and the encryption

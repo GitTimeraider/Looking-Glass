@@ -535,3 +535,17 @@ nav.side .grp ~ a { margin-left: 4px; }
 .swatches { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
 .swatch { width: 26px; height: 26px; padding: 0; border-radius: 50%; background: var(--a5); border: 2px solid var(--panel); box-shadow: 0 0 0 1px var(--border); }
 .swatch.on { box-shadow: 0 0 0 2px var(--text); }
+/* devices page: per-device settings - one row per setting, "Use global" switches the device's own value off */
+#lim-rows .lim-group { margin: 14px 0 4px; }
+#lim-rows .lim-group:first-child { margin-top: 6px; }
+.lim-row { display: grid; grid-template-columns: minmax(0, 1fr) auto 170px; gap: 6px 12px; align-items: center;
+  padding: 6px 8px; border-radius: 6px; font-size: 13px; }
+.lim-row.own { background: color-mix(in srgb, var(--accent, #4a8cff) 10%, transparent); }
+.lim-row .lim-l { display: flex; flex-direction: column; gap: 2px; }
+.lim-row .lim-g { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.lim-row .lim-v input, .lim-row .lim-v select { width: 100%; }
+.lim-row .lim-v :disabled { opacity: .55; }
+.lim-actions { margin-top: 12px; }
+.lim-row.lim-type { border: 1px solid var(--border); margin-top: 6px; }
+.lim-row .lim-g input { flex: none; margin: 0; }
+@media (max-width: 640px) { .lim-row { grid-template-columns: auto minmax(0, 1fr); } .lim-row .lim-l { grid-column: 1 / -1; } }

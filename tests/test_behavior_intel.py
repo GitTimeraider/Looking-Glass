@@ -9,7 +9,7 @@ import pytest
 from lookingglass import db
 from lookingglass.behavior import Behavior, Matcher, clean_limits
 from lookingglass.config import Settings
-from lookingglass.detections import DetectionEngine
+from lookingglass.detections import DetectionEngine, evidence, raise_alert
 from lookingglass.intel import (Intel, describe_rule, dns_redirects, exposure_changes, nat_redirects, opens_inbound, parse_canaries,
                                parse_feed)
 from lookingglass.mlforest import SubspaceForest
@@ -202,6 +202,50 @@ def test_new_behavior_respects_learning_peers_and_predictability():
 
 
 @needs_db
+def test_new_behavior_per_device_settings():
+    """A device's own "new ..." switches, quiet period and predictable limit win over the global settings."""
+    async def body(pool):
+        old = NOW - timedelta(days=10)
+        devs = {"aa:00:00:00:00:01": ("192.168.30.11", '{"new_country": false}'),        # country alerts off
+                "aa:00:00:00:00:02": ("192.168.30.12", '{"min_days": 30}'),              # still in its quiet period
+                "aa:00:00:00:00:03": ("192.168.30.13", '{}'),                            # global settings
+                "aa:00:00:00:00:04": ("192.168.30.14", '{"new_port": true}'),            # on although globally off
+                "aa:00:00:00:00:05": ("192.168.30.15", '{"new_country": "silent"}'),     # stored muted
+                "ip:10.8.0.2": ("10.8.0.2", '{}'),                                       # WireGuard phone: silent by type
+                "ip:10.8.0.3": ("10.8.0.3", '{"new_country": "alert"}')}                 # own setting beats its type
+        types = {"ip:10.8.0.2": "phone", "ip:10.8.0.3": "phone"}
+        for i, (mac, (ip, lim)) in enumerate(devs.items()):
+            await pool.execute("INSERT INTO devices (mac, ip, vendor, limits, device_type) "
+                               "VALUES ($1, $2::inet, $3, $4::text::jsonb, $5)", mac, ip, f"V{i}", lim, types.get(mac))
+            await pool.execute("INSERT INTO device_profile (key, kind, value, first_seen, last_seen, hits) VALUES "
+                               "($1, 'country', 'NL', $2, $2, 50), ($1, 'port', 'tcp/443', $2, $2, 50)", mac, old)
+        await db.copy_events([event(NOW - timedelta(minutes=1), "firewall", severity=6, action="pass", src_ip=ip,
+                                    dst_ip="203.0.113.1", dst_port=8443, proto="tcp", dst_country="RU")
+                              for ip, _ in devs.values()])
+        await db.kv_set("wm:profile", 0)
+        s = Settings(behavior_new_port=False, internal_networks="10.8.0.0/24")  # countries on, ports off; quiet 5 days
+        await Behavior(s, DetectionEngine(s).internal).update_profiles()
+        rows = await pool.fetch("SELECT host(src_ip) ip, title, status, close_reason FROM alerts WHERE rule = 'new_behavior'")
+        shown = {(r["ip"], "country" if "country" in r["title"] else "port") for r in rows if r["status"] == "open"}
+        assert shown == {("192.168.30.13", "country"), ("192.168.30.14", "country"), ("192.168.30.14", "port"),
+                         ("10.8.0.3", "country")}
+        # the phone type: countries and ports silent (ports even though globally off)
+        muted = sorted((r["ip"], "country" if "country" in r["title"] else "port", r["status"], r["close_reason"])
+                       for r in rows if r["status"] != "open")
+        assert muted == [("10.8.0.2", "country", "closed", "muted"), ("10.8.0.2", "port", "closed", "muted"),
+                         ("10.8.0.3", "port", "closed", "muted"), ("192.168.30.15", "country", "closed", "muted")]
+        # muted alerts still count for combinations: the risk score and corroboration see it, the alert list does not
+        assert "new_behavior" in (await evidence("192.168.30.15", "beaconing"))["other_alerts"]
+        await Behavior(s, DetectionEngine(s).internal).risk()
+        assert await pool.fetchval("SELECT score FROM risk_scores WHERE entity = '192.168.30.15'") > 0
+        # it happens again: still muted, sightings collected
+        await raise_alert("new_behavior", "low", "again", next(r for r in await pool.fetch(
+            "SELECT fingerprint FROM alerts WHERE close_reason = 'muted'"))["fingerprint"], src_ip="192.168.30.15", silent=True)
+        assert await pool.fetchval("SELECT count(*) FROM alerts WHERE status = 'open' AND host(src_ip) = '192.168.30.15'") == 0
+    run(body)
+
+
+@needs_db
 def test_volume_ml_and_hour_of_week():
     async def body(pool):
         hour = NOW.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
@@ -281,7 +325,12 @@ def test_clean_limits():
         {"volume_factor": 25, "ml_sensitivity": "low"}
     assert clean_limits({"volume_factor": 0, "risk_threshold": 0}) == {"volume_factor": 0, "risk_threshold": 0}
     assert clean_limits(None) == {} and clean_limits({}) == {}
-    for bad in ({"volume_factor": "x"}, {"volume_factor": 5000}, {"ml_sensitivity": "extreme"}, {"nope": 1}, [1]):
+    assert clean_limits({"new_country": "off", "new_port": True, "odd_hours": "silent", "new_tls": "", "stable_max": "0",
+                         "min_days": 2, "ml_sensitivity": "default", "ml_alerts": "silent", "new_domain": "alert"}) == \
+        {"new_country": "off", "new_port": "alert", "odd_hours": "silent", "stable_max": 0, "min_days": 2,
+         "ml_alerts": "silent", "new_domain": "alert"}
+    for bad in ({"volume_factor": "x"}, {"volume_factor": 5000}, {"ml_sensitivity": "extreme"}, {"nope": 1}, [1],
+                {"new_domain": "maybe"}, {"min_days": 0}, {"stable_max": True}, {"volume_alerts": "off"}):
         with pytest.raises(ValueError):
             clean_limits(bad)
 

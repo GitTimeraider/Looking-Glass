@@ -8,8 +8,11 @@
   pairs, see mlforest.py) that finds hours unlike the device's own history.
 * Hour-of-week baselines (hourly_stats): network-wide totals compared to the same hour in previous weeks.
 * Risk score per address: all alerts add points that fade over time.
-* Per-device limits (devices.limits, Devices page): a device's own traffic-spike factor, machine learning sensitivity
-  and risk score threshold - higher for devices that are busy at random, lower for very steady ones.
+* Device types (devices.device_type, DEVICE_TYPES): defaults per kind of device - a laptop or phone gets no loud "new
+  country" alerts. A device's own settings win over its type, its type over the global settings.
+* Per-device limits (devices.limits, Devices page): a device's own traffic-spike factor, machine learning sensitivity,
+  risk score threshold, "new ..." alert switches, predictable-device limit and quiet period - looser for devices that are
+  busy at random, stricter for very steady ones (see LIMITS).
 * Feedback: alerts closed as "false positive" become suggestions (or automatic severity rules).
 
 Everything is configurable under Settings › Behaviour & ML, including devices never to analyse.
@@ -29,8 +32,8 @@ from zoneinfo import ZoneInfo
 
 from . import alert_filters, db
 from .config import Settings, local_time
-from .detections import (ALLOWED_ROW, LATERAL_PORTS, SUSPICIOUS_OUT_PORTS, SEVERITIES, Rating, corroborate, evidence,
-                         raise_alert, registered_domain)
+from .detections import (ALLOWED_ROW, COUNTS_SQL, LATERAL_PORTS, SUSPICIOUS_OUT_PORTS, SEVERITIES, Rating, corroborate,
+                         evidence, raise_alert, registered_domain)
 from .mlforest import SubspaceForest
 from .parsers.common import INTERNAL_NETS, parse_networks
 
@@ -46,12 +49,57 @@ MIN_INCREASE = {"connections": 200, "destinations": 30, "ports": 10, "countries"
                 "blocked": 50, "upload_mb": 100}
 ML_LEVELS = {"low": (0.9995, 4.0), "medium": (0.998, 3.5), "high": (0.995, 3.0)}  # training percentile, deviation
 RISK_POINTS = {"info": 1, "low": 3, "medium": 8, "high": 20, "critical": 40}
-# per-device overrides of global settings (devices.limits); a missing key means "use the global setting"
-LIMITS = {"volume_factor": (0, 1000), "ml_sensitivity": ("off", "low", "medium", "high"), "risk_threshold": (0, 1000)}
+# per-device overrides of global settings (devices.limits); a missing key means "use the global setting".
+# key -> (kind, bounds / choices, the global setting it overrides - None: no global setting, "alert")
+# Alert modes: "alert" = a normal alert, "silent" = stored muted (never shown as open or notified) but it still counts
+# for combinations - corroboration, attack chains, the risk score - and "off" = not even detected.
+MODES = ("alert", "silent", "off")
+LIMITS: dict[str, tuple[str, Any, str | None]] = {
+    "volume_factor": ("int", (0, 1000), "behavior_volume_factor"),
+    "volume_alerts": ("choice", ("alert", "silent"), None),
+    "ml_sensitivity": ("choice", ("off", "low", "medium", "high"), "anomaly_ml_sensitivity"),
+    "ml_alerts": ("choice", ("alert", "silent"), None),
+    "risk_threshold": ("int", (0, 1000), "risk_threshold"),
+    "new_country": ("mode", MODES, "behavior_new_country"),
+    "new_port": ("mode", MODES, "behavior_new_port"),
+    "new_domain": ("mode", MODES, "behavior_new_domain"),
+    "new_tls": ("mode", MODES, "behavior_new_tls"),
+    "odd_hours": ("mode", MODES, "behavior_odd_hours"),
+    "stable_max": ("int", (0, 1000), "behavior_stable_max"),
+    "min_days": ("int", (1, 60), "behavior_min_days"),
+}
+# device types (Devices page): defaults between a device's own settings and the global ones. Laptops / desktops and
+# phones / tablets reach new countries, domains and programs all the time (travel, apps, updates, a VPN): their "new ..."
+# alerts are silent (they still count for attack chains and the risk score) or off. Other types keep the global settings.
+DEVICE_TYPES: dict[str, dict[str, Any]] = {
+    "computer": {"label": "Laptop / desktop", "limits": {
+        "new_country": "silent", "new_port": "silent", "new_domain": "off", "new_tls": "off", "odd_hours": "silent"}},
+    "phone": {"label": "Phone / tablet", "limits": {
+        "new_country": "silent", "new_port": "silent", "new_domain": "off", "new_tls": "off", "odd_hours": "silent"}},
+    "server": {"label": "Server / NAS", "limits": {}},
+    "iot": {"label": "IoT (camera, plug, TV, speaker)", "limits": {}},
+    "network": {"label": "Network equipment", "limits": {}},
+    "other": {"label": "Other", "limits": {}},
+}
+NOVELTY_LIMIT = {"country": "new_country", "port": "new_port", "domain": "new_domain", "tls": "new_tls", "hour": "odd_hours"}
+
+
+def as_mode(value: Any) -> str:
+    """An alert mode; a global on/off setting (or a value stored as true / false) is "alert" / "off"."""
+    if isinstance(value, bool):
+        return "alert" if value else "off"
+    return value if value in MODES else "alert"
+
+
+def global_limit(s: Settings, key: str) -> Any:
+    """The global value of a per-device setting."""
+    kind, _, attr = LIMITS[key]
+    value = getattr(s, attr) if attr else "alert"
+    return as_mode(value) if kind == "mode" else value
 
 
 def clean_limits(raw: Any) -> dict[str, Any]:
-    """Validate per-device limits from the UI: empty / None = default (key dropped). Raises ValueError."""
+    """Validate per-device limits from the UI: empty / None = the global setting (key dropped). Raises ValueError."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -60,33 +108,62 @@ def clean_limits(raw: Any) -> dict[str, Any]:
     for key, value in raw.items():
         if key not in LIMITS:
             raise ValueError(f"unknown limit {key}")
-        if value is None or (isinstance(value, str) and not value.strip()):
+        if value is None or (isinstance(value, str) and value.strip().lower() in ("", "default", "global")):
             continue
-        if key == "ml_sensitivity":
-            if value not in LIMITS[key]:
-                raise ValueError(f"machine learning sensitivity must be one of {', '.join(LIMITS[key])}")
+        kind, spec, _ = LIMITS[key]
+        if kind == "choice":
+            if value not in spec:
+                raise ValueError(f"{key}: must be one of {', '.join(spec)}")
             out[key] = value
-            continue
-        lo, hi = LIMITS[key]
-        try:
-            n = int(str(value).strip())
-        except ValueError as exc:
-            raise ValueError(f"{key}: '{value}' is not a whole number") from exc
-        if not lo <= n <= hi:
-            raise ValueError(f"{key}: must be between {lo} and {hi}")
-        out[key] = n
+        elif kind == "mode":
+            v = value if isinstance(value, bool) else str(value).strip().lower()
+            v = {True: "alert", False: "off", "on": "alert", "true": "alert", "false": "off"}.get(v, v)
+            if v not in spec:
+                raise ValueError(f"{key}: must be one of {', '.join(spec)}")
+            out[key] = v
+        else:
+            lo, hi = spec
+            if isinstance(value, bool):
+                raise ValueError(f"{key}: '{value}' is not a whole number")
+            try:
+                n = int(str(value).strip())
+            except ValueError as exc:
+                raise ValueError(f"{key}: '{value}' is not a whole number") from exc
+            if not lo <= n <= hi:
+                raise ValueError(f"{key}: must be between {lo} and {hi}")
+            out[key] = n
     return out
 
 
+def limit(limits: dict[str, dict[str, Any]], key: str, ip: str | None, name: str, default: Any) -> Any:
+    """A device's own value for one limit (looked up by behaviour key, then address), else ``default``."""
+    own = (limits.get(key) or (limits.get(ip) if ip else None) or {}).get(name)
+    return default if own is None else own
+
+
+def clean_type(raw: Any) -> str | None:
+    """A device type from the UI: empty = not set. Raises ValueError."""
+    if raw is None or not str(raw).strip():
+        return None
+    if str(raw) not in DEVICE_TYPES:
+        raise ValueError(f"device type must be one of {', '.join(DEVICE_TYPES)}")
+    return str(raw)
+
+
 async def device_limits() -> dict[str, dict[str, Any]]:
-    """Per-device limits by MAC (the behaviour key) and by every address of the device."""
+    """Per-device limits by MAC (the behaviour key) and by every address of the device: the device's own settings over
+    the defaults of its type (DEVICE_TYPES); what is in neither is the global setting."""
     rows = await db.pool().fetch(
-        "SELECT mac, limits, (SELECT array_agg(DISTINCT host(x)) FROM unnest(coalesce(ips, '{}'::inet[]) || ip) x "
-        "WHERE x IS NOT NULL) ips FROM devices WHERE limits <> '{}'::jsonb ORDER BY mac NOT LIKE 'ip:%', last_seen")
+        "SELECT mac, limits, device_type, (SELECT array_agg(DISTINCT host(x)) FROM unnest(coalesce(ips, '{}'::inet[]) || ip) x "
+        "WHERE x IS NOT NULL) ips FROM devices WHERE limits <> '{}'::jsonb OR device_type IS NOT NULL "
+        "ORDER BY mac NOT LIKE 'ip:%', last_seen")
     out: dict[str, dict[str, Any]] = {}
     for r in rows:  # later rows win: a device with a MAC over an ip: entry, the most recently seen one
+        merged = {**(DEVICE_TYPES.get(r["device_type"] or "") or {}).get("limits", {}), **dict(r["limits"] or {})}
+        if not merged:
+            continue  # a type without defaults of its own
         for k in [r["mac"], *(r["ips"] or [])]:
-            out[k] = dict(r["limits"] or {})
+            out[k] = merged
     return out
 
 
@@ -229,12 +306,18 @@ class Behavior:
     async def _novelties(self, new: list[dict[str, Any]], ips: dict[str, str], macs: dict[str, dict[str, Any]]) -> None:
         pool = db.pool()
         s = self.s
-        enabled = {"country": s.behavior_new_country, "port": s.behavior_new_port, "domain": s.behavior_new_domain,
-                   "tls": s.behavior_new_tls, "hour": s.behavior_odd_hours}
+        enabled = {kind: global_limit(s, name) for kind, name in NOVELTY_LIMIT.items()}
+        limits = await device_limits()  # a device can set a kind to alert / silent / off for itself (Devices page)
         by_key: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+        modes: dict[tuple[str, str], str] = {}
         for n in new:
-            if enabled.get(n["kind"]):
-                by_key[n["key"]][n["kind"]].append(n)
+            kind = n["kind"]
+            if kind not in enabled:
+                continue
+            mode = as_mode(limit(limits, n["key"], ips.get(n["key"]), NOVELTY_LIMIT[kind], enabled[kind]))
+            if mode != "off":
+                by_key[n["key"]][kind].append(n)
+                modes[(n["key"], kind)] = mode
         if not by_key:
             return
         ages = {r["key"]: r for r in await pool.fetch(
@@ -243,18 +326,20 @@ class Behavior:
         now = datetime.now(timezone.utc)
         for key, kinds in by_key.items():
             since = ages.get(key, {}).get("since") if key in ages else None
-            if not since or now - since < timedelta(days=s.behavior_min_days):
-                continue  # still learning this device
             ip = ips.get(key)
+            if not since or now - since < timedelta(days=limit(limits, key, ip, "min_days", s.behavior_min_days)):
+                continue  # still learning this device
+            stable_max = limit(limits, key, ip, "stable_max", s.behavior_stable_max)
             dev = mac_info.get(key) or {}
             vendor = dev.get("vendor")
             peers = [m for m, d in mac_info.items() if vendor and d.get("vendor") == vendor and m != key]
             label = f"{dev.get('hostname')} ({ip})" if dev.get("hostname") else ip
             for kind, items in kinds.items():
+                silent = modes[(key, kind)] == "silent"
                 if kind == "hour":
-                    await self._odd_hour(key, ip, label, items, since)
+                    await self._odd_hour(key, ip, label, items, since, silent)
                     continue
-                if s.behavior_stable_max and await self._new_per_day(key, kind, since) > s.behavior_stable_max:
+                if stable_max and await self._new_per_day(key, kind, since) > stable_max:
                     continue  # this device always picks up new things of this kind (PC, phone): not predictable
                 values = [i["value"] for i in items]
                 common: set[str] = set()
@@ -290,7 +375,7 @@ class Behavior:
                     "new_behavior", rating, f"{label}: new {KINDS[kind]}: {', '.join(shown[:4])}"
                                             + (f" +{len(shown) - 4}" if len(shown) > 4 else ""),
                     f"newbeh:{key}:{kind}:{day}", src_ip=ip, events={"ip": ip}, count=len(values),
-                    data={"key": key, "kind": kind, "values": shown},
+                    data={"key": key, "kind": kind, "values": shown}, silent=silent,
                     description=f"First time in at least {s.behavior_learn_days} days that {label} uses these "
                                 f"{KINDS[kind]}s: {', '.join(shown)}. Expected (an update, a new app)? Then nothing to do: "
                                 "it is now part of the device's normal behaviour. Tune under Settings › Behaviour & ML.")
@@ -303,7 +388,8 @@ class Behavior:
         days = max(1.0, (datetime.now(timezone.utc) - since).total_seconds() / 86400 - 1)
         return (row["n"] if row else 0) / days
 
-    async def _odd_hour(self, key: str, ip: str | None, label: str, items: list[dict[str, Any]], since: datetime) -> None:
+    async def _odd_hour(self, key: str, ip: str | None, label: str, items: list[dict[str, Any]], since: datetime,
+                        silent: bool = False) -> None:
         busy = [i for i in items if i["hits"] >= 20]
         if not busy:
             return
@@ -312,7 +398,7 @@ class Behavior:
             "odd_hours", corroborate(Rating("low", "active at an hour this device has never been active", sticky=True),
                                      await evidence(ip, "odd_hours"), 1),
             f"{label} active at an unusual hour ({hrs})", f"oddhour:{key}:{busy[0]['value']}", src_ip=ip,
-            events={"ip": ip}, count=sum(i["hits"] for i in busy),
+            events={"ip": ip}, count=sum(i["hits"] for i in busy), silent=silent,
             description=f"{label} made {sum(i['hits'] for i in busy)} connections / lookups around {hrs} "
                         f"({self.s.timezone or 'UTC'}), an hour it has not been active in since "
                         f"{local_time(self.s, since, date=True)}. Scheduled updates or backups do this too.")
@@ -417,7 +503,7 @@ class Behavior:
             if not cur or len(hist) < 24 * min(self.s.behavior_min_days, 3):
                 continue
             ip = cur["ip"]
-            own = (limits.get(key) or limits.get(ip) or {}).get("volume_factor")
+            own = limit(limits, key, ip, "volume_factor", None)
             factor = default if own is None else own
             if not factor:
                 continue  # off (for this device)
@@ -433,6 +519,7 @@ class Behavior:
                                                         + (" (this device's own limit)" if own is not None else "")),
                                                 await evidence(ip, "volume_spike"), 1),
                     f"Traffic spike from {ip}: {spikes[0]}", f"volume:{key}:{hour:%Y%m%d%H}", src_ip=ip, events={"ip": ip},
+                    silent=limit(limits, key, ip, "volume_alerts", "alert") == "silent",
                     description=f"Between {local_time(self.s, hour)} and {local_time(self.s, hour + timedelta(hours=1))}: "
                                 f"{'; '.join(spikes)}. Alert from {factor}× the normal hour"
                                 + (" (set for this device on the Devices page)." if own is not None else
@@ -460,7 +547,7 @@ class Behavior:
             def vec(feat: dict[str, Any]) -> list[float]:
                 return [(math.log1p(float(feat.get(f, 0))) - norm[f][0]) / norm[f][1] for f in FEATURES]
             train += [vec(r["features"]) for r in hist]
-            level = (limits.get(key) or limits.get(rows[-1]["ip"]) or {}).get("ml_sensitivity", default)
+            level = limit(limits, key, rows[-1]["ip"], "ml_sensitivity", default)
             if rows[-1]["hour"] == hour and level in ML_LEVELS:  # every device trains the model, only these are judged
                 v = vec(rows[-1]["features"])
                 med_raw = [statistics.median(float(r["features"].get(f, 0)) for r in hist) for f in FEATURES]
@@ -492,6 +579,7 @@ class Behavior:
                                           await evidence(ip, "ml_anomaly"), 1),
                 f"Unusual activity of {ip} (machine learning): {parts[0]}", f"ml:{key}:{hour:%Y%m%d%H}", src_ip=ip,
                 events={"ip": ip}, data={"score": round(score, 3), "cut": round(cut, 3)},
+                silent=limit(limits, key, ip, "ml_alerts", "alert") == "silent",
                 description=f"Between {local_time(self.s, hour)} and {local_time(self.s, hour + timedelta(hours=1))} this "
                             f"device behaved unlike its last {self.s.behavior_learn_days} days: {'; '.join(parts)}. "
                             f"Anomaly score {score:.2f} (alert from {cut:.2f}, sensitivity {level}"
@@ -538,7 +626,7 @@ class Behavior:
             return
         pool = db.pool()
         rows = await pool.fetch(
-            "SELECT host(coalesce(src_ip, dst_ip)) ent, rule, severity, last_seen FROM alerts WHERE status = 'open' "
+            f"SELECT host(coalesce(src_ip, dst_ip)) ent, rule, severity, last_seen FROM alerts WHERE {COUNTS_SQL} "
             "AND last_seen > now() - interval '7 days' AND coalesce(src_ip, dst_ip) IS NOT NULL "
             "AND rule NOT IN ('risk_score')")
         excl, never = Matcher(self.s.risk_exclude), self.excluded()
@@ -627,4 +715,4 @@ def metric_events(metric: str) -> dict[str, Any]:
             "nxdomain": {"source": "unbound", "d_rcode": "NXDOMAIN"}}.get(metric, {})
 
 
-__all__ = ["Behavior", "Matcher", "SEVERITIES", "clean_limits", "device_limits"]
+__all__ = ["DEVICE_TYPES", "LIMITS", "MODES", "Behavior", "as_mode", "clean_type", "global_limit", "Matcher", "SEVERITIES", "clean_limits", "device_limits", "limit"]
