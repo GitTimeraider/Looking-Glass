@@ -815,26 +815,32 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
 
     ai_jobs: dict[str, dict[str, Any]] = {}
 
-    async def run_ai_message(job_id: str, chat_id: int | None, history: list[dict[str, Any]], text: str) -> None:
+    async def run_ai_message(job_id: str, chat_id: int, history: list[dict[str, Any]], text: str, created: bool) -> None:
         job = ai_jobs[job_id]
         try:
             new = await analyst.chat(history, text)
-            messages = history + new
-            if chat_id:
-                await db.pool().execute("UPDATE ai_chats SET messages = $2, updated_at = now() WHERE id = $1", chat_id, messages)
-            else:
-                chat_id = await db.pool().fetchval("INSERT INTO ai_chats (title, messages) VALUES ($1, $2) RETURNING id",
-                                                   text[:80], messages)
+            await db.pool().execute("UPDATE ai_chats SET messages = $2, updated_at = now() WHERE id = $1",
+                                    chat_id, history + new)
             job.update(status="done", chat_id=chat_id, messages=new)
         except Exception as exc:  # noqa: BLE001
             log.exception("AI request failed")
             job.update(status="error", error=f"AI request failed: {exc}")
+            # take the unanswered question back out, so the next question does not follow it without an answer
+            try:
+                if created:
+                    await db.pool().execute("DELETE FROM ai_chats WHERE id = $1", chat_id)
+                else:
+                    await db.pool().execute("UPDATE ai_chats SET messages = $2 WHERE id = $1", chat_id, history)
+            except Exception:  # noqa: BLE001
+                log.exception("could not roll back the failed AI question")
         job["finished"] = time.time()
 
     @app.post("/api/ai/message")
     async def ai_message(payload: dict = Body(...)):
         """Starts the analysis and answers at once: an agent run takes minutes, longer than reverse proxies in front of
-        Looking Glass wait for a response (nginx: 60 s). The page polls /api/ai/jobs/{job} for the result."""
+        Looking Glass wait for a response (nginx: 60 s). The page polls /api/ai/jobs/{job} for the result.
+
+        The question is saved to its chat right away, so a new chat shows up in the chat list while the analyst works."""
         text = str(payload.get("text", "")).strip()
         if not text:
             raise HTTPException(400, "empty message")
@@ -845,15 +851,26 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if chat_id:
             row = await db.pool().fetchrow("SELECT messages FROM ai_chats WHERE id = $1", int(chat_id))
             if row:
-                history = row["messages"]
+                history = list(row["messages"])
+                # a question left unanswered (Looking Glass restarted during its analysis) is asked again by the user
+                while history and history[-1].get("role") == "user":
+                    history.pop()
             else:
                 chat_id = None
+        pending = history + [{"role": "user", "content": text}]
+        created = not chat_id
+        if chat_id:
+            chat_id = int(chat_id)
+            await db.pool().execute("UPDATE ai_chats SET messages = $2, updated_at = now() WHERE id = $1", chat_id, pending)
+        else:
+            chat_id = await db.pool().fetchval("INSERT INTO ai_chats (title, messages) VALUES ($1, $2) RETURNING id",
+                                               text[:80], pending)
         for old_id in [k for k, j in ai_jobs.items() if j.get("finished") and j["finished"] < time.time() - 3600]:
             del ai_jobs[old_id]
         job_id = secrets.token_urlsafe(12)
         ai_jobs[job_id] = {"status": "running", "started": time.time()}
-        _background(run_ai_message(job_id, int(chat_id) if chat_id else None, history, text))
-        return {"job": job_id}
+        _background(run_ai_message(job_id, chat_id, history, text, created))
+        return {"job": job_id, "chat_id": chat_id}
 
     @app.get("/api/ai/jobs/{job_id}")
     async def ai_job(job_id: str):
