@@ -879,8 +879,9 @@ def test_dns_beaconing_to_a_busy_site_is_no_alert():
 
 @needs_db
 def test_qfeeds_hits_count_once_as_evidence():
-    """A Q-Feeds block stored twice (the plugin's event and the tagged firewall log line) and the threat_intel_outbound
-    alert made of it are ONE sign of trouble for the device's other alerts, not three."""
+    """One blocked Q-Feeds hit from a device of yours (a stray link) is Q-Feeds doing its job: no sign of trouble for the
+    device's other alerts. A device that keeps coming back is - once: the hits (stored twice, the plugin's event and the
+    tagged firewall log line) and the threat_intel_outbound alert made of them are one sign, not three."""
     async def body(pool):
         kw = dict(severity=4, action="block", src_ip="192.168.3.3", dst_ip="178.16.54.129", dst_port=443)
         await db.copy_events([event(NOW, "qfeeds", data={"blocklist": "Q-Feeds"}, **kw),
@@ -888,5 +889,15 @@ def test_qfeeds_hits_count_once_as_evidence():
         await raise_alert("threat_intel_outbound", "low", "Internal host contacted a listed IP", "qf_out:x",
                           src_ip="192.168.3.3", dst_ip="178.16.54.129")
         ev = await evidence("192.168.3.3", "beaconing")
-        assert ev["qfeeds"] == 1 and ev["other_alerts"] == []
+        assert ev["qfeeds"] == 0 and ev["other_alerts"] == []  # once, blocked: nothing
+        # keeps coming back: 6 separate 10-minute periods (each stored twice) and its alert, now rated medium
+        await db.copy_events([event(NOW - timedelta(minutes=15 * i), src, data={"blocklist": "Q-Feeds"}, **kw)
+                              for i in range(1, 6) for src in ("qfeeds", "firewall")])
+        await raise_alert("threat_intel_outbound", "medium", "Internal host contacted a listed IP", "qf_out:x",
+                          src_ip="192.168.3.3", dst_ip="178.16.54.129")
+        ev = await evidence("192.168.3.3", "beaconing")
+        assert ev["qfeeds"] == 6 and ev["other_alerts"] == []
+        # an outside address on the list: its hits always count (that address itself is the known-bad one)
+        await db.copy_events([event(NOW, "qfeeds", severity=4, action="block", src_ip="91.92.1.1", dst_ip="192.168.3.10")])
+        assert (await evidence("91.92.1.1", "port_scan"))["qfeeds"] == 1
     run(body)

@@ -327,7 +327,7 @@ def test_blocked_traffic_is_never_critical():
                 # Suricata and Q-Feeds also flagged 192.168.1.6 and it keeps trying - that would push the blocked malware
                 # hit to critical
                 ev("suricata", 5, action="alert", src_ip="192.168.1.6", dst_ip="198.51.100.1", message="ET MALWARE x"),
-                ev("qfeeds", 5, action="block", src_ip="192.168.1.6", dst_ip="198.51.100.1"),
+                *[ev("qfeeds", 5 + 30 * i, action="block", src_ip="192.168.1.6", dst_ip="198.51.100.1") for i in range(6)],
                 *[ev("zenarmor", 1 + 30 * i, action="block", src_ip="192.168.1.6", domain="c2.example",
                      data={"security": "Malware"}) for i in range(6)],
                 ev("zenarmor", 1, action="conn", src_ip="192.168.1.7", domain="p.example", data={"security": "Phishing"}),

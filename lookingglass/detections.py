@@ -178,6 +178,14 @@ RULE_FAMILIES = [{"brute_force", "success_after_failures", "admin_login", "passw
                  {"port_scan", "host_sweep", "internal_blocked_outbound"}]
 
 
+def _private(ip: str) -> bool:
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return a.is_private or a in ipaddress.ip_network("100.64.0.0/10")
+
+
 async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]:
     """What else is known about one IP in the last ``hours``: traffic that got through and other threat signals."""
     if not ip:
@@ -190,6 +198,8 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
             "count(*) FILTER (WHERE action = 'login_success') AS login_ok, "
             "count(*) FILTER (WHERE source = 'suricata') AS ids, "
             f"count(*) FILTER (WHERE {QFEEDS}) AS qfeeds, "
+            f"count(DISTINCT date_bin('10 minutes', ts, 'epoch')) FILTER (WHERE {QFEEDS}) AS qf_periods, "
+            f"count(DISTINCT dst_ip) FILTER (WHERE {QFEEDS}) AS qf_targets, "
             "count(*) FILTER (WHERE source = 'crowdsec') AS crowdsec, "
             # only threat traffic Zenarmor did NOT block: a blocked ad / link is Zenarmor doing its job, no sign of
             # anything (repeated blocked threats raise their own zenarmor_threat alert, which counts below)
@@ -200,11 +210,19 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
             # acknowledged = you looked at it and know it: no longer a sign that something else is wrong
             f"SELECT DISTINCT rule FROM alerts WHERE (src_ip = $1::inet OR dst_ip = $1::inet) AND {COUNTS_SQL} "
             "AND NOT (rule = ANY($2::text[])) AND last_seen > now() - make_interval(hours => $3) "
-            "AND rule NOT IN ('new_device', 'admin_login', 'config_change', 'port_scan', 'host_sweep', 'attack_chain', 'risk_score')",
+            "AND rule NOT IN ('new_device', 'admin_login', 'config_change', 'port_scan', 'host_sweep', 'attack_chain', 'risk_score') "
+            # a threat-intel alert rated low / info is "blocked, working as intended": no sign anything else is wrong
+            "AND NOT (rule IN ('threat_intel_outbound', 'threat_intel_inbound') AND severity IN ('low', 'info'))",
             ip, sorted(next((f for f in RULE_FAMILIES if rule in f), {rule})), hours)
     except Exception:  # noqa: BLE001 - invalid IP text etc.
         return {}
     out = dict(row) if row else {}
+    # Q-Feeds lists the OUTSIDE address, so a hit says that address is bad. For a device of yours Q-Feeds blocked it:
+    # one visit (an ad, a stray link, a retry burst) is Q-Feeds doing its job - only a device that keeps coming back
+    # (as for its own threat_intel_outbound alert) is a sign that something on it is wrong
+    if out.get("qfeeds") and _private(ip) and not (out.get("qf_periods", 0) >= REPEAT_PERIODS
+                                                   or out.get("qf_targets", 0) >= REPEAT_TARGETS):
+        out["qfeeds"] = 0
     # the threat-intel alerts are made of the Q-Feeds hits counted above: one sign, not two
     out["other_alerts"] = sorted(r["rule"] for r in others
                                  if not (out.get("qfeeds") and r["rule"] in ("threat_intel_outbound", "threat_intel_inbound")))
