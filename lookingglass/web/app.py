@@ -750,17 +750,22 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return {"ok": True}
 
     # ---------------------------------------------------------------- AI ---
+    ai_jobs: dict[str, dict[str, Any]] = {}  # running and recently finished analyses (AI Analyst), by job id
+
     @app.get("/api/ai/chats")
     async def chats():
         rows = await db.pool().fetch("SELECT id, title, updated_at FROM ai_chats ORDER BY updated_at DESC LIMIT 100")
-        return db.records(rows)
+        busy = {j["chat_id"] for j in ai_jobs.values() if j["status"] == "running"}
+        return [{**r, "busy": r["id"] in busy} for r in db.records(rows)]
 
     @app.get("/api/ai/chats/{chat_id}")
     async def chat(chat_id: int):
         row = await db.pool().fetchrow("SELECT * FROM ai_chats WHERE id = $1", chat_id)
         if not row:
             raise HTTPException(404)
-        return db.jsonable(dict(row))
+        # the analysis still running for this chat, so the page shows it is busy (also after a reload / on another device)
+        job = next((k for k, j in ai_jobs.items() if j["chat_id"] == chat_id and j["status"] == "running"), None)
+        return {**db.jsonable(dict(row)), "job": job}
 
     @app.get("/api/ai/chats/{chat_id}/sent")
     async def chat_as_sent(chat_id: int):
@@ -812,8 +817,6 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         deleted = await db.pool().fetchval(
             "WITH d AS (DELETE FROM ai_chats WHERE id = ANY($1::bigint[]) RETURNING 1) SELECT count(*) FROM d", ids)
         return {"ok": True, "deleted": deleted}
-
-    ai_jobs: dict[str, dict[str, Any]] = {}
 
     async def run_ai_message(job_id: str, chat_id: int, history: list[dict[str, Any]], text: str, created: bool) -> None:
         job = ai_jobs[job_id]
@@ -868,7 +871,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         for old_id in [k for k, j in ai_jobs.items() if j.get("finished") and j["finished"] < time.time() - 3600]:
             del ai_jobs[old_id]
         job_id = secrets.token_urlsafe(12)
-        ai_jobs[job_id] = {"status": "running", "started": time.time()}
+        ai_jobs[job_id] = {"status": "running", "started": time.time(), "chat_id": chat_id}
         _background(run_ai_message(job_id, chat_id, history, text, created))
         return {"job": job_id, "chat_id": chat_id}
 
