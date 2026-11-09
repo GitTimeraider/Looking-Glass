@@ -1,6 +1,6 @@
 # container packages (Unraid › Packages): Syft, copied from its official image (static binary, linux/amd64 + arm64);
 # Dependabot keeps this tag current
-FROM anchore/syft:v1.56.0 AS syft
+FROM anchore/syft:v1.57.0 AS syft
 
 FROM python:3.15-slim AS base
 
