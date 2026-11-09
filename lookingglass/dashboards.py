@@ -319,6 +319,8 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                     f"FROM events WHERE {IDS} AND {W} GROUP BY 1 ORDER BY 7 DESC LIMIT 50"},
             {"id": "ids_iface", "tab": "suricata", "title": "Interfaces", "type": "pie", "drill": {"by": "iface"},
              "sql": f"SELECT coalesce(interface, '?') label, count(*) v FROM events WHERE {IDS} AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 8"},
+            # the live log high up, right below the overview - before the top lists and the TLS tables
+            {**log_panel(IDS), "id": "ids_log", "tab": "suricata"},
             {"id": "ids_src", "tab": "suricata", "title": "Top sources", "type": "table", "drill": {"by": {"src": "ip"}},
              "cols": [["ip", "Source", "ip"], ["country", "", "flag"], ["sigs", "Sigs", "num"], ["n", "Hits", "num"], ["last", "Last", "ago"]],
              "sql": f"SELECT host(src_ip) ip, max(src_country) country, count(DISTINCT message) sigs, count(*) n, max(ts) last "
@@ -341,7 +343,6 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
              "cols": [["sni", "Server name"], ["clients", "Clients", "num"], ["n", "Records", "num"]],
              "sql": f"SELECT domain sni, count(DISTINCT src_ip) clients, count(*) n FROM events "
                     f"WHERE source = 'suricata' AND action = 'tls' AND domain IS NOT NULL AND {W} GROUP BY 1 ORDER BY 3 DESC LIMIT 25"},
-            {**log_panel(IDS), "id": "ids_log", "tab": "suricata"},
         ]},
     "zenarmor": {
         # field names: Zenarmor ES/syslog stream (see parsers/security.py). Only conn records carry app_name /
