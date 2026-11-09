@@ -161,7 +161,12 @@ document.getElementById("del-sel").onclick = async () => {
 async function openChat(id) {
   const c = await LG.api(`/api/ai/chats/${id}`);
   chatId = id; convo = c.messages; renderMessages(convo); convTools(); loadChats();
+  if (id === asking) {  // back on the chat whose question is still being analysed: show that it is
+    msgsEl.insertAdjacentHTML("beforeend", `<div class="msg assistant"><span class="spinner"></span> investigating…</div>`);
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+  }
 }
+let asking = null;  // the chat whose question is being analysed
 async function send(text) {
   text = (text || document.getElementById("input").value).trim();
   if (!text) return;
@@ -172,7 +177,10 @@ async function send(text) {
   msgsEl.insertAdjacentHTML("beforeend", `<div class="msg assistant" id="thinking"><span class="spinner"></span> investigating… (the analyst queries the log database, this can take a minute)</div>`);
   msgsEl.scrollTop = msgsEl.scrollHeight;
   try {
-    const { job } = await LG.api("/api/ai/message", { method: "POST", body: { chat_id: chatId, text } });
+    const started = await LG.api("/api/ai/message", { method: "POST", body: { chat_id: chatId, text } });
+    const job = started.job;
+    chatId = started.chat_id; asking = chatId;  // the question is saved already: show the chat in the list now
+    convTools(); loadChats();
     let r, lost = 0;
     const thinking = document.getElementById("thinking"), busy = thinking.innerHTML;
     for (;;) {  // the analysis runs on the server; polling keeps every request short for proxies in front
@@ -190,16 +198,21 @@ async function send(text) {
       if (lost) { lost = 0; thinking.innerHTML = busy; }
       if (r.done) break;
     }
-    chatId = r.chat_id;
-    convo = convo.slice(0, -1).concat(r.messages);
-    renderMessages(convo); convTools(); loadChats();
+    if (chatId === asking) {  // only if the user still looks at this chat (not "New chat" or another one meanwhile)
+      convo = convo.slice(0, -1).concat(r.messages);
+      renderMessages(convo); convTools();
+    }
+    loadChats();
   } catch (e) {
     const lostIt = e instanceof TypeError || /^HTTP 50[234]\b/.test(e.message);
+    if (asking !== null && chatId !== asking) { loadChats(); return; }  // the user moved to another chat meanwhile
+    // the server takes a failed question back out (and drops a chat that only held it)
+    if (!lostIt && asking !== null && convo.length <= 1) chatId = null;
     document.getElementById("thinking").innerHTML = `⚠️ ${LG.esc(e.message)}` + (lostIt ?
       " - the analyst may still finish on the server: open the chat from the list in a minute before asking again." : "");
     convo = convo.slice(0, -1);
-    loadChats();
-  } finally { btn.disabled = false; }
+    convTools(); loadChats();
+  } finally { btn.disabled = false; asking = null; }
 }
 document.getElementById("send").onclick = () => send();
 document.getElementById("input").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); };
