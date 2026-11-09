@@ -857,3 +857,36 @@ def test_host_sweep_ignores_out_of_state_packets():
         await eng.host_sweep()
         assert [r["ip"] for r in await rules(pool, "host_sweep")] == ["192.168.2.9"]
     run(body)
+
+
+@needs_db
+def test_dns_beaconing_to_a_busy_site_is_no_alert():
+    """A browser keeping a Google sign-in fresh: accounts.youtube.com every 5 minutes from one PC. Only one device looks
+    up that exact name, but many use youtube.com - a normal service, not a hidden C2 domain."""
+    async def body(pool):
+        beacon = [event(NOW - timedelta(minutes=5 * i), "unbound", severity=6, action="query", src_ip="192.168.3.3",
+                        domain="accounts.youtube.com") for i in range(36)]
+        await db.copy_events(beacon)
+        await DetectionEngine(Settings()).beaconing()
+        assert len(await rules(pool, "beaconing")) == 1  # alone it looks like a beacon
+        await pool.execute("TRUNCATE alerts")
+        await db.copy_events([event(NOW - timedelta(minutes=i), "unbound", severity=6, action="query", src_ip=f"192.168.3.{10 + i}",
+                                    domain="www.youtube.com") for i in range(3)])
+        await DetectionEngine(Settings()).beaconing()
+        assert await rules(pool, "beaconing") == []
+    run(body)
+
+
+@needs_db
+def test_qfeeds_hits_count_once_as_evidence():
+    """A Q-Feeds block stored twice (the plugin's event and the tagged firewall log line) and the threat_intel_outbound
+    alert made of it are ONE sign of trouble for the device's other alerts, not three."""
+    async def body(pool):
+        kw = dict(severity=4, action="block", src_ip="192.168.3.3", dst_ip="178.16.54.129", dst_port=443)
+        await db.copy_events([event(NOW, "qfeeds", data={"blocklist": "Q-Feeds"}, **kw),
+                              event(NOW, "firewall", data={"blocklist": "Q-Feeds", "label": "Q-feeds LAN"}, **kw)])
+        await raise_alert("threat_intel_outbound", "low", "Internal host contacted a listed IP", "qf_out:x",
+                          src_ip="192.168.3.3", dst_ip="178.16.54.129")
+        ev = await evidence("192.168.3.3", "beaconing")
+        assert ev["qfeeds"] == 1 and ev["other_alerts"] == []
+    run(body)

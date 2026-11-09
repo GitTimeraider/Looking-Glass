@@ -69,7 +69,8 @@ function go(p, params, url) {
 
 function build(d) {
   const box = document.getElementById("panels");
-  box.innerHTML = d.panels.map(p => {
+  // why a tab is empty (Threats › Suricata), filled in by render()
+  box.innerHTML = `<div class="card span3" id="dnotice" hidden></div>` + d.panels.map(p => {
     // a table with 5+ columns gets at least two thirds of the width, so its count columns are not cut off
     const wide = p.type === "table" && (p.cols || []).length >= 5;
     const span = p.span === 3 || p.type === "stat" || p.type === "log" ? "span3" : p.span === 2 || wide ? "span2" : "";
@@ -95,6 +96,8 @@ const tableCols = p => (p.cols || Object.keys((p.rows || [])[0] || {}).filter(k 
 function render(d, only) {
   step = d.step || step;
   lastData = d;
+  const note = document.getElementById("dnotice");
+  if (note) { note.hidden = !d.notice; note.innerHTML = d.notice ? `<b>Why is this empty?</b> <span class="small">${LG.esc(d.notice)}</span>` : ""; }
   for (const p of d.panels) {
     if (only && p.id !== only) continue;
     const base = drillBase(p, d);

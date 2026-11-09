@@ -205,7 +205,9 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
     except Exception:  # noqa: BLE001 - invalid IP text etc.
         return {}
     out = dict(row) if row else {}
-    out["other_alerts"] = sorted(r["rule"] for r in others)
+    # the threat-intel alerts are made of the Q-Feeds hits counted above: one sign, not two
+    out["other_alerts"] = sorted(r["rule"] for r in others
+                                 if not (out.get("qfeeds") and r["rule"] in ("threat_intel_outbound", "threat_intel_inbound")))
     return out
 
 
@@ -1487,6 +1489,14 @@ class DetectionEngine:
             if not rows:
                 continue
             common = {p["dst"] for p in await db.pool().fetch(popular, list({r["dst"] for r in rows}))}
+            if kind == "dns":
+                # a host name only one or two devices use, of a site many devices use (accounts.youtube.com: a browser
+                # keeping a Google sign-in fresh) is that site's service, not a hidden C2 domain
+                sites = {registered_domain(r["dst"]) for r in rows if r["dst"] not in common}
+                busy = {s for s in sites if s and await db.pool().fetchval(
+                    "SELECT count(DISTINCT src_ip) FROM events WHERE source = 'unbound' AND ts > now() - interval '24 hours' "
+                    "AND (domain = $1 OR domain LIKE $2)", s, "%." + s.replace("%", "").replace("_", "\\_")) > 2}
+                common |= {r["dst"] for r in rows if registered_domain(r["dst"]) in busy}
             for r in rows:
                 if r["dst"] in common:
                     continue  # several devices talk to it: a normal service (updates, time, cloud)

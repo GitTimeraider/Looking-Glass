@@ -892,7 +892,41 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "SELECT s FROM unnest($1::text[]) s WHERE EXISTS (SELECT 1 FROM events WHERE source = s "
             "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
         off = {k for k, on in pulls.items() if not on or (not settings.opnsense_enabled and k not in has)}
-        return await run_dashboard(name, hours, off, tab)
+        out = await run_dashboard(name, hours, off, tab)
+        if out.get("tab") == "suricata":
+            out["notice"] = await suricata_notice(hours)
+        return out
+
+    async def suricata_notice(hours: float) -> str | None:
+        """Why the Suricata tab is empty, when it is: the API pull, nothing received at all, or nothing in this period."""
+        pool = db.pool()
+        alert = "('alert', 'drop', 'blocked', 'reject')"
+        if await pool.fetchval(f"SELECT EXISTS (SELECT 1 FROM events WHERE source = 'suricata' AND action IN {alert} "
+                               "AND ts > now() - make_interval(secs => $1))", hours * 3600):
+            return None
+        job = (await db.get_snapshot("poller_status") or {}).get("ids") or {}
+        if job.get("forbidden"):
+            why = ("The OPNsense API user may not read Suricata alerts: add 'Services: Intrusion Detection' under "
+                   "System › Access › Users › (Looking Glass user) › Privileges.")
+        elif job.get("ok") is False:
+            why = f"Reading Suricata alerts from OPNsense fails: {job.get('error') or 'API error'} (see Setup & status)."
+        else:
+            why = None
+        last = await pool.fetchval(f"SELECT max(ts) FROM events WHERE source = 'suricata' AND action IN {alert}")
+        kinds = await pool.fetch("SELECT coalesce(action, '(none)') a, count(*) n FROM events WHERE source = 'suricata' "
+                                 "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 5", hours * 3600)
+        parts = [why] if why else []
+        if last:
+            parts.append(f"No Suricata alerts in this period - the latest is from {last.isoformat(timespec='minutes')}. "
+                         "Pick a longer period (7d / 30d) at the top right.")
+        else:
+            parts.append("Looking Glass has not received any Suricata alert yet. On OPNsense: Services › Intrusion Detection › "
+                         "Administration › Enabled ✓, rules downloaded (Download tab) and enabled with a policy that alerts or "
+                         "drops (Policy tab); alerts then show under Services › Intrusion Detection › Alerts. Setup & status "
+                         "shows whether the pull works.")
+        if kinds:
+            parts.append("Received in this period, but not alerts: " + ", ".join(f"{r['n']} × {r['a']}" for r in kinds) + ".")
+        return " ".join(parts)
 
     @app.get("/api/unifi")
     async def unifi_data():
