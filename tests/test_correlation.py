@@ -169,7 +169,7 @@ def test_blocked_threat_traffic_is_low_unless_repeated_or_confirmed():
                        data={"security": "Malware"}) for i in range(5)]
             evs += [ev("qfeeds", 2, action="block", src_ip="192.168.1.9", dst_ip=f"91.92.1.{i}", dst_port=443) for i in range(5)]
             # confirmed by two other sources
-            evs += [ev("suricata", 2, src_ip="192.168.1.10"),
+            evs += [ev("suricata", 2, action="alert", src_ip="192.168.1.10", data={"priority": 1}),
                     ev("zenarmor", 1, action="block", src_ip="192.168.1.10", domain="x.example", data={"security": "Phishing"})]
             await db.copy_events(evs)
             await raise_alert("dns_tunneling", "medium", "x", "t:1", src_ip="192.168.1.10")
@@ -326,7 +326,7 @@ def test_blocked_traffic_is_never_critical():
             await db.copy_events([
                 # Suricata and Q-Feeds also flagged 192.168.1.6 and it keeps trying - that would push the blocked malware
                 # hit to critical
-                ev("suricata", 5, action="alert", src_ip="192.168.1.6", dst_ip="198.51.100.1", message="ET MALWARE x"),
+                ev("suricata", 5, action="alert", src_ip="192.168.1.6", dst_ip="198.51.100.1", message="ET MALWARE x", data={"priority": 1}),
                 *[ev("qfeeds", 5 + 30 * i, action="block", src_ip="192.168.1.6", dst_ip="198.51.100.1") for i in range(6)],
                 *[ev("zenarmor", 1 + 30 * i, action="block", src_ip="192.168.1.6", domain="c2.example",
                      data={"security": "Malware"}) for i in range(6)],

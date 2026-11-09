@@ -316,7 +316,10 @@ decide it for every rule:
    events Zenarmor did *not* block (a blocked ad or link is no sign of anything) or other open alerts in the last 24 hours, the alert goes up one or two steps.
    For a device of yours, Q-Feeds hits only count when it keeps coming back (blocked attempts in 6 separate 10-minute
    periods or to 5 listed addresses): one blocked visit is Q-Feeds doing its job, as is a threat-intel alert rated low.
-   The hits and the threat-intel alert made of them count once. Alerts built from the same
+   The hits and the threat-intel alert made of them count once. Suricata: a priority 1–2 alert that got through
+   counts; a dropped or priority-3 (policy / info) hit only when it keeps happening, and eve flow / dns / tls records
+   never. CrowdSec, Suricata and threat-intel alerts rated low (handled, blocked, policy noise) don't count; an
+   internal CrowdSec detection (rated high) does. Alerts built from the same
    events (e.g. a brute force and the login after it) don't count as confirmation for each other. Traffic that was
    **blocked** - by the firewall, Zenarmor, Q-Feeds, Suricata in IPS mode or a DNS blocklist, in any rule (scans,
    threat feeds, Tor, suspicious ports, beaconing, lateral movement, ...) - stays at **high** at most, however much

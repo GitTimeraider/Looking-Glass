@@ -178,6 +178,9 @@ RULE_FAMILIES = [{"brute_force", "success_after_failures", "admin_login", "passw
                  {"port_scan", "host_sweep", "internal_blocked_outbound"}]
 
 
+IDS_ALERT = "(source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject'))"
+
+
 def _private(ip: str) -> bool:
     try:
         a = ipaddress.ip_address(ip)
@@ -196,7 +199,11 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
             "SELECT count(*) FILTER (WHERE source = 'firewall' AND action = 'pass' AND direction = 'in') AS fw_pass, "
             "count(*) FILTER (WHERE source = 'nginx' AND action ~ '^http_[23]') AS web_ok, "
             "count(*) FILTER (WHERE action = 'login_success') AS login_ok, "
-            "count(*) FILTER (WHERE source = 'suricata') AS ids, "
+            # Suricata: alerts only (not eve flow / dns / tls records); priority 1-2 that got through count, a dropped or
+            # priority-3 (policy / info) hit only when it keeps happening - like the Q-Feeds hits below
+            f"count(*) FILTER (WHERE {IDS_ALERT} AND action = 'alert' AND data->>'priority' IN ('1', '2')) AS ids, "
+            f"count(*) FILTER (WHERE {IDS_ALERT}) AS ids_all, "
+            f"count(DISTINCT date_bin('10 minutes', ts, 'epoch')) FILTER (WHERE {IDS_ALERT}) AS ids_periods, "
             f"count(*) FILTER (WHERE {QFEEDS}) AS qfeeds, "
             f"count(DISTINCT date_bin('10 minutes', ts, 'epoch')) FILTER (WHERE {QFEEDS}) AS qf_periods, "
             f"count(DISTINCT dst_ip) FILTER (WHERE {QFEEDS}) AS qf_targets, "
@@ -211,8 +218,9 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
             f"SELECT DISTINCT rule FROM alerts WHERE (src_ip = $1::inet OR dst_ip = $1::inet) AND {COUNTS_SQL} "
             "AND NOT (rule = ANY($2::text[])) AND last_seen > now() - make_interval(hours => $3) "
             "AND rule NOT IN ('new_device', 'admin_login', 'config_change', 'port_scan', 'host_sweep', 'attack_chain', 'risk_score') "
-            # a threat-intel alert rated low / info is "blocked, working as intended": no sign anything else is wrong
-            "AND NOT (rule IN ('threat_intel_outbound', 'threat_intel_inbound') AND severity IN ('low', 'info'))",
+            # a threat-intel / CrowdSec / Suricata alert rated low or info is "blocked / handled / policy noise": no sign
+            # that anything else is wrong (rated higher, it is: repeated, not blocked, or a serious signature)
+            "AND NOT (rule IN ('threat_intel_outbound', 'threat_intel_inbound', 'crowdsec', 'ids') AND severity IN ('low', 'info'))",
             ip, sorted(next((f for f in RULE_FAMILIES if rule in f), {rule})), hours)
     except Exception:  # noqa: BLE001 - invalid IP text etc.
         return {}
@@ -223,6 +231,8 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
     if out.get("qfeeds") and _private(ip) and not (out.get("qf_periods", 0) >= REPEAT_PERIODS
                                                    or out.get("qf_targets", 0) >= REPEAT_TARGETS):
         out["qfeeds"] = 0
+    if out.get("ids_periods", 0) >= REPEAT_PERIODS:
+        out["ids"] = out.get("ids_all", 0)
     # the threat-intel alerts are made of the Q-Feeds hits counted above: one sign, not two
     out["other_alerts"] = sorted(r["rule"] for r in others
                                  if not (out.get("qfeeds") and r["rule"] in ("threat_intel_outbound", "threat_intel_inbound")))

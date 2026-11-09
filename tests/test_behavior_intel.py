@@ -901,3 +901,30 @@ def test_qfeeds_hits_count_once_as_evidence():
         await db.copy_events([event(NOW, "qfeeds", severity=4, action="block", src_ip="91.92.1.1", dst_ip="192.168.3.10")])
         assert (await evidence("91.92.1.1", "port_scan"))["qfeeds"] == 1
     run(body)
+
+
+@needs_db
+def test_suricata_and_crowdsec_evidence_only_when_it_matters():
+    """Suricata: a priority 1-2 alert that got through is a sign; a dropped or priority-3 hit only when it keeps happening;
+    eve flow / dns / tls records never. CrowdSec / Suricata / threat-intel alerts rated low ("handled") are no sign."""
+    async def body(pool):
+        ip = "192.168.3.3"
+        await db.copy_events([event(NOW, "suricata", severity=6, action=a, src_ip=ip, dst_ip="198.51.100.7", data=d) for a, d in (
+            ("flow", {}), ("tls", {}), ("dns", {}),
+            ("alert", {"priority": 3}),             # policy / info signature
+            ("blocked", {"priority": 1}))])         # IPS dropped it
+        await raise_alert("crowdsec", "low", "CrowdSec: ssh-bf", "crowdsec:x", src_ip=ip)
+        await raise_alert("ids", "low", "Suricata: ET INFO x", "ids:x", src_ip=ip)
+        ev = await evidence(ip, "beaconing")
+        assert ev["ids"] == 0 and ev["other_alerts"] == []
+        # priority 1 and NOT dropped: a sign
+        await db.copy_events([event(NOW, "suricata", severity=2, action="alert", src_ip=ip, data={"priority": 1})])
+        assert (await evidence(ip, "beaconing"))["ids"] == 1
+        # an internal CrowdSec detection is rated high: a sign
+        await raise_alert("crowdsec", "high", "CrowdSec: ssh-bf (INTERNAL)", "crowdsec:y", src_ip=ip)
+        assert (await evidence(ip, "beaconing"))["other_alerts"] == ["crowdsec"]
+        # priority-3 hits that keep coming (6 separate 10-minute periods): all count
+        await db.copy_events([event(NOW - timedelta(minutes=15 * i), "suricata", severity=4, action="alert", src_ip="192.168.3.4",
+                                    data={"priority": 3}) for i in range(6)])
+        assert (await evidence("192.168.3.4", "beaconing"))["ids"] == 6
+    run(body)
