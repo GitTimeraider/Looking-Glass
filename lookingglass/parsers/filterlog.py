@@ -30,7 +30,12 @@ BLOCKLIST_SEEN: dict[str, float] = {}
 # the events the Q-Feeds plugin lists (those are read from the same firewall log, so the poller only stores them
 # while no tagged log lines arrive - see OPNsensePoller.poll_qfeeds). Plugin events carry data.blocklist too.
 QFEEDS_NAME = "Q-Feeds"
-QFEEDS = "(source = 'qfeeds' OR (source = 'firewall' AND lower(data->>'blocklist') = 'q-feeds'))"
+# A plugin event with a tagged log line of the same connection (stored before the poller skipped them, or right after a
+# start) is left out, so a block never counts twice. Used in queries over "FROM events" (not aliased).
+QFEEDS = ("(source = 'firewall' AND lower(data->>'blocklist') = 'q-feeds' OR source = 'qfeeds' AND NOT EXISTS ("
+          "SELECT 1 FROM events f WHERE f.src_ip = events.src_ip AND f.ts BETWEEN events.ts - interval '2 minutes' "
+          "AND events.ts + interval '2 minutes' AND f.source = 'firewall' AND lower(f.data->>'blocklist') = 'q-feeds' "
+          "AND f.dst_ip IS NOT DISTINCT FROM events.dst_ip))")
 
 
 def parse_blocklist_aliases(text: str) -> dict[str, list[str]]:

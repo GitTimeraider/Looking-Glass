@@ -178,6 +178,17 @@ RULE_FAMILIES = [{"brute_force", "success_after_failures", "admin_login", "passw
                  {"port_scan", "host_sweep", "internal_blocked_outbound"}]
 
 
+IDS_ALERT = "(source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject'))"
+
+
+def _private(ip: str) -> bool:
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return a.is_private or a in ipaddress.ip_network("100.64.0.0/10")
+
+
 async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]:
     """What else is known about one IP in the last ``hours``: traffic that got through and other threat signals."""
     if not ip:
@@ -188,8 +199,14 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
             "SELECT count(*) FILTER (WHERE source = 'firewall' AND action = 'pass' AND direction = 'in') AS fw_pass, "
             "count(*) FILTER (WHERE source = 'nginx' AND action ~ '^http_[23]') AS web_ok, "
             "count(*) FILTER (WHERE action = 'login_success') AS login_ok, "
-            "count(*) FILTER (WHERE source = 'suricata') AS ids, "
+            # Suricata: alerts only (not eve flow / dns / tls records); priority 1-2 that got through count, a dropped or
+            # priority-3 (policy / info) hit only when it keeps happening - like the Q-Feeds hits below
+            f"count(*) FILTER (WHERE {IDS_ALERT} AND action = 'alert' AND data->>'priority' IN ('1', '2')) AS ids, "
+            f"count(*) FILTER (WHERE {IDS_ALERT}) AS ids_all, "
+            f"count(DISTINCT date_bin('10 minutes', ts, 'epoch')) FILTER (WHERE {IDS_ALERT}) AS ids_periods, "
             f"count(*) FILTER (WHERE {QFEEDS}) AS qfeeds, "
+            f"count(DISTINCT date_bin('10 minutes', ts, 'epoch')) FILTER (WHERE {QFEEDS}) AS qf_periods, "
+            f"count(DISTINCT dst_ip) FILTER (WHERE {QFEEDS}) AS qf_targets, "
             "count(*) FILTER (WHERE source = 'crowdsec') AS crowdsec, "
             # only threat traffic Zenarmor did NOT block: a blocked ad / link is Zenarmor doing its job, no sign of
             # anything (repeated blocked threats raise their own zenarmor_threat alert, which counts below)
@@ -200,12 +217,25 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
             # acknowledged = you looked at it and know it: no longer a sign that something else is wrong
             f"SELECT DISTINCT rule FROM alerts WHERE (src_ip = $1::inet OR dst_ip = $1::inet) AND {COUNTS_SQL} "
             "AND NOT (rule = ANY($2::text[])) AND last_seen > now() - make_interval(hours => $3) "
-            "AND rule NOT IN ('new_device', 'admin_login', 'config_change', 'port_scan', 'host_sweep', 'attack_chain', 'risk_score')",
+            "AND rule NOT IN ('new_device', 'admin_login', 'config_change', 'port_scan', 'host_sweep', 'attack_chain', 'risk_score') "
+            # a threat-intel / CrowdSec / Suricata alert rated low or info is "blocked / handled / policy noise": no sign
+            # that anything else is wrong (rated higher, it is: repeated, not blocked, or a serious signature)
+            "AND NOT (rule IN ('threat_intel_outbound', 'threat_intel_inbound', 'crowdsec', 'ids') AND severity IN ('low', 'info'))",
             ip, sorted(next((f for f in RULE_FAMILIES if rule in f), {rule})), hours)
     except Exception:  # noqa: BLE001 - invalid IP text etc.
         return {}
     out = dict(row) if row else {}
-    out["other_alerts"] = sorted(r["rule"] for r in others)
+    # Q-Feeds lists the OUTSIDE address, so a hit says that address is bad. For a device of yours Q-Feeds blocked it:
+    # one visit (an ad, a stray link, a retry burst) is Q-Feeds doing its job - only a device that keeps coming back
+    # (as for its own threat_intel_outbound alert) is a sign that something on it is wrong
+    if out.get("qfeeds") and _private(ip) and not (out.get("qf_periods", 0) >= REPEAT_PERIODS
+                                                   or out.get("qf_targets", 0) >= REPEAT_TARGETS):
+        out["qfeeds"] = 0
+    if out.get("ids_periods", 0) >= REPEAT_PERIODS:
+        out["ids"] = out.get("ids_all", 0)
+    # the threat-intel alerts are made of the Q-Feeds hits counted above: one sign, not two
+    out["other_alerts"] = sorted(r["rule"] for r in others
+                                 if not (out.get("qfeeds") and r["rule"] in ("threat_intel_outbound", "threat_intel_inbound")))
     return out
 
 
@@ -1487,6 +1517,14 @@ class DetectionEngine:
             if not rows:
                 continue
             common = {p["dst"] for p in await db.pool().fetch(popular, list({r["dst"] for r in rows}))}
+            if kind == "dns":
+                # a host name only one or two devices use, of a site many devices use (accounts.youtube.com: a browser
+                # keeping a Google sign-in fresh) is that site's service, not a hidden C2 domain
+                sites = {registered_domain(r["dst"]) for r in rows if r["dst"] not in common}
+                busy = {s for s in sites if s and await db.pool().fetchval(
+                    "SELECT count(DISTINCT src_ip) FROM events WHERE source = 'unbound' AND ts > now() - interval '24 hours' "
+                    "AND (domain = $1 OR domain LIKE $2)", s, "%." + s.replace("%", "").replace("_", "\\_")) > 2}
+                common |= {r["dst"] for r in rows if registered_domain(r["dst"]) in busy}
             for r in rows:
                 if r["dst"] in common:
                     continue  # several devices talk to it: a normal service (updates, time, cloud)

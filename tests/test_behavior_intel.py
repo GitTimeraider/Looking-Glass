@@ -857,3 +857,74 @@ def test_host_sweep_ignores_out_of_state_packets():
         await eng.host_sweep()
         assert [r["ip"] for r in await rules(pool, "host_sweep")] == ["192.168.2.9"]
     run(body)
+
+
+@needs_db
+def test_dns_beaconing_to_a_busy_site_is_no_alert():
+    """A browser keeping a Google sign-in fresh: accounts.youtube.com every 5 minutes from one PC. Only one device looks
+    up that exact name, but many use youtube.com - a normal service, not a hidden C2 domain."""
+    async def body(pool):
+        beacon = [event(NOW - timedelta(minutes=5 * i), "unbound", severity=6, action="query", src_ip="192.168.3.3",
+                        domain="accounts.youtube.com") for i in range(36)]
+        await db.copy_events(beacon)
+        await DetectionEngine(Settings()).beaconing()
+        assert len(await rules(pool, "beaconing")) == 1  # alone it looks like a beacon
+        await pool.execute("TRUNCATE alerts")
+        await db.copy_events([event(NOW - timedelta(minutes=i), "unbound", severity=6, action="query", src_ip=f"192.168.3.{10 + i}",
+                                    domain="www.youtube.com") for i in range(3)])
+        await DetectionEngine(Settings()).beaconing()
+        assert await rules(pool, "beaconing") == []
+    run(body)
+
+
+@needs_db
+def test_qfeeds_hits_count_once_as_evidence():
+    """One blocked Q-Feeds hit from a device of yours (a stray link) is Q-Feeds doing its job: no sign of trouble for the
+    device's other alerts. A device that keeps coming back is - once: the hits (stored twice, the plugin's event and the
+    tagged firewall log line) and the threat_intel_outbound alert made of them are one sign, not three."""
+    async def body(pool):
+        kw = dict(severity=4, action="block", src_ip="192.168.3.3", dst_ip="178.16.54.129", dst_port=443)
+        await db.copy_events([event(NOW, "qfeeds", data={"blocklist": "Q-Feeds"}, **kw),
+                              event(NOW, "firewall", data={"blocklist": "Q-Feeds", "label": "Q-feeds LAN"}, **kw)])
+        await raise_alert("threat_intel_outbound", "low", "Internal host contacted a listed IP", "qf_out:x",
+                          src_ip="192.168.3.3", dst_ip="178.16.54.129")
+        ev = await evidence("192.168.3.3", "beaconing")
+        assert ev["qfeeds"] == 0 and ev["other_alerts"] == []  # once, blocked: nothing
+        # keeps coming back: 6 separate 10-minute periods (each stored twice) and its alert, now rated medium
+        await db.copy_events([event(NOW - timedelta(minutes=15 * i), src, data={"blocklist": "Q-Feeds"}, **kw)
+                              for i in range(1, 6) for src in ("qfeeds", "firewall")])
+        await raise_alert("threat_intel_outbound", "medium", "Internal host contacted a listed IP", "qf_out:x",
+                          src_ip="192.168.3.3", dst_ip="178.16.54.129")
+        ev = await evidence("192.168.3.3", "beaconing")
+        assert ev["qfeeds"] == 6 and ev["other_alerts"] == []
+        # an outside address on the list: its hits always count (that address itself is the known-bad one)
+        await db.copy_events([event(NOW, "qfeeds", severity=4, action="block", src_ip="91.92.1.1", dst_ip="192.168.3.10")])
+        assert (await evidence("91.92.1.1", "port_scan"))["qfeeds"] == 1
+    run(body)
+
+
+@needs_db
+def test_suricata_and_crowdsec_evidence_only_when_it_matters():
+    """Suricata: a priority 1-2 alert that got through is a sign; a dropped or priority-3 hit only when it keeps happening;
+    eve flow / dns / tls records never. CrowdSec / Suricata / threat-intel alerts rated low ("handled") are no sign."""
+    async def body(pool):
+        ip = "192.168.3.3"
+        await db.copy_events([event(NOW, "suricata", severity=6, action=a, src_ip=ip, dst_ip="198.51.100.7", data=d) for a, d in (
+            ("flow", {}), ("tls", {}), ("dns", {}),
+            ("alert", {"priority": 3}),             # policy / info signature
+            ("blocked", {"priority": 1}))])         # IPS dropped it
+        await raise_alert("crowdsec", "low", "CrowdSec: ssh-bf", "crowdsec:x", src_ip=ip)
+        await raise_alert("ids", "low", "Suricata: ET INFO x", "ids:x", src_ip=ip)
+        ev = await evidence(ip, "beaconing")
+        assert ev["ids"] == 0 and ev["other_alerts"] == []
+        # priority 1 and NOT dropped: a sign
+        await db.copy_events([event(NOW, "suricata", severity=2, action="alert", src_ip=ip, data={"priority": 1})])
+        assert (await evidence(ip, "beaconing"))["ids"] == 1
+        # an internal CrowdSec detection is rated high: a sign
+        await raise_alert("crowdsec", "high", "CrowdSec: ssh-bf (INTERNAL)", "crowdsec:y", src_ip=ip)
+        assert (await evidence(ip, "beaconing"))["other_alerts"] == ["crowdsec"]
+        # priority-3 hits that keep coming (6 separate 10-minute periods): all count
+        await db.copy_events([event(NOW - timedelta(minutes=15 * i), "suricata", severity=4, action="alert", src_ip="192.168.3.4",
+                                    data={"priority": 3}) for i in range(6)])
+        assert (await evidence("192.168.3.4", "beaconing"))["ids"] == 6
+    run(body)

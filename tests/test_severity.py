@@ -34,13 +34,16 @@ def test_scan_severity_depends_on_outcome_and_origin_not_size():
             now = datetime.now(timezone.utc)
             evs = scan("203.0.113.50", 20, now) + scan("203.0.113.51", 400, now) + scan("203.0.113.52", 20, now) \
                 + scan("192.168.1.66", 20, now) + scan("192.168.1.67", 20, now)
-            # .52 reached an open port (normal for a hosted service), .53 also logged in, .67 contacted a threat-intel IP
-            evs += scan("203.0.113.53", 20, now)
+            # .52 reached an open port (normal for a hosted service), .53 also logged in, .67 keeps contacting a
+            # threat-intel IP (blocked, in 6 separate 10-minute periods), .68 did so once (a stray link: no sign)
+            evs += scan("203.0.113.53", 20, now) + scan("192.168.1.68", 20, now)
             evs.append(event(now, "firewall", host="t", severity=6, action="pass", direction="in", src_ip="203.0.113.52",
                              dst_ip="192.168.1.10", dst_port=443))
             evs.append(event(now, "auth", host="t", severity=5, action="login_success", src_ip="203.0.113.53", username="root"))
-            evs.append(event(now, "qfeeds", host="t", severity=4, action="block", src_ip="192.168.1.67", dst_ip="91.92.1.1",
-                             uid="qf:t1"))
+            evs += [event(now - timedelta(minutes=15 * i), "qfeeds", host="t", severity=4, action="block", src_ip="192.168.1.67",
+                          dst_ip="91.92.1.1", uid=f"qf:t{i}") for i in range(6)]
+            evs.append(event(now, "qfeeds", host="t", severity=4, action="block", src_ip="192.168.1.68", dst_ip="91.92.1.1",
+                             uid="qf:once"))
             await db.insert_events_dedup([e for e in evs if e.get("uid")])
             await db.copy_events([e for e in evs if not e.get("uid")])
             await DetectionEngine(Settings()).port_scan()
@@ -49,7 +52,7 @@ def test_scan_severity_depends_on_outcome_and_origin_not_size():
             # blocked scans from the internet are noise: no alert, whatever the size or an open port it reached
             assert "203.0.113.50" not in sev and "203.0.113.51" not in sev and "203.0.113.52" not in sev
             assert sev["203.0.113.53"] == "high"  # but it also logged in
-            assert sev["192.168.1.66"] == "medium" and sev["192.168.1.67"] == "high"
+            assert sev["192.168.1.66"] == "medium" and sev["192.168.1.67"] == "high" and sev["192.168.1.68"] == "medium"
             await pool.execute("TRUNCATE events, alerts")
         finally:
             await db.close()
