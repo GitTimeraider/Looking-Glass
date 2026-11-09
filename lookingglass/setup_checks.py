@@ -62,6 +62,11 @@ async def run(settings: Settings) -> dict[str, Any]:
         add(f"{src}:{'api' if r['api'] else 'syslog'}", r)
         if src == "zenarmor":
             add("zenarmor:es" if r["program"] == "zenarmor-es" else "zenarmor:syslog", r)
+    # Q-Feeds blocks also arrive as the firewall log lines of its rules (tagged with the blocklist)
+    qf = await pool.fetchrow("SELECT count(*) n, max(ts) last FROM events WHERE source = 'firewall' "
+                             "AND lower(data->>'blocklist') = 'q-feeds' AND ts > now() - interval '24 hours'")
+    if qf and qf["n"]:
+        add("qfeeds", {"n": qf["n"], "last": qf["last"], "http": 0, "no_ip": 0, "queries": 0, "blocks": qf["n"]})
 
     def n(key: str) -> int:
         return agg.get(key, {}).get("n", 0)

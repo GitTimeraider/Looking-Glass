@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+import time
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +23,14 @@ RULE_LABELS: dict[str, str] = {}
 # rule id -> blocklist name ("CrowdSec", "Q-Feeds", ...) for the pf rules that use a blocklist alias
 # (Settings › OPNsense › Blocklist aliases), refreshed from the OPNsense API; their log lines get data.blocklist
 BLOCKLIST_RULES: dict[str, str] = {}
+# blocklist name (lower case) -> when a log line of one of its rules last arrived (the Q-Feeds poller uses it)
+BLOCKLIST_SEEN: dict[str, float] = {}
+
+# Q-Feeds blocks: the firewall log lines of the rules that use its aliases (any interface, interface groups too) and
+# the events the Q-Feeds plugin lists (those are read from the same firewall log, so the poller only stores them
+# while no tagged log lines arrive - see OPNsensePoller.poll_qfeeds). Plugin events carry data.blocklist too.
+QFEEDS_NAME = "Q-Feeds"
+QFEEDS = "(source = 'qfeeds' OR (source = 'firewall' AND lower(data->>'blocklist') = 'q-feeds'))"
 
 
 def parse_blocklist_aliases(text: str) -> dict[str, list[str]]:
@@ -49,6 +58,7 @@ def alias_matches(table: str, patterns: list[str]) -> bool:
 def _tag(data: dict[str, Any], rid: Any) -> dict[str, Any]:
     if rid and (name := BLOCKLIST_RULES.get(str(rid))):
         data["blocklist"] = name
+        BLOCKLIST_SEEN[name.lower()] = time.time()
     return data
 
 
