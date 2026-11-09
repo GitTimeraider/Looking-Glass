@@ -58,7 +58,7 @@
       (<i>Pull VPN status</i>, on by default), as do OpenVPN sessions and IPsec tunnels. Logins and connects of OpenVPN /
       IPsec also arrive via syslog (<code>openvpn</code>, <code>ipsec (charon)</code>).</li>
     <li><b>CrowdSec</b> (os-crowdsec) — nothing extra: alerts and decisions are pulled via the API (CrowdSec writes no syslog on OPNsense).</li>
-    <li><b>Suricata IDS/IPS</b> — nothing extra: alerts are pulled from the API (<i>Pull Suricata IDS alerts</i>). Do <b>not</b>
+    <li><b>Suricata</b> — nothing extra: alerts are pulled from the API (<i>Pull Suricata alerts</i>). Do <b>not</b>
       also tick <i>Enable syslog alerts</i> in Intrusion Detection, that would count every alert twice.</li>
     <li><b>Zenarmor</b> — <i>Zenarmor › Settings › Streaming Data</i>. Works on every edition including free Home:
       <i>Stream Reporting Data to External Elasticsearch</i> with URI <code>http://&lt;docker-host&gt;:9200</code> and Elasticsearch

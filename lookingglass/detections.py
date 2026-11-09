@@ -13,6 +13,7 @@ from typing import Any
 
 from . import alert_filters, db, event_filter
 from .parsers.common import real_name
+from .parsers.filterlog import QFEEDS, QFEEDS_NAME
 from .config import Settings
 from .ingest import STATS
 from .parsers.common import is_internal_ip, parse_networks
@@ -188,7 +189,7 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
             "count(*) FILTER (WHERE source = 'nginx' AND action ~ '^http_[23]') AS web_ok, "
             "count(*) FILTER (WHERE action = 'login_success') AS login_ok, "
             "count(*) FILTER (WHERE source = 'suricata') AS ids, "
-            "count(*) FILTER (WHERE source = 'qfeeds') AS qfeeds, "
+            f"count(*) FILTER (WHERE {QFEEDS}) AS qfeeds, "
             "count(*) FILTER (WHERE source = 'crowdsec') AS crowdsec, "
             # only threat traffic Zenarmor did NOT block: a blocked ad / link is Zenarmor doing its job, no sign of
             # anything (repeated blocked threats raise their own zenarmor_threat alert, which counts below)
@@ -230,7 +231,7 @@ async def blocked_threat_history(src: str, source: str) -> tuple[int, int, int]:
     pool = db.pool()
     if source == "qfeeds":
         r = await pool.fetchrow("SELECT count(*) n, count(DISTINCT date_bin('10 minutes', ts, 'epoch')) p, "
-                                "count(DISTINCT dst_ip) t FROM events WHERE source = 'qfeeds' "
+                                f"count(DISTINCT dst_ip) t FROM events WHERE {QFEEDS} "
                                 "AND src_ip = $1::inet AND ts > now() - interval '24 hours'", src)
         return r["n"], r["p"], r["t"]
     rows = await pool.fetch(
@@ -1049,7 +1050,7 @@ class DetectionEngine:
             "SELECT src_ip, dst_ip, message, min(severity) AS sev, count(*) AS hits, max(data->>'classification') AS cls, "
             "min(ts) AS first, max(ts) AS last, "
             "bool_and(action IN ('drop', 'blocked')) AS all_blocked "
-            "FROM events WHERE id > $1 AND id <= $2 AND source = 'suricata' AND action IS NOT NULL AND action <> 'tls' "
+            "FROM events WHERE id > $1 AND id <= $2 AND source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject') "
             # Settings › OPNsense: priority limit (prio 1/2/3 are stored as severity 2/3/4, unknown 5) and ignored SIDs
             "AND severity <= $3 AND NOT coalesce(data->>'sid', '') = ANY($4::text[]) "
             "GROUP BY src_ip, dst_ip, message", last, current,
@@ -1096,7 +1097,7 @@ class DetectionEngine:
         last, current = await self._watermark("qfeeds")
         rows = await db.pool().fetch(
             "SELECT src_ip, dst_ip, dst_port, count(*) AS hits, min(ts) AS first, max(ts) AS last FROM events "
-            "WHERE id > $1 AND id <= $2 AND source = 'qfeeds' "
+            f"WHERE id > $1 AND id <= $2 AND {QFEEDS} "
             "GROUP BY 1, 2, 3", last, current)
         inbound: dict[str, int] = defaultdict(int)
         spans: dict[str, tuple[Any, Any]] = {}
@@ -1112,7 +1113,7 @@ class DetectionEngine:
                 repeated(rating, *await blocked_threat_history(src, "qfeeds"))
                 await raise_alert(
                     "threat_intel_outbound", rating, f"Internal host {src} contacted threat-intel listed IP {dst}",
-                    f"qf_out:{src}:{dst}", src_ip=src, events={"source": "qfeeds", "ip": src}, dst_ip=dst, count=r["hits"],
+                    f"qf_out:{src}:{dst}", src_ip=src, events={"source": "firewall,qfeeds", "d_blocklist": QFEEDS_NAME, "ip": src}, dst_ip=dst, count=r["hits"],
                     span=(r["first"], r["last"]), blocked="Q-Feeds blocked it",
                     description=f"Q-Feeds blocked traffic from internal {src} to known malicious {dst}:{r['dst_port']}. "
                                 "A single attempt is usually a web page or ad; repeated attempts or other alerts for "
@@ -1126,7 +1127,7 @@ class DetectionEngine:
                 await raise_alert("threat_intel_inbound", Rating("info", "known-bad internet address probing you, already "
                                                                          "blocked by Q-Feeds", sticky=True),
                                   f"Threat-intel listed IP {src} is probing you",
-                                  f"qf_in:{src}", src_ip=src, events={"source": "qfeeds", "ip": src}, count=hits,
+                                  f"qf_in:{src}", src_ip=src, events={"source": "firewall,qfeeds", "d_blocklist": QFEEDS_NAME, "ip": src}, count=hits,
                                   span=spans.get(src), blocked="Q-Feeds blocked it", description=f"{hits} connection attempts from {src} (Q-Feeds listed) were blocked.")
         await self._commit("qfeeds", current)
 

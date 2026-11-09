@@ -206,6 +206,10 @@ UPDATE events SET data = coalesce(data, '{}'::jsonb) || jsonb_build_object('scen
  WHERE source = 'crowdsec' AND action = 'alert' AND data->>'scenario' IS NULL AND data->>'reason' IS NULL
    AND message LIKE '% from %' AND split_part(message, ' from ', 1) NOT IN ('', 'None');
 
+-- Q-Feeds plugin events stored before they carried their blocklist (Threats › Q-Feeds links filter on it)
+UPDATE events SET data = coalesce(data, '{}'::jsonb) || '{"blocklist": "Q-Feeds"}'::jsonb
+ WHERE source = 'qfeeds' AND data->>'blocklist' IS NULL;
+
 -- alert filters (Settings › Alert filters): stop or auto-close alerts by severity, rule, text and IP / network
 CREATE TABLE IF NOT EXISTS alert_filters (
     id           BIGSERIAL PRIMARY KEY,

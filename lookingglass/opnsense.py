@@ -770,13 +770,17 @@ class Poller:
         # Q-Feeds has no event store: every call re-reads the firewall log files on OPNsense, oldest line of a file
         # first - so ask for the newest rows explicitly (unsorted, the first rows are the oldest of the day)
         rows = await self.api.search("q_feeds/settings/search_events", rows=1000, sort={"timestamp": "desc"})
+        # the plugin reads its events from the firewall log: while the log lines of the Q-Feeds rules arrive themselves
+        # (tagged data.blocklist, also rules on interface groups the plugin misses) its copies would count them twice
+        if time.time() - filterlog.BLOCKLIST_SEEN.get(filterlog.QFEEDS_NAME.lower(), 0) < 3600:
+            rows = []
         for r in rows:
             ts = self.local_ts(str(r.get("timestamp", ""))) or datetime.now(timezone.utc)
             src, dst = r.get("source"), r.get("destination")
             self.writer.put(event(
                 ts, "qfeeds", program="qfeeds", severity=4, action="block", src_ip=src, dst_ip=dst,
                 src_port=r.get("source_port"), dst_port=r.get("destination_port"), interface=r.get("interface"),
-                direction=r.get("direction"),
+                direction=r.get("direction"), data={"blocklist": filterlog.QFEEDS_NAME},
                 message=f'Q-Feeds threat-intel match {r.get("direction", "")} on {r.get("interface", "")}: '
                         f'{src}:{r.get("source_port", "")} -> {dst}:{r.get("destination_port", "")}',
                 uid=f'qf:{r.get("timestamp")}:{src}:{dst}:{r.get("source_port")}:{r.get("destination_port")}',

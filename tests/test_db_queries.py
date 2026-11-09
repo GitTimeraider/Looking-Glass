@@ -62,15 +62,21 @@ def test_threats_dashboard_crowdsec_and_switched_off_sources():
             res = await run_dashboard("threats", 24)
             by = {p["id"]: p for p in res["panels"]}
             kpi = by["kpi"]["rows"][0]
-            assert kpi["Suricata events"] == 0 and kpi["CrowdSec active decisions"] == 2 and kpi["CrowdSec firewall blocks"] == 1
+            assert kpi["Suricata alerts"] == 0 and kpi["CrowdSec active decisions"] == 2 and kpi["CrowdSec firewall blocks"] == 1
             assert {r["series"] for r in by["src"]["rows"]} == {"crowdsec", "qfeeds"}  # blocks count as CrowdSec
             assert by["src"]["drill"]["series_drill"]["crowdsec"] == {"source": "firewall", "d_blocklist": "CrowdSec"}
-            assert "Suricata signatures" in {p.get("title") for p in res["panels"]}
-            # Suricata switched off and without data: its tiles and panels are left out, the rest stays
-            res = await run_dashboard("threats", 24, off={"suricata"})
-            by = {p["id"]: p for p in res["panels"]}
-            assert "cls" not in by and "sigs" not in by and "cs" in by
-            assert "Suricata events" not in by["kpi"]["rows"][0] and "CrowdSec alerts" in by["kpi"]["rows"][0]
+            assert {r["label"]: r["v"] for r in by["blk"]["rows"]} == {"Suricata (dropped)": 0, "CrowdSec (firewall)": 1, "Q-Feeds": 1}
+            # tabs: Main first, one per source; a tab only runs its own panels
+            assert res["tab"] == "main" and [t["id"] for t in res["tabs"]] == ["main", "crowdsec", "qfeeds", "suricata"]
+            assert all(p.get("tab") == "main" for p in res["panels"])
+            cs = await run_dashboard("threats", 24, tab="crowdsec")
+            by = {p["id"]: p for p in cs["panels"]}
+            assert cs["source"] == "crowdsec" and by["cs_kpi"]["rows"][0]["Firewall blocks"] == 1 and by["csfw"]["rows"]
+            # CrowdSec switched off and without data: its tiles and tab are left out, the rest stays
+            res = await run_dashboard("threats", 24, off={"crowdsec"}, tab="crowdsec")
+            assert res["tab"] == "main" and "crowdsec" not in [t["id"] for t in res["tabs"]]
+            kpi = {p["id"]: p for p in res["panels"]}["kpi"]["rows"][0]
+            assert "CrowdSec alerts" not in kpi and "Q-Feeds hits" in kpi
         finally:
             await db.pool().execute("TRUNCATE events")
             await db.pool().execute("DELETE FROM snapshots WHERE key = 'crowdsec_decisions'")
@@ -94,9 +100,8 @@ def test_crowdsec_alert_pulled_late_counts_in_the_period():
             await pool.execute("UPDATE events SET received_at = now() - interval '2 days'")
             by = {p["id"]: p for p in (await run_dashboard("threats", 24 * 7))["panels"]}
             assert by["kpi"]["rows"][0]["CrowdSec alerts"] == 1
-            assert by["cs"]["rows"][0]["scenario"] == "firewallservices/pf-scan-multi_ports"
             by = {p["id"]: p for p in (await run_dashboard("threats", 24))["panels"]}  # neither happened nor arrived today
-            assert by["kpi"]["rows"][0]["CrowdSec alerts"] == 0 and not by["cs"]["rows"]
+            assert by["kpi"]["rows"][0]["CrowdSec alerts"] == 0
         finally:
             await db.pool().execute("TRUNCATE events")
             await db.close()

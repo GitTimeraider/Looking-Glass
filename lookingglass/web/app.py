@@ -84,14 +84,8 @@ def _background(coro) -> None:
 
 def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, Any] | None = None) -> FastAPI:
     templates.env.globals["time_format"] = lambda: settings.time_format  # live setting, read per page
-    # sidebar dashboards of sources that are switched off (live as well); Suricata also arrives by syslog, so its
-    # page stays while syslog delivered Suricata lines in the last day
-    def dash_hidden() -> set[str]:
-        hidden = set() if settings.zenarmor_enabled else {"zenarmor"}
-        if not settings.ids_pull and time.time() - STATS.last_by_source.get("suricata", 0) > 86400:
-            hidden.add("suricata")
-        return hidden
-    templates.env.globals["dash_hidden"] = dash_hidden
+    # sidebar dashboards of sources that are switched off (live as well)
+    templates.env.globals["dash_hidden"] = lambda: set() if settings.zenarmor_enabled else {"zenarmor"}
     templates.env.globals["theme_attrs"] = lambda: Markup(  # <html> attributes for the theme (style.css), live as well
         f' data-theme="{escape(settings.theme)}" data-mode="{"light" if settings.theme == "light" else "dark"}" '
         f'data-accent="{escape(settings.accent)}"')
@@ -200,6 +194,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
                    "nginx": settings.nginx_pull, "unbound": settings.unbound_query_pull}
         enabled = {k: (v and settings.opnsense_enabled) or k in has for k, v in enabled.items()}
+        for k, on in (("suricata", settings.ids_pull), ("crowdsec", settings.crowdsec_pull), ("qfeeds", settings.qfeeds_pull)):
+            if not on:  # switched off: hidden like its Threats tab, even with older data in the period
+                enabled[k] = False
         # Settings › OPNsense › Receive Zenarmor data off: hidden even while older Zenarmor events are in the period
         enabled["zenarmor"] = settings.zenarmor_enabled and (optional_sources.zenarmor() or "zenarmor" in has)
         return {
@@ -873,6 +870,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     # ------------------------------------------------- function dashboards ---
     @app.get("/dash/{name}", response_class=HTMLResponse)
     async def dash_page(request: Request, name: str):
+        if name == "suricata":  # Suricata is a tab of the Threats page
+            return RedirectResponse("/dash/threats#suricata")
         if name not in DASHBOARDS:
             raise HTTPException(404)
         return templates.TemplateResponse(request, "dash.html", {
@@ -880,19 +879,20 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "ai_enabled": settings.ai_enabled, "user": request.session.get("user")})
 
     @app.get("/api/dash/{name}")
-    async def dash_data(name: str, hours: float = Query(24, gt=0, le=24 * 90)):
+    async def dash_data(name: str, hours: float = Query(24, gt=0, le=24 * 90), tab: str | None = Query(None, max_length=40)):
         if name not in DASHBOARDS:
             raise HTTPException(404)
-        return await results.get(("dash", name, hours), ttl_for(hours), lambda: dash_compute(name, hours))
+        return await results.get(("dash", name, hours, tab), ttl_for(hours), lambda: dash_compute(name, hours, tab))
 
-    async def dash_compute(name: str, hours: float) -> dict[str, Any]:
-        # an optional source whose pull is off and that has no data in the period: its tiles and panels are hidden
+    async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
+        # Threats sources: switched off in Settings › OPNsense -> its tab and tiles are hidden, even with older data in
+        # the period; with OPNsense not set up (yet) they show only when there is data
         pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull}
         has = {r["s"] for r in await db.pool().fetch(
             "SELECT s FROM unnest($1::text[]) s WHERE EXISTS (SELECT 1 FROM events WHERE source = s "
             "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
-        off = {k for k, on in pulls.items() if not (on and settings.opnsense_enabled) and k not in has}
-        return await run_dashboard(name, hours, off)
+        off = {k for k, on in pulls.items() if not on or (not settings.opnsense_enabled and k not in has)}
+        return await run_dashboard(name, hours, off, tab)
 
     @app.get("/api/unifi")
     async def unifi_data():
@@ -1284,6 +1284,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             changed = await app_config.save(settings, payload.get("values") or {})
         except app_config.SettingsError as exc:
             raise HTTPException(400, str(exc)) from exc
+        if changed:  # e.g. a source switched off: pages show it at once, not after the cached results expire
+            results.clear()
         return {"ok": True, "changed": changed}
 
     def _candidate(values: dict) -> Any:

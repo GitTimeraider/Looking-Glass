@@ -24,7 +24,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 |---|---|
 | **Alerts** - every alert says why it got its severity, which device it is and where it is connected; mute, re-rate or ask the AI | **AI analyst** - asks the database itself and answers with findings and actions |
 | ![Alerts](docs/screenshots/alerts.png) | ![AI analyst](docs/screenshots/ai-analyst.png) |
-| **Firewall dashboard** - one of ten dashboards (DNS, web server, threats, Suricata, Zenarmor, logins, VPN, Wi-Fi, logs) | **Devices** - inventory from ARP, DHCP, UniFi and Zenarmor, with risk score and learned behaviour |
+| **Firewall dashboard** - one of nine dashboards (DNS, web server, threats, Zenarmor, logins, VPN, Wi-Fi, logs) | **Devices** - inventory from ARP, DHCP, UniFi and Zenarmor, with risk score and learned behaviour |
 | ![Firewall dashboard](docs/screenshots/firewall.png) | ![Devices](docs/screenshots/devices.png) |
 | **OPNsense** - hardware, load, temperatures, gateways, interfaces and services | **UniFi** - access points, switches, Wi-Fi and wired clients, neighbouring Wi-Fi |
 | ![OPNsense](docs/screenshots/opnsense.png) | ![UniFi](docs/screenshots/unifi.png) |
@@ -41,7 +41,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 | nginx plugin | syslog (access via nginx *SYSLOG Targets*, errors automatically) | requests, status codes, attack patterns (SQLi, RCE, traversal, scanners), WAF / rate limit |
 | Unbound DNS | API (reporting DB) and/or syslog (`log-queries`) | per-client queries, blocklist hits, NXDOMAIN, DNS tunneling / DGA detection |
 | CrowdSec | API (alerts + decisions) + syslog | scenarios, bans |
-| Suricata IDS/IPS | API + syslog | signatures, classifications |
+| Suricata | API + syslog | signatures, classifications |
 | Zenarmor | built-in Elasticsearch-compatible receiver (**works on the free edition**) or syslog (paid editions) | flows, DNS, TLS/SNI, HTTP, threat alerts, apps/categories, traffic volume, **device fingerprints** (name, vendor, OS) |
 | Q-Feeds | API (events + stats) | threat-intel matches, especially **internal hosts contacting malicious IPs** (needs logged block rules, see step 5) |
 | SSH / web GUI / OpenVPN / IPsec | syslog | failed and successful logins, config changes |
@@ -535,6 +535,10 @@ These steps were checked against the current OPNsense documentation and source (
    add **block rules that use the Q-Feeds aliases with logging enabled**, e.g. on LAN: *block, destination = Q-Feeds
    alias, Log ✓* and on WAN: *block, source = Q-Feeds alias, Log ✓* (**Firewall › Rules**). The domain feeds are
    applied through Unbound's blocklist (*Register domain feeds* in **Security › Q-Feeds Connect**).
+   The log lines of those rules (on any interface or interface group) count as Q-Feeds blocks under *Threats ›
+   Q-Feeds*, for alerts and in reports - also blocks the plugin's own *Events* miss. While they arrive, the plugin's
+   events (read from the same log) are not stored again. In / out is taken from the addresses: a LAN rule logs an
+   outgoing connection as "in" on the LAN interface.
 8. **CrowdSec** needs nothing extra – alerts and decisions are read through the API. These are only CrowdSec's own detections; the community blocklist (usually by far the most bans) blocks in the firewall, through the rules that use its aliases. *Settings › OPNsense › Blocklist aliases* names those aliases per tool (default `CrowdSec: crowdsec_blocklists, crowdsec6_blocklists` and `Q-Feeds: __qfeeds_*`, `*` as wildcard - change it when a plugin renames them, or add your own lists): Looking Glass finds every rule using them, reads the addresses in the tables and the packets the rules blocked, and marks their firewall log lines. Needs the API user's *Firewall: Alias: Edit* and *Diagnostics: Firewall statistics* privileges; for the logged blocks enable *Services › CrowdSec › Settings › Enable log for rules*.
 
 Check **Setup & Status** in Looking Glass: every source should show a recent "last message" and every API job "ok"
@@ -917,9 +921,14 @@ How UniFi and OPNsense data are combined:
   *Firewall* (actions, interfaces, protocols, ports, countries, rules, allowed inbound, internal hosts being blocked),
   *DNS* (queries vs. blocked, types, rcodes, blocklists, clients, NXDOMAIN, tunneling candidates),
   *Web server* (status classes, attack patterns over time, vhosts, paths, 4xx probing, user agents, clients),
-  *Threats* (Suricata, CrowdSec, Q-Feeds, alerts by rule/severity, top attackers across all sources, active bans),
-  *Suricata IDS* (alerts by priority, alerted vs dropped, classifications, app protocols, countries, signatures with
-  SID, interfaces, sources, targeted hosts, internal hosts alerting, TLS JA3/JA4 fingerprints and SNI),
+  *Threats* with four tabs: *Main* (all three sources together: key figures, threat events and blocks per source,
+  alerts by rule/severity, top attackers, blocklists, live log), *CrowdSec* (alerts, decisions, blocklist blocks over
+  time, direction, countries, ports, blocked IPs), *Q-Feeds* (hits in / out over time, interfaces, matches, internal
+  hosts contacting listed addresses, ports) and *Suricata* (alerts by priority, alerted vs dropped, classifications,
+  app protocols, countries, signatures with SID, interfaces, sources, targeted hosts, internal hosts alerting, TLS
+  JA3/JA4 fingerprints and SNI). Switching a source off (Settings › OPNsense › Pull …) hides its tab, its tiles
+  and its Overview widgets right away;
+  */dash/threats#suricata* opens a tab directly,
   *Zenarmor* (record types, applications and app categories, web categories, DNS/TLS/HTTP, hosts and devices, blocked
   destinations, threats, top talkers),
   *Authentication* (failed/successful logins, IPs with failed logins, usernames tried, config changes),

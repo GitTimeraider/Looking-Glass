@@ -8,6 +8,7 @@ from datetime import date
 from typing import Any
 
 from . import db
+from .parsers.filterlog import QFEEDS
 
 log = logging.getLogger(__name__)
 
@@ -46,26 +47,29 @@ QUERIES: dict[str, str] = {
     "auth_success": "SELECT host(src_ip) ip, username, program, count(*) n, max(ts) last FROM events WHERE action = 'login_success' "
                     "AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2, 3 ORDER BY 5 DESC LIMIT 15",
     "ids_signatures": "SELECT message signature, max(data->>'classification') classification, count(*) n, count(DISTINCT src_ip) sources FROM events "
-                      "WHERE source = 'suricata' AND ts > now() - make_interval(secs => $1) AND action IS NOT NULL AND action <> 'tls' GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
+                      "WHERE source = 'suricata' AND ts > now() - make_interval(secs => $1) AND action IN ('alert', 'drop', 'blocked', 'reject') GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
     "ids_top_sources": "SELECT host(src_ip) ip, max(src_country) country, count(DISTINCT message) sigs, count(*) n FROM events "
-                       "WHERE source = 'suricata' AND action IS NOT NULL AND action <> 'tls' AND src_ip IS NOT NULL "
+                       "WHERE source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject') AND src_ip IS NOT NULL "
                        "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 4 DESC LIMIT 15",
     "ids_top_targets": "SELECT host(dst_ip) ip, dst_port port, count(DISTINCT src_ip) sources, count(*) n FROM events "
-                       "WHERE source = 'suricata' AND action IS NOT NULL AND action <> 'tls' AND dst_ip IS NOT NULL "
+                       "WHERE source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject') AND dst_ip IS NOT NULL "
                        "AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 4 DESC LIMIT 15",
     "ids_classifications": "SELECT coalesce(data->>'classification', data->>'category', '?') classification, count(*) n, "
                            "count(*) FILTER (WHERE action IN ('drop', 'blocked')) dropped FROM events "
-                           "WHERE source = 'suricata' AND action IS NOT NULL AND action <> 'tls' "
+                           "WHERE source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject') "
                            "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
     "ids_internal_hosts": "SELECT host(src_ip) ip, count(DISTINCT message) sigs, count(*) n FROM events "
-                          "WHERE source = 'suricata' AND action IS NOT NULL AND action <> 'tls' AND (src_ip << '10.0.0.0/8' "
+                          "WHERE source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject') AND (src_ip << '10.0.0.0/8' "
                           "OR src_ip << '172.16.0.0/12' OR src_ip << '192.168.0.0/16' OR src_ip << 'fc00::/7') "
                           "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
     "crowdsec_scenarios": "SELECT coalesce(data->>'scenario', data->>'reason') scenario, count(*) n, count(DISTINCT src_ip) ips FROM events "
                           "WHERE source = 'crowdsec' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
     "zenarmor_top": "SELECT coalesce(data->>'app_name', data->>'app_category', action) app, action, count(*) n FROM events "
                     "WHERE source = 'zenarmor' AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
-    "qfeeds_hits": "SELECT host(src_ip) src, host(dst_ip) dst, direction, count(*) n FROM events WHERE source = 'qfeeds' "
+    # Q-Feeds: its firewall log lines too; direction from the addresses (a LAN rule logs outgoing traffic as "in")
+    "qfeeds_hits": "SELECT host(src_ip) src, host(dst_ip) dst, CASE WHEN src_ip << '10.0.0.0/8' OR src_ip << '172.16.0.0/12' "
+                   "OR src_ip << '192.168.0.0/16' OR src_ip << 'fc00::/7' OR src_ip << '100.64.0.0/10' THEN 'out' ELSE 'in' END direction, "
+                   f"count(*) n FROM events WHERE {QFEEDS} "
                    "AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 15",
     "alerts_by_severity": "SELECT severity, count(*) n FROM alerts WHERE last_seen > now() - make_interval(secs => $1) GROUP BY 1 "
                           "ORDER BY array_position(ARRAY['critical','high','medium','low','info'], severity)",
@@ -78,7 +82,7 @@ QUERIES: dict[str, str] = {
     # UniFi location + OPNsense findings: which device, where it is connected and what it did
     "clients_with_security_events": "WITH ev AS (SELECT src_ip, count(*) FILTER (WHERE source = 'firewall' AND action = 'block') fw, "
         "count(*) FILTER (WHERE source = 'unbound' AND action IN ('block', 'drop')) dns, "
-        "count(*) FILTER (WHERE source IN ('suricata', 'crowdsec', 'qfeeds') OR (source = 'zenarmor' AND action = 'block')) threats "
+        "count(*) FILTER (WHERE source IN ('suricata', 'crowdsec', 'qfeeds') OR lower(data->>'blocklist') = 'q-feeds' OR (source = 'zenarmor' AND action = 'block')) threats "
         "FROM events WHERE ts > now() - make_interval(secs => $1) AND src_ip IS NOT NULL "
         "AND source IN ('firewall', 'unbound', 'suricata', 'crowdsec', 'qfeeds', 'zenarmor') GROUP BY 1) "
         "SELECT coalesce(d.hostname, d.mac) name, host(d.ip) ip, d.conn_where, ev.fw, ev.dns, ev.threats FROM devices d "
