@@ -774,3 +774,44 @@ def test_attack_chain_needs_a_strong_link_and_skips_known_alerts():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_suricata_alerts_like_crowdsec_and_qfeeds():
+    """A signature that fires is no alert on its own: internet addresses only once they keep at it, devices inside
+    only for a priority-1 hit that got through, or when it repeats / other sources confirm it."""
+    def ids(minutes, src, sig, prio=3, action="alert", dst="198.51.100.1"):
+        return event(NOW - timedelta(minutes=minutes), "suricata", severity={1: 2, 2: 3, 3: 4}[prio], action=action,
+                     src_ip=src, dst_ip=dst, message=sig, data={"priority": prio})
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events, alerts, devices")
+            evs = [
+                # internet: a few dropped hits -> nothing; 25 hits -> one alert for the address
+                *[ids(1, "203.0.113.5", "ET SCAN x", action="drop", dst="192.168.1.2") for _ in range(5)],
+                *[ids(1 + i, "203.0.113.6", f"ET SCAN {i % 3}", action="drop", dst="192.168.1.2") for i in range(25)],
+                # inside: a policy signature once, a dropped priority-1 once -> nothing
+                ids(1, "192.168.1.20", "ET POLICY Dropbox", prio=2),
+                ids(1, "192.168.1.21", "ET MALWARE x", prio=1, action="drop"),
+                # inside: priority 1 NOT dropped -> high
+                ids(1, "192.168.1.22", "ET MALWARE y", prio=1),
+                # inside: the same info signature every 30 minutes -> repeated -> medium
+                *[ids(1 + 30 * i, "192.168.1.23", "ET INFO z") for i in range(6)],
+                # TLS / JA4 records are no signature hits
+                *[event(NOW, "suricata", severity=6, action="tls", src_ip="203.0.113.7", dst_ip="192.168.1.2",
+                        message="TLS a.example 1.3") for _ in range(30)],
+            ]
+            await db.copy_events(evs)
+            await db.kv_set("wm:ids", 0)
+            await DetectionEngine(Settings()).ids_alerts()
+            got = {r["ip"]: (r["severity"], r["count"]) for r in await pool.fetch(
+                "SELECT host(src_ip) ip, severity, count FROM alerts WHERE rule = 'ids'")}
+            assert got == {"203.0.113.6": ("info", 25), "192.168.1.22": ("high", 1), "192.168.1.23": ("medium", 6)}
+            await pool.execute("TRUNCATE events, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
