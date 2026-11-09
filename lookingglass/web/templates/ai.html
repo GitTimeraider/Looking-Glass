@@ -55,6 +55,7 @@ function convTools() {
   document.getElementById("conv-tools").hidden = !chatId;
   sentBtn.setAttribute("aria-pressed", String(sentView));
   sentBtn.classList.toggle("on", sentView);
+  updateSend();
 }
 // a piece of text as sent: pseudonyms highlighted, the real value on hover / tap
 const sentText = parts => parts.map(([real, fake]) => fake == null ? LG.esc(real)
@@ -117,11 +118,16 @@ async function loadChats() {
   chatList = await LG.api("/api/ai/chats");
   for (const id of [...picked]) if (!chatList.some(c => c.id === id)) picked.delete(id);
   renderChats();
+  // an analysis this page does not wait for itself (started elsewhere): check back until it is done
+  clearTimeout(listTimer);
+  if (chatList.some(c => c.busy && ![...following.values()].includes(c.id))) listTimer = setTimeout(loadChats, 5000);
 }
+let listTimer = null;
 function renderChats() {
   document.getElementById("chats").innerHTML = chatList.map(c => `<div class="chat-item ${c.id === chatId ? "active" : ""}">` +
     (selecting ? `<input type="checkbox" data-pick="${c.id}" ${picked.has(c.id) ? "checked" : ""}>` : "") +
     `<a href="#" data-id="${c.id}" title="${LG.esc(c.title)}">${LG.esc(c.title)}</a>` +
+    (isBusy(c.id) ? `<span class="spinner" title="The analyst is working on this chat"></span>` : "") +
     `<button class="del" data-del="${c.id}" title="Delete this chat">✕</button></div>`).join("") || `<div class="empty small">No chats yet</div>`;
   document.querySelectorAll("#chats a").forEach(a => a.onclick = async e => {
     e.preventDefault();
@@ -138,6 +144,7 @@ function renderChats() {
   all.indeterminate = picked.size > 0 && picked.size < chatList.length;
   const del = document.getElementById("del-sel");
   del.disabled = !picked.size; del.textContent = picked.size ? `Delete ${picked.size}` : "Delete";
+  updateSend();
 }
 function togglePick(id) { picked.has(id) ? picked.delete(id) : picked.add(id); renderChats(); }
 async function deleteChats(ids) {
@@ -161,28 +168,26 @@ document.getElementById("del-sel").onclick = async () => {
 async function openChat(id) {
   const c = await LG.api(`/api/ai/chats/${id}`);
   chatId = id; convo = c.messages; renderMessages(convo); convTools(); loadChats();
-  if (id === asking) {  // back on the chat whose question is still being analysed: show that it is
-    msgsEl.insertAdjacentHTML("beforeend", `<div class="msg assistant"><span class="spinner"></span> investigating…</div>`);
-    msgsEl.scrollTop = msgsEl.scrollHeight;
+  if (c.job) {  // its analysis is still running (sent from here, before a reload or from another device): show and follow it
+    showThinking();
+    follow(c.job, id);
   }
 }
-let asking = null;  // the chat whose question is being analysed
-async function send(text) {
-  text = (text || document.getElementById("input").value).trim();
-  if (!text) return;
-  document.getElementById("input").value = "";
-  const btn = document.getElementById("send"); btn.disabled = true;
-  convo = convo.concat([{ role: "user", content: text }]);
-  renderMessages(convo);
-  msgsEl.insertAdjacentHTML("beforeend", `<div class="msg assistant" id="thinking"><span class="spinner"></span> investigating… (the analyst queries the log database, this can take a minute)</div>`);
+const BUSY = `<span class="spinner"></span> investigating… (the analyst queries the log database, this can take a minute)`;
+const thinkingEl = () => document.getElementById("thinking");
+function showThinking() {
+  msgsEl.insertAdjacentHTML("beforeend", `<div class="msg assistant" id="thinking">${BUSY}</div>`);
   msgsEl.scrollTop = msgsEl.scrollHeight;
+}
+const following = new Map();  // job id -> chat id: the analyses this page waits for
+let posting = false;           // a question is on its way to the server
+const isBusy = id => id !== null && ([...following.values()].includes(id) || chatList.some(c => c.id === id && c.busy));
+function updateSend() { document.getElementById("send").disabled = posting || isBusy(chatId); }
+async function follow(job, id) {
+  if (following.has(job)) return;  // already waiting for it
+  following.set(job, id); renderChats();
   try {
-    const started = await LG.api("/api/ai/message", { method: "POST", body: { chat_id: chatId, text } });
-    const job = started.job;
-    chatId = started.chat_id; asking = chatId;  // the question is saved already: show the chat in the list now
-    convTools(); loadChats();
     let r, lost = 0;
-    const thinking = document.getElementById("thinking"), busy = thinking.innerHTML;
     for (;;) {  // the analysis runs on the server; polling keeps every request short for proxies in front
       await new Promise(res => setTimeout(res, 2000));
       try { r = await LG.api(`/api/ai/jobs/${job}`); }
@@ -190,29 +195,51 @@ async function send(text) {
         // a network error ("Failed to fetch": Wi-Fi, sleep, a proxy restart) or a proxy hiccup: the analysis keeps
         // running on the server and saves its answer, so keep asking for a while instead of losing it
         if ((e instanceof TypeError || /^HTTP 50[234]\b/.test(e.message)) && ++lost < 150) {
-          if (lost === 3) thinking.innerHTML = `<span class="spinner"></span> lost the connection to Looking Glass - retrying (the analysis keeps running)…`;
+          if (lost === 3 && chatId === id && thinkingEl())
+            thinkingEl().innerHTML = `<span class="spinner"></span> lost the connection to Looking Glass - retrying (the analysis keeps running)…`;
           continue;
         }
         throw e;
       }
-      if (lost) { lost = 0; thinking.innerHTML = busy; }
+      if (lost) { lost = 0; if (chatId === id && thinkingEl()) thinkingEl().innerHTML = BUSY; }
       if (r.done) break;
     }
-    if (chatId === asking) {  // only if the user still looks at this chat (not "New chat" or another one meanwhile)
-      convo = convo.slice(0, -1).concat(r.messages);
-      renderMessages(convo); convTools();
+    following.delete(job);
+    if (chatId === id) {  // only if the user still looks at this chat (not "New chat" or another one meanwhile)
+      const c = await LG.api(`/api/ai/chats/${id}`);
+      if (chatId === id) { convo = c.messages; renderMessages(convo); convTools(); }
     }
-    loadChats();
   } catch (e) {
+    following.delete(job);
+    if (chatId !== id) return;  // the user moved to another chat meanwhile
     const lostIt = e instanceof TypeError || /^HTTP 50[234]\b/.test(e.message);
-    if (asking !== null && chatId !== asking) { loadChats(); return; }  // the user moved to another chat meanwhile
     // the server takes a failed question back out (and drops a chat that only held it)
-    if (!lostIt && asking !== null && convo.length <= 1) chatId = null;
-    document.getElementById("thinking").innerHTML = `⚠️ ${LG.esc(e.message)}` + (lostIt ?
+    if (!lostIt && convo.length <= 1) chatId = null;
+    if (thinkingEl()) thinkingEl().innerHTML = `⚠️ ${LG.esc(e.message)}` + (lostIt ?
       " - the analyst may still finish on the server: open the chat from the list in a minute before asking again." : "");
     convo = convo.slice(0, -1);
+    convTools();
+  } finally { following.delete(job); loadChats(); }
+}
+async function send(text) {
+  text = (text || document.getElementById("input").value).trim();
+  if (!text || posting || isBusy(chatId)) return;
+  document.getElementById("input").value = "";
+  posting = true; updateSend();
+  convo = convo.concat([{ role: "user", content: text }]);
+  renderMessages(convo);
+  showThinking();
+  try {
+    const started = await LG.api("/api/ai/message", { method: "POST", body: { chat_id: chatId, text } });
+    chatId = started.chat_id;  // the question is saved already: the chat shows in the list, marked busy, right away
+    posting = false;
     convTools(); loadChats();
-  } finally { btn.disabled = false; asking = null; }
+    follow(started.job, chatId);
+  } catch (e) {
+    if (thinkingEl()) thinkingEl().innerHTML = `⚠️ ${LG.esc(e.message)}`;
+    convo = convo.slice(0, -1);
+    loadChats();
+  } finally { posting = false; updateSend(); }
 }
 document.getElementById("send").onclick = () => send();
 document.getElementById("input").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); };
