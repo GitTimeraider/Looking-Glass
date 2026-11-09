@@ -181,6 +181,18 @@ RULE_FAMILIES = [{"brute_force", "success_after_failures", "admin_login", "passw
 IDS_ALERT = "(source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject'))"
 
 
+def ids_wanted(sev: int, sids: int) -> str:
+    """Settings › OPNsense limits of the hits Suricata alerts are made of: $sev = highest stored severity, $sids =
+    ignored SIDs (the query parameter numbers)."""
+    return f"severity <= ${sev} AND NOT coalesce(data->>'sid', '') = ANY(${sids}::text[])"
+
+
+# level per stored severity (priority 1 -> 2, 2 -> 3, 3 -> 4) and how many hits from one internet address in 24h
+# make it an alert - fewer is background noise, as for Q-Feeds
+IDS_LEVELS = {0: "critical", 1: "critical", 2: "high", 3: "medium", 4: "low"}
+IDS_INBOUND_MIN = 20
+
+
 def _private(ip: str) -> bool:
     try:
         a = ipaddress.ip_address(ip)
@@ -283,6 +295,16 @@ def repeated(r: Rating, hits: int, periods: int, targets: int) -> Rating:
         r.up(f"repeated: blocked threat traffic {why} in the last 24h ({hits} attempt(s), {targets} site(s)) - "
              "can be malware calling home; check which program on the device does it")
     return r
+
+
+async def ids_history(src: str, signature: str, max_sev: int, ignore: list[str]) -> tuple[int, int, int]:
+    """(hits, distinct 10-minute periods of this signature, distinct signatures) of Suricata hits from one device in 24h."""
+    r = await db.pool().fetchrow(
+        "SELECT count(*) FILTER (WHERE message = $4) n, "
+        "count(DISTINCT date_bin('10 minutes', ts, 'epoch')) FILTER (WHERE message = $4) p, count(DISTINCT message) s "
+        f"FROM events WHERE {IDS_ALERT} AND {ids_wanted(1, 2)} AND src_ip = $3::inet AND ts > now() - interval '24 hours'",
+        max_sev, ignore, src, signature)
+    return r["n"], r["p"], r["s"]
 
 
 async def alert_ports(filters: dict[str, Any] | None, since: datetime) -> dict[str, Any] | None:
@@ -1075,34 +1097,88 @@ class DetectionEngine:
 
     # -------------------------------------------------- 3rd party sources ---
     async def ids_alerts(self) -> None:
+        """Suricata, set up like CrowdSec / Q-Feeds / Zenarmor: a signature that fires (or a packet IPS mode drops) is
+        no alert on its own. An internet address: one alert per address once it keeps at it (``IDS_INBOUND_MIN`` hits
+        in 24h). A device inside: a priority-1 signature that got through, or a hit that repeats / other sources
+        confirm."""
         last, current = await self._watermark("ids")
         rows = await db.pool().fetch(
             "SELECT src_ip, dst_ip, message, min(severity) AS sev, count(*) AS hits, max(data->>'classification') AS cls, "
             "min(ts) AS first, max(ts) AS last, "
-            "bool_and(action IN ('drop', 'blocked')) AS all_blocked "
-            "FROM events WHERE id > $1 AND id <= $2 AND source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject') "
-            # Settings › OPNsense: priority limit (prio 1/2/3 are stored as severity 2/3/4, unknown 5) and ignored SIDs
-            "AND severity <= $3 AND NOT coalesce(data->>'sid', '') = ANY($4::text[]) "
-            "GROUP BY src_ip, dst_ip, message", last, current,
-            {1: 2, 2: 3}.get(self.settings.ids_alert_priority, 7),
-            [p.strip() for p in (self.settings.ids_ignore_sids or "").split(",") if p.strip()])
+            "bool_and(action IN ('drop', 'blocked', 'reject')) AS all_blocked "
+            f"FROM events WHERE id > $1 AND id <= $2 AND {IDS_ALERT} AND {ids_wanted(3, 4)} "
+            "GROUP BY src_ip, dst_ip, message", last, current, *self._ids_limits())
+        inbound: set[str] = set()
         for r in rows:
-            base = {0: "critical", 1: "critical", 2: "high", 3: "medium", 4: "low"}.get(r["sev"], "low")
-            rating = Rating(base, f"Suricata rates this signature {'priority 1' if base == 'critical' else base}", sticky=True)
             src = str(r["src_ip"]) if r["src_ip"] else None
-            if r["all_blocked"]:
-                rating.down("Suricata (IPS mode) dropped it")
-            if src and self.internal(src) and not (r["dst_ip"] and self.internal(str(r["dst_ip"]))):
-                ev = await evidence(src, "ids")
-                ev["ids"] = 0  # that is this alert
-                corroborate(rating, ev, 1)
-            await raise_alert("ids", rating, f"Suricata: {r['message']}", f"ids:{r['src_ip']}:{r['message']}",
-                              events={"source": "suricata", "ip": str(r["src_ip"]) if r["src_ip"] else None, "q": r["message"][:80]},
-                              src_ip=str(r["src_ip"]) if r["src_ip"] else None, dst_ip=str(r["dst_ip"]) if r["dst_ip"] else None,
-                              count=r["hits"], span=(r["first"], r["last"]), blocked=r["all_blocked"] and "Suricata dropped it",
-                              description=f"Suricata signature '{r['message']}' ({r['cls'] or 'n/a'}) "
-                                                           f"{r['src_ip']} -> {r['dst_ip']}, {r['hits']} hit(s).")
+            if not src:
+                continue
+            if self.internal(src):
+                await self._ids_inside(src, r)
+            else:
+                inbound.add(src)  # judged per address below, over the last 24h
+        for src in inbound:
+            await self._ids_inbound(src)
         await self._commit("ids", current)
+
+    def _ids_limits(self) -> tuple[int, list[str]]:
+        # Settings › OPNsense: priority limit (prio 1/2/3 are stored as severity 2/3/4, unknown 5) and ignored SIDs
+        return ({1: 2, 2: 3}.get(self.settings.ids_alert_priority, 7),
+                [p.strip() for p in (self.settings.ids_ignore_sids or "").split(",") if p.strip()])
+
+    async def _ids_inside(self, src: str, r: Any) -> None:
+        dst = str(r["dst_ip"]) if r["dst_ip"] else None
+        fingerprint = f"ids:{src}:{r['message']}"
+        level = IDS_LEVELS.get(r["sev"], "low")
+        if r["all_blocked"]:
+            rating = Rating("low", f"Suricata ({level} signature) dropped it in IPS mode - working as intended", sticky=True)
+        elif level in ("critical", "high"):
+            rating = Rating("high", "Suricata priority-1 signature from a device inside, NOT dropped", sticky=True)
+        else:
+            rating = Rating("low", f"Suricata {level} signature, only logged - on its own usually policy / info traffic",
+                            sticky=True)
+        ev = await evidence(src, "ids")
+        ev["ids"] = 0  # that is this alert
+        corroborate(rating, ev, 2)
+        hits, periods, sigs = await ids_history(src, r["message"], *self._ids_limits())
+        if periods >= REPEAT_PERIODS or sigs >= REPEAT_TARGETS:
+            why = (f"this signature fired in {periods} separate 10-minute periods" if periods >= REPEAT_PERIODS
+                   else f"{sigs} different signatures fired for this device")
+            rating.up(f"repeated: {why} in the last 24h ({hits} hit(s)) - check which program on the device does it")
+        is_open = bool(await db.pool().fetchval(
+            "SELECT 1 FROM alerts WHERE fingerprint = $1 AND status <> 'closed' "
+            "AND last_seen > now() - interval '24 hours'", fingerprint))
+        if rating.severity in ("info", "low") and not is_open:
+            return  # one hit, nothing else points at the device: Suricata logged / dropped it, nothing to look into
+        await raise_alert("ids", rating, f"Suricata: {r['message']}", fingerprint,
+                          events={"source": "suricata", "ip": src, "q": r["message"][:80]}, src_ip=src, dst_ip=dst,
+                          count=r["hits"], span=(r["first"], r["last"]), blocked=r["all_blocked"] and "Suricata dropped it",
+                          description=f"Suricata signature '{r['message']}' ({r['cls'] or 'n/a'}) "
+                                      f"{src} -> {dst}, {r['hits']} hit(s).")
+
+    async def _ids_inbound(self, src: str) -> None:
+        pool = db.pool()
+        fingerprint = f"ids_in:{src}"
+        limits = self._ids_limits()
+        t = await pool.fetchrow(
+            "SELECT count(*) n, bool_and(action IN ('drop', 'blocked', 'reject')) blocked, min(ts) f, max(ts) l "
+            f"FROM events WHERE {IDS_ALERT} AND {ids_wanted(1, 2)} AND src_ip = $3::inet "
+            "AND ts > now() - interval '24 hours'", *limits, src)
+        is_open = bool(await pool.fetchval(
+            "SELECT 1 FROM alerts WHERE fingerprint = $1 AND status <> 'closed' "
+            "AND last_seen > now() - interval '24 hours'", fingerprint))
+        if not t or (t["n"] < IDS_INBOUND_MIN and not is_open):
+            return  # a few signatures from the internet: background noise every public IP gets
+        sigs = await pool.fetch(
+            f"SELECT message, count(*) n FROM events WHERE {IDS_ALERT} AND {ids_wanted(1, 2)} AND src_ip = $3::inet "
+            "AND ts > now() - interval '24 hours' GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5", *limits, src)
+        top = "; ".join(f"{s['message']} ({s['n']}x)" for s in sigs)
+        rating = Rating("info", "internet address probing you, every hit dropped by Suricata (IPS mode)") if t["blocked"] \
+            else Rating("low", "internet address probing you, Suricata only logged it (IDS mode or not dropped)")
+        await raise_alert("ids", rating, f"Suricata: {src} keeps triggering signatures ({t['n']} hits in 24h)", fingerprint,
+                          src_ip=src, events={"source": "suricata", "ip": src}, count=t["n"], mode="max",
+                          span=(t["f"], t["l"]), blocked=t["blocked"] and "Suricata dropped it",
+                          description=f"{t['n']} Suricata signature hits from {src} in the last 24 hours. Most frequent: {top}.")
 
     async def crowdsec_alerts(self) -> None:
         last, current = await self._watermark("crowdsec")

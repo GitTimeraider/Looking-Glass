@@ -27,8 +27,8 @@ def test_ids_alert_priority_ignored_sids_and_tls():
             pool = db.pool()
             await pool.execute("TRUNCATE events, alerts")
             now = datetime.now(timezone.utc)
-            evs = [suricata_from_eve({"timestamp": now.isoformat(), "event_type": "alert", "src_ip": "203.0.113.5",
-                                      "dest_ip": "192.168.1.10", "alert": {"signature": sig, "signature_id": sid, "severity": prio}}, now)
+            evs = [suricata_from_eve({"timestamp": now.isoformat(), "event_type": "alert", "src_ip": "192.168.1.30",
+                                      "dest_ip": "198.51.100.9", "alert": {"signature": sig, "signature_id": sid, "severity": prio}}, now)
                    for sig, sid, prio in (("P1", 1, 1), ("P3", 3, 3), ("Ignored", 2210050, 1))]
             evs.append(suricata_from_eve({"timestamp": now.isoformat(), "event_type": "tls", "src_ip": "192.168.1.20",
                                           "dest_ip": "198.51.100.7", "tls": {"sni": "example.com"}}, now))
@@ -38,6 +38,7 @@ def test_ids_alert_priority_ignored_sids_and_tls():
                 await pool.execute("INSERT INTO events (ts, source, severity, action, src_ip, dst_ip, message, domain, data) "
                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", e["ts"], e["source"], e.get("severity"),
                                    e.get("action"), e.get("src_ip"), e.get("dst_ip"), e.get("message"), e.get("domain"), e.get("data"))
+            # a device inside, priority 1 NOT dropped: an alert (one hit from the internet would not be)
             await DetectionEngine(Settings(ids_alert_priority=2, ids_ignore_sids="2210050")).ids_alerts()
             assert [r["title"] for r in await pool.fetch("SELECT title FROM alerts")] == ["Suricata: P1"]
             out = await dashboards.run_dashboard("threats", 24, tab="suricata")
