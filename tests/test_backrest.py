@@ -158,16 +158,27 @@ def test_backup_alerts_open_and_close_by_themselves():
             await backups.store_runs("backrest", [{**check, "ext_id": "9", "status": "success", "started": t + timedelta(hours=1)}])
             await backups.check_repos("backrest", "Backrest", ["nas"])
             assert (await alerts())[-1]["status"] == "closed"
+            # Backrest lists the next scheduled runs as pending, with their start time in the future: never "latest"
+            await backups.store_runs("backrest", [
+                {**run(10, "pending", -5), "ended": None, "duration_s": None},
+                {**check, "ext_id": "11", "status": "pending", "started": now + timedelta(days=2), "ended": None}])
+            await backups.check_jobs("backrest", "Backrest", [job], now=now)
+            await backups.check_repos("backrest", "Backrest", ["nas"])
+            assert all(r["status"] == "closed" for r in await alerts())
             # the Main tab and the Backrest tab
             await db.set_snapshot("backup_jobs:backrest", {"label": "Backrest", "jobs": [job]})
             ov = await backups.overview(30)
             j = ov["jobs"][0]
+            assert j["last_status"] == "success" and j["last_finished_status"] == "success" and j["runs_total"] == 7
+            assert "pending" not in {r["status"] for r in ov["recent"]}
             assert j["job"] == "docs" and j["state"] == "ok" and j["failed"] == 2 and j["ok"] == 4 and j["warned"] == 1
             assert ov["sources"][0]["source"] == "backrest" and sum(d["n"] for d in ov["daily"]) == 7
             detail = await backups.source_detail("backrest", 30)
+            assert [(t["kind"], t["status"]) for t in detail["last_tasks"]] == [("check", "success")]
+            assert "pending" in {r["status"] for r in detail["runs"]}  # the Backup runs table does show it
             speeds = {r["ext_id"]: r["speed_bps"] for r in detail["runs"]}
             assert speeds["1"] == 10_000_000  # 6 GB in 600 s
-            assert detail["per_job"][0]["added_bps"] == 100_000 and len(detail["maintenance"]) == 2
+            assert detail["per_job"][0]["added_bps"] == 100_000 and len(detail["maintenance"]) == 3  # pending check included
             # no successful backup for longer than the threshold -> overdue in the Main tab too
             late = now + timedelta(hours=40)
             assert backups.job_state({**j, "last_good": datetime.fromisoformat(j["last_good"])}, late) == "overdue"

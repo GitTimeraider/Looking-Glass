@@ -215,7 +215,7 @@ function drawBackrest() {
   const sumPlans = Object.fromEntries(((B.summary || {}).plans || []).map(s => [s.id, s]));
   const perJob = Object.fromEntries(B.per_job.map(j => [j.job, j]));
   const jobs = Object.fromEntries(B.jobs.map(j => [j.job, j]));
-  const lastRun = {}; for (const r of B.runs) if (!lastRun[r.job]) lastRun[r.job] = r;
+  const lastRun = {}; for (const r of B.runs) if (!lastRun[r.job] && r.status !== "pending") lastRun[r.job] = r;  // not the next scheduled run
   LG.table("#b-plans", [
     {k: "id", l: "Plan", f: (v, r) => `<b>${LG.esc(v)}</b>${r.disabled ? ` <span class="pill">not scheduled</span>` : ""}<div class="small muted" title="${LG.esc(r.paths.join("\n"))}">${LG.esc(r.paths.slice(0, 3).join(", "))}${r.paths.length > 3 ? ` +${r.paths.length - 3}` : ""}${r.excludes ? ` · ${r.excludes} excludes` : ""}</div>`},
     {k: "repo", l: "Repository"},
