@@ -12,6 +12,7 @@ import uvicorn
 
 from . import __version__, app_config, auth, crypto, db, db_config, notify, optional_sources, rollup
 from .ai import Analyst, request_log
+from .backrest import BackrestPoller
 from .config import get_settings
 from .detections import (
     DetectionEngine,
@@ -54,6 +55,7 @@ async def housekeeping(settings) -> None:
                 await asyncio.sleep(0.5)
             await rollup.prune(settings.retention_days)
             await pool.execute("DELETE FROM metrics WHERE ts < now() - make_interval(days => $1)", settings.metrics_retention_days)
+            await pool.execute("DELETE FROM backup_runs WHERE started < now() - interval '400 days'")
             await pool.execute("DELETE FROM alerts WHERE status = 'closed' AND last_seen < now() - make_interval(days => $1)",
                                max(settings.retention_days, 90))
             # comments of alerts that are gone (deleted here, by hand or with an older version)
@@ -115,6 +117,26 @@ async def unifi_supervisor(settings, writer: EventWriter) -> None:
             if settings.unifi_enabled:
                 poller = UnifiPoller(settings, writer)
                 task = asyncio.create_task(poller.run(), name="unifi")
+        await asyncio.sleep(5)
+
+
+async def backrest_supervisor(settings) -> None:
+    """Run the Backrest poller while it is configured; restart it whenever its settings change."""
+    poller: BackrestPoller | None = None
+    task: asyncio.Task | None = None
+    sig = None
+    while True:
+        new_sig = app_config.signature(settings, "backrest")
+        if new_sig != sig or (task is not None and task.done()):
+            if poller is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await poller.stop()
+                poller = task = None
+            sig = new_sig
+            if settings.backrest_enabled:
+                poller = BackrestPoller(settings)
+                task = asyncio.create_task(poller.run(), name="backrest")
         await asyncio.sleep(5)
 
 
@@ -233,6 +255,7 @@ async def amain() -> None:
     tasks.append(asyncio.create_task(opnsense_supervisor(settings, writer), name="opnsense"))
     tasks.append(asyncio.create_task(UnraidManager(settings, writer).run(), name="unraid"))
     tasks.append(asyncio.create_task(unifi_supervisor(settings, writer), name="unifi"))
+    tasks.append(asyncio.create_task(backrest_supervisor(settings), name="backrest"))
     tasks.append(asyncio.create_task(daily_ai_report(settings, analyst), name="daily_report"))
     tasks.append(asyncio.create_task(notify.notifier(settings), name="notifier"))
     from .intel import Intel

@@ -65,6 +65,7 @@ PAGES = {
     "/devices": ("devices.html", "Devices"),
     "/unraid": ("unraid.html", "Unraid"),
     "/unifi": ("unifi.html", "UniFi"),
+    "/backups": ("backups.html", "Backups"),
     "/reports": ("reports.html", "Reports"),
     "/ai": ("ai.html", "AI Analyst"),
     "/setup": ("setup.html", "Setup"),
@@ -961,6 +962,24 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 c["known_as"] = names.get(c.get("mac"))
         return {"configured": settings.unifi_enabled, "url": settings.unifi_url, "updated": ts.get("devices"), **snaps}
 
+    @app.get("/api/backups")
+    async def backups_overview(days: int = Query(30, ge=1, le=400)):
+        """Infrastructure › Backups › Main: every backup job of every tool."""
+        from .. import backups
+        return await backups.overview(days, settings.timezone or "UTC")
+
+    @app.get("/api/backups/backrest")
+    async def backups_backrest(days: int = Query(30, ge=1, le=400)):
+        """Infrastructure › Backups › Backrest: plans, repositories, runs with their speed, repository size."""
+        from .. import backups
+        rows = await db.pool().fetch("SELECT key, ts, data FROM snapshots WHERE key LIKE 'backrest:%'")
+        snaps = {r["key"].split(":", 1)[1]: r["data"] for r in rows}
+        ts = {r["key"].split(":", 1)[1]: r["ts"].isoformat() for r in rows}
+        jobs = await db.get_snapshot("backup_jobs:backrest") or {}
+        return {"configured": settings.backrest_enabled, "url": settings.backrest_url, "updated": ts.get("config"),
+                "status": snaps.get("status"), "config": snaps.get("config"), "summary": snaps.get("summary"),
+                "jobs": jobs.get("jobs", []), **await backups.source_detail("backrest", days)}
+
     @app.get("/api/metrics/multi")
     async def metrics_multi(names: str, hours: float = Query(24, gt=0), prefix: str | None = None):
         """Several metric series at once: {name: {labels: [[t, v], ...]}}; ``prefix`` filters labels (e.g. unraid server id)."""
@@ -1381,6 +1400,15 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         cand = _candidate(payload.get("values"))
         if not cand.unifi_enabled:
             return {"ok": False, "error": "URL and an API key (or username + password) are required"}
+        return await test_connection(cand)
+
+    @app.post("/api/settings/test/backrest")
+    async def test_backrest(payload: dict = Body(...)):
+        from ..backrest import test_connection
+
+        cand = _candidate(payload.get("values"))
+        if not cand.backrest_enabled:
+            return {"ok": False, "error": "The Backrest URL (with port) is required"}
         return await test_connection(cand)
 
     @app.post("/api/settings/test/email")
