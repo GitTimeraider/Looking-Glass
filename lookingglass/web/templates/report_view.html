@@ -39,6 +39,7 @@ const SECTIONS = [
   ["new_devices", "New devices", [{k: "mac", l: "MAC", f: LG.mac}, {k: "ip", l: "IP"}, {k: "hostname", l: "Hostname"}, {k: "conn_where", l: "Connected to"}, {k: "first_seen", l: "First seen", f: LG.time}]],
   ["clients_with_security_events", "Clients with security events (UniFi + OPNsense)", [{k: "name", l: "Device"}, {k: "ip", l: "IP"}, {k: "conn_where", l: "Connected to"}, {k: "fw", l: "FW blocks", num: true}, {k: "dns", l: "DNS blocked", num: true}, {k: "threats", l: "Threats", num: true}]],
   ["unifi_events", "UniFi events", [{k: "action", l: "Event"}, {k: "clients", l: "Clients", num: true}, {k: "n", l: "Count", num: true}]],
+  ["backups", "Backups", [{k: "job", l: "Job"}, {k: "source", l: "Tool"}, {k: "ok", l: "Successful", num: true}, {k: "warnings", l: "Warnings", num: true}, {k: "failed", l: "Failed", num: true}, {k: "added", l: "Data added", num: true, f: LG.bytes}, {k: "last_good", l: "Last good", f: LG.time}]],
 ];
 /* the AI analysis runs in the background: show progress, then the result - or why it failed, with Retry */
 let aiStarted = Date.now();

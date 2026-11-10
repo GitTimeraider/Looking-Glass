@@ -1,0 +1,275 @@
+"""Backups (Infrastructure › Backups): the part that is the same for every backup tool.
+
+A tool's poller (backrest.py) stores its runs in ``backup_runs`` (store_runs), writes its jobs to the snapshot
+``backup_jobs:<source>`` ({label, jobs: [{job, repo, schedule, gap_s, threshold_s, disabled, next_run}]}) and its
+connection state to ``<source>:status``, and calls check_jobs / check_repos for the alerts. The Main tab (overview)
+reads only these, so another tool only needs a poller.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from . import db
+from .detections import Rating, close_alerts, raise_alert
+
+GOOD = ("success", "warning")
+SOURCES = {"backrest": "Backrest"}  # source -> label, for the Main tab (also when the tool is not set up yet)
+COLUMNS = ("ext_id", "kind", "job", "repo", "status", "started", "ended", "duration_s", "bytes_processed", "bytes_added",
+           "files_new", "files_changed", "files_total", "snapshot_id", "message", "data")
+
+
+def overdue_threshold(gap_s: float | None, overdue_hours: int = 0) -> float | None:
+    """Seconds without a successful backup after which a job is overdue: the setting, else the schedule's longest normal
+    gap plus a quarter and 2 hours (a daily backup: 32 h, hourly: 3¼ h, weekly: 8¾ days). None = no schedule known."""
+    if overdue_hours and overdue_hours > 0:
+        return overdue_hours * 3600.0
+    if not gap_s:
+        return None
+    return gap_s * 1.25 + 7200
+
+
+def span(seconds: float) -> str:
+    """"3 days 4 hours" / "5 hours" / "20 minutes" - for alert texts."""
+    s = int(seconds)
+    d, h, m = s // 86400, s % 86400 // 3600, s % 3600 // 60
+    plural = lambda n, w: f"{n} {w}{'s' if n != 1 else ''}"  # noqa: E731
+    if d:
+        return plural(d, "day") + (f" {plural(h, 'hour')}" if h else "")
+    if h:
+        return plural(h, "hour")
+    return plural(max(m, 1), "minute")
+
+
+async def store_runs(source: str, runs: list[dict[str, Any]]) -> None:
+    if not runs:
+        return
+    cols = ", ".join(("source",) + COLUMNS)
+    params = ", ".join(f"${i}" for i in range(1, len(COLUMNS) + 2))
+    update = ", ".join(f"{c} = EXCLUDED.{c}" for c in COLUMNS[1:]) + ", seen_at = now()"
+    async with db.pool().acquire() as conn:
+        await conn.executemany(f"INSERT INTO backup_runs ({cols}) VALUES ({params}) "
+                               f"ON CONFLICT (source, ext_id) DO UPDATE SET {update}",
+                               [(source, *(r.get(c) if c != "data" else (r.get("data") or {}) for c in COLUMNS))
+                                for r in runs])
+
+
+def _when(t: datetime | None) -> str:
+    return t.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if t else "never"
+
+
+async def check_jobs(source: str, label: str, jobs: list[dict[str, Any]], warnings: bool = True,
+                     now: datetime | None = None) -> None:
+    """Alerts per backup job from its latest runs: failed (more severe when it keeps failing), finished with warnings,
+    and overdue (no successful backup for longer than its threshold_s). Each closes by itself once a backup succeeds."""
+    now = now or datetime.now(timezone.utc)
+    names = [j["job"] for j in jobs]
+    rows = await db.pool().fetch(
+        "SELECT job, status, started, ended, message, data FROM (SELECT *, row_number() OVER (PARTITION BY job "
+        "ORDER BY started DESC NULLS LAST) rn FROM backup_runs WHERE source = $1 AND kind = 'backup' "
+        "AND job = ANY($2::text[]) AND status IN ('success', 'warning', 'error', 'running')) x "
+        "WHERE rn <= 30 ORDER BY job, started DESC NULLS LAST", source, names)
+    by_job: dict[str, list[Any]] = {}
+    for r in rows:
+        by_job.setdefault(r["job"], []).append(r)
+    for j in jobs:
+        job, runs = j["job"], by_job.get(j["job"], [])
+        fp = f"{source}:{job}"
+        finished = [r for r in runs if r["status"] != "running"]
+        running = runs[0] if runs and runs[0]["status"] == "running" else None
+        last = finished[0] if finished else None
+        good = next((r for r in finished if r["status"] in GOOD), None)
+        good_at = (good["ended"] or good["started"]) if good else None
+        # failed
+        if last and last["status"] == "error":
+            fails = next((i for i, r in enumerate(finished) if r["status"] != "error"), len(finished))
+            rating = Rating("medium", "the latest backup failed - the data changed since the last good backup is not "
+                                      "protected")
+            if fails >= 2:
+                rating.up(f"{fails} backups in a row failed")
+            if not good:
+                rating.up("there is no successful backup at all")
+            await raise_alert("backup_failed", rating, f"{label} backup '{job}' failed", f"backup_fail:{fp}",
+                              description=f"Backup of plan '{job}' (repository {j.get('repo') or '?'}) started "
+                                          f"{_when(last['started'])} failed: {last['message'] or 'no message'}\n\n"
+                                          f"Last successful backup: {_when(good_at)}.",
+                              data={"source": source, "job": job, "repo": j.get("repo")}, count=fails, mode="max")
+        elif last:
+            await close_alerts("backup_failed", [f"backup_fail:{fp}"], f"the backup of {_when(last['started'])} "
+                                                                        f"finished ({last['status']})")
+        # warnings
+        if warnings and last and last["status"] == "warning":
+            errs = (last["data"] or {}).get("errors") or []
+            items = "\n".join(f"- {e.get('item')}: {e.get('message')}" for e in errs[:10])
+            await raise_alert("backup_warning", "low", f"{label} backup '{job}' finished with warnings",
+                              f"backup_warn:{fp}", description=f"Backup of plan '{job}' started {_when(last['started'])}: "
+                              f"{last['message'] or 'finished with warnings'}" + (f"\n\n{items}" if items else "") +
+                              "\n\nUsually files that could not be read (in use, permissions) - they are missing from "
+                              "this snapshot.", data={"source": source, "job": job, "repo": j.get("repo")}, mode="max")
+        elif last:
+            await close_alerts("backup_warning", [f"backup_warn:{fp}"], "a newer backup finished without warnings"
+                               if last["status"] == "success" else "a newer backup replaced it")
+        # overdue
+        limit = j.get("threshold_s")
+        if j.get("disabled") or not limit or not good_at:
+            continue  # no schedule, or never succeeded (the failure alert covers that)
+        late = (now - good_at).total_seconds()
+        if late > limit and not (running and running["started"] and (now - running["started"]).total_seconds() < limit):
+            rating = Rating("medium", f"no successful backup for {span(late)} (expected at least every {span(limit)})")
+            if late > 2 * limit:
+                rating.up("more than twice as long as expected")
+            await raise_alert("backup_overdue", rating, f"{label} backup '{job}' is overdue", f"backup_overdue:{fp}",
+                              description=f"Plan '{job}' ({j.get('schedule') or 'no schedule'}) last backed up "
+                                          f"successfully {_when(good_at)}. Check that Backrest is running and the "
+                                          "plan's schedule is enabled.",
+                              data={"source": source, "job": job, "repo": j.get("repo")})
+        else:
+            await close_alerts("backup_overdue", [f"backup_overdue:{fp}"], f"a backup succeeded ({_when(good_at)})")
+
+
+REPO_TASKS = {"check": ("high", "Repository check failed", "the repository may be damaged - restores could fail"),
+              "prune": ("medium", "Repository prune failed", "old data is not removed - the repository keeps growing"),
+              "forget": ("medium", "Forgetting old snapshots failed", "the retention policy is not applied")}
+
+
+async def check_repos(source: str, label: str, repos: list[str]) -> None:
+    """Alerts when the latest check / prune / forget of a repository failed; closed when the next one succeeds."""
+    rows = await db.pool().fetch(
+        "SELECT DISTINCT ON (repo, kind) repo, kind, status, started, message FROM backup_runs WHERE source = $1 "
+        "AND kind = ANY($2::text[]) AND repo = ANY($3::text[]) AND status IN ('success', 'warning', 'error') "
+        "ORDER BY repo, kind, started DESC NULLS LAST", source, list(REPO_TASKS), repos)
+    for r in rows:
+        sev, title, why = REPO_TASKS[r["kind"]]
+        fp = f"backup_repo:{source}:{r['repo']}:{r['kind']}"
+        if r["status"] == "error":
+            await raise_alert("backup_repo_problem", Rating(sev, why), f"{label}: {title.lower()} ({r['repo']})", fp,
+                              description=f"{title} for repository '{r['repo']}' ({_when(r['started'])}): "
+                                          f"{r['message'] or 'no message'}",
+                              data={"source": source, "repo": r["repo"], "task": r["kind"]}, mode="max")
+        else:
+            await close_alerts("backup_repo_problem", [fp], f"the next {r['kind']} succeeded")
+
+
+# ---------------------------------------------------------------- web UI ---
+def job_state(j: dict[str, Any], now: datetime) -> str:
+    if j.get("last_status") == "running":
+        return "running"
+    if not j.get("runs_total"):
+        return "never"
+    if j.get("last_finished_status") == "error":
+        return "failed"
+    good = j.get("last_good")
+    if not j.get("disabled") and j.get("threshold_s") and good and \
+            (now - good).total_seconds() > j["threshold_s"]:
+        return "overdue"
+    if j.get("last_finished_status") == "warning":
+        return "warning"
+    return "ok"
+
+
+async def overview(days: int, tz: str = "UTC") -> dict[str, Any]:
+    """Main tab: every backup job of every tool with its state, outcomes per day and the latest runs."""
+    pool = db.pool()
+    now = datetime.now(timezone.utc)
+    snaps = {r["key"]: r for r in await pool.fetch(
+        "SELECT key, ts, data FROM snapshots WHERE key LIKE 'backup_jobs:%' OR key = ANY($1::text[])",
+        [f"{s}:status" for s in SOURCES])}
+    stats = {(r["source"], r["job"]): dict(r) for r in await pool.fetch(
+        "SELECT source, job, max(repo) repo, count(*) runs_total, "
+        "(array_agg(status ORDER BY started DESC NULLS LAST))[1] last_status, max(started) last_started, "
+        "(array_agg(status ORDER BY started DESC NULLS LAST) FILTER (WHERE status <> 'running'))[1] last_finished_status, "
+        "(array_agg(message ORDER BY started DESC NULLS LAST) FILTER (WHERE status <> 'running'))[1] last_message, "
+        "(array_agg(data ORDER BY started DESC NULLS LAST))[1] last_data, "
+        "max(coalesce(ended, started)) FILTER (WHERE status IN ('success', 'warning')) last_good, "
+        "count(*) FILTER (WHERE status = 'success' AND started > now() - make_interval(days => $1)) ok, "
+        "count(*) FILTER (WHERE status = 'warning' AND started > now() - make_interval(days => $1)) warned, "
+        "count(*) FILTER (WHERE status = 'error' AND started > now() - make_interval(days => $1)) failed, "
+        "avg(duration_s) FILTER (WHERE status IN ('success', 'warning') AND started > now() - make_interval(days => $1)) avg_duration, "
+        "sum(bytes_added) FILTER (WHERE status IN ('success', 'warning') AND started > now() - make_interval(days => $1)) added, "
+        "(array_agg(bytes_processed ORDER BY started DESC NULLS LAST) FILTER (WHERE status IN ('success', 'warning')))[1] last_size "
+        "FROM backup_runs WHERE kind = 'backup' AND job <> '' GROUP BY 1, 2", days)}
+    jobs: list[dict[str, Any]] = []
+    seen = set()
+    for key, snap in snaps.items():
+        if not key.startswith("backup_jobs:"):
+            continue
+        source = key.split(":", 1)[1]
+        for j in (snap["data"] or {}).get("jobs", []):
+            seen.add((source, j["job"]))
+            jobs.append({"source": source, "source_label": SOURCES.get(source, source), **j,
+                         **stats.get((source, j["job"]), {}), "configured": True})
+    for (source, job), st in stats.items():  # removed from the tool, but runs are known
+        if (source, job) not in seen:
+            jobs.append({"source": source, "source_label": SOURCES.get(source, source), "job": job, **st,
+                         "configured": False, "disabled": True})
+    for j in jobs:
+        j["state"] = job_state(j, now)
+    order = ["failed", "overdue", "warning", "running", "never", "ok"]
+    jobs.sort(key=lambda j: (order.index(j["state"]), j["source"], j["job"]))
+    daily = await pool.fetch(
+        "SELECT to_char(date_trunc('day', started AT TIME ZONE $2), 'YYYY-MM-DD') d, status, count(*) n FROM backup_runs "
+        "WHERE kind = 'backup' AND started > now() - make_interval(days => $1) AND status IN ('success', 'warning', 'error') "
+        "GROUP BY 1, 2 ORDER BY 1", days, tz)
+    recent = await pool.fetch(
+        "SELECT source, ext_id, kind, job, repo, status, started, ended, duration_s, bytes_processed, bytes_added, "
+        "files_new, files_changed, message FROM backup_runs WHERE started > now() - make_interval(days => $1) "
+        "AND (kind = 'backup' OR (kind IN ('check', 'prune', 'forget', 'restore') AND status IN ('error', 'warning'))) "
+        "ORDER BY started DESC LIMIT 100", days)
+    sources = []
+    for s, label in SOURCES.items():
+        st = snaps.get(f"{s}:status")
+        sources.append({"source": s, "label": label, "status": st["data"] if st else None,
+                        "jobs": sum(1 for j in jobs if j["source"] == s)})
+    return {"days": days, "now": now.isoformat(), "sources": sources, "jobs": [db.jsonable(j) for j in jobs],
+            "daily": db.records(daily), "recent": db.records(recent)}
+
+
+SPEED = ("CASE WHEN duration_s > 0 THEN bytes_processed / duration_s END speed_bps, "
+         "CASE WHEN duration_s > 0 THEN bytes_added / duration_s END added_bps")
+
+
+async def source_detail(source: str, days: int) -> dict[str, Any]:
+    """Runs of one tool for its own tab: backups with their speed, maintenance, repository size over time and per-job
+    figures."""
+    pool = db.pool()
+    runs = await pool.fetch(
+        f"SELECT ext_id, job, repo, status, started, ended, duration_s, bytes_processed, bytes_added, files_new, "
+        f"files_changed, files_total, snapshot_id, message, data, {SPEED} FROM backup_runs WHERE source = $1 "
+        "AND kind = 'backup' AND (started > now() - make_interval(days => $2) OR status = 'running') "
+        "ORDER BY started DESC LIMIT 3000", source, days)
+    maintenance = await pool.fetch(
+        "SELECT ext_id, kind, job, repo, status, started, ended, duration_s, bytes_processed, message, data "
+        "FROM backup_runs WHERE source = $1 AND kind NOT IN ('backup', 'stats') "
+        "AND started > now() - make_interval(days => $2) ORDER BY started DESC LIMIT 500", source, days)
+    stats = await pool.fetch(
+        "SELECT repo, started t, (data->'stats'->>'total_size')::bigint total_size, "
+        "(data->'stats'->>'total_uncompressed_size')::bigint uncompressed, "
+        "(data->'stats'->>'compression_ratio')::float ratio, (data->'stats'->>'snapshot_count')::int snapshots "
+        "FROM backup_runs WHERE source = $1 AND kind = 'stats' AND status = 'success' "
+        "AND started > now() - make_interval(days => $2) ORDER BY started", source, days)
+    latest_stats = await pool.fetch(
+        "SELECT DISTINCT ON (repo) repo, started t, (data->'stats'->>'total_size')::bigint total_size, "
+        "(data->'stats'->>'total_uncompressed_size')::bigint uncompressed, "
+        "(data->'stats'->>'compression_ratio')::float ratio, (data->'stats'->>'snapshot_count')::int snapshots "
+        "FROM backup_runs WHERE source = $1 AND kind = 'stats' AND status = 'success' ORDER BY repo, started DESC", source)
+    last_tasks = await pool.fetch(
+        "SELECT DISTINCT ON (repo, kind) repo, kind, status, started, message FROM backup_runs WHERE source = $1 "
+        "AND kind IN ('check', 'prune', 'forget') AND status <> 'running' ORDER BY repo, kind, started DESC", source)
+    per_job = await pool.fetch(
+        "SELECT job, count(*) FILTER (WHERE status IN ('success', 'warning', 'error')) runs, "
+        "count(*) FILTER (WHERE status = 'success') ok, count(*) FILTER (WHERE status = 'warning') warned, "
+        "count(*) FILTER (WHERE status = 'error') failed, "
+        "avg(duration_s) FILTER (WHERE status IN ('success', 'warning')) avg_duration, "
+        "max(duration_s) FILTER (WHERE status IN ('success', 'warning')) max_duration, "
+        "sum(bytes_added) FILTER (WHERE status IN ('success', 'warning')) added, "
+        "sum(bytes_processed) FILTER (WHERE status IN ('success', 'warning') AND duration_s > 0) "
+        "  / nullif(sum(duration_s) FILTER (WHERE status IN ('success', 'warning') AND duration_s > 0 "
+        "  AND bytes_processed IS NOT NULL), 0) speed_bps, "
+        "sum(bytes_added) FILTER (WHERE status IN ('success', 'warning') AND duration_s > 0) "
+        "  / nullif(sum(duration_s) FILTER (WHERE status IN ('success', 'warning') AND duration_s > 0 "
+        "  AND bytes_added IS NOT NULL), 0) added_bps, "
+        "(array_agg(bytes_processed ORDER BY started DESC) FILTER (WHERE status IN ('success', 'warning')))[1] last_size "
+        "FROM backup_runs WHERE source = $1 AND kind = 'backup' AND started > now() - make_interval(days => $2) "
+        "GROUP BY job", source, days)
+    return {"runs": db.records(runs), "maintenance": db.records(maintenance), "repo_stats": db.records(stats),
+            "latest_stats": db.records(latest_stats), "last_tasks": db.records(last_tasks), "per_job": db.records(per_job)}

@@ -79,6 +79,10 @@ QUERIES: dict[str, str] = {
                    "ORDER BY first_seen DESC LIMIT 25",
     "unifi_events": "SELECT action, count(*) n, count(DISTINCT data->>'mac') clients FROM events WHERE source = 'unifi' "
                     "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC",
+    "backups": "SELECT source, job, count(*) FILTER (WHERE status = 'success') ok, count(*) FILTER (WHERE status = 'warning') warnings, "
+               "count(*) FILTER (WHERE status = 'error') failed, max(coalesce(ended, started)) FILTER (WHERE status IN ('success', 'warning')) last_good, "
+               "sum(bytes_added) FILTER (WHERE status IN ('success', 'warning')) added FROM backup_runs WHERE kind = 'backup' AND job <> '' "
+               "AND started > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 5 DESC, 2",
     # UniFi location + OPNsense findings: which device, where it is connected and what it did
     "clients_with_security_events": "WITH ev AS (SELECT src_ip, count(*) FILTER (WHERE source = 'firewall' AND action = 'block') fw, "
         "count(*) FILTER (WHERE source = 'unbound' AND action IN ('block', 'drop')) dns, "
