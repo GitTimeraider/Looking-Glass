@@ -24,6 +24,7 @@ import ipaddress
 import logging
 import math
 import random
+import re
 import statistics
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -203,6 +204,83 @@ def robust(values: list[float], floor: float = 1.0, rel: float = 0.1) -> tuple[f
     med = statistics.median(values)
     mad = statistics.median(abs(v - med) for v in values) * 1.4826
     return med, max(mad, rel * abs(med), floor)
+
+
+DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_DAY = {**{d: i for i, d in enumerate(DAYS)},
+        **{d: i for i, d in enumerate(("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"))}}
+
+
+def _days(spec: str) -> frozenset[int]:
+    """"tue", "mon-fri", "sat+sun", "fri-mon" -> weekday numbers (Monday = 0)."""
+    out: set[int] = set()
+    for part in spec.split("+"):
+        a, _, b = part.partition("-")
+        if a not in _DAY or (b and b not in _DAY):
+            raise ValueError
+        i, j = _DAY[a], _DAY[b or a]
+        out.update(d % 7 for d in range(i, j + 1 if j >= i else j + 8))
+    return frozenset(out)
+
+
+def _hours(spec: str) -> tuple[int, int]:
+    """"01-02", "1:00-2:00", "22-06" (past midnight) -> (start hour, end hour); the end hour itself is not included."""
+    a, sep, b = spec.partition("-")
+    try:
+        start, end = (int(x.split(":")[0]) for x in (a, b))
+    except ValueError:
+        raise ValueError from None
+    if not sep or not 0 <= start <= 23 or not 0 <= end <= 24 or start == end or any(
+            ":" in x and x.split(":", 1)[1] not in ("00", "0") for x in (a, b)):
+        raise ValueError
+    return start, end
+
+
+def parse_seasonal_ignore(text: str | None) -> list[tuple[str, frozenset[int] | None, tuple[int, int] | None]]:
+    """Settings › Behaviour & ML › Hour of the week: ignore. One entry per line: a metric name ('*' = all of them),
+    optionally followed by days and / or an hour range in local time, e.g. "source:unraid tue 01-02",
+    "blocks mon-fri 22-06", "* sun 03-05", "dns 02-04" (every day). Raises ValueError naming a line it cannot read."""
+    out = []
+    for line in re.split(r"[,;\n]+", text or ""):
+        words = line.split()
+        if not words:
+            continue
+        metric, days, hours = words[0], None, None
+        try:
+            for w in words[1:]:
+                if w[:1].isdigit() and hours is None:
+                    hours = _hours(w)
+                elif not w[:1].isdigit() and days is None:
+                    days = _days(w.lower())
+                else:
+                    raise ValueError
+        except ValueError:
+            raise ValueError(f"'{line.strip()}' - write it as: metric [days] [hours], e.g. source:unraid tue 01-02 "
+                             f"(days: mon … sun, mon-fri, sat+sun; hours: 01-02 or 22-06, local time)") from None
+        out.append((metric, days, hours))
+    return out
+
+
+def seasonal_ignored(rules, metric: str, local: datetime) -> bool:
+    """Whether an hour of ``metric`` that starts at ``local`` (local time) is ignored by one of ``rules``."""
+    for name, days, hours in rules:
+        if name not in (metric, "*"):
+            continue
+        day, h = local.weekday(), local.hour
+        if hours:
+            start, end = hours
+            if start < end:
+                if not start <= h < end:
+                    continue
+            elif h >= start:
+                pass
+            elif h < end:  # past midnight: the window belongs to the day it started on
+                day = (day - 1) % 7
+            else:
+                continue
+        if days is None or day in days:
+            return True
+    return False
 
 
 class Behavior:
@@ -590,12 +668,25 @@ class Behavior:
         """Network-wide totals of this hour against the same hour of the week before (or the same hour of day)."""
         if not self.s.seasonal_enabled:
             return
-        ignore = {p.strip() for p in (self.s.seasonal_ignore or "").split(",") if p.strip()}
+        try:
+            ignore = parse_seasonal_ignore(self.s.seasonal_ignore)
+        except ValueError as exc:  # saved before entries were checked: use what can be read
+            log.warning("Hour of the week: ignore: %s", exc)
+            ignore = []
+            for line in (self.s.seasonal_ignore or "").split(","):
+                try:
+                    ignore += parse_seasonal_ignore(line)
+                except ValueError:
+                    pass
+        try:
+            local = hour.astimezone(ZoneInfo(self.s.timezone or "UTC"))
+        except Exception:  # noqa: BLE001 - unknown zone name
+            local = hour
         pool = db.pool()
         cur = {r["metric"]: r["value"] for r in await pool.fetch("SELECT metric, value FROM hourly_stats WHERE hour = $1", hour)}
         k = self.s.seasonal_sensitivity
         for metric, value in cur.items():
-            if metric in ignore or value < 30:
+            if value < 30 or seasonal_ignored(ignore, metric, local):
                 continue
             weekly = [r["value"] for r in await pool.fetch(
                 "SELECT value FROM hourly_stats WHERE metric = $1 AND hour = ANY($2::timestamptz[])",
@@ -618,7 +709,9 @@ class Behavior:
                 f"season:{metric}:{hour:%Y%m%d%H}", data={"metric": metric, "value": value, "median": med},
                 events=metric_events(metric),
                 description=f"{value:,.0f} {metric_label(metric)} between {when} - normally ~{med:,.0f} at {ref}. "
-                            f"Ignore this metric: add '{metric}' under Settings › Behaviour & ML › Hour of the week: ignore.")
+                            f"Ignore it: under Settings › Behaviour & ML › Hour of the week: ignore, add '{metric} "
+                            f"{DAYS[local.weekday()]} {local.hour:02d}-{local.hour + 1:02d}' for just this hour of the "
+                            f"week (local time), or '{metric}' for always.")
 
     # ----------------------------------------------------------- risk score ---
     async def risk(self) -> None:

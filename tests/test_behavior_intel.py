@@ -281,6 +281,18 @@ def test_volume_ml_and_hour_of_week():
         await pool.execute("DELETE FROM alerts")
         await Behavior(s2, DetectionEngine(s2).internal).seasonal(hour)
         assert not await rules(pool, "unusual_volume")
+        # only at this hour of the week (local time): ignored now, the same alert at another hour still comes
+        from zoneinfo import ZoneInfo
+        from lookingglass.behavior import DAYS
+        loc = hour.astimezone(ZoneInfo(Settings().timezone or "UTC"))
+        here = f"blocks {DAYS[loc.weekday()]} {loc.hour:02d}-{loc.hour + 1:02d}"
+        s3 = Settings(seasonal_ignore=here)
+        await Behavior(s3, DetectionEngine(s3).internal).seasonal(hour)
+        assert not await rules(pool, "unusual_volume")
+        s4 = Settings(seasonal_ignore=f"blocks {DAYS[(loc.weekday() + 1) % 7]} {loc.hour:02d}-{loc.hour + 1:02d}")
+        await Behavior(s4, DetectionEngine(s4).internal).seasonal(hour)
+        season = await rules(pool, "unusual_volume")
+        assert len(season) == 1 and f"'{here}'" in season[0]["description"]
     run(body)
 
 
