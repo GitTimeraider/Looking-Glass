@@ -50,15 +50,35 @@ async def _init_conn(conn: asyncpg.Connection) -> None:
                               encoder=lambda v: json.dumps(v, default=str).encode(), decoder=json.loads)
 
 
+# the database went away while connecting (restarting, shutting down, starting up): worth trying again
+_DB_GONE = (OSError, asyncio.TimeoutError, asyncpg.InterfaceError, asyncpg.PostgresConnectionError,
+            asyncpg.OperatorInterventionError)
+
+
+async def _create_schema(p: asyncpg.Pool) -> None:
+    schema = (Path(__file__).parent / "schema.sql").read_text()
+    async with p.acquire() as conn:
+        # serialize schema creation between replicas
+        await conn.execute("SELECT pg_advisory_lock(424242)")
+        try:
+            await conn.execute(schema)
+        finally:
+            try:
+                await conn.execute("SELECT pg_advisory_unlock(424242)")
+            except _DB_GONE:  # the connection is gone, and with it the lock: keep the original error
+                pass
+
+
 async def connect(dsn: str | None = None, *, retry: bool = True, **kwargs: Any) -> asyncpg.Pool:
-    """Open the pool (``dsn`` or asyncpg keyword arguments) and create the schema. ``retry=False`` raises instead."""
+    """Open the pool (``dsn`` or asyncpg keyword arguments) and create the schema. ``retry=False`` raises instead.
+
+    Also retries when the database goes away halfway (e.g. its container restarts together with Looking Glass)."""
     global _pool
     delay = 1.0
     while True:
         try:
             _pool = await asyncpg.create_pool(dsn, min_size=2, max_size=15, init=_init_conn, command_timeout=120,
                                               timeout=15, server_settings=SERVER_SETTINGS, **kwargs)
-            break
         except (OSError, asyncpg.PostgresError, asyncio.TimeoutError) as exc:
             if not retry:
                 raise
@@ -66,16 +86,19 @@ async def connect(dsn: str | None = None, *, retry: bool = True, **kwargs: Any) 
                 log.error("database login refused (%s). Wrong user/password? To enter the connection again run: "
                           "docker exec looking-glass python -m lookingglass.cli setup-database  (then restart)", exc)
             log.warning("database not reachable yet (%s), retrying in %.0fs", exc, delay)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, 30)
-    schema = (Path(__file__).parent / "schema.sql").read_text()
-    async with _pool.acquire() as conn:
-        # serialize schema creation between replicas
-        await conn.execute("SELECT pg_advisory_lock(424242)")
-        try:
-            await conn.execute(schema)
-        finally:
-            await conn.execute("SELECT pg_advisory_unlock(424242)")
+        else:
+            try:
+                await _create_schema(_pool)
+                break
+            except _DB_GONE as exc:
+                _pool.terminate()
+                _pool = None
+                if not retry:
+                    raise
+                log.warning("database connection lost while preparing the database (%s), retrying in %.0fs",
+                            exc, delay)
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 30)
     log.info("database ready")
     return _pool
 
