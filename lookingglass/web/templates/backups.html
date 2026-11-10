@@ -60,8 +60,8 @@ document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => showTab
 const kpi = (l, v, c = "", title = "") => `<div class="card kpi ${c}"${title ? ` title="${LG.esc(title)}"` : ""}><div class="v">${v}</div><div class="l">${l}</div></div>`;
 const rate = v => v === null || v === undefined || !isFinite(v) ? "–" : LG.bytes(v) + "/s";
 const dur = s => { if (s === null || s === undefined) return "–"; s = Math.round(Number(s));
-  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
-  return h ? `${h}h ${m}m` : m ? `${m}m ${x}s` : `${x}s`; };
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m ${x}s` : `${x}s`; };  // from a day on: days + hours
 const ms = t => new Date(t).getTime();
 const pctOf = (a, b) => b ? Math.round(a / b * 100) + "%" : "–";
 const STATUS = { success: ["ok", "ok"], warning: ["warn", "warning"], error: ["bad", "failed"], running: ["info", "running"],
@@ -215,7 +215,7 @@ function drawBackrest() {
   const sumPlans = Object.fromEntries(((B.summary || {}).plans || []).map(s => [s.id, s]));
   const perJob = Object.fromEntries(B.per_job.map(j => [j.job, j]));
   const jobs = Object.fromEntries(B.jobs.map(j => [j.job, j]));
-  const lastRun = {}; for (const r of B.runs) if (!lastRun[r.job]) lastRun[r.job] = r;
+  const lastRun = {}; for (const r of B.runs) if (!lastRun[r.job] && r.status !== "pending") lastRun[r.job] = r;  // not the next scheduled run
   LG.table("#b-plans", [
     {k: "id", l: "Plan", f: (v, r) => `<b>${LG.esc(v)}</b>${r.disabled ? ` <span class="pill">not scheduled</span>` : ""}<div class="small muted" title="${LG.esc(r.paths.join("\n"))}">${LG.esc(r.paths.slice(0, 3).join(", "))}${r.paths.length > 3 ? ` +${r.paths.length - 3}` : ""}${r.excludes ? ` · ${r.excludes} excludes` : ""}</div>`},
     {k: "repo", l: "Repository"},

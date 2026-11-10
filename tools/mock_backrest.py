@@ -52,7 +52,8 @@ def op(kind: str, body: dict, plan: str, repo: str, start: float, secs: float, s
     NEXT_ID[0] += 1
     o = {"id": str(NEXT_ID[0]), "flowId": str(NEXT_ID[0]), "repoId": repo, "repoGuid": "x" + repo, "planId": plan,
          "instanceId": "unraid-backrest", "status": status, "unixTimeStartMs": str(int(start * 1000)),
-         "unixTimeEndMs": str(int((start + secs) * 1000)) if status != "STATUS_INPROGRESS" else "0", kind: body}
+         "unixTimeEndMs": str(int((start + secs) * 1000)) if status not in ("STATUS_INPROGRESS", "STATUS_PENDING") else "0",
+         kind: body}
     if msg:
         o["displayMessage"] = msg
     OPS.append(o)
@@ -107,6 +108,10 @@ def build() -> None:
                                                       "filesDone": "6300", "bytesDone": str(int(doc_size * 0.42)),
                                                       "currentFile": ["/mnt/user/documents/x.pdf"]}}},
        "documents", "b2-cloud", now - doc_size * 0.42 / 48e6, 0, "STATUS_INPROGRESS")
+    # the next scheduled runs: pending, with their start time in the future
+    op("operationBackup", {}, "photos", "nas", now + 5 * 3600, 0, "STATUS_PENDING")
+    op("operationBackup", {}, "documents", "b2-cloud", now + 11 * 3600, 0, "STATUS_PENDING")
+    op("operationCheck", {}, "_system_", "nas", now + 2 * day, 0, "STATUS_PENDING")
 
 
 def check_auth(request: Request) -> None:

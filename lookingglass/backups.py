@@ -168,7 +168,8 @@ def job_state(j: dict[str, Any], now: datetime) -> str:
 
 
 async def overview(days: int, tz: str = "UTC") -> dict[str, Any]:
-    """Main tab: every backup job of every tool with its state, outcomes per day and the latest runs."""
+    """Main tab: every backup job of every tool with its state, outcomes per day and the latest runs. Pending runs (the
+    next scheduled one, which Backrest lists with its future start time) are left out: they have no result yet."""
     pool = db.pool()
     now = datetime.now(timezone.utc)
     snaps = {r["key"]: r for r in await pool.fetch(
@@ -187,7 +188,7 @@ async def overview(days: int, tz: str = "UTC") -> dict[str, Any]:
         "avg(duration_s) FILTER (WHERE status IN ('success', 'warning') AND started > now() - make_interval(days => $1)) avg_duration, "
         "sum(bytes_added) FILTER (WHERE status IN ('success', 'warning') AND started > now() - make_interval(days => $1)) added, "
         "(array_agg(bytes_processed ORDER BY started DESC NULLS LAST) FILTER (WHERE status IN ('success', 'warning')))[1] last_size "
-        "FROM backup_runs WHERE kind = 'backup' AND job <> '' GROUP BY 1, 2", days)}
+        "FROM backup_runs WHERE kind = 'backup' AND job <> '' AND status <> 'pending' GROUP BY 1, 2", days)}
     jobs: list[dict[str, Any]] = []
     seen = set()
     for key, snap in snaps.items():
@@ -213,6 +214,7 @@ async def overview(days: int, tz: str = "UTC") -> dict[str, Any]:
     recent = await pool.fetch(
         "SELECT source, ext_id, kind, job, repo, status, started, ended, duration_s, bytes_processed, bytes_added, "
         "files_new, files_changed, message FROM backup_runs WHERE started > now() - make_interval(days => $1) "
+        "AND status <> 'pending' "
         "AND (kind = 'backup' OR (kind IN ('check', 'prune', 'forget', 'restore') AND status IN ('error', 'warning'))) "
         "ORDER BY started DESC LIMIT 100", days)
     sources = []
@@ -254,7 +256,8 @@ async def source_detail(source: str, days: int) -> dict[str, Any]:
         "FROM backup_runs WHERE source = $1 AND kind = 'stats' AND status = 'success' ORDER BY repo, started DESC", source)
     last_tasks = await pool.fetch(
         "SELECT DISTINCT ON (repo, kind) repo, kind, status, started, message FROM backup_runs WHERE source = $1 "
-        "AND kind IN ('check', 'prune', 'forget') AND status <> 'running' ORDER BY repo, kind, started DESC", source)
+        "AND kind IN ('check', 'prune', 'forget') AND status NOT IN ('running', 'pending') "
+        "ORDER BY repo, kind, started DESC", source)
     per_job = await pool.fetch(
         "SELECT job, count(*) FILTER (WHERE status IN ('success', 'warning', 'error')) runs, "
         "count(*) FILTER (WHERE status = 'success') ok, count(*) FILTER (WHERE status = 'warning') warned, "
