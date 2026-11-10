@@ -217,8 +217,11 @@ FIELDS: list[Field] = [
           "blocks, failed logins, DNS, failed lookups, per log source) against the same hour in previous weeks."),
     Field("seasonal_sensitivity", "behavior", "Hour of the week: sensitivity", "int", "How many 'normal deviations' "
           "above usual before an alert (3 = sensitive, 10 = only big spikes).", min=2, max=30),
-    Field("seasonal_ignore", "behavior", "Hour of the week: ignore metrics", "list", "Metric names from "
-          "these alerts, e.g. blocks, dns, source:firewall.", placeholder="blocks, source:nginx"),
+    Field("seasonal_ignore", "behavior", "Hour of the week: ignore", "list", "A metric name from these alerts (e.g. "
+          "blocks, dns, source:unraid; * = all), optionally only on some days and hours (local time, the end hour not "
+          "included): 'source:unraid tue 01-02' = Tuesdays 01:00-02:00, 'blocks mon-fri 22-06' = weeknights, "
+          "'* sun 03-05', 'dns 02-04' = every day. Without days / hours it is ignored always.",
+          placeholder="source:unraid tue 01-02, blocks"),
     Field("risk_enabled", "behavior", "Risk score per device / address", "bool", "Every alert adds points (info 1, low "
           "3, medium 8, high 20, critical 40; once per rule) that fade over time; one alert when the total is high."),
     Field("risk_threshold", "behavior", "Risk score: alert from", "int", "", min=10, max=1000),
@@ -393,6 +396,12 @@ def _coerce(f: Field, value: Any) -> Any:
                 ipaddress.ip_network(part.strip(), strict=False)
             except ValueError as exc:
                 raise SettingsError(f"{f.label}: '{part.strip()}' is not an IP address or CIDR") from exc
+    if f.key == "seasonal_ignore" and v:
+        from .behavior import parse_seasonal_ignore
+        try:
+            parse_seasonal_ignore(v)
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: {exc}") from exc
     if f.key == "pkg_tool_env" and v:
         from .packages import parse_env
         try:
