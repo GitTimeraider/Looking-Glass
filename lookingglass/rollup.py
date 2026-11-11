@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from . import db
 
@@ -54,9 +55,35 @@ SELECT {_COLS}, 1 FROM events WHERE id > {{upto}} AND ts > {_START}
 
 def convert(sql: str, upto: int) -> str:
     """A panel query over raw events, rewritten for the hourly counts: ``FROM events`` -> the combined relation,
-    ``count(*)`` -> ``sum(n)`` (also with FILTER). ``upto`` must be read in the same snapshot as the query runs in
-    (``fetch``), or events counted in the meantime would be counted twice."""
-    return sql.replace("FROM events", "FROM " + RELATION.replace("{upto}", str(int(upto)))).replace("count(*)", "sum(n)")
+    ``count(*)`` -> ``coalesce(sum(n), 0)`` (also with FILTER). ``upto`` must be read in the same snapshot as the
+    query runs in (``fetch``), or events counted in the meantime would be counted twice."""
+    return _counts(sql.replace("FROM events", "FROM " + RELATION.replace("{upto}", str(int(upto)))))
+
+
+def _counts(sql: str) -> str:
+    """``count(*)`` -> ``coalesce(sum(n), 0)``, with a FILTER clause inside the coalesce: count gives 0 where there is
+    nothing to count, sum gives NULL."""
+    out, i = [], 0
+    while (j := sql.find("count(*)", i)) >= 0:
+        out.append(sql[i:j])
+        k = j + len("count(*)")
+        m = re.match(r"\s*FILTER\s*\(", sql[k:])
+        if m:  # up to the parenthesis that closes the FILTER clause (not one inside a 'string')
+            depth, quoted, e = 0, False, k + m.end() - 1
+            for e in range(k + m.end() - 1, len(sql)):
+                if sql[e] == "'":
+                    quoted = not quoted
+                elif not quoted:
+                    depth += {"(": 1, ")": -1}.get(sql[e], 0)
+                    if depth == 0:
+                        break
+            out.append(f"coalesce(sum(n){sql[k:e + 1]}, 0)")
+            i = e + 1
+        else:
+            out.append("coalesce(sum(n), 0)")
+            i = k
+    out.append(sql[i:])
+    return "".join(out)
 
 
 async def fetch(conn, sql: str, *args):
