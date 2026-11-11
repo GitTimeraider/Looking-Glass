@@ -116,6 +116,66 @@ async def close() -> None:
         _pool = None
 
 
+# Indexes for the dashboards that take a minute or more to build on a large events table: built in the background
+# after the start (CONCURRENTLY: events keep being written meanwhile), not in schema.sql, which would hold up the start
+# and block every insert while it builds. name -> definition.
+BACKGROUND_INDEXES = {
+    # events per source and time, with the columns most dashboard queries group by: those read this narrow index alone
+    # (index-only scan) instead of the whole wide rows with their message and JSON data. Replaces the plain
+    # events_source_ts_idx (same key; dropped once this one is there): only a few hundred MB larger
+    "events_source_ts_cover_idx": "ON events (source, ts DESC) "
+                                  "INCLUDE (action, src_ip, dst_ip, dst_port, proto, direction, src_country, domain)",
+    # the firewall log lines of blocklist rules (CrowdSec, Q-Feeds ... data.blocklist): a small part of the firewall
+    # lines. Without it every Q-Feeds / CrowdSec panel reads the JSON of every firewall line of the period (30 days:
+    # minutes instead of seconds)
+    "events_blocklist_idx": "ON events (lower(data->>'blocklist'), ts) "
+                            "WHERE source = 'firewall' AND data->>'blocklist' IS NOT NULL",
+    # CrowdSec rule lines stored before they were tagged with data.blocklist (dashboards.CS_FW)
+    "events_cs_label_idx": "ON events (ts) WHERE source = 'firewall' AND data->>'label' LIKE 'CrowdSec (%'",
+    # blocked traffic with the columns the "top blocked ..." tables and tiles group by: they read this narrow index
+    # (index-only scan) instead of the whole wide rows - about a tenth of the data
+    "events_block_idx": "ON events (ts) INCLUDE (source, action, src_ip, dst_ip, dst_port, proto, src_country, direction) "
+                        "WHERE action IN ('block', 'drop')",
+}
+# indexes a BACKGROUND_INDEXES one makes unnecessary: dropped once that one is built
+REPLACED_INDEXES = {"events_source_ts_cover_idx": "events_source_ts_idx"}
+
+
+async def build_background_indexes() -> None:
+    """Create the missing BACKGROUND_INDEXES, one at a time. One that an interruption left unfinished (invalid) is built
+    again. Several Looking Glass instances on one database: only one builds."""
+    async with pool().acquire() as conn:
+        if not await conn.fetchval("SELECT pg_try_advisory_lock(424243)"):
+            return
+        try:
+            for name, definition in BACKGROUND_INDEXES.items():
+                valid = await conn.fetchval("SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)", name)
+                if not valid:
+                    if valid is False:
+                        await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {name}", timeout=3600)
+                    log.info("building index %s for the dashboards (once; may take a few minutes on a large database)",
+                             name)
+                    started = asyncio.get_running_loop().time()
+                    await conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} {definition}", timeout=6 * 3600)
+                    log.info("index %s built in %.0f s", name, asyncio.get_running_loop().time() - started)
+                if old := REPLACED_INDEXES.get(name):
+                    await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {old}", timeout=3600)
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock(424243)")
+
+
+async def background_indexes_loop() -> None:
+    """build_background_indexes, retried every 10 minutes until it succeeds (e.g. the database restarted halfway)."""
+    await asyncio.sleep(30)  # let the start (rollup catch-up, first polls) settle first
+    while True:
+        try:
+            await build_background_indexes()
+            return
+        except Exception:  # noqa: BLE001
+            log.exception("building the dashboard indexes failed, trying again in 10 minutes")
+        await asyncio.sleep(600)
+
+
 def _row(ev: dict[str, Any]) -> tuple:
     return tuple(ev.get(c) for c in EVENT_COLUMNS)
 

@@ -26,12 +26,20 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS events_ts_idx         ON events USING BRIN (ts);
-CREATE INDEX IF NOT EXISTS events_source_ts_idx  ON events (source, ts DESC);
+-- (source, ts): events_source_ts_cover_idx, built in the background (db.BACKGROUND_INDEXES)
 CREATE INDEX IF NOT EXISTS events_src_ip_idx     ON events (src_ip, ts DESC);
 CREATE INDEX IF NOT EXISTS events_dst_ip_idx     ON events (dst_ip, ts DESC);
 CREATE INDEX IF NOT EXISTS events_action_ts_idx  ON events (action, ts DESC);
 CREATE INDEX IF NOT EXISTS events_domain_idx     ON events (domain) WHERE domain IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS events_uid_idx ON events (uid) WHERE uid IS NOT NULL;
+-- more indexes for the dashboards are built in the background after the start: db.BACKGROUND_INDEXES
+-- vacuum the (append-only) events table after every ~1 % new rows instead of 20 %: the dashboards read the blocked
+-- traffic from an index alone (index-only scan) only for pages vacuum has marked all-visible - with 20 % the newest
+-- days of a large table would not be. Such a vacuum only visits the new pages. (PostgreSQL 13+)
+DO $$ BEGIN
+    ALTER TABLE events SET (autovacuum_vacuum_insert_scale_factor = 0.01);
+EXCEPTION WHEN invalid_parameter_value OR syntax_error THEN NULL;
+END $$;
 
 CREATE TABLE IF NOT EXISTS metrics (
     ts     TIMESTAMPTZ NOT NULL DEFAULT now(),

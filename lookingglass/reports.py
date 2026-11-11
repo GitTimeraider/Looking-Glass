@@ -7,7 +7,7 @@ import logging
 from datetime import date
 from typing import Any
 
-from . import db
+from . import db, rollup
 from .parsers.filterlog import QFEEDS
 
 log = logging.getLogger(__name__)
@@ -90,11 +90,18 @@ QUERIES: dict[str, str] = {
 }
 
 
+# queries that only count events per source / action: from 2 days on they read the hourly counts (rollup.py) - the
+# same numbers; counting 30 days of raw events took half a minute or more each
+ROLLUP_QUERIES = {"totals_by_source", "firewall_actions", "web_status"}
+
+
 async def build_report(hours: float = 24) -> dict[str, Any]:
     secs = float(hours) * 3600
 
     async def run(name: str, sql: str) -> tuple[str, list[dict[str, Any]]]:
         async with db.heavy(), db.pool().acquire() as conn:
+            if hours >= rollup.MIN_HOURS and name in ROLLUP_QUERIES:
+                return name, db.records(await rollup.fetch(conn, sql, secs))
             return name, db.records(await conn.fetch(sql, secs))
 
     results = await asyncio.gather(*(run(n, q) for n, q in QUERIES.items()))
@@ -106,7 +113,6 @@ async def build_report(hours: float = 24) -> dict[str, Any]:
 async def timeline(hours: float = 24, buckets: int = 48) -> dict[str, Any]:
     """Events per source and blocked events over time (Overview). From 2 days on in whole hours, counted from the
     hourly counts (rollup.py) - same numbers, a fraction of the work."""
-    from . import rollup
     secs = float(hours) * 3600
     step = max(60, int(secs / buckets))
     by_source = ("SELECT to_timestamp(floor(extract(epoch FROM ts) / $2) * $2) AS bucket, source, count(*) n FROM events "

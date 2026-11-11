@@ -27,7 +27,7 @@ from ..config import Settings
 from . import asset_version
 from ..ingest import STATS
 from .. import rollup
-from ..cache import ResultCache, ttl_for
+from ..cache import ResultCache, stale_for, ttl_for
 from ..dashboards import DASHBOARDS, run_dashboard
 from ..reports import build_report, report_mail, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
@@ -175,12 +175,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                     "AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1)) x", secs)
 
         kpi, ips, report, tl = await asyncio.gather(kpi_counts(), blocked_ips(), build_report(hours), timeline(hours))
-        return {"kpi": db.jsonable({**kpi, "blocked_ips": ips}), "report": report, "timeline": tl}
+        return {"kpi": db.jsonable({**kpi, "blocked_ips": ips}), "report": report, "timeline": tl, "as_of": time.time()}
 
     @app.get("/api/overview")
     async def overview(hours: float = Query(24, gt=0, le=24 * 90)):
         pool = db.pool()
-        counted = await results.get(("overview", hours), ttl_for(hours), lambda: overview_counts(hours))
+        key = ("overview", hours)
+        counted = await results.get(key, ttl_for(hours), lambda: overview_counts(hours), stale_for(hours))
         kpi = counted["kpi"]
         # open alerts, devices and the system state are cheap and always current
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
@@ -209,6 +210,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "system": await db.get_snapshot("system"),
             "gateways": await db.get_snapshot("gateways"),
             "ingest": STATS.as_dict(),
+            # when the events were counted, and whether newer counts are on their way (the page asks again soon)
+            "as_of": counted["as_of"], "refreshing": results.refreshing(key),
         }
 
     @app.get("/api/events")
@@ -902,7 +905,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def dash_data(name: str, hours: float = Query(24, gt=0, le=24 * 90), tab: str | None = Query(None, max_length=40)):
         if name not in DASHBOARDS:
             raise HTTPException(404)
-        return await results.get(("dash", name, hours, tab), ttl_for(hours), lambda: dash_compute(name, hours, tab))
+        key = ("dash", name, hours, tab)
+        out = await results.get(key, ttl_for(hours), lambda: dash_compute(name, hours, tab), stale_for(hours))
+        return {**out, "refreshing": results.refreshing(key)}
 
     async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
         # Threats sources: switched off in Settings › OPNsense -> its tab and tiles are hidden, even with older data in
@@ -913,6 +918,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
         off = {k for k, on in pulls.items() if not on or (not settings.opnsense_enabled and k not in has)}
         out = await run_dashboard(name, hours, off, tab)
+        out["as_of"] = time.time()
         if out.get("tab") == "suricata":
             out["notice"] = await suricata_notice(hours)
         return out

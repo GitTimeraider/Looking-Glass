@@ -618,8 +618,18 @@ Dashboards count a lot of log lines, so Looking Glass keeps that work small:
   once in the background, in small slices; until then those panels count the raw events as before.
 * **Refresh**: a page only refreshes while its tab is visible (a tab in the background does nothing, and catches up
   when you open it again); 24 h views every minute, 7 days every 5 minutes, 30 days every 15 minutes.
+* **Indexes for the dashboards**: blocked traffic, the CrowdSec / Q-Feeds blocklist lines and the per-source counts
+  are read from narrow indexes instead of the whole log lines with their message and data (30 days: the Q-Feeds table
+  went from over 3 minutes to a few seconds). After an update they are built **once, in the background**, shortly
+  after the start - on a large database this takes a few minutes (the log says `building index ...` and
+  `index ... built`), events keep arriving meanwhile, and the dashboards get faster when it is done. They take about
+  2 GB extra disk space per 30 million events.
 * **Shared results**: tabs, devices and users looking at the same dashboard and period share one result for a short
   while (30 s for up to a day, 2 / 5 minutes for 7 / 30 days).
+* **No waiting for a recount**: when that time is over, the page still shows the last result right away and the server
+  counts again in the background (up to 5 minutes later for 24 h views, up to 6 hours for 7 / 30 days); the top right
+  then says `updated 14:05:09 · refreshing…` and the page picks up the new numbers by itself. Only the very first look
+  at a period (after a start, or after a long time) waits for the count.
 * **No spikes**: at most 3 heavy queries run at once, instead of every panel of a page at the same time.
 * **Database memory**: the compose files start PostgreSQL with `shared_buffers=512MB` (the default 128 MB is too small
   for the log tables once they hold a few days). **Existing installation?** Add this line to the `db:` service of your

@@ -226,6 +226,7 @@ async def amain() -> None:
              asyncio.create_task(DetectionEngine(settings).run(), name="detections"),
              asyncio.create_task(housekeeping(settings), name="housekeeping"),
              asyncio.create_task(rollup.loop(), name="event_rollup"),
+             asyncio.create_task(db.background_indexes_loop(), name="dashboard_indexes"),
              asyncio.create_task(device_upkeep_loop(settings), name="device_upkeep"),
              asyncio.create_task(optional_sources.loop(), name="optional_sources")]
     if settings.syslog_enabled:

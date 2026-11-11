@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from lookingglass import cache, db, rollup
+from lookingglass import cache, db, reports, rollup
 from lookingglass.dashboards import DASHBOARDS, ROLLUP_PANELS, step_for
 
 DSN = os.environ.get("TEST_DATABASE_URL")
@@ -47,6 +47,14 @@ async def compare_all(conn) -> int:
                 raw, fast = await conn.fetch(sql, *args), await conn.fetch(rollup.convert(sql, upto), *args)
             assert same(raw, fast), (hours, name, pid)
             checked += 1
+        # the report / Overview queries that read the hourly counts
+        for name in sorted(reports.ROLLUP_QUERIES):
+            sql = reports.QUERIES[name]
+            async with conn.transaction(isolation="repeatable_read", readonly=True):
+                upto = await conn.fetchval("SELECT upto FROM event_rollup_state")
+                raw, fast = await conn.fetch(sql, secs), await conn.fetch(rollup.convert(sql, upto), secs)
+            assert raw and same(raw, fast), (hours, name)
+            checked += 1
     return checked
 
 
@@ -62,7 +70,7 @@ def test_hourly_counts_give_the_same_numbers_as_raw_events():
             total = await pool.fetchval("SELECT count(*) FROM events")
             async with pool.acquire() as conn:
                 # nothing counted yet: everything comes from the raw events - same numbers
-                assert await compare_all(conn) == 3 * len(ROLLUP_PANELS)
+                assert await compare_all(conn) == 3 * (len(ROLLUP_PANELS) + len(reports.ROLLUP_QUERIES))
                 await pool.execute("INSERT INTO events (ts, received_at, source, action) VALUES "
                                    "(now() + interval '3 hours', now() - interval '20 hours', 'firewall', 'block')")
                 total += 1
@@ -168,5 +176,71 @@ def test_result_cache_shares_one_computation():
         await asyncio.sleep(0.1)
         assert c.items["y"][1] == {"n": 4}
         assert cache.ttl_for(24) == 30 and cache.ttl_for(168) == 120 and cache.ttl_for(720) == 300
+
+    asyncio.run(main())
+
+
+def test_result_cache_shows_the_last_result_while_counting_again():
+    async def main():
+        c = cache.ResultCache()
+        calls = []
+        release = asyncio.Event()
+
+        async def compute():
+            calls.append(1)
+            if len(calls) > 1:
+                await release.wait()
+            return {"n": len(calls)}
+
+        assert await c.get("k", 0, compute, stale=60) == {"n": 1}  # nothing yet: waits for it
+        # expired, but within the stale time: the old result at once, a new one is counted in the background
+        assert await c.get("k", 0, compute, stale=60) == {"n": 1}
+        await asyncio.sleep(0.01)
+        assert c.refreshing("k") and calls == [1, 1]
+        assert await c.get("k", 0, compute, stale=60) == {"n": 1} and calls == [1, 1]  # no second recount
+        release.set()
+        await asyncio.sleep(0.01)
+        assert not c.refreshing("k")
+        assert await c.get("k", 30, compute, stale=60) == {"n": 2}
+        # too old to show: waits for the new count
+        release.clear()
+        c.items["k"] = (c.items["k"][0] - 1000, c.items["k"][1])
+        task = asyncio.ensure_future(c.get("k", 30, compute, stale=60))
+        await asyncio.sleep(0.01)
+        assert not task.done()
+        release.set()
+        assert await task == {"n": 3}
+        assert cache.stale_for(24) == 300 and cache.stale_for(720) >= 3600
+
+    asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_dashboard_indexes_are_built_in_the_background():
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            valid = "SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)"
+            for name in db.BACKGROUND_INDEXES:
+                await pool.execute(f"DROP INDEX IF EXISTS {name}")
+            await pool.execute("CREATE INDEX IF NOT EXISTS events_source_ts_idx ON events (source, ts DESC)")
+            # one left unfinished (invalid) by an interrupted build
+            await pool.execute("CREATE INDEX events_block_idx ON events (ts)")
+            await pool.execute("UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'events_block_idx'::regclass")
+            await db.build_background_indexes()
+            for name in db.BACKGROUND_INDEXES:
+                assert await pool.fetchval(valid, name) is True, name
+            assert "INCLUDE" in await pool.fetchval("SELECT pg_get_indexdef('events_block_idx'::regclass)")
+            # the plain (source, ts) index is replaced by the covering one
+            assert await pool.fetchval("SELECT to_regclass('events_source_ts_idx')") is None
+            await db.build_background_indexes()  # all there: nothing to do
+            # the dashboard queries over blocklist lines can use their index
+            plan = "\n".join(r[0] for r in await pool.fetch(
+                "EXPLAIN SELECT count(*) FROM events WHERE source = 'firewall' AND lower(data->>'blocklist') = 'q-feeds' "
+                "AND ts > now() - interval '1 day'"))
+            assert "events_blocklist_idx" in plan
+        finally:
+            await db.close()
 
     asyncio.run(main())
