@@ -235,10 +235,13 @@ def test_dashboard_indexes_are_built_in_the_background():
             # the plain (source, ts) index is replaced by the covering one
             assert await pool.fetchval("SELECT to_regclass('events_source_ts_idx')") is None
             await db.build_background_indexes()  # all there: nothing to do
-            # the dashboard queries over blocklist lines can use their index
-            plan = "\n".join(r[0] for r in await pool.fetch(
-                "EXPLAIN SELECT count(*) FROM events WHERE source = 'firewall' AND lower(data->>'blocklist') = 'q-feeds' "
-                "AND ts > now() - interval '1 day'"))
+            # the dashboard queries over blocklist lines can use their index (a small test table is read whole, so
+            # the planner is told not to)
+            async with pool.acquire() as conn, conn.transaction():
+                await conn.execute("SET LOCAL enable_seqscan = off")
+                plan = "\n".join(r[0] for r in await conn.fetch(
+                    "EXPLAIN SELECT count(*) FROM events WHERE source = 'firewall' AND lower(data->>'blocklist') = 'q-feeds' "
+                    "AND ts > now() - interval '1 day'"))
             assert "events_blocklist_idx" in plan
         finally:
             await db.close()
