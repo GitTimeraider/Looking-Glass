@@ -363,16 +363,26 @@ def test_dashboard_indexes_are_built_in_the_background():
             # the plain (source, ts) index is replaced by the covering one
             assert await pool.fetchval("SELECT to_regclass('events_source_ts_idx')") is None
             await db.build_background_indexes()  # all there: nothing to do
-            # the dashboard queries over blocklist lines can use their index (a small test table would be read whole
-            # or through another index, so the planner is told not to)
-            async with pool.acquire() as conn, conn.transaction():
-                await conn.execute("SET LOCAL enable_seqscan = off")
-                await conn.execute("SET LOCAL enable_indexscan = off")
-                await conn.execute("SET LOCAL enable_indexonlyscan = off")
-                plan = "\n".join(r[0] for r in await conn.fetch(
-                    "EXPLAIN SELECT count(*) FROM events WHERE source = 'firewall' AND lower(data->>'blocklist') = 'q-feeds' "
-                    "AND ts > now() - interval '1 day'"))
-            assert "events_blocklist_idx" in plan
+            # the dashboard queries over blocklist lines can use their index: on a small test table the planner may
+            # as well pick any other index or read it whole, so (in a transaction that is rolled back) the other indexes
+            # are dropped and a sequential scan is ruled out - it must then use this one
+            async with pool.acquire() as conn:
+                tr = conn.transaction()
+                await tr.start()
+                try:
+                    for (other,) in await conn.fetch(
+                            "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+                            "WHERE i.indrelid = 'events'::regclass AND NOT i.indisprimary "
+                            "AND c.relname <> 'events_blocklist_idx'"):
+                        await conn.execute(f'DROP INDEX "{other}"')
+                    await conn.execute("SET LOCAL enable_seqscan = off")
+                    plan = "\n".join(r[0] for r in await conn.fetch(
+                        "EXPLAIN SELECT count(*) FROM events WHERE source = 'firewall' "
+                        "AND lower(data->>'blocklist') = 'q-feeds' AND ts > now() - interval '1 day'"))
+                finally:
+                    await tr.rollback()
+            assert "events_blocklist_idx" in plan, plan
+            assert await pool.fetchval(valid, "events_block_idx") is True  # rolled back: all still there
         finally:
             await db.close()
 
