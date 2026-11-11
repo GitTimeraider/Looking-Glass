@@ -7,7 +7,8 @@
 
 30 days of history: plan "documents" (daily, cron) and "photos" (every 6 hours) to two repositories, with a failed
 and a warning backup, a failed repository check, one backup running now, forget / prune / check / stats runs.
-POST /mock/fail/<plan> makes the next backup of a plan fail, /mock/ok/<plan> succeed again (a new run is added).
+POST /mock/fail/<plan> makes the next backup of a plan fail, /mock/ok/<plan> succeed again (a new run is added);
+POST /mock/reschedule gives the pending (next) runs new ids, as Backrest does after a restart.
 Answers in proto3 JSON as Backrest does (lowerCamelCase, 64-bit numbers as strings, enums by name).
 """
 from __future__ import annotations
@@ -153,6 +154,16 @@ async def rpc(method: str, request: Request):
         ops = sorted(OPS, key=lambda o: int(o["id"]))
         return {"operations": ops[-n:] if n else ops}
     raise HTTPException(404, f"unimplemented: {method}")
+
+
+@app.post("/mock/reschedule")
+def reschedule():
+    """What Backrest does after a restart or a schedule change: the pending (next) runs get new ids."""
+    for o in OPS:
+        if o["status"] == "STATUS_PENDING":
+            NEXT_ID[0] += 1
+            o["id"] = o["flowId"] = str(NEXT_ID[0])
+    return {"ok": True}
 
 
 @app.post("/mock/{what}/{plan}")
