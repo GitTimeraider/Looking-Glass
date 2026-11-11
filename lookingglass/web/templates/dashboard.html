@@ -188,9 +188,13 @@ async function load() {
   let d;
   try { d = await LG.api(`/api/overview?hours=${hours}`, { signal: LG.latest("overview") }); }
   catch (e) { if (!LG.aborted(e)) document.getElementById("updated").textContent = "Failed to load: " + e.message; return; }
+  // 7 / 30 days never counted yet: the server counts it in the background; what is shown belongs to another period
+  $("widgets").classList.toggle("pending-period", !!d.pending);
+  if (d.pending) { LG.updated($("updated"), d, load, VIEW()); return; }
   last = d;
   render(d);
 }
+const VIEW = () => ({ kind: "overview", hours });
 function render(d) {
   const k = d.kpi, oa = k.open_alerts || {}, on = d.sources || {};
   srcOn = on;
@@ -207,7 +211,7 @@ function render(d) {
     (on.unbound ? kpi("DNS queries", LG.num(k.dns)) : "") +
     (on.crowdsec ? kpi("CrowdSec bans", `${k.crowdsec_decisions ?? "–"}${k.crowdsec_blocklist != null ? ` <span class="small">+ ${LG.num(k.crowdsec_blocklist)} on the blocklist</span>` : ""}`) : "") +
     kpi("Devices (24h)", LG.num(k.devices));
-  LG.updated(document.getElementById("updated"), d, load);
+  LG.updated(document.getElementById("updated"), d, load, VIEW());
 
   // timeline (stacked by source)
   const tl = d.timeline, buckets = [...new Set(tl.series.map(r => r.bucket))].sort();

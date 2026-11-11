@@ -181,6 +181,9 @@ class Settings(BaseSettings):
     device_remove_days: int = 0
     metrics_retention_days: int = 90
     detection_interval: int = 60
+    long_refresh_7d: int = 60  # minutes: 7-day dashboard / Overview results are counted again this often (periods.py)
+    long_refresh_30d: int = 360  # minutes: the same for periods over 7 days
+    long_keep_days: int = 7  # 7 / 30 day views not opened for this many days are no longer refreshed
     unraid_container_grace: int = 10  # minutes
     unraid_offline_grace: int = 10  # minutes
     unraid_unhealthy_minutes: int = 5  # a failing Docker health check alerts after this long (0 = off)

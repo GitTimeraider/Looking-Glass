@@ -104,3 +104,22 @@ def test_poller_job_survives_a_closing_database():
         await poller.api.close()
 
     asyncio.run(main())
+
+
+def test_a_one_time_job_that_finishes_is_neither_restarted_nor_stops_the_app():
+    from lookingglass import main as lgmain
+
+    async def main():
+        runs = []
+
+        async def build_indexes():
+            runs.append(1)  # done: returns
+
+        task = asyncio.create_task(lgmain.keep_running("dashboard_indexes", build_indexes, once=True))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert runs == [1] and not task.done()  # finished, idle: main's wait for the first task to end goes on
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(main())

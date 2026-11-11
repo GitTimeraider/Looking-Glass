@@ -20,6 +20,7 @@ _pool: asyncpg.Pool | None = None
 # loads about as fast. Short periods (up to a day: cheap) have a queue of their own, so switching to 1h / 24h never
 # waits behind the queries of a 7- or 30-day view.
 HEAVY_PARALLEL = 3
+LOW_PAUSE = 0.5  # seconds between two queries of background work (Priority low)
 SHORT_HOURS = 24
 _heavy: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore, asyncio.Semaphore, asyncio.Semaphore] | None = None
 
@@ -62,7 +63,12 @@ class _Slot:
         return self
 
     async def __aexit__(self, *exc) -> None:
-        self.sem.release()
+        try:
+            if self.sem is self.sems[2] and LOW_PAUSE:
+                # background work (7 / 30 day counts): a short gap after each query, so it never runs back to back
+                await asyncio.sleep(LOW_PAUSE)
+        finally:
+            self.sem.release()
 
 
 def heavy(hours: float | None = None) -> _Slot:

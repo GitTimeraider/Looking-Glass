@@ -88,14 +88,19 @@ async def _stop_poller(poller, task: asyncio.Task | None) -> None:
     await asyncio.shield(stop())
 
 
-async def keep_running(name: str, factory) -> None:
+async def keep_running(name: str, factory, once: bool = False) -> None:
     """Run a background loop for as long as Looking Glass runs. One that crashes (e.g. a database query failed while
-    the database was overloaded or restarting) is restarted after a pause instead of shutting the whole app down."""
+    the database was overloaded or restarting) is restarted after a pause instead of shutting the whole app down.
+    ``once``: a job that is finished when it returns (e.g. building the dashboard indexes); only a crash restarts it.
+    Either way this never returns by itself: its end would stop Looking Glass (main waits for the first task to end)."""
     delay = 10
     while True:
         started = asyncio.get_running_loop().time()
         try:
             await factory()
+            if once:
+                log.debug("background job %s done", name)
+                await asyncio.Event().wait()  # done: stays idle until shutdown
             problem, error = "stopped unexpectedly", None
         except asyncio.CancelledError:
             raise
@@ -290,16 +295,16 @@ async def amain() -> None:
 
     tasks: list[asyncio.Task] = []
 
-    def background(name: str, factory) -> None:
+    def background(name: str, factory, once: bool = False) -> None:
         """A loop that runs as long as Looking Glass does (restarted when it crashes, see keep_running)."""
-        tasks.append(asyncio.create_task(keep_running(name, factory), name=name))
+        tasks.append(asyncio.create_task(keep_running(name, factory, once), name=name))
 
     detections = DetectionEngine(settings)
     background("writer", writer.run)
     background("detections", detections.run)
     background("housekeeping", lambda: housekeeping(settings))
     background("event_rollup", rollup.loop)
-    background("dashboard_indexes", db.background_indexes_loop)
+    background("dashboard_indexes", db.background_indexes_loop, once=True)
     background("device_upkeep", lambda: device_upkeep_loop(settings))
     background("optional_sources", optional_sources.loop)
     if settings.syslog_enabled:
@@ -319,6 +324,7 @@ async def amain() -> None:
 
     app = create_app(settings, analyst)
     app.state.packages = packages
+    background("long_periods", app.state.periods.run)  # 7 / 30 day views, counted on a schedule (periods.py)
     server = uvicorn.Server(uvicorn.Config(app, host=settings.web_host, port=settings.web_port, log_level="warning",
                                            proxy_headers=True, forwarded_allow_ips="*"))
     server.install_signal_handlers = lambda: None  # we handle signals ourselves
