@@ -12,7 +12,8 @@ slowed down. Instead:
 - the refresh button on a page (``refresh``) puts that period at the front of the queue;
 - a period never counted before (the first look after an update) is counted right away, also in the background - the
   page says so and asks again until it is there;
-- periods nobody looked at for a week are no longer counted.
+- periods nobody looked at for Settings › Data & detection › "keep refreshing for (days)" (default 7) are no
+  longer counted; opened again, they show their last result and are counted anew.
 """
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ from . import db
 log = logging.getLogger(__name__)
 
 SHORT_HOURS = 24  # periods up to this are counted live (cheap); longer ones come from here
-KEEP_DAYS = 7  # a period not looked at for this long is no longer refreshed
+KEEP_DAYS = 7  # default of Settings › Data & detection › "keep refreshing for (days)" (long_keep_days)
 VIEW_WRITE_S = 300  # "looked at" is written at most this often per period
 
 
@@ -73,8 +74,10 @@ class Periods:
             self.refresh(key)
             return {"data": None, "as_of": None, "refreshing": True, "next": None, "error": None}
         counted, data, error = hit
-        if (datetime.now(timezone.utc) - counted).total_seconds() > self.interval_s(hours) and key not in self.urgent:
-            self.wake.set()  # due (e.g. the interval was shortened): the worker picks it up
+        if (datetime.now(timezone.utc) - counted).total_seconds() > self.interval_s(hours):
+            # due - e.g. opened again after it was no longer refreshed, or the interval was shortened: someone looks
+            # at it, so it is counted next (the page shows "Counting…" and picks up the new numbers by itself)
+            self.refresh(key)
         return {"data": data, "as_of": counted.timestamp(), "refreshing": self.busy(key),
                 "next": counted.timestamp() + self.interval_s(hours), "error": error}
 
@@ -112,7 +115,7 @@ class Periods:
             return self.urgent.pop(0)
         rows = await db.pool().fetch(
             "SELECT key, hours, computed_at FROM period_results WHERE viewed_at > now() - make_interval(days => $1) "
-            "ORDER BY computed_at NULLS FIRST", KEEP_DAYS)
+            "ORDER BY computed_at NULLS FIRST", max(1, int(getattr(self.settings, "long_keep_days", 0) or KEEP_DAYS)))
         now = datetime.now(timezone.utc)
         for r in rows:
             if r["computed_at"] is None or (now - r["computed_at"]).total_seconds() >= self.interval_s(r["hours"]):

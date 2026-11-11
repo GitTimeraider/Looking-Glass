@@ -323,6 +323,10 @@ FIELDS: list[Field] = [
     Field("long_refresh_30d", "data", "30-day views: count again every (minutes)", "int", "The same for 30 days (and "
           "other periods over 7 days). Counting 30 days takes the database a while: every few hours is plenty.",
           min=30, max=10080),
+    Field("long_keep_days", "data", "7 / 30 day views: keep refreshing for (days)", "int", "A 7- or 30-day view (a page, "
+          "tab and period) is counted again on the schedule above for this many days after it was last opened; after "
+          "that it is no longer counted until someone opens it again (it then shows its last result and counts anew). "
+          "Lower = less background work for views nobody looks at.", min=1, max=365),
     Field("dns_ignore_domains", "data", "DNS: domains to ignore", "list",
           "Domains (subdomains included) the DNS checks - random-looking / DGA names, tunneling, NXDOMAIN "
           "storms - skip, e.g. CDNs or latency probes with random names. Logs and dashboards still show them.",

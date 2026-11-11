@@ -69,10 +69,21 @@ def test_long_periods_are_counted_in_the_background_and_served_from_the_store():
             assert await p2._next() == k7  # the 30 days not again right away; the 7 days (never counted) is due
             fail["on"] = False
 
-            # not looked at for over a week: no longer counted
+            # not looked at for over a week (Settings: keep refreshing for 7 days): no longer counted
             await pool.execute("UPDATE period_results SET computed_at = now() - interval '2 days', "
                                "viewed_at = now() - interval '8 days'")
+            p2.urgent.clear()
             assert await p2._next() is None
+            s.long_keep_days = 10  # raised in Settings: refreshed again
+            assert await p2._next() is not None
+            s.long_keep_days = 7
+            # opened again: shows its last result and is counted next
+            p2.viewed.clear()
+            p2.memory.clear()  # (the test changed the stored time directly)
+            got = await p2.get("overview", 720.0)
+            assert got["data"] == {"n": 1, "hours": 720.0} and got["refreshing"] and p2.urgent == [k30]
+            p2.urgent.clear()
+            await pool.execute("UPDATE period_results SET viewed_at = now() - interval '8 days'")
             # a kind that no longer exists is dropped
             await pool.execute("INSERT INTO period_results (key, hours) VALUES ($1, 720)", '["gone", 720.0]')
             await p2.count('["gone", 720.0]')
