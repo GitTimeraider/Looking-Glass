@@ -49,6 +49,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 | System / hardware | API | CPU %, load, memory, swap, ZFS ARC, disks, temperatures, states, interface throughput/errors, gateways, services, top processes, firmware updates |
 | **UniFi** | UniFi Network API (API key or local account) | access points, switches (ports, PoE, errors), consoles: state, firmware/updates, load; **Wi-Fi / wired clients** with AP or switch port, SSID, signal, experience, traffic; health; client connects / roams, device offline, **rogue / evil-twin APs, rogue DHCP**; and *where* every device is connected, shown in alerts and the device list |
 | **Unraid** | Unraid API (GraphQL) + optional Docker socket proxy | CPU/cores, memory, temperatures, network, array/parity, disks (temp, errors, SMART), shares, **Docker containers** (state, CPU/mem) and **their logs**, Unraid syslog, **notifications**, VMs, UPS (Unraid UPS service, or the **NUT plugin** via upsd port 3493), **packages inside every container image** (Syft, optional) |
+| **Backrest** (restic backups) | Backrest API (read only, user + password) | plans, repositories, schedules and retention; **every backup run** with result, duration, data scanned / added, files and **speed**; forget / prune / check runs; repository size, compression and snapshot count over time; alerts for failed, overdue and warning backups and failed repository checks |
 
 ## Built-in detections
 
@@ -616,20 +617,16 @@ Dashboards count a lot of log lines, so Looking Glass keeps that work small:
   come from a small table of hourly totals that is updated every minute from the new events only - the same numbers as
   counting every event, a fraction of the work (30 days: ~16× less). After an update the existing events are counted
   once in the background, in small slices; until then those panels count the raw events as before.
+* **Indexes for the dashboards**: blocked traffic, the CrowdSec / Q-Feeds blocklist lines and the per-source counts
+  are read from narrow indexes instead of the whole log lines with their message and data (30 million events: the
+  Q-Feeds table went from over 3 minutes to a few seconds, the "top blocked" tables read ~1 GB instead of ~14 GB).
+  After an update they are built **once, in the background**, shortly after the start - on a large database this takes
+  a few minutes (the log says `building index ...` and `index ... built`), events keep arriving meanwhile, and the
+  dashboards get faster when it is done. They take about 2 GB extra disk space per 30 million events.
 * **Refresh**: a page only refreshes while its tab is visible (a tab in the background does nothing, and catches up
   when you open it again); 24 h views every minute, 7 days every 5 minutes, 30 days every 15 minutes.
-* **Indexes for the dashboards**: blocked traffic, the CrowdSec / Q-Feeds blocklist lines and the per-source counts
-  are read from narrow indexes instead of the whole log lines with their message and data (30 days: the Q-Feeds table
-  went from over 3 minutes to a few seconds). After an update they are built **once, in the background**, shortly
-  after the start - on a large database this takes a few minutes (the log says `building index ...` and
-  `index ... built`), events keep arriving meanwhile, and the dashboards get faster when it is done. They take about
-  2 GB extra disk space per 30 million events.
 * **Shared results**: tabs, devices and users looking at the same dashboard and period share one result for a short
   while (30 s for up to a day, 2 / 5 minutes for 7 / 30 days).
-* **No waiting for a recount**: when that time is over, the page still shows the last result right away and the server
-  counts again in the background (up to 5 minutes later for 24 h views, up to 6 hours for 7 / 30 days); the top right
-  then says `updated 14:05:09 · refreshing…` and the page picks up the new numbers by itself. Only the very first look
-  at a period (after a start, or after a long time) waits for the count.
 * **No spikes**: at most 3 heavy queries run at once, instead of every panel of a page at the same time.
 * **Database memory**: the compose files start PostgreSQL with `shared_buffers=512MB` (the default 128 MB is too small
   for the log tables once they hold a few days). **Existing installation?** Add this line to the `db:` service of your
@@ -915,6 +912,40 @@ How UniFi and OPNsense data are combined:
 * The **AI analyst** can read UniFi state (tool `unifi_status`) and is told to use location / SSID / VLAN when judging a
   device and to give UniFi containment steps.
 
+## Adding Backrest (backups)
+
+Optional. [Backrest](https://github.com/garethgeorge/backrest) is a web UI and scheduler for restic backups. Looking
+Glass reads its plans, repositories and backup history over Backrest's own API; it never changes anything in Backrest
+and does not need to be attached to the Backrest container.
+
+1. **Backrest web UI** (`http://<unraid-ip>:9898`) › *Settings* › *Users*: add a user for Looking Glass (Backrest has
+   no read-only users, so a separate one is best). Skip this when Backrest's authentication is disabled.
+2. **Looking Glass web UI** › *Settings* › *Backrest*:
+   * **Backrest URL (with port)** - the port is required, so a non-default port works too:
+     `http://192.168.1.10:9898` (the Unraid host's IP and the port mapped in Docker), `http://backrest:9898` when
+     both containers share a Docker network, or `https://backup.example.com:443` behind a reverse proxy.
+   * **Username / Password** of that Backrest user.
+   * **Test connection**, then **Save**.
+3. If the test cannot connect: Looking Glass must reach that address. In **Unraid › Docker** check the port mapping of
+   the Backrest container, or put both containers on the same custom Docker network.
+
+What you get under **Infrastructure › Backups**:
+
+* **Main** - every backup job of every backup tool (Backrest now, more later): state (ok, warnings, failed,
+  overdue, running), last and last successful run, next run, runs in the period, backups per day and the latest runs.
+* **Backrest** - per plan and repository: schedule, retention, success rate, average and longest duration,
+  **processing speed** (data scanned ÷ duration) and **upload speed** (new data added ÷ duration) per backup and on
+  average, new data and data scanned per backup, repository size (stored and original), compression, snapshots over
+  time, the last check / prune / forget, a running backup with its progress, current speed and time left, and every
+  run with its error text.
+
+Alerts (rules under *Backups* in Settings › Alert filters): **backup failed** (high when it keeps failing), **backup
+finished with warnings** (low, can be switched off), **backup overdue** (no successful backup for longer than the
+plan's schedule allows - the longest normal gap plus 25 % and 2 hours; or a fixed number of hours in Settings),
+**repository check / prune / forget failed** and **Backrest unreachable**. They close by themselves once the next run
+works. Repository passwords, cloud keys (restic environment variables) and Backrest's user hashes are dropped as soon
+as the configuration is read - they are never stored. Runs are kept for 400 days, also after Backrest forgets them.
+
 ## Using it
 
 * **Overview** – KPIs and the most important tables of every source in one page.
@@ -1067,6 +1098,8 @@ python tools/mock_opnsense.py --port 18443            # fake OPNsense API  (Sett
 python tools/mock_unraid.py --port 18500              # fake Unraid API    (Settings › Unraid: http://127.0.0.1:18500, key test-key)
 python tools/mock_unifi.py --port 18600               # fake UniFi console (Settings › UniFi: http://127.0.0.1:18600, key test-key;
                                                       #   --selfhosted: admin / admin-pass, --version 11.0.89, --no-legacy-key)
+python tools/mock_backrest.py --port 19898            # fake Backrest     (Settings › Backrest: http://127.0.0.1:19898, admin / admin-pass;
+                                                      #   --no-auth, --no-summary = Backrest before 1.6)
 TEST_DATABASE_URL=postgresql://... python -m pytest   # also runs every dashboard query against PostgreSQL
 ```
 

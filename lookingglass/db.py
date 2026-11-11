@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import math
@@ -16,23 +17,70 @@ _pool: asyncpg.Pool | None = None
 
 # dashboard / report queries that count many events run at most this many at a time (all panels of a page at once
 # took every CPU core of the database server for a moment); the rest wait their turn - on a 4-8 core server a page
-# loads about as fast
+# loads about as fast. Short periods (up to a day: cheap) have a queue of their own, so switching to 1h / 24h never
+# waits behind the queries of a 7- or 30-day view.
 HEAVY_PARALLEL = 3
-_heavy: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
+SHORT_HOURS = 24
+_heavy: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore, asyncio.Semaphore, asyncio.Semaphore] | None = None
 
 
-def heavy() -> asyncio.Semaphore:
-    """``async with db.heavy():`` around a query that counts many events. One per event loop (a semaphore belongs to
-    the loop it was first used in)."""
+class Priority:
+    """Work done ahead of time (cache.py: the other periods of a page, loaded in the background). ``low`` while
+    nobody waits for it: its queries then run one at a time in a slot of their own and never hold up a page.
+    Set to False when a page starts waiting for it: its remaining queries join the normal queues."""
+
+    def __init__(self) -> None:
+        self.low = True
+
+
+_priority: contextvars.ContextVar[Priority | None] = contextvars.ContextVar("lg_priority", default=None)
+
+
+def run_low(prio: Priority, coro):
+    """Run ``coro`` (and the tasks it starts) as ``prio``."""
+    async def runner():
+        _priority.set(prio)
+        return await coro
+    return runner()
+
+
+class _Slot:
+    def __init__(self, hours: float | None, sems: tuple[asyncio.Semaphore, asyncio.Semaphore, asyncio.Semaphore]):
+        self.hours, self.sems, self.sem = hours, sems, None
+
+    async def __aenter__(self):
+        short, long_, low = self.sems
+        prio = _priority.get()
+        while prio is not None and prio.low:
+            if not low.locked():
+                await low.acquire()
+                self.sem = low
+                return self
+            await asyncio.sleep(0.2)  # the low slot is busy: wait, unless a page starts waiting for this work
+        self.sem = short if self.hours is not None and self.hours <= SHORT_HOURS else long_
+        await self.sem.acquire()
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        self.sem.release()
+
+
+def heavy(hours: float | None = None) -> _Slot:
+    """``async with db.heavy(hours):`` around a query that counts many events over ``hours``. One set of queues per
+    event loop (a semaphore belongs to the loop it was first used in)."""
     global _heavy
     loop = asyncio.get_running_loop()
     if _heavy is None or _heavy[0] is not loop:
-        _heavy = (loop, asyncio.Semaphore(HEAVY_PARALLEL))
-    return _heavy[1]
+        _heavy = (loop, asyncio.Semaphore(HEAVY_PARALLEL), asyncio.Semaphore(HEAVY_PARALLEL), asyncio.Semaphore(1))
+    return _Slot(hours, (_heavy[2], _heavy[1], _heavy[3]))
 
 # per connection: JIT compiling costs more CPU than it saves on these aggregate queries (measured: 15-25 % slower
-# with it on 7 / 30 day windows); a bit more memory per sort / hash keeps large GROUP BYs off the disk
-SERVER_SETTINGS = {"jit": "off", "work_mem": "16MB"}
+# with it on 7 / 30 day windows); a bit more memory per sort / hash keeps large GROUP BYs off the disk.
+# No parallel workers: with them a count of the distinct blocked source addresses over 30 days (millions of
+# addresses) now and then ran for minutes instead of seconds (measured: 5 of 6 runs > 15 s, without them 3.4 s every
+# time), and three such queries at once with 2 workers each took every core - logins and log ingest stalled.
+# Without them the pages load about as fast: they already run 3 queries side by side.
+SERVER_SETTINGS = {"jit": "off", "work_mem": "16MB", "max_parallel_workers_per_gather": "0"}
 
 EVENT_COLUMNS = (
     "ts", "source", "host", "program", "severity", "action", "src_ip", "src_port",

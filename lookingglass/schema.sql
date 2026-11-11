@@ -397,3 +397,29 @@ CREATE TABLE IF NOT EXISTS image_packages (
     created    TEXT,                               -- when its containers were (re)created, when read
     seen_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- backups (backups.py, Infrastructure › Backups): one row per run of a backup tool, the same for every tool (Backrest
+-- now, others later). Kept after the tool itself forgets the run; removed after 400 days (housekeeping).
+CREATE TABLE IF NOT EXISTS backup_runs (
+    source          TEXT NOT NULL,                -- backrest
+    ext_id          TEXT NOT NULL,                -- the tool's own id of the run
+    kind            TEXT NOT NULL,                -- backup | forget | prune | check | stats | restore
+    job             TEXT NOT NULL DEFAULT '',     -- the backup job (Backrest: plan); '' for repository tasks
+    repo            TEXT NOT NULL DEFAULT '',     -- where it is stored (Backrest: repository id)
+    status          TEXT NOT NULL,                -- success | warning | error | running | pending | cancelled | unknown
+    started         TIMESTAMPTZ,
+    ended           TIMESTAMPTZ,
+    duration_s      DOUBLE PRECISION,
+    bytes_processed BIGINT,                       -- data read / scanned (restore: restored)
+    bytes_added     BIGINT,                       -- new data written to the repository
+    files_new       BIGINT,
+    files_changed   BIGINT,
+    files_total     BIGINT,
+    snapshot_id     TEXT,
+    message         TEXT,                         -- error / warning text
+    data            JSONB NOT NULL DEFAULT '{}',  -- tool specific: progress, errors, repository stats ...
+    seen_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source, ext_id)
+);
+CREATE INDEX IF NOT EXISTS backup_runs_started ON backup_runs (started DESC);
+CREATE INDEX IF NOT EXISTS backup_runs_job ON backup_runs (source, kind, job, started DESC);

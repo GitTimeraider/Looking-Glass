@@ -16,6 +16,23 @@ const LG = {
     if (!r.ok) throw new Error((data && data.detail) || `HTTP ${r.status} ${r.statusText}`.trim());
     return data;
   },
+  /** An abort signal for the newest request of ``key``: the previous one of that key is aborted. Picking another
+   *  period while one is still loading so drops the old request, and the server stops its queries. */
+  latest(key) {
+    const c = LG._ctl || (LG._ctl = {});
+    if (c[key]) c[key].abort();
+    return (c[key] = new AbortController()).signal;
+  },
+  aborted(e) { return e && e.name === "AbortError"; },
+  /** "updated 14:05:09" for a dashboard answer: the time it was counted (``as_of``). A ``stale`` answer (a period
+   *  shown again not long after: answered at once, counted anew in the background) calls ``reload`` a few seconds
+   *  later to pick up the new numbers. */
+  updated(el, d, reload) {
+    clearTimeout(LG._staleTimer);
+    const at = d && d.as_of ? new Date(d.as_of * 1000) : new Date();
+    if (el) el.textContent = "updated " + LG.clock(at) + (d && d.stale ? " · refreshing…" : "");
+    if (d && d.stale && reload) LG._staleTimer = setTimeout(reload, 4000);
+  },
   esc(v) {
     if (v === null || v === undefined) return "";
     return String(v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -66,14 +83,6 @@ const LG = {
    *  (a 30-day chart hardly changes from one minute to the next). */
   refreshMs(hours) { return hours <= 24 ? 60000 : hours <= 168 ? 300000 : 900000; },
   clock(d) { return (d || new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", ...LG.hc() }); },
-  /** "updated 14:05:09" for a dashboard / Overview result: when its events were counted (``as_of``, seconds), plus
-   *  "refreshing…" while the server counts them again - a 7 or 30 day result is shown at once from the last count. */
-  updated(d) { return "updated " + LG.clock(d && d.as_of ? new Date(d.as_of * 1000) : null) + (d && d.refreshing ? " · refreshing…" : ""); },
-  /** While ``d.refreshing``: call ``fn`` again in 15 s (one timer per page), to pick up the new counts. */
-  followRefresh(d, fn) {
-    clearTimeout(LG._refreshTimer);
-    if (d && d.refreshing) LG._refreshTimer = setTimeout(fn, 15000);
-  },
   ago(iso) {
     if (!iso) return "never";
     const s = (Date.now() - (typeof iso === "number" ? iso * 1000 : new Date(iso).getTime())) / 1000;

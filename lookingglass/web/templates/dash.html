@@ -138,14 +138,16 @@ function render(d, only) {
 
 async function load() {
   try {
-    const d = await LG.api(`/api/dash/${NAME}?hours=${hours}${tab ? `&tab=${encodeURIComponent(tab)}` : ""}`);
+    const d = await LG.api(`/api/dash/${NAME}?hours=${hours}${tab ? `&tab=${encodeURIComponent(tab)}` : ""}`,
+                           { signal: LG.latest("dash") });
     if (d.tab && tab && d.tab !== tab) { tab = d.tab; history.replaceState(null, "", "#" + tab); }  // that tab's source is off
     drawTabs(d);
     if (!built || d.tab !== builtTab) { build(d); builtTab = d.tab; }
     render(d);
-    document.getElementById("updated").textContent = LG.updated(d);
-    LG.followRefresh(d, load);
-  } catch (e) { document.getElementById("panels").innerHTML = `<div class="card">Failed to load: ${LG.esc(e.message)}</div>`; built = false; }
+    LG.updated(document.getElementById("updated"), d, load);
+  } catch (e) {
+    if (LG.aborted(e)) return;  // another period / tab was picked meanwhile
+    document.getElementById("panels").innerHTML = `<div class="card">Failed to load: ${LG.esc(e.message)}</div>`; built = false; }
 }
 load();
 const auto = LG.autoRefresh(load, () => LG.refreshMs(hours));

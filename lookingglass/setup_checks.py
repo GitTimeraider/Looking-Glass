@@ -431,6 +431,25 @@ async def run(settings: Settings) -> dict[str, Any]:
                                   "(Looking Glass › Settings › UniFi)."],
               avoid=["Turning on UniFi's SIEM / remote syslog towards Looking Glass as well - the API already delivers "
                      "these events."], count=n("unifi"), last_seen=last("unifi") or uni.get("last"), link="/unifi")
+    br = await db.get_snapshot("backrest:status") or {}
+    if not settings.backrest_enabled:
+        check("backrest", "Backrest (backups)", "optional", [], "Not configured. Optional: status, history, speed and "
+              "alerts of your Backrest / restic backups under Infrastructure › Backups.",
+              ["Looking Glass › Settings › Backrest: the Backrest URL with its port (default 9898), plus a Backrest "
+               "username / password when its authentication is on."], link="/settings#backrest")
+    elif br.get("ok") is False:
+        check("backrest", "Backrest (backups)", "action", ["API"], f"Not reachable: {br.get('error')}",
+              ["Looking Glass › Settings › Backrest: check URL, port and login with Test connection.",
+               "The Backrest container must be reachable from Looking Glass (same Docker network, or the host's IP "
+               "address and the mapped port)."], last_seen=br.get("last"), link="/settings#backrest")
+    elif not br:
+        check("backrest", "Backrest (backups)", "info", ["API"], "Connecting…", link="/backups#backrest")
+    else:
+        failed = [k for k, v in (br.get("sections") or {}).items() if not v.get("ok")]
+        check("backrest", "Backrest (backups)", "ok" if not failed else "info", ["API"],
+              f"Connected{' to ' + br['instance'] if br.get('instance') else ''}." +
+              (" No summary dashboard (Backrest 1.6+ needed for next run times and 30-day counts)." if failed else ""),
+              last_seen=br.get("last"), link="/backups")
     geo = settings.geoip_db and os.path.exists(settings.geoip_db)
     check("geoip", "GeoIP countries", "ok" if geo else "optional", [], "GeoLite2 database loaded." if geo else
           "No GeoLite2 database - countries stay empty. Optional: download GeoLite2-City.mmdb (free MaxMind account) "

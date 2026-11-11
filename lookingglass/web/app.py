@@ -65,12 +65,17 @@ PAGES = {
     "/devices": ("devices.html", "Devices"),
     "/unraid": ("unraid.html", "Unraid"),
     "/unifi": ("unifi.html", "UniFi"),
+    "/backups": ("backups.html", "Backups"),
     "/reports": ("reports.html", "Reports"),
     "/ai": ("ai.html", "AI Analyst"),
     "/setup": ("setup.html", "Setup"),
     "/settings": ("settings.html", "Settings"),
 }
 
+
+# the period buttons of the Overview (dashboard.html) and the dashboards (dash.html)
+OVERVIEW_HOURS = (1, 24, 168, 720)
+DASH_HOURS = (1, 6, 24, 168, 720)
 
 _TASKS: set[asyncio.Task] = set()
 
@@ -82,6 +87,43 @@ def _background(coro) -> None:
     task.add_done_callback(_TASKS.discard)
 
 
+class AuthGuard:
+    """Runs ``check(request)`` before every HTTP request; a response it returns is sent instead of the page."""
+
+    def __init__(self, app, check) -> None:
+        self.app, self.check = app, check
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http":
+            answer = await self.check(Request(scope, receive))
+            if answer is not None:
+                await answer(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+class ClientGone(Exception):
+    """The browser closed the connection before the answer was ready."""
+
+
+async def until_disconnected(request: Request, aw, poll: float = 0.5):
+    """Await ``aw``, but give up (cancel it) as soon as the browser has gone - e.g. another period was picked while
+    a 30-day view was still loading. With the result cache (cache.py) the database queries nobody waits for any more
+    are cancelled too."""
+    task = asyncio.ensure_future(aw)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=poll)
+            if done:
+                return task.result()
+            if await request.is_disconnected():
+                raise ClientGone()
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
 def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, Any] | None = None) -> FastAPI:
     templates.env.globals["time_format"] = lambda: settings.time_format  # live setting, read per page
     # sidebar dashboards of sources that are switched off (live as well)
@@ -91,11 +133,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         f'data-accent="{escape(settings.accent)}"')
     app = FastAPI(title="Looking Glass", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
 
-    @app.middleware("http")
-    async def auth_guard(request: Request, call_next):
+    async def auth_guard(request: Request) -> Response | None:
+        """None = let the request through, else the answer (login redirect, 401 / 403)."""
         path = request.url.path
         if path.startswith("/static/") or path in PUBLIC_PATHS:
-            return await call_next(request)
+            return None
         user, mfa = await current_user(request)
         if not user:
             if path.startswith("/api/"):
@@ -111,7 +153,15 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 and request.headers.get("x-looking-glass") != "1":
             return JSONResponse({"detail": "missing X-Looking-Glass header"}, status_code=403)
         request.state.user = user
-        return await call_next(request)
+        return None
+
+    # a plain ASGI middleware, not @app.middleware("http"): behind that one an endpoint never learns that the browser
+    # has gone (request.is_disconnected() stays False), so abandoned dashboard queries could not be stopped
+    app.add_middleware(AuthGuard, check=auth_guard)
+
+    @app.exception_handler(ClientGone)
+    async def client_gone(request: Request, exc: ClientGone):
+        return Response(status_code=499)  # nobody reads it; keeps a traceback out of the log
 
     # added after the guard so it wraps it (the session must be decoded first)
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, session_cookie="lookingglass_session",
@@ -164,24 +214,29 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                   "FROM events WHERE ts > now() - make_interval(secs => $1)")
 
         async def kpi_counts() -> dict[str, Any]:
-            async with db.heavy(), db.pool().acquire() as conn:
+            async with db.heavy(hours), db.pool().acquire() as conn:
                 row = await (rollup.fetch(conn, counts, secs) if hours >= rollup.MIN_HOURS else conn.fetch(counts, secs))
             return dict(row[0])
 
         async def blocked_ips() -> int:
-            async with db.heavy(), db.pool().acquire() as conn:
+            async with db.heavy(hours), db.pool().acquire() as conn:
                 return await conn.fetchval(
                     "SELECT count(*) FROM (SELECT DISTINCT src_ip FROM events WHERE action IN ('block', 'drop') "
                     "AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1)) x", secs)
 
         kpi, ips, report, tl = await asyncio.gather(kpi_counts(), blocked_ips(), build_report(hours), timeline(hours))
-        return {"kpi": db.jsonable({**kpi, "blocked_ips": ips}), "report": report, "timeline": tl, "as_of": time.time()}
+        return {"kpi": db.jsonable({**kpi, "blocked_ips": ips}), "report": report, "timeline": tl}
 
     @app.get("/api/overview")
-    async def overview(hours: float = Query(24, gt=0, le=24 * 90)):
+    async def overview(request: Request, hours: float = Query(24, gt=0, le=24 * 90)):
         pool = db.pool()
-        key = ("overview", hours)
-        counted = await results.get(key, ttl_for(hours), lambda: overview_counts(hours), stale_for(hours))
+        # an expired result of this period (picked again not long after) is answered at once and computed again in
+        # the background: "stale" makes the page ask again shortly
+        counted, as_of, stale = await until_disconnected(request, results.fetch(
+            ("overview", hours), ttl_for(hours), lambda: overview_counts(hours), stale_for(hours)))
+        for h in OVERVIEW_HOURS:  # the other periods ahead of time (low priority), so switching is instant
+            if h != hours:
+                results.warm(("overview", h), lambda h=h: overview_counts(h), stale_for(h))
         kpi = counted["kpi"]
         # open alerts, devices and the system state are cheap and always current
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
@@ -210,8 +265,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "system": await db.get_snapshot("system"),
             "gateways": await db.get_snapshot("gateways"),
             "ingest": STATS.as_dict(),
-            # when the events were counted, and whether newer counts are on their way (the page asks again soon)
-            "as_of": counted["as_of"], "refreshing": results.refreshing(key),
+            "as_of": as_of, "stale": stale,
         }
 
     @app.get("/api/events")
@@ -902,12 +956,16 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "ai_enabled": settings.ai_enabled, "user": request.session.get("user")})
 
     @app.get("/api/dash/{name}")
-    async def dash_data(name: str, hours: float = Query(24, gt=0, le=24 * 90), tab: str | None = Query(None, max_length=40)):
+    async def dash_data(request: Request, name: str, hours: float = Query(24, gt=0, le=24 * 90),
+                        tab: str | None = Query(None, max_length=40)):
         if name not in DASHBOARDS:
             raise HTTPException(404)
-        key = ("dash", name, hours, tab)
-        out = await results.get(key, ttl_for(hours), lambda: dash_compute(name, hours, tab), stale_for(hours))
-        return {**out, "refreshing": results.refreshing(key)}
+        out, as_of, stale = await until_disconnected(request, results.fetch(
+            ("dash", name, hours, tab), ttl_for(hours), lambda: dash_compute(name, hours, tab), stale_for(hours)))
+        for h in DASH_HOURS:  # see overview()
+            if h != hours:
+                results.warm(("dash", name, h, tab), lambda h=h: dash_compute(name, h, tab), stale_for(h))
+        return {**out, "as_of": as_of, "stale": stale}  # see overview(): "stale" = ask again shortly
 
     async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
         # Threats sources: switched off in Settings › OPNsense -> its tab and tiles are hidden, even with older data in
@@ -918,7 +976,6 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
         off = {k for k, on in pulls.items() if not on or (not settings.opnsense_enabled and k not in has)}
         out = await run_dashboard(name, hours, off, tab)
-        out["as_of"] = time.time()
         if out.get("tab") == "suricata":
             out["notice"] = await suricata_notice(hours)
         return out
@@ -966,6 +1023,24 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             for c in clients:
                 c["known_as"] = names.get(c.get("mac"))
         return {"configured": settings.unifi_enabled, "url": settings.unifi_url, "updated": ts.get("devices"), **snaps}
+
+    @app.get("/api/backups")
+    async def backups_overview(days: int = Query(30, ge=1, le=400)):
+        """Infrastructure › Backups › Main: every backup job of every tool."""
+        from .. import backups
+        return await backups.overview(days, settings.timezone or "UTC")
+
+    @app.get("/api/backups/backrest")
+    async def backups_backrest(days: int = Query(30, ge=1, le=400)):
+        """Infrastructure › Backups › Backrest: plans, repositories, runs with their speed, repository size."""
+        from .. import backups
+        rows = await db.pool().fetch("SELECT key, ts, data FROM snapshots WHERE key LIKE 'backrest:%'")
+        snaps = {r["key"].split(":", 1)[1]: r["data"] for r in rows}
+        ts = {r["key"].split(":", 1)[1]: r["ts"].isoformat() for r in rows}
+        jobs = await db.get_snapshot("backup_jobs:backrest") or {}
+        return {"configured": settings.backrest_enabled, "url": settings.backrest_url, "updated": ts.get("config"),
+                "status": snaps.get("status"), "config": snaps.get("config"), "summary": snaps.get("summary"),
+                "jobs": jobs.get("jobs", []), **await backups.source_detail("backrest", days)}
 
     @app.get("/api/metrics/multi")
     async def metrics_multi(names: str, hours: float = Query(24, gt=0), prefix: str | None = None):
@@ -1387,6 +1462,15 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         cand = _candidate(payload.get("values"))
         if not cand.unifi_enabled:
             return {"ok": False, "error": "URL and an API key (or username + password) are required"}
+        return await test_connection(cand)
+
+    @app.post("/api/settings/test/backrest")
+    async def test_backrest(payload: dict = Body(...)):
+        from ..backrest import test_connection
+
+        cand = _candidate(payload.get("values"))
+        if not cand.backrest_enabled:
+            return {"ok": False, "error": "The Backrest URL (with port) is required"}
         return await test_connection(cand)
 
     @app.post("/api/settings/test/email")

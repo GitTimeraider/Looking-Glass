@@ -3,8 +3,9 @@ import os
 
 import pytest
 
-from lookingglass import cache, db, reports, rollup
+from lookingglass import cache, db, rollup
 from lookingglass.dashboards import DASHBOARDS, ROLLUP_PANELS, step_for
+from lookingglass.reports import QUERIES, ROLLUP_QUERIES
 
 DSN = os.environ.get("TEST_DATABASE_URL")
 
@@ -23,6 +24,11 @@ SELECT now() - (i * interval '97 seconds'), now() - (i * interval '97 seconds'),
 FROM generate_series(1, 3600) i;
 INSERT INTO events (ts, received_at, source, action, proto, dst_port, src_country)
 VALUES (now() + interval '3 hours', now() - interval '20 hours', 'firewall', 'block', 'tcp', 22, 'NL');
+INSERT INTO events (ts, received_at, source, action, interface, src_country, severity)
+SELECT now() - (i * interval '1031 seconds'), now() - (i * interval '1031 seconds'), 'suricata',
+       (ARRAY['alert','drop','blocked','reject','other'])[1 + i % 5], (ARRAY['igb0',NULL])[1 + i % 2],
+       CASE WHEN i % 3 = 0 THEN NULL ELSE (ARRAY['NL','RU'])[1 + i % 2] END, 3
+FROM generate_series(1, 400) i;
 """
 
 
@@ -47,14 +53,20 @@ async def compare_all(conn) -> int:
                 raw, fast = await conn.fetch(sql, *args), await conn.fetch(rollup.convert(sql, upto), *args)
             assert same(raw, fast), (hours, name, pid)
             checked += 1
-        # the report / Overview queries that read the hourly counts
-        for name in sorted(reports.ROLLUP_QUERIES):
-            sql = reports.QUERIES[name]
+        for name in sorted(ROLLUP_QUERIES):
             async with conn.transaction(isolation="repeatable_read", readonly=True):
                 upto = await conn.fetchval("SELECT upto FROM event_rollup_state")
-                raw, fast = await conn.fetch(sql, secs), await conn.fetch(rollup.convert(sql, upto), secs)
+                raw = await conn.fetch(QUERIES[name], secs)
+                fast = await conn.fetch(rollup.convert(QUERIES[name], upto), secs)
             assert raw and same(raw, fast), (hours, name)
             checked += 1
+        # a count with nothing to count gives 0, as on the raw events (sum gives NULL): sources without blocks
+        sql = ("SELECT source, count(*) n, count(*) FILTER (WHERE action = 'block' AND proto IN ('tcp')) blocked "
+               "FROM events WHERE ts > now() - make_interval(secs => $1) GROUP BY 1")
+        async with conn.transaction(isolation="repeatable_read", readonly=True):
+            upto = await conn.fetchval("SELECT upto FROM event_rollup_state")
+            raw, fast = await conn.fetch(sql, secs), await conn.fetch(rollup.convert(sql, upto), secs)
+        assert any(r["blocked"] == 0 for r in raw) and same(raw, fast), hours
     return checked
 
 
@@ -70,7 +82,7 @@ def test_hourly_counts_give_the_same_numbers_as_raw_events():
             total = await pool.fetchval("SELECT count(*) FROM events")
             async with pool.acquire() as conn:
                 # nothing counted yet: everything comes from the raw events - same numbers
-                assert await compare_all(conn) == 3 * (len(ROLLUP_PANELS) + len(reports.ROLLUP_QUERIES))
+                assert await compare_all(conn) == 3 * (len(ROLLUP_PANELS) + len(ROLLUP_QUERIES))
                 await pool.execute("INSERT INTO events (ts, received_at, source, action) VALUES "
                                    "(now() + interval '3 hours', now() - interval '20 hours', 'firewall', 'block')")
                 total += 1
@@ -105,6 +117,13 @@ def test_hourly_counts_give_the_same_numbers_as_raw_events():
     asyncio.run(main())
 
 
+class StillThere:
+    """A request whose browser stays connected."""
+
+    async def is_disconnected(self) -> bool:
+        return False
+
+
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
 def test_dashboard_and_overview_use_the_hourly_counts_from_two_days():
     from lookingglass.config import Settings
@@ -129,7 +148,7 @@ def test_dashboard_and_overview_use_the_hourly_counts_from_two_days():
             app = create_app(Settings(secret_key="x" * 40), None)
             ov = next(r.endpoint for r in app.routes if getattr(r, "path", "") == "/api/overview")
             for hours in (24, 168):
-                out = await ov(hours=hours)
+                out = await ov(request=StillThere(), hours=hours)
                 kpi = out["kpi"]
                 raw = await pool.fetchrow(
                     "SELECT count(*) total, count(DISTINCT src_ip) FILTER (WHERE action IN ('block', 'drop')) ips "
@@ -169,50 +188,159 @@ def test_result_cache_shares_one_computation():
         with pytest.raises(RuntimeError):
             await c.get("x", 30, broken)
         assert await c.get("x", 30, compute) == {"n": 3}
-        # the browser went away while it ran: the result is still stored for the next one
-        task = asyncio.ensure_future(c.get("y", 30, compute))
-        await asyncio.sleep(0.01)
-        task.cancel()
-        await asyncio.sleep(0.1)
-        assert c.items["y"][1] == {"n": 4}
         assert cache.ttl_for(24) == 30 and cache.ttl_for(168) == 120 and cache.ttl_for(720) == 300
 
     asyncio.run(main())
 
 
-def test_result_cache_shows_the_last_result_while_counting_again():
+def test_result_cache_stops_work_nobody_waits_for():
+    """Picking another period while a long one loads must stop its queries, not queue them up (that kept the database
+    busy - and every page waiting - for half an hour)."""
+    async def main():
+        c = cache.ResultCache()
+        state = []
+
+        async def slow():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                state.append("cancelled")
+                raise
+            return 1
+
+        a = asyncio.ensure_future(c.get("y", 30, slow))
+        b = asyncio.ensure_future(c.get("y", 30, slow))  # a second tab waits for the same computation
+        await asyncio.sleep(0.01)
+        a.cancel()
+        await asyncio.sleep(0.01)
+        assert state == [] and "y" in c.running  # still wanted by the second one
+        b.cancel()
+        await asyncio.sleep(0.01)
+        assert state == ["cancelled"] and "y" not in c.running and "y" not in c.items
+
+        async def quick():
+            return 2
+        assert await c.get("y", 30, quick) == 2  # the next request starts afresh
+
+    asyncio.run(main())
+
+
+def test_result_cache_answers_a_recent_result_at_once_and_refreshes_it():
     async def main():
         c = cache.ResultCache()
         calls = []
-        release = asyncio.Event()
 
         async def compute():
             calls.append(1)
-            if len(calls) > 1:
-                await release.wait()
-            return {"n": len(calls)}
+            await asyncio.sleep(0.05)
+            return len(calls)
 
-        assert await c.get("k", 0, compute, stale=60) == {"n": 1}  # nothing yet: waits for it
-        # expired, but within the stale time: the old result at once, a new one is counted in the background
-        assert await c.get("k", 0, compute, stale=60) == {"n": 1}
-        await asyncio.sleep(0.01)
-        assert c.refreshing("k") and calls == [1, 1]
-        assert await c.get("k", 0, compute, stale=60) == {"n": 1} and calls == [1, 1]  # no second recount
-        release.set()
-        await asyncio.sleep(0.01)
-        assert not c.refreshing("k")
-        assert await c.get("k", 30, compute, stale=60) == {"n": 2}
-        # too old to show: waits for the new count
-        release.clear()
-        c.items["k"] = (c.items["k"][0] - 1000, c.items["k"][1])
-        task = asyncio.ensure_future(c.get("k", 30, compute, stale=60))
-        await asyncio.sleep(0.01)
-        assert not task.done()
-        release.set()
-        assert await task == {"n": 3}
-        assert cache.stale_for(24) == 300 and cache.stale_for(720) >= 3600
+        assert (await c.fetch("k", 30, compute, stale=60))[::2] == (1, False)
+        c.items["k"] = (c.items["k"][0] - 40, *c.items["k"][1:])  # expired 10 s ago, still within "stale"
+        value, _, stale = await c.fetch("k", 30, compute, stale=60)
+        assert (value, stale) == (1, True)  # at once, not after the computation
+        assert "k" in c.running
+        # someone waiting on it and leaving does not stop the background refresh
+        await asyncio.sleep(0.1)
+        assert c.items["k"][2] == 2 and calls == [1, 1]
+        assert (await c.fetch("k", 30, compute, stale=60))[::2] == (2, False)
+        # too old: waits for a new one
+        c.items["k"] = (c.items["k"][0] - 100, *c.items["k"][1:])
+        assert (await c.fetch("k", 30, compute, stale=60))[::2] == (3, False)
+        assert cache.stale_for(1) == 180 and cache.stale_for(720) == 3600 and cache.stale_for(0.1) == 30
 
     asyncio.run(main())
+
+
+def test_a_dashboard_request_stops_when_the_browser_has_gone():
+    from lookingglass.web.app import ClientGone, until_disconnected
+
+    class Leaves:
+        def __init__(self):
+            self.asked = 0
+
+        async def is_disconnected(self) -> bool:
+            self.asked += 1
+            return self.asked > 1
+
+    async def main():
+        c = cache.ResultCache()
+        state = []
+
+        async def slow():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                state.append("cancelled")
+                raise
+
+        with pytest.raises(ClientGone):
+            await until_disconnected(Leaves(), c.get("k", 30, slow), poll=0.01)
+        await asyncio.sleep(0.01)
+        assert state == ["cancelled"] and not c.running
+        assert await until_disconnected(StillThere(), asyncio.sleep(0.02, "ok"), poll=0.01) == "ok"
+
+    asyncio.run(main())
+
+
+def test_other_periods_are_computed_ahead_of_time_at_low_priority():
+    async def main():
+        c = cache.ResultCache()
+        seen = []
+
+        async def compute(tag):
+            async with db.heavy(720) as slot:
+                seen.append((tag, slot.sem is db._heavy[3]))  # the low-priority slot?
+                await asyncio.sleep(0.05)
+            return tag
+
+        c.warm("a", lambda: compute("a"), stale=60)
+        c.warm("b", lambda: compute("b"), stale=60)
+        c.warm("a", lambda: compute("a"), stale=60)  # already queued: once
+        await c.worker
+        assert seen == [("a", True), ("b", True)] and c.items["a"][2] == "a"
+        c.warm("a", lambda: compute("again"), stale=60)  # fresh enough: not again
+        assert not c.queue
+
+        # a page asking for a period that is being computed ahead of time: same computation, now at full speed
+        async def two_queries():
+            for i in range(2):
+                async with db.heavy(720) as slot:
+                    seen.append(("c", slot.sem is db._heavy[3]))
+                    await asyncio.sleep(0.05)
+            return "c"
+
+        seen.clear()
+        c.warm("c", two_queries, stale=60)
+        await asyncio.sleep(0.01)
+        assert await c.get("c", 30, two_queries) == "c"
+        assert seen == [("c", True), ("c", False)]
+
+        # work ahead of time never holds up a page: its slot is apart from the normal queues
+        hold = asyncio.Event()
+
+        async def busy():
+            async with db.heavy(720):
+                await hold.wait()
+
+        c.warm("d", busy, stale=60)
+        await asyncio.sleep(0.01)
+        async with db.heavy(720) as slot:
+            assert slot.sem is db._heavy[1]
+        hold.set()
+        await c.worker
+
+    asyncio.run(main())
+
+
+def test_counts_are_rewritten_with_zero_for_nothing_counted():
+    """count(*) gives 0 where nothing matches, sum(n) NULL: the rewrite keeps the 0 (also with FILTER)."""
+    sql = ("SELECT count(*) n, count(*) FILTER (WHERE x LIKE 'Crowd (%' OR y IN (1, 2)) c, count(*)::bigint m, "
+           "count(DISTINCT src_ip) d FROM events")
+    out = rollup.convert(sql, 5)
+    assert "event_rollup" in out and "id <= 5" in out
+    assert out.startswith("SELECT coalesce(sum(n), 0) n, coalesce(sum(n) FILTER (WHERE x LIKE 'Crowd (%' OR y IN (1, 2)), 0) c, "
+                          "coalesce(sum(n), 0)::bigint m, count(DISTINCT src_ip) d FROM ")
 
 
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
@@ -235,10 +363,12 @@ def test_dashboard_indexes_are_built_in_the_background():
             # the plain (source, ts) index is replaced by the covering one
             assert await pool.fetchval("SELECT to_regclass('events_source_ts_idx')") is None
             await db.build_background_indexes()  # all there: nothing to do
-            # the dashboard queries over blocklist lines can use their index (a small test table is read whole, so
-            # the planner is told not to)
+            # the dashboard queries over blocklist lines can use their index (a small test table would be read whole
+            # or through another index, so the planner is told not to)
             async with pool.acquire() as conn, conn.transaction():
                 await conn.execute("SET LOCAL enable_seqscan = off")
+                await conn.execute("SET LOCAL enable_indexscan = off")
+                await conn.execute("SET LOCAL enable_indexonlyscan = off")
                 plan = "\n".join(r[0] for r in await conn.fetch(
                     "EXPLAIN SELECT count(*) FROM events WHERE source = 'firewall' AND lower(data->>'blocklist') = 'q-feeds' "
                     "AND ts > now() - interval '1 day'"))
