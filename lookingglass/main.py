@@ -324,6 +324,7 @@ async def amain() -> None:
 
     app = create_app(settings, analyst)
     app.state.packages = packages
+    background("long_periods", app.state.periods.run)  # 7 / 30 day views, counted on a schedule (periods.py)
     server = uvicorn.Server(uvicorn.Config(app, host=settings.web_host, port=settings.web_port, log_level="warning",
                                            proxy_headers=True, forwarded_allow_ips="*"))
     server.install_signal_handlers = lambda: None  # we handle signals ourselves

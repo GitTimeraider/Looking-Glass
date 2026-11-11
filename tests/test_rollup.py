@@ -147,8 +147,15 @@ def test_dashboard_and_overview_use_the_hourly_counts_from_two_days():
                 assert tl["series"] and (tl["step"] % 3600 == 0) == (hours >= 48)
             app = create_app(Settings(secret_key="x" * 40), None)
             ov = next(r.endpoint for r in app.routes if getattr(r, "path", "") == "/api/overview")
+            await pool.execute("TRUNCATE period_results")
             for hours in (24, 168):
                 out = await ov(request=StillThere(), hours=hours)
+                if hours == 168:  # 7 days: never counted when asked - counted in the background (periods.py)
+                    assert out["pending"] and out["refreshing"]
+                    periods = app.state.periods
+                    await periods.count(periods.urgent.pop(0))
+                    out = await ov(request=StillThere(), hours=hours)
+                    assert out["long"] and out["as_of"] and not out["refreshing"]
                 kpi = out["kpi"]
                 raw = await pool.fetchrow(
                     "SELECT count(*) total, count(DISTINCT src_ip) FILTER (WHERE action IN ('block', 'drop')) ips "

@@ -28,6 +28,7 @@ from . import asset_version
 from ..ingest import STATS
 from .. import rollup
 from ..cache import ResultCache, stale_for, ttl_for
+from ..periods import Periods, is_long, key_of
 from ..dashboards import DASHBOARDS, run_dashboard
 from ..reports import build_report, report_mail, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
@@ -227,16 +228,63 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         kpi, ips, report, tl = await asyncio.gather(kpi_counts(), blocked_ips(), build_report(hours), timeline(hours))
         return {"kpi": db.jsonable({**kpi, "blocked_ips": ips}), "report": report, "timeline": tl}
 
+    async def dash_compute_args(name: str, tab: str | None, hours: float) -> dict[str, Any]:
+        return await dash_compute(name, hours, tab)
+
+    # 7 / 30 days: counted on a schedule in the background and shown from the stored result (periods.py)
+    long_periods = Periods(settings, {"overview": overview_counts, "dash": dash_compute_args})
+    app.state.periods = long_periods
+
+    def long_info(got: dict[str, Any]) -> dict[str, Any]:
+        return {"as_of": got["as_of"], "stale": False, "long": True, "refreshing": got["refreshing"],
+                "next_refresh": got["next"], "refresh_error": got["error"]}
+
+    def dash_tab(name: str, tab: str | None) -> str | None:
+        """The tab a stored result is kept under: the dashboard's first tab when none is picked, None without tabs."""
+        tabs = [t["id"] for t in DASHBOARDS[name].get("tabs") or []]
+        if not tabs:
+            return None
+        return tab if tab in tabs else tabs[0]
+
+    @app.post("/api/periods/refresh")
+    async def refresh_period(payload: dict = Body(...)):
+        """The refresh button of a 7 / 30 day view: count it again now (in the background)."""
+        try:
+            hours = float(payload.get("hours"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "hours missing") from None
+        if not is_long(hours) or hours > 24 * 90:
+            raise HTTPException(400, "only periods over a day are counted in the background")
+        if payload.get("kind") == "overview":
+            key = key_of("overview", hours)
+        elif payload.get("kind") == "dash" and payload.get("name") in DASHBOARDS:
+            key = key_of("dash", payload["name"], dash_tab(payload["name"], payload.get("tab")), hours)
+        else:
+            raise HTTPException(400, "unknown view")
+        long_periods.refresh(key)
+        return {"ok": True, "status": long_periods.status()}
+
+    @app.get("/api/periods/status")
+    async def periods_status():
+        return long_periods.status()
+
     @app.get("/api/overview")
     async def overview(request: Request, hours: float = Query(24, gt=0, le=24 * 90)):
         pool = db.pool()
-        # an expired result of this period (picked again not long after) is answered at once and computed again in
-        # the background: "stale" makes the page ask again shortly
-        counted, as_of, stale = await until_disconnected(request, results.fetch(
-            ("overview", hours), ttl_for(hours), lambda: overview_counts(hours), stale_for(hours)))
-        for h in OVERVIEW_HOURS:  # the other periods ahead of time (low priority), so switching is instant
-            if h != hours:
-                results.warm(("overview", h), lambda h=h: overview_counts(h), stale_for(h))
+        if is_long(hours):  # never counted here: the stored result (periods.py)
+            got = await long_periods.get("overview", hours)
+            if got["data"] is None:
+                return {"pending": True, **long_info(got)}
+            counted, extra = got["data"], long_info(got)
+        else:
+            # an expired result of this period (picked again not long after) is answered at once and computed again
+            # in the background: "stale" makes the page ask again shortly
+            counted, as_of, stale = await until_disconnected(request, results.fetch(
+                ("overview", hours), ttl_for(hours), lambda: overview_counts(hours), stale_for(hours)))
+            extra = {"as_of": as_of, "stale": stale}
+            for h in OVERVIEW_HOURS:  # the other short periods ahead of time (low priority), so switching is instant
+                if h != hours and not is_long(h):
+                    results.warm(("overview", h), lambda h=h: overview_counts(h), stale_for(h))
         kpi = counted["kpi"]
         # open alerts, devices and the system state are cheap and always current
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
@@ -265,7 +313,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "system": await db.get_snapshot("system"),
             "gateways": await db.get_snapshot("gateways"),
             "ingest": STATS.as_dict(),
-            "as_of": as_of, "stale": stale,
+            **extra,
         }
 
     @app.get("/api/events")
@@ -687,7 +735,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     # ------------------------------------------------- delete collected data ---
     # What can be wiped. Never touched: settings, credentials, accounts / MFA, Unraid servers, encryption key.
     PURGE = {
-        "events": ("events, event_rollup", "Logs / events"),
+        "events": ("events, event_rollup, period_results", "Logs / events"),
         "alerts": ("alerts, alert_comments", "Alerts (and your comments on them)"),
         "metrics": ("metrics", "Graphs (metrics history)"),
         "reports": ("reports", "Reports"),
@@ -724,6 +772,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         # TRUNCATE without RESTART IDENTITY: event ids keep growing, so the detection rules' watermarks stay valid
         await db.pool().execute(f"TRUNCATE {', '.join(PURGE[p][0] for p in parts)}")
         results.clear()
+        if "events" in parts:
+            long_periods.forget()
         if "ai_chats" in parts:
             from .. import privacy
             privacy.invalidate()
@@ -960,10 +1010,16 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                         tab: str | None = Query(None, max_length=40)):
         if name not in DASHBOARDS:
             raise HTTPException(404)
+        if is_long(hours):  # see overview(): the stored result, counted in the background
+            tab = dash_tab(name, tab)
+            got = await long_periods.get("dash", name, tab, hours)
+            if got["data"] is None:
+                return {"pending": True, "name": name, "title": DASHBOARDS[name]["title"], **long_info(got)}
+            return {**got["data"], **long_info(got)}
         out, as_of, stale = await until_disconnected(request, results.fetch(
             ("dash", name, hours, tab), ttl_for(hours), lambda: dash_compute(name, hours, tab), stale_for(hours)))
         for h in DASH_HOURS:  # see overview()
-            if h != hours:
+            if h != hours and not is_long(h):
                 results.warm(("dash", name, h, tab), lambda h=h: dash_compute(name, h, tab), stale_for(h))
         return {**out, "as_of": as_of, "stale": stale}  # see overview(): "stale" = ask again shortly
 

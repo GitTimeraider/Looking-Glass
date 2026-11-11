@@ -316,6 +316,13 @@ FIELDS: list[Field] = [
           "alert limits are kept. A removed device that comes back is a new device again.",
           min=0, max=3650),
     Field("detection_interval", "data", "Detection interval (seconds)", "int", "", min=10, max=3600),
+    Field("long_refresh_7d", "data", "7-day views: count again every (minutes)", "int", "Overview and dashboards over "
+          "7 days are counted in the background on this schedule, one at a time, and shown from the stored result "
+          "(switching to 7d does not count anything). The refresh button next to the period counts one again at once.",
+          min=10, max=1440),
+    Field("long_refresh_30d", "data", "30-day views: count again every (minutes)", "int", "The same for 30 days (and "
+          "other periods over 7 days). Counting 30 days takes the database a while: every few hours is plenty.",
+          min=30, max=10080),
     Field("dns_ignore_domains", "data", "DNS: domains to ignore", "list",
           "Domains (subdomains included) the DNS checks - random-looking / DGA names, tunneling, NXDOMAIN "
           "storms - skip, e.g. CDNs or latency probes with random names. Logs and dashboards still show them.",

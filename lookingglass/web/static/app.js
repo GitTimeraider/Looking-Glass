@@ -27,11 +27,46 @@ const LG = {
   /** "updated 14:05:09" for a dashboard answer: the time it was counted (``as_of``). A ``stale`` answer (a period
    *  shown again not long after: answered at once, counted anew in the background) calls ``reload`` a few seconds
    *  later to pick up the new numbers. */
-  updated(el, d, reload) {
+  updated(el, d, reload, view) {
     clearTimeout(LG._staleTimer);
+    if (d && d.long) return LG.longUpdated(el, d, reload, view);
     const at = d && d.as_of ? new Date(d.as_of * 1000) : new Date();
     if (el) el.textContent = "updated " + LG.clock(at) + (d && d.stale ? " · refreshing…" : "");
     if (d && d.stale && reload) LG._staleTimer = setTimeout(reload, 4000);
+  },
+  /** 7 / 30 day views are counted on the server on a schedule (periods.py), not when picked: "counted 14:05 ·
+   *  next ~15:05" with a refresh button that counts it again now (in the background, at low priority). While it is
+   *  being counted the page asks again every 10 s and shows the new numbers when they are there.
+   *  ``view`` = {kind: "overview" | "dash", name, tab, hours}. Returns true while it is counted for the first time. */
+  longUpdated(el, d, reload, view) {
+    const short = t => new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", ...LG.hc() });
+    let text;
+    if (d.pending) text = "counting this period for the first time - can take a few minutes, the page fills in by itself";
+    else {
+      text = "counted " + short(d.as_of);
+      text += d.refreshing ? " · counting again…" : (d.next_refresh ? " · next ~" + short(d.next_refresh) : "");
+      if (d.refresh_error) text += " · last count failed: " + d.refresh_error;
+    }
+    if (el) {
+      el.innerHTML = "";
+      el.title = "7 and 30 days are counted in the background on a schedule (Settings › Data & detection) and shown " +
+                 "from the last count, so switching periods costs nothing.";
+      el.append(text);
+      if (view && !d.pending && !d.refreshing) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "small refresh-period"; b.textContent = "↻ Refresh";
+        b.title = "Count this period again now (in the background; the page shows the new numbers when done)";
+        b.onclick = async () => {
+          b.disabled = true;
+          try { await LG.api("/api/periods/refresh", { method: "POST", body: view }); }
+          catch (e) { alert("Refresh failed: " + e.message); b.disabled = false; return; }
+          if (reload) reload();
+        };
+        el.append(" ", b);
+      }
+    }
+    if ((d.pending || d.refreshing) && reload) LG._staleTimer = setTimeout(reload, 10000);
+    return !!d.pending;
   },
   esc(v) {
     if (v === null || v === undefined) return "";

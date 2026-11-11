@@ -140,11 +140,19 @@ async function load() {
   try {
     const d = await LG.api(`/api/dash/${NAME}?hours=${hours}${tab ? `&tab=${encodeURIComponent(tab)}` : ""}`,
                            { signal: LG.latest("dash") });
+    const view = { kind: "dash", name: NAME, tab: tab || null, hours };
+    // 7 / 30 days never counted yet: counted in the background; what is shown belongs to another period
+    document.getElementById("panels").classList.toggle("pending-period", !!d.pending);
+    if (d.pending) {
+      if (!built) document.getElementById("panels").innerHTML = `<div class="card span3 muted">Counting this period for the first time…</div>`;
+      LG.updated(document.getElementById("updated"), d, load, view);
+      return;
+    }
     if (d.tab && tab && d.tab !== tab) { tab = d.tab; history.replaceState(null, "", "#" + tab); }  // that tab's source is off
     drawTabs(d);
     if (!built || d.tab !== builtTab) { build(d); builtTab = d.tab; }
     render(d);
-    LG.updated(document.getElementById("updated"), d, load);
+    LG.updated(document.getElementById("updated"), d, load, view);
   } catch (e) {
     if (LG.aborted(e)) return;  // another period / tab was picked meanwhile
     document.getElementById("panels").innerHTML = `<div class="card">Failed to load: ${LG.esc(e.message)}</div>`; built = false; }

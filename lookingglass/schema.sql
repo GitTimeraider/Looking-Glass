@@ -423,3 +423,15 @@ CREATE TABLE IF NOT EXISTS backup_runs (
 );
 CREATE INDEX IF NOT EXISTS backup_runs_started ON backup_runs (started DESC);
 CREATE INDEX IF NOT EXISTS backup_runs_job ON backup_runs (source, kind, job, started DESC);
+
+-- 7 / 30 day results of the Overview and the dashboards (periods.py): counted in the background on a schedule (or
+-- with the refresh button) and shown from here - switching to such a period counts nothing. key = JSON
+-- ["overview", hours] or ["dash", name, hours, tab]; viewed_at: those not looked at for a week are no longer refreshed
+CREATE TABLE IF NOT EXISTS period_results (
+    key         TEXT PRIMARY KEY,
+    hours       DOUBLE PRECISION NOT NULL,
+    computed_at TIMESTAMPTZ,
+    viewed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    data        JSONB,
+    error       TEXT
+);

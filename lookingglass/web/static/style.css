@@ -550,3 +550,5 @@ nav.side .grp ~ a { margin-left: 4px; }
 .lim-row.lim-type { border: 1px solid var(--border); margin-top: 6px; }
 .lim-row .lim-g input { flex: none; margin: 0; }
 @media (max-width: 640px) { .lim-row { grid-template-columns: auto minmax(0, 1fr); } .lim-row .lim-l { grid-column: 1 / -1; } }
+.refresh-period { margin-left: 6px; padding: 1px 8px; }
+.pending-period { opacity: .35; pointer-events: none; }
