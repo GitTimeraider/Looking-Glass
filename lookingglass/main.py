@@ -75,29 +75,64 @@ async def device_upkeep_loop(settings) -> None:
             log.exception("device upkeep failed")
 
 
+async def _stop_poller(poller, task: asyncio.Task | None) -> None:
+    """Stop a poller's main loop and its running jobs - also while the caller itself is being cancelled (shutdown)."""
+    async def stop() -> None:
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        try:
+            await poller.stop()
+        except Exception:  # noqa: BLE001
+            log.exception("stopping a poller failed")
+    await asyncio.shield(stop())
+
+
+async def keep_running(name: str, factory) -> None:
+    """Run a background loop for as long as Looking Glass runs. One that crashes (e.g. a database query failed while
+    the database was overloaded or restarting) is restarted after a pause instead of shutting the whole app down."""
+    delay = 10
+    while True:
+        started = asyncio.get_running_loop().time()
+        try:
+            await factory()
+            problem, error = "stopped unexpectedly", None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            problem, error = "crashed", exc
+        if asyncio.get_running_loop().time() - started > 600:
+            delay = 10  # it ran fine for a while: the next problem starts with a short pause again
+        log.error("background task %s %s, restarting it in %ss", name, problem, delay, exc_info=error)
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 300)
+
+
 async def opnsense_supervisor(settings, writer: EventWriter) -> None:
     """Run the OPNsense poller and restart it whenever its settings change in the web UI."""
     poller: Poller | None = None
     task: asyncio.Task | None = None
     sig = None
     announced = False
-    while True:
-        new_sig = app_config.signature(settings, "opnsense")
-        if new_sig != sig or (task is not None and task.done()):
-            if poller is not None:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-                await poller.stop()
-                poller = task = None
-            sig = new_sig
-            if settings.opnsense_enabled:
-                poller = Poller(settings, writer)
-                task = asyncio.create_task(poller.run(), name="poller")
-                announced = False
-            elif not announced:
-                log.warning("OPNsense API not configured - set URL, API key and secret under Settings in the web UI")
-                announced = True
-        await asyncio.sleep(5)
+    try:
+        while True:
+            new_sig = app_config.signature(settings, "opnsense")
+            if new_sig != sig or (task is not None and task.done()):
+                if poller is not None:
+                    await _stop_poller(poller, task)
+                    poller = task = None
+                sig = new_sig
+                if settings.opnsense_enabled:
+                    poller = Poller(settings, writer)
+                    task = asyncio.create_task(poller.run(), name="poller")
+                    announced = False
+                elif not announced:
+                    log.warning("OPNsense API not configured - set URL, API key and secret under Settings in the web UI")
+                    announced = True
+            await asyncio.sleep(5)
+    finally:  # shutdown: its jobs must not go on writing into the closing database
+        if poller is not None:
+            await _stop_poller(poller, task)
 
 
 async def unifi_supervisor(settings, writer: EventWriter) -> None:
@@ -105,19 +140,21 @@ async def unifi_supervisor(settings, writer: EventWriter) -> None:
     poller: UnifiPoller | None = None
     task: asyncio.Task | None = None
     sig = None
-    while True:
-        new_sig = app_config.signature(settings, "unifi")
-        if new_sig != sig or (task is not None and task.done()):
-            if poller is not None:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-                await poller.stop()
-                poller = task = None
-            sig = new_sig
-            if settings.unifi_enabled:
-                poller = UnifiPoller(settings, writer)
-                task = asyncio.create_task(poller.run(), name="unifi")
-        await asyncio.sleep(5)
+    try:
+        while True:
+            new_sig = app_config.signature(settings, "unifi")
+            if new_sig != sig or (task is not None and task.done()):
+                if poller is not None:
+                    await _stop_poller(poller, task)
+                    poller = task = None
+                sig = new_sig
+                if settings.unifi_enabled:
+                    poller = UnifiPoller(settings, writer)
+                    task = asyncio.create_task(poller.run(), name="unifi")
+            await asyncio.sleep(5)
+    finally:  # shutdown: its jobs must not go on writing into the closing database
+        if poller is not None:
+            await _stop_poller(poller, task)
 
 
 async def backrest_supervisor(settings) -> None:
@@ -125,19 +162,21 @@ async def backrest_supervisor(settings) -> None:
     poller: BackrestPoller | None = None
     task: asyncio.Task | None = None
     sig = None
-    while True:
-        new_sig = app_config.signature(settings, "backrest")
-        if new_sig != sig or (task is not None and task.done()):
-            if poller is not None:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-                await poller.stop()
-                poller = task = None
-            sig = new_sig
-            if settings.backrest_enabled:
-                poller = BackrestPoller(settings)
-                task = asyncio.create_task(poller.run(), name="backrest")
-        await asyncio.sleep(5)
+    try:
+        while True:
+            new_sig = app_config.signature(settings, "backrest")
+            if new_sig != sig or (task is not None and task.done()):
+                if poller is not None:
+                    await _stop_poller(poller, task)
+                    poller = task = None
+                sig = new_sig
+                if settings.backrest_enabled:
+                    poller = BackrestPoller(settings)
+                    task = asyncio.create_task(poller.run(), name="backrest")
+            await asyncio.sleep(5)
+    finally:  # shutdown: its jobs must not go on writing into the closing database
+        if poller is not None:
+            await _stop_poller(poller, task)
 
 
 async def daily_ai_report(settings, analyst: Analyst) -> None:
@@ -156,11 +195,11 @@ async def daily_ai_report(settings, analyst: Analyst) -> None:
             continue
         key = now.strftime("%Y-%m-%d")
         every = max(1, settings.report_every_days)
-        if not report_due(await db.kv_get("daily_report"), now.date(), every):
-            continue
-        await db.kv_set("daily_report", key)
         title = f"Daily security report {key}" if every == 1 else f"Security report {key} ({every} days)"
         try:
+            if not report_due(await db.kv_get("daily_report"), now.date(), every):
+                continue
+            await db.kv_set("daily_report", key)
             data = await build_report(24 * every)
             rid = await db.pool().fetchval("INSERT INTO reports (period_h, title, data) VALUES ($1, $2, $3) RETURNING id",
                                            24 * every, title, data)
@@ -212,8 +251,13 @@ async def amain() -> None:
         raise SystemExit(2) from exc
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
+
+    def on_signal(sig: signal.Signals) -> None:
+        log.warning("%s received (container stopped or restarted from outside): shutting down", sig.name)
+        stop.set()
+
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
+        loop.add_signal_handler(sig, on_signal, sig)
 
     # database: DATABASE_URL from the environment, else the connection saved by the setup wizard
     need_db = False
@@ -244,25 +288,34 @@ async def amain() -> None:
         log.exception("checking whether Zenarmor is set up failed")
     analyst = Analyst(settings)
 
-    tasks = [asyncio.create_task(writer.run(), name="writer"),
-             asyncio.create_task(DetectionEngine(settings).run(), name="detections"),
-             asyncio.create_task(housekeeping(settings), name="housekeeping"),
-             asyncio.create_task(rollup.loop(), name="event_rollup"),
-             asyncio.create_task(db.background_indexes_loop(), name="dashboard_indexes"),
-             asyncio.create_task(device_upkeep_loop(settings), name="device_upkeep"),
-             asyncio.create_task(optional_sources.loop(), name="optional_sources")]
+    tasks: list[asyncio.Task] = []
+
+    def background(name: str, factory) -> None:
+        """A loop that runs as long as Looking Glass does (restarted when it crashes, see keep_running)."""
+        tasks.append(asyncio.create_task(keep_running(name, factory), name=name))
+
+    detections = DetectionEngine(settings)
+    background("writer", writer.run)
+    background("detections", detections.run)
+    background("housekeeping", lambda: housekeeping(settings))
+    background("event_rollup", rollup.loop)
+    background("dashboard_indexes", db.background_indexes_loop)
+    background("device_upkeep", lambda: device_upkeep_loop(settings))
+    background("optional_sources", optional_sources.loop)
     if settings.syslog_enabled:
         await SyslogServer(settings, writer).start()
-    tasks.append(asyncio.create_task(opnsense_supervisor(settings, writer), name="opnsense"))
-    tasks.append(asyncio.create_task(UnraidManager(settings, writer).run(), name="unraid"))
-    tasks.append(asyncio.create_task(unifi_supervisor(settings, writer), name="unifi"))
-    tasks.append(asyncio.create_task(backrest_supervisor(settings), name="backrest"))
-    tasks.append(asyncio.create_task(daily_ai_report(settings, analyst), name="daily_report"))
-    tasks.append(asyncio.create_task(notify.notifier(settings), name="notifier"))
+    background("opnsense", lambda: opnsense_supervisor(settings, writer))
+    unraid = UnraidManager(settings, writer)
+    background("unraid", unraid.run)
+    background("unifi", lambda: unifi_supervisor(settings, writer))
+    background("backrest", lambda: backrest_supervisor(settings))
+    background("daily_report", lambda: daily_ai_report(settings, analyst))
+    background("notifier", lambda: notify.notifier(settings))
     from .intel import Intel
-    tasks.append(asyncio.create_task(Intel(settings).updater(), name="threat_feeds"))
+    intel = Intel(settings)
+    background("threat_feeds", intel.updater)
     packages = PackageReader(settings)
-    tasks.append(asyncio.create_task(packages.run(), name="container_packages"))
+    background("container_packages", packages.run)
 
     app = create_app(settings, analyst)
     app.state.packages = packages
@@ -281,9 +334,10 @@ async def amain() -> None:
         log.info("Zenarmor Elasticsearch-compatible receiver on port %s", settings.zenarmor_es_port)
     log.info("web UI on http://%s:%s", settings.web_host, settings.web_port)
     done, _ = await asyncio.wait([*servers, asyncio.create_task(stop.wait()), *tasks], return_when=asyncio.FIRST_COMPLETED)
-    for t in done:
-        if t.exception() if not t.cancelled() else None:
-            log.error("task %s died: %r", t.get_name(), t.exception())
+    for t in done:  # why Looking Glass stops (a signal is logged by on_signal)
+        if t in servers or t in tasks:
+            exc = t.exception() if not t.cancelled() else None
+            log.error("%s stopped%s: shutting down", t.get_name(), f" ({exc!r})" if exc else "")
     server.should_exit = True
     if es_server:
         es_server.should_exit = True

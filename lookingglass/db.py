@@ -157,11 +157,16 @@ def pool() -> asyncpg.Pool:
     return _pool
 
 
-async def close() -> None:
+async def close(timeout: float = 10) -> None:
+    """Close the pool. Queries still running after ``timeout`` seconds (a 30-day dashboard query can take minutes) are
+    cut off instead of holding up the shutdown."""
     global _pool
     if _pool is not None:
-        await _pool.close()
-        _pool = None
+        p, _pool = _pool, None
+        try:
+            await asyncio.wait_for(p.close(), timeout)
+        except Exception:  # noqa: BLE001 - incl. the timeout
+            p.terminate()
 
 
 # Indexes for the dashboards that take a minute or more to build on a large events table: built in the background
