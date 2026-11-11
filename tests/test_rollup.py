@@ -341,3 +341,39 @@ def test_counts_are_rewritten_with_zero_for_nothing_counted():
     assert "event_rollup" in out and "id <= 5" in out
     assert out.startswith("SELECT coalesce(sum(n), 0) n, coalesce(sum(n) FILTER (WHERE x LIKE 'Crowd (%' OR y IN (1, 2)), 0) c, "
                           "coalesce(sum(n), 0)::bigint m, count(DISTINCT src_ip) d FROM ")
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_dashboard_indexes_are_built_in_the_background():
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            valid = "SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)"
+            for name in db.BACKGROUND_INDEXES:
+                await pool.execute(f"DROP INDEX IF EXISTS {name}")
+            await pool.execute("CREATE INDEX IF NOT EXISTS events_source_ts_idx ON events (source, ts DESC)")
+            # one left unfinished (invalid) by an interrupted build
+            await pool.execute("CREATE INDEX events_block_idx ON events (ts)")
+            await pool.execute("UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'events_block_idx'::regclass")
+            await db.build_background_indexes()
+            for name in db.BACKGROUND_INDEXES:
+                assert await pool.fetchval(valid, name) is True, name
+            assert "INCLUDE" in await pool.fetchval("SELECT pg_get_indexdef('events_block_idx'::regclass)")
+            # the plain (source, ts) index is replaced by the covering one
+            assert await pool.fetchval("SELECT to_regclass('events_source_ts_idx')") is None
+            await db.build_background_indexes()  # all there: nothing to do
+            # the dashboard queries over blocklist lines can use their index (a small test table would be read whole
+            # or through another index, so the planner is told not to)
+            async with pool.acquire() as conn, conn.transaction():
+                await conn.execute("SET LOCAL enable_seqscan = off")
+                await conn.execute("SET LOCAL enable_indexscan = off")
+                await conn.execute("SET LOCAL enable_indexonlyscan = off")
+                plan = "\n".join(r[0] for r in await conn.fetch(
+                    "EXPLAIN SELECT count(*) FROM events WHERE source = 'firewall' AND lower(data->>'blocklist') = 'q-feeds' "
+                    "AND ts > now() - interval '1 day'"))
+            assert "events_blocklist_idx" in plan
+        finally:
+            await db.close()
+
+    asyncio.run(main())

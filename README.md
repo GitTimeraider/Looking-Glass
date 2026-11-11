@@ -617,6 +617,12 @@ Dashboards count a lot of log lines, so Looking Glass keeps that work small:
   come from a small table of hourly totals that is updated every minute from the new events only - the same numbers as
   counting every event, a fraction of the work (30 days: ~16× less). After an update the existing events are counted
   once in the background, in small slices; until then those panels count the raw events as before.
+* **Indexes for the dashboards**: blocked traffic, the CrowdSec / Q-Feeds blocklist lines and the per-source counts
+  are read from narrow indexes instead of the whole log lines with their message and data (30 million events: the
+  Q-Feeds table went from over 3 minutes to a few seconds, the "top blocked" tables read ~1 GB instead of ~14 GB).
+  After an update they are built **once, in the background**, shortly after the start - on a large database this takes
+  a few minutes (the log says `building index ...` and `index ... built`), events keep arriving meanwhile, and the
+  dashboards get faster when it is done. They take about 2 GB extra disk space per 30 million events.
 * **Refresh**: a page only refreshes while its tab is visible (a tab in the background does nothing, and catches up
   when you open it again); 24 h views every minute, 7 days every 5 minutes, 30 days every 15 minutes.
 * **Shared results**: tabs, devices and users looking at the same dashboard and period share one result for a short

@@ -216,7 +216,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                     "(b.value->>'size')::bigint size, coalesce(nullif(jsonb_array_length(coalesce(b.value->'rids', '[]')), 0), "
                     "jsonb_array_length(coalesce(b.value->'rules', '[]'))) rules, "
                     "(b.value->>'packets')::bigint packets, (SELECT count(*) FROM events e WHERE e.source = 'firewall' "
-                    "AND e.data->>'blocklist' = b.value->>'name' AND e.ts > now() - make_interval(secs => $1)) logged "
+                    "AND lower(e.data->>'blocklist') = lower(b.value->>'name') AND e.ts > now() - make_interval(secs => $1)) logged "
                     "FROM snapshots s, jsonb_each(CASE WHEN jsonb_typeof(s.data) = 'object' THEN s.data ELSE '{}'::jsonb END) b "
                     "WHERE s.key = 'blocklists' ORDER BY 1"},
             # -------------------------------------------------------------------------------------- CrowdSec ---
