@@ -5,6 +5,7 @@ import pytest
 
 from lookingglass import cache, db, rollup
 from lookingglass.dashboards import DASHBOARDS, ROLLUP_PANELS, step_for
+from lookingglass.reports import QUERIES, ROLLUP_QUERIES
 
 DSN = os.environ.get("TEST_DATABASE_URL")
 
@@ -23,6 +24,11 @@ SELECT now() - (i * interval '97 seconds'), now() - (i * interval '97 seconds'),
 FROM generate_series(1, 3600) i;
 INSERT INTO events (ts, received_at, source, action, proto, dst_port, src_country)
 VALUES (now() + interval '3 hours', now() - interval '20 hours', 'firewall', 'block', 'tcp', 22, 'NL');
+INSERT INTO events (ts, received_at, source, action, interface, src_country, severity)
+SELECT now() - (i * interval '1031 seconds'), now() - (i * interval '1031 seconds'), 'suricata',
+       (ARRAY['alert','drop','blocked','reject','other'])[1 + i % 5], (ARRAY['igb0',NULL])[1 + i % 2],
+       CASE WHEN i % 3 = 0 THEN NULL ELSE (ARRAY['NL','RU'])[1 + i % 2] END, 3
+FROM generate_series(1, 400) i;
 """
 
 
@@ -47,6 +53,13 @@ async def compare_all(conn) -> int:
                 raw, fast = await conn.fetch(sql, *args), await conn.fetch(rollup.convert(sql, upto), *args)
             assert same(raw, fast), (hours, name, pid)
             checked += 1
+        for name in sorted(ROLLUP_QUERIES):
+            async with conn.transaction(isolation="repeatable_read", readonly=True):
+                upto = await conn.fetchval("SELECT upto FROM event_rollup_state")
+                raw = await conn.fetch(QUERIES[name], secs)
+                fast = await conn.fetch(rollup.convert(QUERIES[name], upto), secs)
+            assert raw and same(raw, fast), (hours, name)
+            checked += 1
     return checked
 
 
@@ -62,7 +75,7 @@ def test_hourly_counts_give_the_same_numbers_as_raw_events():
             total = await pool.fetchval("SELECT count(*) FROM events")
             async with pool.acquire() as conn:
                 # nothing counted yet: everything comes from the raw events - same numbers
-                assert await compare_all(conn) == 3 * len(ROLLUP_PANELS)
+                assert await compare_all(conn) == 3 * (len(ROLLUP_PANELS) + len(ROLLUP_QUERIES))
                 await pool.execute("INSERT INTO events (ts, received_at, source, action) VALUES "
                                    "(now() + interval '3 hours', now() - interval '20 hours', 'firewall', 'block')")
                 total += 1
@@ -259,5 +272,55 @@ def test_a_dashboard_request_stops_when_the_browser_has_gone():
         await asyncio.sleep(0.01)
         assert state == ["cancelled"] and not c.running
         assert await until_disconnected(StillThere(), asyncio.sleep(0.02, "ok"), poll=0.01) == "ok"
+
+    asyncio.run(main())
+
+
+def test_other_periods_are_computed_ahead_of_time_at_low_priority():
+    async def main():
+        c = cache.ResultCache()
+        seen = []
+
+        async def compute(tag):
+            async with db.heavy(720) as slot:
+                seen.append((tag, slot.sem is db._heavy[3]))  # the low-priority slot?
+                await asyncio.sleep(0.05)
+            return tag
+
+        c.warm("a", lambda: compute("a"), stale=60)
+        c.warm("b", lambda: compute("b"), stale=60)
+        c.warm("a", lambda: compute("a"), stale=60)  # already queued: once
+        await c.worker
+        assert seen == [("a", True), ("b", True)] and c.items["a"][2] == "a"
+        c.warm("a", lambda: compute("again"), stale=60)  # fresh enough: not again
+        assert not c.queue
+
+        # a page asking for a period that is being computed ahead of time: same computation, now at full speed
+        async def two_queries():
+            for i in range(2):
+                async with db.heavy(720) as slot:
+                    seen.append(("c", slot.sem is db._heavy[3]))
+                    await asyncio.sleep(0.05)
+            return "c"
+
+        seen.clear()
+        c.warm("c", two_queries, stale=60)
+        await asyncio.sleep(0.01)
+        assert await c.get("c", 30, two_queries) == "c"
+        assert seen == [("c", True), ("c", False)]
+
+        # work ahead of time never holds up a page: its slot is apart from the normal queues
+        hold = asyncio.Event()
+
+        async def busy():
+            async with db.heavy(720):
+                await hold.wait()
+
+        c.warm("d", busy, stale=60)
+        await asyncio.sleep(0.01)
+        async with db.heavy(720) as slot:
+            assert slot.sem is db._heavy[1]
+        hold.set()
+        await c.worker
 
     asyncio.run(main())

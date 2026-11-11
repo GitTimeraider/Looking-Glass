@@ -11,12 +11,23 @@ A computation that nobody waits for any more (every browser that asked has gone:
 was closed) is cancelled, and with it its database queries. Otherwise clicking through 1h / 24h / 7d / 30d a few times
 queued dozens of long 30-day queries that kept the database busy - and every page waiting - for half an hour.
 A background refresh is never cancelled that way (nobody waits for it by design); there is one per key at most.
+
+The first switch to a period is instant too, most of the time: when a page is loaded, the other periods of that page
+are computed ahead of time (``warm``), one after the other, at low priority - their queries run one at a time in a
+slot of their own (db.Priority) and never hold up a page. A page that asks for such a period while it is being
+computed waits for that same computation, which then continues at normal priority. A period computed ahead of time
+is computed again at most every ``stale_for / 2`` (30-day view: every 30 minutes while the page is open).
 """
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any, Awaitable, Callable
+
+from . import db
+
+log = logging.getLogger(__name__)
 
 
 def ttl_for(hours: float) -> float:
@@ -36,6 +47,9 @@ class ResultCache:
         self.running: dict[Any, asyncio.Future] = {}
         self.waiters: dict[Any, int] = {}
         self.background: set[asyncio.Future] = set()
+        self.priority: dict[asyncio.Future, db.Priority] = {}  # computations started ahead of time
+        self.queue: dict[Any, tuple[float, Callable[[], Awaitable[Any]]]] = {}  # key -> (stale, compute)
+        self.worker: asyncio.Task | None = None
         self.max_items = max_items
 
     def _start(self, key: Any, compute: Callable[[], Awaitable[Any]]) -> asyncio.Future:
@@ -47,6 +61,7 @@ class ResultCache:
 
         def done(f: asyncio.Future, key: Any = key) -> None:
             self.background.discard(f)
+            self.priority.pop(f, None)
             if self.running.get(key) is f:
                 self.running.pop(key, None)
             if not f.cancelled() and f.exception() is None:
@@ -72,8 +87,12 @@ class ResultCache:
                 fut = self._start(key, compute)
                 if fut not in self.background and not self.waiters.get(key):
                     self.background.add(fut)
+                if prio := self.priority.get(fut):
+                    prio.low = False  # someone looks at the old result meanwhile
                 return hit[2], hit[1], True
         fut = self._start(key, compute)
+        if prio := self.priority.get(fut):
+            prio.low = False  # computed ahead of time, and now a page waits for it: full speed
         self.waiters[key] = self.waiters.get(key, 0) + 1
         try:
             return await asyncio.shield(fut), time.time(), False
@@ -86,6 +105,35 @@ class ResultCache:
                     fut.cancel()
                     if self.running.get(key) is fut:
                         self.running.pop(key, None)
+
+    def warm(self, key: Any, compute: Callable[[], Awaitable[Any]], stale: float) -> None:
+        """Compute ``key`` ahead of time, in the background at low priority, unless a result younger than half of
+        ``stale`` is there or it is being computed already."""
+        hit = self.items.get(key)
+        if (hit and time.monotonic() - hit[0] < stale / 2) or key in self.running or key in self.queue:
+            return
+        self.queue[key] = (stale, compute)
+        if self.worker is None or self.worker.done():
+            self.worker = asyncio.ensure_future(self._work())
+
+    async def _work(self) -> None:
+        while self.queue:
+            key = next(iter(self.queue))
+            stale, compute = self.queue.pop(key)
+            hit = self.items.get(key)
+            if (hit and time.monotonic() - hit[0] < stale / 2) or key in self.running:
+                continue
+            prio = db.Priority()
+            fut = self._start(key, lambda prio=prio, compute=compute: db.run_low(prio, compute()))
+            self.priority[fut] = prio
+            self.background.add(fut)
+            try:
+                await asyncio.shield(fut)
+            except asyncio.CancelledError:
+                if not fut.cancelled():
+                    raise  # this worker itself is cancelled (shut down)
+            except Exception:  # the page computes it itself when asked
+                log.debug("computing %s ahead of time failed", key, exc_info=True)
 
     async def get(self, key: Any, ttl: float, compute: Callable[[], Awaitable[Any]], stale: float = 0) -> Any:
         return (await self.fetch(key, ttl, compute, stale))[0]

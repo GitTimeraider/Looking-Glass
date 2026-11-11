@@ -574,7 +574,8 @@ def step_for(hours: float) -> int:
 ROLLUP_PANELS = {("firewall", "actions"), ("firewall", "proto"), ("firewall", "iface"), ("firewall", "dir"),
                  ("firewall", "ports"), ("firewall", "countries"), ("firewall", "hour"), ("dns", "q"), ("web", "status"),
                  ("web", "codes"), ("web", "countries"), ("zenarmor", "blk"), ("auth", "ts"), ("vpn", "vpnev"),
-                 ("unifi", "ts"), ("syslog", "sev")}
+                 ("unifi", "ts"), ("syslog", "sev"), ("threats", "ids_act"), ("threats", "ids_countries"),
+                 ("threats", "ids_iface")}
 
 
 async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] = frozenset(),

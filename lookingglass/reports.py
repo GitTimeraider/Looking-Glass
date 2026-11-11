@@ -37,7 +37,7 @@ QUERIES: dict[str, str] = {
                    "AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
     "dns_clients": "SELECT host(src_ip) client, count(*) n, count(*) FILTER (WHERE action IN ('block', 'drop')) blocked FROM events "
                    "WHERE source = 'unbound' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
-    "web_status": "SELECT action status, count(*) n FROM events WHERE source = 'nginx' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
+    "web_status": "SELECT action status, count(*)::bigint n FROM events WHERE source = 'nginx' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
     "web_top_clients": "SELECT host(src_ip) ip, src_country country, count(*) n, count(*) FILTER (WHERE action ~ '^http_[45]') errors FROM events "
                        "WHERE source = 'nginx' AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
     "web_attack_tags": "SELECT tag, count(*) n, count(DISTINCT src_ip) ips FROM (SELECT src_ip, jsonb_array_elements_text(data->'tags') tag FROM events "
@@ -95,7 +95,7 @@ QUERIES: dict[str, str] = {
 
 # only count events per source / action: from 2 days on read from the hourly counts (rollup.py), same numbers
 # (::bigint keeps them whole numbers there: sum(n) is a numeric)
-ROLLUP_QUERIES = {"totals_by_source", "firewall_actions"}
+ROLLUP_QUERIES = {"totals_by_source", "firewall_actions", "web_status"}
 
 
 async def build_report(hours: float = 24) -> dict[str, Any]:

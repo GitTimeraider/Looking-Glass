@@ -73,6 +73,10 @@ PAGES = {
 }
 
 
+# the period buttons of the Overview (dashboard.html) and the dashboards (dash.html)
+OVERVIEW_HOURS = (1, 24, 168, 720)
+DASH_HOURS = (1, 6, 24, 168, 720)
+
 _TASKS: set[asyncio.Task] = set()
 
 
@@ -230,6 +234,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         # the background: "stale" makes the page ask again shortly
         counted, as_of, stale = await until_disconnected(request, results.fetch(
             ("overview", hours), ttl_for(hours), lambda: overview_counts(hours), stale_for(hours)))
+        for h in OVERVIEW_HOURS:  # the other periods ahead of time (low priority), so switching is instant
+            if h != hours:
+                results.warm(("overview", h), lambda h=h: overview_counts(h), stale_for(h))
         kpi = counted["kpi"]
         # open alerts, devices and the system state are cheap and always current
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
@@ -955,6 +962,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             raise HTTPException(404)
         out, as_of, stale = await until_disconnected(request, results.fetch(
             ("dash", name, hours, tab), ttl_for(hours), lambda: dash_compute(name, hours, tab), stale_for(hours)))
+        for h in DASH_HOURS:  # see overview()
+            if h != hours:
+                results.warm(("dash", name, h, tab), lambda h=h: dash_compute(name, h, tab), stale_for(h))
         return {**out, "as_of": as_of, "stale": stale}  # see overview(): "stale" = ask again shortly
 
     async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
