@@ -16,23 +16,29 @@ _pool: asyncpg.Pool | None = None
 
 # dashboard / report queries that count many events run at most this many at a time (all panels of a page at once
 # took every CPU core of the database server for a moment); the rest wait their turn - on a 4-8 core server a page
-# loads about as fast
+# loads about as fast. Short periods (up to a day: cheap) have a queue of their own, so switching to 1h / 24h never
+# waits behind the queries of a 7- or 30-day view.
 HEAVY_PARALLEL = 3
-_heavy: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
+SHORT_HOURS = 24
+_heavy: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore, asyncio.Semaphore] | None = None
 
 
-def heavy() -> asyncio.Semaphore:
-    """``async with db.heavy():`` around a query that counts many events. One per event loop (a semaphore belongs to
-    the loop it was first used in)."""
+def heavy(hours: float | None = None) -> asyncio.Semaphore:
+    """``async with db.heavy(hours):`` around a query that counts many events over ``hours``. One pair per event loop
+    (a semaphore belongs to the loop it was first used in)."""
     global _heavy
     loop = asyncio.get_running_loop()
     if _heavy is None or _heavy[0] is not loop:
-        _heavy = (loop, asyncio.Semaphore(HEAVY_PARALLEL))
-    return _heavy[1]
+        _heavy = (loop, asyncio.Semaphore(HEAVY_PARALLEL), asyncio.Semaphore(HEAVY_PARALLEL))
+    return _heavy[2] if hours is not None and hours <= SHORT_HOURS else _heavy[1]
 
 # per connection: JIT compiling costs more CPU than it saves on these aggregate queries (measured: 15-25 % slower
-# with it on 7 / 30 day windows); a bit more memory per sort / hash keeps large GROUP BYs off the disk
-SERVER_SETTINGS = {"jit": "off", "work_mem": "16MB"}
+# with it on 7 / 30 day windows); a bit more memory per sort / hash keeps large GROUP BYs off the disk.
+# No parallel workers: with them a count of the distinct blocked source addresses over 30 days (millions of
+# addresses) now and then ran for minutes instead of seconds (measured: 5 of 6 runs > 15 s, without them 3.4 s every
+# time), and three such queries at once with 2 workers each took every core - logins and log ingest stalled.
+# Without them the pages load about as fast: they already run 3 queries side by side.
+SERVER_SETTINGS = {"jit": "off", "work_mem": "16MB", "max_parallel_workers_per_gather": "0"}
 
 EVENT_COLUMNS = (
     "ts", "source", "host", "program", "severity", "action", "src_ip", "src_port",

@@ -97,6 +97,13 @@ def test_hourly_counts_give_the_same_numbers_as_raw_events():
     asyncio.run(main())
 
 
+class StillThere:
+    """A request whose browser stays connected."""
+
+    async def is_disconnected(self) -> bool:
+        return False
+
+
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
 def test_dashboard_and_overview_use_the_hourly_counts_from_two_days():
     from lookingglass.config import Settings
@@ -121,7 +128,7 @@ def test_dashboard_and_overview_use_the_hourly_counts_from_two_days():
             app = create_app(Settings(secret_key="x" * 40), None)
             ov = next(r.endpoint for r in app.routes if getattr(r, "path", "") == "/api/overview")
             for hours in (24, 168):
-                out = await ov(hours=hours)
+                out = await ov(request=StillThere(), hours=hours)
                 kpi = out["kpi"]
                 raw = await pool.fetchrow(
                     "SELECT count(*) total, count(DISTINCT src_ip) FILTER (WHERE action IN ('block', 'drop')) ips "
@@ -161,12 +168,96 @@ def test_result_cache_shares_one_computation():
         with pytest.raises(RuntimeError):
             await c.get("x", 30, broken)
         assert await c.get("x", 30, compute) == {"n": 3}
-        # the browser went away while it ran: the result is still stored for the next one
-        task = asyncio.ensure_future(c.get("y", 30, compute))
-        await asyncio.sleep(0.01)
-        task.cancel()
-        await asyncio.sleep(0.1)
-        assert c.items["y"][1] == {"n": 4}
         assert cache.ttl_for(24) == 30 and cache.ttl_for(168) == 120 and cache.ttl_for(720) == 300
+
+    asyncio.run(main())
+
+
+def test_result_cache_stops_work_nobody_waits_for():
+    """Picking another period while a long one loads must stop its queries, not queue them up (that kept the database
+    busy - and every page waiting - for half an hour)."""
+    async def main():
+        c = cache.ResultCache()
+        state = []
+
+        async def slow():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                state.append("cancelled")
+                raise
+            return 1
+
+        a = asyncio.ensure_future(c.get("y", 30, slow))
+        b = asyncio.ensure_future(c.get("y", 30, slow))  # a second tab waits for the same computation
+        await asyncio.sleep(0.01)
+        a.cancel()
+        await asyncio.sleep(0.01)
+        assert state == [] and "y" in c.running  # still wanted by the second one
+        b.cancel()
+        await asyncio.sleep(0.01)
+        assert state == ["cancelled"] and "y" not in c.running and "y" not in c.items
+
+        async def quick():
+            return 2
+        assert await c.get("y", 30, quick) == 2  # the next request starts afresh
+
+    asyncio.run(main())
+
+
+def test_result_cache_answers_a_recent_result_at_once_and_refreshes_it():
+    async def main():
+        c = cache.ResultCache()
+        calls = []
+
+        async def compute():
+            calls.append(1)
+            await asyncio.sleep(0.05)
+            return len(calls)
+
+        assert (await c.fetch("k", 30, compute, stale=60))[::2] == (1, False)
+        c.items["k"] = (c.items["k"][0] - 40, *c.items["k"][1:])  # expired 10 s ago, still within "stale"
+        value, _, stale = await c.fetch("k", 30, compute, stale=60)
+        assert (value, stale) == (1, True)  # at once, not after the computation
+        assert "k" in c.running
+        # someone waiting on it and leaving does not stop the background refresh
+        await asyncio.sleep(0.1)
+        assert c.items["k"][2] == 2 and calls == [1, 1]
+        assert (await c.fetch("k", 30, compute, stale=60))[::2] == (2, False)
+        # too old: waits for a new one
+        c.items["k"] = (c.items["k"][0] - 100, *c.items["k"][1:])
+        assert (await c.fetch("k", 30, compute, stale=60))[::2] == (3, False)
+        assert cache.stale_for(1) == 180 and cache.stale_for(720) == 3600 and cache.stale_for(0.1) == 30
+
+    asyncio.run(main())
+
+
+def test_a_dashboard_request_stops_when_the_browser_has_gone():
+    from lookingglass.web.app import ClientGone, until_disconnected
+
+    class Leaves:
+        def __init__(self):
+            self.asked = 0
+
+        async def is_disconnected(self) -> bool:
+            self.asked += 1
+            return self.asked > 1
+
+    async def main():
+        c = cache.ResultCache()
+        state = []
+
+        async def slow():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                state.append("cancelled")
+                raise
+
+        with pytest.raises(ClientGone):
+            await until_disconnected(Leaves(), c.get("k", 30, slow), poll=0.01)
+        await asyncio.sleep(0.01)
+        assert state == ["cancelled"] and not c.running
+        assert await until_disconnected(StillThere(), asyncio.sleep(0.02, "ok"), poll=0.01) == "ok"
 
     asyncio.run(main())

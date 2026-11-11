@@ -596,7 +596,7 @@ async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] 
         args = [secs, step] if "$2" in sql else [secs]
         out = {k: v for k, v in panel.items() if k != "sql"}
         try:
-            async with db.heavy(), db.pool().acquire() as conn:
+            async with db.heavy(hours), db.pool().acquire() as conn:
                 out["rows"] = db.records(await (rollup.fetch(conn, sql, *args) if fast else conn.fetch(sql, *args)))
             if hide := {c for c, src in (panel.get("needs_cols") or {}).items() if src in off}:
                 out["rows"] = [{k: v for k, v in r.items() if k not in hide} for r in out["rows"]]

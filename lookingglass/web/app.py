@@ -27,7 +27,7 @@ from ..config import Settings
 from . import asset_version
 from ..ingest import STATS
 from .. import rollup
-from ..cache import ResultCache, ttl_for
+from ..cache import ResultCache, stale_for, ttl_for
 from ..dashboards import DASHBOARDS, run_dashboard
 from ..reports import build_report, report_mail, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
@@ -83,6 +83,43 @@ def _background(coro) -> None:
     task.add_done_callback(_TASKS.discard)
 
 
+class AuthGuard:
+    """Runs ``check(request)`` before every HTTP request; a response it returns is sent instead of the page."""
+
+    def __init__(self, app, check) -> None:
+        self.app, self.check = app, check
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http":
+            answer = await self.check(Request(scope, receive))
+            if answer is not None:
+                await answer(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+class ClientGone(Exception):
+    """The browser closed the connection before the answer was ready."""
+
+
+async def until_disconnected(request: Request, aw, poll: float = 0.5):
+    """Await ``aw``, but give up (cancel it) as soon as the browser has gone - e.g. another period was picked while
+    a 30-day view was still loading. With the result cache (cache.py) the database queries nobody waits for any more
+    are cancelled too."""
+    task = asyncio.ensure_future(aw)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=poll)
+            if done:
+                return task.result()
+            if await request.is_disconnected():
+                raise ClientGone()
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
 def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, Any] | None = None) -> FastAPI:
     templates.env.globals["time_format"] = lambda: settings.time_format  # live setting, read per page
     # sidebar dashboards of sources that are switched off (live as well)
@@ -92,11 +129,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         f'data-accent="{escape(settings.accent)}"')
     app = FastAPI(title="Looking Glass", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
 
-    @app.middleware("http")
-    async def auth_guard(request: Request, call_next):
+    async def auth_guard(request: Request) -> Response | None:
+        """None = let the request through, else the answer (login redirect, 401 / 403)."""
         path = request.url.path
         if path.startswith("/static/") or path in PUBLIC_PATHS:
-            return await call_next(request)
+            return None
         user, mfa = await current_user(request)
         if not user:
             if path.startswith("/api/"):
@@ -112,7 +149,15 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 and request.headers.get("x-looking-glass") != "1":
             return JSONResponse({"detail": "missing X-Looking-Glass header"}, status_code=403)
         request.state.user = user
-        return await call_next(request)
+        return None
+
+    # a plain ASGI middleware, not @app.middleware("http"): behind that one an endpoint never learns that the browser
+    # has gone (request.is_disconnected() stays False), so abandoned dashboard queries could not be stopped
+    app.add_middleware(AuthGuard, check=auth_guard)
+
+    @app.exception_handler(ClientGone)
+    async def client_gone(request: Request, exc: ClientGone):
+        return Response(status_code=499)  # nobody reads it; keeps a traceback out of the log
 
     # added after the guard so it wraps it (the session must be decoded first)
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, session_cookie="lookingglass_session",
@@ -165,12 +210,12 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                   "FROM events WHERE ts > now() - make_interval(secs => $1)")
 
         async def kpi_counts() -> dict[str, Any]:
-            async with db.heavy(), db.pool().acquire() as conn:
+            async with db.heavy(hours), db.pool().acquire() as conn:
                 row = await (rollup.fetch(conn, counts, secs) if hours >= rollup.MIN_HOURS else conn.fetch(counts, secs))
             return dict(row[0])
 
         async def blocked_ips() -> int:
-            async with db.heavy(), db.pool().acquire() as conn:
+            async with db.heavy(hours), db.pool().acquire() as conn:
                 return await conn.fetchval(
                     "SELECT count(*) FROM (SELECT DISTINCT src_ip FROM events WHERE action IN ('block', 'drop') "
                     "AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1)) x", secs)
@@ -179,9 +224,12 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return {"kpi": db.jsonable({**kpi, "blocked_ips": ips}), "report": report, "timeline": tl}
 
     @app.get("/api/overview")
-    async def overview(hours: float = Query(24, gt=0, le=24 * 90)):
+    async def overview(request: Request, hours: float = Query(24, gt=0, le=24 * 90)):
         pool = db.pool()
-        counted = await results.get(("overview", hours), ttl_for(hours), lambda: overview_counts(hours))
+        # an expired result of this period (picked again not long after) is answered at once and computed again in
+        # the background: "stale" makes the page ask again shortly
+        counted, as_of, stale = await until_disconnected(request, results.fetch(
+            ("overview", hours), ttl_for(hours), lambda: overview_counts(hours), stale_for(hours)))
         kpi = counted["kpi"]
         # open alerts, devices and the system state are cheap and always current
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
@@ -210,6 +258,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "system": await db.get_snapshot("system"),
             "gateways": await db.get_snapshot("gateways"),
             "ingest": STATS.as_dict(),
+            "as_of": as_of, "stale": stale,
         }
 
     @app.get("/api/events")
@@ -900,10 +949,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "ai_enabled": settings.ai_enabled, "user": request.session.get("user")})
 
     @app.get("/api/dash/{name}")
-    async def dash_data(name: str, hours: float = Query(24, gt=0, le=24 * 90), tab: str | None = Query(None, max_length=40)):
+    async def dash_data(request: Request, name: str, hours: float = Query(24, gt=0, le=24 * 90),
+                        tab: str | None = Query(None, max_length=40)):
         if name not in DASHBOARDS:
             raise HTTPException(404)
-        return await results.get(("dash", name, hours, tab), ttl_for(hours), lambda: dash_compute(name, hours, tab))
+        out, as_of, stale = await until_disconnected(request, results.fetch(
+            ("dash", name, hours, tab), ttl_for(hours), lambda: dash_compute(name, hours, tab), stale_for(hours)))
+        return {**out, "as_of": as_of, "stale": stale}  # see overview(): "stale" = ask again shortly
 
     async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
         # Threats sources: switched off in Settings › OPNsense -> its tab and tiles are hidden, even with older data in
