@@ -60,6 +60,13 @@ async def compare_all(conn) -> int:
                 fast = await conn.fetch(rollup.convert(QUERIES[name], upto), secs)
             assert raw and same(raw, fast), (hours, name)
             checked += 1
+        # a count with nothing to count gives 0, as on the raw events (sum gives NULL): sources without blocks
+        sql = ("SELECT source, count(*) n, count(*) FILTER (WHERE action = 'block' AND proto IN ('tcp')) blocked "
+               "FROM events WHERE ts > now() - make_interval(secs => $1) GROUP BY 1")
+        async with conn.transaction(isolation="repeatable_read", readonly=True):
+            upto = await conn.fetchval("SELECT upto FROM event_rollup_state")
+            raw, fast = await conn.fetch(sql, secs), await conn.fetch(rollup.convert(sql, upto), secs)
+        assert any(r["blocked"] == 0 for r in raw) and same(raw, fast), hours
     return checked
 
 
@@ -324,3 +331,13 @@ def test_other_periods_are_computed_ahead_of_time_at_low_priority():
         await c.worker
 
     asyncio.run(main())
+
+
+def test_counts_are_rewritten_with_zero_for_nothing_counted():
+    """count(*) gives 0 where nothing matches, sum(n) NULL: the rewrite keeps the 0 (also with FILTER)."""
+    sql = ("SELECT count(*) n, count(*) FILTER (WHERE x LIKE 'Crowd (%' OR y IN (1, 2)) c, count(*)::bigint m, "
+           "count(DISTINCT src_ip) d FROM events")
+    out = rollup.convert(sql, 5)
+    assert "event_rollup" in out and "id <= 5" in out
+    assert out.startswith("SELECT coalesce(sum(n), 0) n, coalesce(sum(n) FILTER (WHERE x LIKE 'Crowd (%' OR y IN (1, 2)), 0) c, "
+                          "coalesce(sum(n), 0)::bigint m, count(DISTINCT src_ip) d FROM ")
