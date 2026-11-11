@@ -41,13 +41,25 @@ def span(seconds: float) -> str:
     return plural(max(m, 1), "minute")
 
 
-async def store_runs(source: str, runs: list[dict[str, Any]]) -> None:
-    if not runs:
-        return
+async def store_runs(source: str, runs: list[dict[str, Any]], replace_pending: bool = False) -> None:
+    """Insert / update runs. ``replace_pending``: ``runs`` is the tool's newest runs (numeric, increasing ids), so a
+    stored pending run that the tool no longer lists is gone there. A pending run is only the next scheduled one: the
+    tool replaces it with a new one (new id) after a restart or a schedule change, and the old one would otherwise stay
+    here forever, shown twice. Removed: pending runs with an id inside the fetched range that are not in it, and
+    pending runs whose start is more than a day past (older than the range, never started)."""
     cols = ", ".join(("source",) + COLUMNS)
     params = ", ".join(f"${i}" for i in range(1, len(COLUMNS) + 2))
     update = ", ".join(f"{c} = EXCLUDED.{c}" for c in COLUMNS[1:]) + ", seen_at = now()"
-    async with db.pool().acquire() as conn:
+    ids = [int(r["ext_id"]) for r in runs if str(r.get("ext_id", "")).isdigit()]
+    async with db.pool().acquire() as conn, conn.transaction():
+        if replace_pending:
+            await conn.execute(
+                "DELETE FROM backup_runs WHERE source = $1 AND status = 'pending' AND NOT ext_id = ANY($2::text[]) "
+                "AND (CASE WHEN ext_id ~ '^[0-9]{1,18}$' THEN ext_id::bigint >= $3 ELSE false END "
+                "OR started < now() - interval '1 day')",
+                source, [r["ext_id"] for r in runs], min(ids) if ids else 2 ** 62)
+        if not runs:
+            return
         await conn.executemany(f"INSERT INTO backup_runs ({cols}) VALUES ({params}) "
                                f"ON CONFLICT (source, ext_id) DO UPDATE SET {update}",
                                [(source, *(r.get(c) if c != "data" else (r.get("data") or {}) for c in COLUMNS))

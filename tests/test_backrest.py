@@ -186,3 +186,41 @@ def test_backup_alerts_open_and_close_by_themselves():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_a_replaced_pending_run_is_not_kept_twice():
+    """Backrest replaces its pending 'next run' (new id) after a restart / schedule change: the old one goes, a pending
+    run older than the fetched ids stays (unless its start is long past), finished runs always stay."""
+    import asyncio
+
+    from lookingglass import db
+
+    now = datetime.now(timezone.utc)
+
+    def r(i, status, start):
+        return {"ext_id": str(i), "kind": "backup", "job": "music", "repo": "nas", "status": status, "started": start,
+                "ended": None, "data": {}}
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE backup_runs")
+            await backups.store_runs("backrest", [
+                r(100, "success", now - timedelta(hours=2)), r(101, "pending", now + timedelta(days=5)),
+                r(50, "pending", now + timedelta(days=3)),    # e.g. a weekly check, scheduled long ago
+                r(40, "pending", now - timedelta(days=2)),    # never started, long past
+                {**r(0, "pending", now + timedelta(days=1)), "ext_id": "other-tool-7"}])
+            # next poll: Backrest scheduled the same run again under a new id
+            await backups.store_runs("backrest", [r(100, "success", now - timedelta(hours=2)),
+                                                  r(102, "pending", now + timedelta(days=5))], replace_pending=True)
+            ids = {x["ext_id"] for x in await pool.fetch("SELECT ext_id FROM backup_runs")}
+            assert ids == {"100", "102", "50", "other-tool-7"}
+            # an empty answer removes nothing that may still be valid
+            await backups.store_runs("backrest", [], replace_pending=True)
+            assert {x["ext_id"] for x in await pool.fetch("SELECT ext_id FROM backup_runs")} == ids
+        finally:
+            await db.close()
+
+    asyncio.run(main())

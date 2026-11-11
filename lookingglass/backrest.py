@@ -382,7 +382,7 @@ class BackrestPoller:
             await db.set_snapshot("backrest:summary", summary)
         runs = await self.client.operations(FIRST_FETCH if self.first else NEXT_FETCH)
         self.first = False
-        await backups.store_runs(SOURCE, runs)
+        await backups.store_runs(SOURCE, runs, replace_pending=True)
         nxt = {p["id"]: p["next_backup"] for p in (summary or {}).get("plans", [])}
         jobs = [{"job": p["id"], "repo": p["repo"], "schedule": p["schedule"], "gap_s": p["gap_s"],
                  "threshold_s": backups.overdue_threshold(p["gap_s"], self.settings.backrest_overdue_hours),
