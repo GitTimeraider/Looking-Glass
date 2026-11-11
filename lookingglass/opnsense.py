@@ -250,7 +250,10 @@ class Poller:
             log.exception("poll %s crashed", name)
         finally:
             self._running.discard(name)
-            await db.set_snapshot("poller_status", self.status)
+            try:
+                await db.set_snapshot("poller_status", self.status)
+            except Exception as exc:  # noqa: BLE001 - database busy, restarting or shutting down: the next run saves it
+                log.debug("saving the poller status failed: %s", exc)
 
     # ------------------------------------------------------------ system ---
     async def _try(self, path: str, method: str = "get") -> Any:
