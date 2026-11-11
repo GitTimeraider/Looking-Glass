@@ -41,10 +41,10 @@ const LG = {
   longUpdated(el, d, reload, view) {
     const short = t => new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", ...LG.hc() });
     let text;
-    if (d.pending) text = "counting this period for the first time - can take a few minutes, the page fills in by itself";
+    if (d.pending) text = "first count of this period - can take a few minutes, the page fills in by itself";
     else {
       text = "counted " + short(d.as_of);
-      text += d.refreshing ? " · counting again…" : (d.next_refresh ? " · next ~" + short(d.next_refresh) : "");
+      if (!d.refreshing && d.next_refresh) text += " · next ~" + short(d.next_refresh);
       if (d.refresh_error) text += " · last count failed: " + d.refresh_error;
     }
     if (el) {
@@ -52,10 +52,13 @@ const LG = {
       el.title = "7 and 30 days are counted in the background on a schedule (Settings › Data & detection) and shown " +
                  "from the last count, so switching periods costs nothing.";
       el.append(text);
-      if (view && !d.pending && !d.refreshing) {
+      if (view) {  // always there, so it can be found: greyed out while this period is being counted
         const b = document.createElement("button");
-        b.type = "button"; b.className = "small refresh-period"; b.textContent = "↻ Refresh";
-        b.title = "Count this period again now (in the background; the page shows the new numbers when done)";
+        const busy = d.pending || d.refreshing;
+        b.type = "button"; b.className = "small refresh-period"; b.textContent = busy ? "↻ Counting…" : "↻ Refresh";
+        b.disabled = busy;
+        b.title = busy ? "Being counted now - the page shows the new numbers when done"
+                       : "Count this period again now (in the background; the page shows the new numbers when done)";
         b.onclick = async () => {
           b.disabled = true;
           try { await LG.api("/api/periods/refresh", { method: "POST", body: view }); }
