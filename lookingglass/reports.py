@@ -14,8 +14,8 @@ log = logging.getLogger(__name__)
 
 # name -> (sql, description). $1 = window in seconds
 QUERIES: dict[str, str] = {
-    "totals_by_source": "SELECT source, count(*) n FROM events WHERE ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC",
-    "firewall_actions": "SELECT action, count(*) n FROM events WHERE source = 'firewall' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC",
+    "totals_by_source": "SELECT source, count(*)::bigint n FROM events WHERE ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC",
+    "firewall_actions": "SELECT action, count(*)::bigint n FROM events WHERE source = 'firewall' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC",
     "top_blocked_sources": "SELECT host(src_ip) ip, src_country country, count(*) n, count(DISTINCT dst_port) ports FROM events "
                            "WHERE source = 'firewall' AND action = 'block' AND ts > now() - make_interval(secs => $1) AND src_ip IS NOT NULL "
                            "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
@@ -37,7 +37,7 @@ QUERIES: dict[str, str] = {
                    "AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
     "dns_clients": "SELECT host(src_ip) client, count(*) n, count(*) FILTER (WHERE action IN ('block', 'drop')) blocked FROM events "
                    "WHERE source = 'unbound' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
-    "web_status": "SELECT action status, count(*) n FROM events WHERE source = 'nginx' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
+    "web_status": "SELECT action status, count(*)::bigint n FROM events WHERE source = 'nginx' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
     "web_top_clients": "SELECT host(src_ip) ip, src_country country, count(*) n, count(*) FILTER (WHERE action ~ '^http_[45]') errors FROM events "
                        "WHERE source = 'nginx' AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
     "web_attack_tags": "SELECT tag, count(*) n, count(DISTINCT src_ip) ips FROM (SELECT src_ip, jsonb_array_elements_text(data->'tags') tag FROM events "
@@ -79,6 +79,10 @@ QUERIES: dict[str, str] = {
                    "ORDER BY first_seen DESC LIMIT 25",
     "unifi_events": "SELECT action, count(*) n, count(DISTINCT data->>'mac') clients FROM events WHERE source = 'unifi' "
                     "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC",
+    "backups": "SELECT source, job, count(*) FILTER (WHERE status = 'success') ok, count(*) FILTER (WHERE status = 'warning') warnings, "
+               "count(*) FILTER (WHERE status = 'error') failed, max(coalesce(ended, started)) FILTER (WHERE status IN ('success', 'warning')) last_good, "
+               "sum(bytes_added) FILTER (WHERE status IN ('success', 'warning')) added FROM backup_runs WHERE kind = 'backup' AND job <> '' "
+               "AND started > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 5 DESC, 2",
     # UniFi location + OPNsense findings: which device, where it is connected and what it did
     "clients_with_security_events": "WITH ev AS (SELECT src_ip, count(*) FILTER (WHERE source = 'firewall' AND action = 'block') fw, "
         "count(*) FILTER (WHERE source = 'unbound' AND action IN ('block', 'drop')) dns, "
@@ -89,13 +93,27 @@ QUERIES: dict[str, str] = {
         "JOIN ev ON ev.src_ip = d.ip WHERE d.conn_where IS NOT NULL ORDER BY 6 DESC, 4 + 5 DESC LIMIT 15",
 }
 
+# only count events per source / action: from 2 days on read from the hourly counts (rollup.py), same numbers
+# (::bigint keeps them whole numbers there: sum(n) is a numeric)
+ROLLUP_QUERIES = {"totals_by_source", "firewall_actions", "web_status"}
+
 
 async def build_report(hours: float = 24) -> dict[str, Any]:
     secs = float(hours) * 3600
 
+    from . import rollup
+
     async def run(name: str, sql: str) -> tuple[str, list[dict[str, Any]]]:
-        async with db.heavy(), db.pool().acquire() as conn:
-            return name, db.records(await conn.fetch(sql, secs))
+        # one query that fails (e.g. the 2-minute limit on a 30-day window) leaves that section empty instead of
+        # failing the whole report: otherwise nothing was cached and every refresh ran all queries again
+        try:
+            async with db.heavy(hours), db.pool().acquire() as conn:
+                if hours >= rollup.MIN_HOURS and name in ROLLUP_QUERIES:
+                    return name, db.records(await rollup.fetch(conn, sql, secs))
+                return name, db.records(await conn.fetch(sql, secs))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("report section %s (%s h) failed: %r", name, hours, exc)
+            return name, []
 
     results = await asyncio.gather(*(run(n, q) for n, q in QUERIES.items()))
     report: dict[str, Any] = {"hours": hours, **dict(results)}

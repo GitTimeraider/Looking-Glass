@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top">
+  <h1>Backups</h1>
+  <span class="muted small" id="updated"></span>
+  <div class="seg" id="range"><button data-v="7">7d</button><button data-v="30">30d</button><button data-v="90">90d</button><button data-v="365">1y</button></div>
+</header>
+<div class="tabs" id="tabs"><button data-t="main" class="on">Main</button><button data-t="backrest">Backrest</button></div>
+
+<section data-s="main">
+  <div class="grid kpis" id="m-kpis"></div>
+  <div class="grid g3" style="margin-top:14px">
+    <div class="card"><h3>Backup tools</h3><div id="m-sources"></div></div>
+    <div class="card span2"><h3>Backups per day</h3><div class="chart-box sm"><canvas id="c-daily"></canvas></div></div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Backup jobs <span class="muted small">the latest state of every job, problems first</span></h3><div id="m-jobs"></div></div>
+  <div class="card" style="margin-top:14px"><h3>Latest runs <span class="muted small">backups of all tools, and repository tasks that had a problem</span></h3><div id="m-recent"></div></div>
+</section>
+
+<section data-s="backrest" hidden>
+  <div id="b-notconf" class="card" hidden>Backrest is not connected yet. Enter its URL <b>with the port</b> (e.g.
+    <span class="mono">http://192.168.1.10:9898</span>) and a Backrest user under <a href="/settings#backrest">Settings › Backrest</a>.</div>
+  <div id="b-err" class="card" hidden></div>
+  <div class="filters"><select id="b-plan"><option value="">all plans</option></select><span class="muted small" id="b-info"></span></div>
+  <div class="grid kpis" id="b-kpis"></div>
+  <div id="b-running"></div>
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card"><h3>Processing speed <span class="muted small">data scanned ÷ duration, per backup</span></h3><div class="chart-box sm"><canvas id="c-speed"></canvas></div></div>
+    <div class="card"><h3>Upload speed <span class="muted small">new data added ÷ duration, per backup</span></h3><div class="chart-box sm"><canvas id="c-upload"></canvas></div></div>
+    <div class="card"><h3>Duration per backup</h3><div class="chart-box sm"><canvas id="c-duration"></canvas></div></div>
+    <div class="card"><h3>New data per backup</h3><div class="chart-box sm"><canvas id="c-added"></canvas></div></div>
+    <div class="card"><h3>Data scanned per backup <span class="muted small">size of what is backed up</span></h3><div class="chart-box sm"><canvas id="c-scanned"></canvas></div></div>
+    <div class="card"><h3>Repository size <span class="muted small">stored (compressed) and original size, from Backrest's stats runs</span></h3><div class="chart-box sm"><canvas id="c-size"></canvas></div></div>
+    <div class="card"><h3>Snapshots per repository</h3><div class="chart-box sm"><canvas id="c-snaps"></canvas></div></div>
+    <div class="card"><h3>Outcome per day</h3><div class="chart-box sm"><canvas id="c-bdaily"></canvas></div></div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Plans</h3><div id="b-plans"></div></div>
+  <div class="card" style="margin-top:14px"><h3>Repositories</h3><div id="b-repos"></div></div>
+  <div class="card" style="margin-top:14px"><h3>Backup runs <span class="muted small" id="b-runs-info"></span></h3><div id="b-runs"></div></div>
+  <div class="card" style="margin-top:14px"><h3>Repository tasks <span class="muted small">forget, prune, check, restore</span></h3><div id="b-maint"></div></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+const DAYS = [7, 30, 90, 365];
+let days = Number(localStorage.getItem("lg-backup-days") || 30), tab = location.hash === "#backrest" ? "backrest" : "main";
+let M = null, B = null;
+if (!DAYS.includes(days)) days = 30;
+LG.seg(document.getElementById("range"), days, v => { days = Number(v); localStorage.setItem("lg-backup-days", v); load(); });
+function showTab(t) {
+  tab = t === "backrest" ? "backrest" : "main";
+  document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x.dataset.t === tab));
+  document.querySelectorAll("section[data-s]").forEach(s => s.hidden = s.dataset.s !== tab);
+  history.replaceState(null, "", tab === "main" ? location.pathname : "#" + tab);
+  load();
+}
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => showTab(b.dataset.t));
+
+/* ---- formatting ---- */
+const kpi = (l, v, c = "", title = "") => `<div class="card kpi ${c}"${title ? ` title="${LG.esc(title)}"` : ""}><div class="v">${v}</div><div class="l">${l}</div></div>`;
+const rate = v => v === null || v === undefined || !isFinite(v) ? "–" : LG.bytes(v) + "/s";
+const dur = s => { if (s === null || s === undefined) return "–"; s = Math.round(Number(s));
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m ${x}s` : `${x}s`; };  // from a day on: days + hours
+const ms = t => new Date(t).getTime();
+const pctOf = (a, b) => b ? Math.round(a / b * 100) + "%" : "–";
+const STATUS = { success: ["ok", "ok"], warning: ["warn", "warning"], error: ["bad", "failed"], running: ["info", "running"],
+                 pending: ["info", "pending"], cancelled: ["", "cancelled"], unknown: ["", "unknown"] };
+const status = s => { const [c, l] = STATUS[s] || ["", s]; return `<span class="badge ${c}">${LG.esc(l)}</span>`; };
+const STATE = { failed: ["bad", "failed"], overdue: ["warn", "overdue"], warning: ["warn", "warnings"], running: ["info", "running"],
+                never: ["", "never run"], ok: ["ok", "ok"] };
+const state = s => { const [c, l] = STATE[s] || ["", s]; return `<span class="badge ${c}">${LG.esc(l)}</span>`; };
+const when = t => t ? `<span title="${LG.esc(LG.time(t))}">${LG.ago(t)}</span>` : `<span class="muted">never</span>`;
+const until = t => { if (!t) return ""; const s = (ms(t) - Date.now()) / 1000;
+  if (s < 0) return `<span title="${LG.esc(LG.time(t))}">due</span>`;
+  const txt = s < 3600 ? Math.round(s / 60) + "m" : s < 86400 ? Math.round(s / 3600) + "h" : Math.round(s / 86400) + "d";
+  return `<span title="${LG.esc(LG.time(t))}">in ${txt}</span>`; };
+const COLORS = { success: "#22c55e", warning: "#f59e0b", error: "#ef4444" };
+function progress(p, started) {
+  if (!p) return "";
+  const pct = Math.max(0, Math.min(100, (p.percent || 0) * 100)), secs = started ? (Date.now() - ms(started)) / 1000 : 0;
+  const speed = secs > 0 ? p.bytes_done / secs : null, eta = speed && p.total_bytes > p.bytes_done ? (p.total_bytes - p.bytes_done) / speed : null;
+  return `<div class="bar"><i style="width:${pct}%"></i></div><div class="small muted">${Math.round(pct)}% · ${LG.bytes(p.bytes_done)} of ${LG.bytes(p.total_bytes)}` +
+    ` · ${LG.num(p.files_done)} / ${LG.num(p.total_files)} files${speed ? ` · ${rate(speed)}` : ""}${eta ? ` · about ${dur(eta)} left` : ""}</div>`;
+}
+/** per-run chart: {series label: [{x: ms, y}]} -> line chart with a point per run */
+function runChart(id, series, fmt) {
+  const datasets = Object.entries(series).map(([label, pts], i) => ({ label, data: pts.sort((a, b) => a.x - b.x),
+    borderColor: LG.color(i), backgroundColor: LG.color(i) + "33", pointRadius: pts.length > 200 ? 1.5 : 3, borderWidth: 1.5,
+    tension: .2, borderDash: label.endsWith("(original)") ? [5, 4] : undefined }));
+  return LG.chart(id, { type: "line", data: { datasets }, options: { maintainAspectRatio: false, animation: false, parsing: false,
+    interaction: { mode: "nearest", intersect: false },
+    scales: { x: { type: "linear", ticks: { callback: v => LG.timeLabel(v, days * 24), maxTicksLimit: 7, maxRotation: 0 } },
+              y: { beginAtZero: true, ticks: { callback: v => fmt(v) } } },
+    plugins: { legend: { display: datasets.length > 1, position: "bottom", labels: { boxWidth: 10 } },
+               tooltip: { callbacks: { title: i => LG.time(i[0].parsed.x), label: c => `${c.dataset.label}: ${fmt(c.parsed.y)}` } } } } });
+}
+/** rows [{d: "YYYY-MM-DD", status, n}] -> stacked bars per day */
+function dailyChart(id, rows) {
+  const labels = [], start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - days + 1);
+  for (let d = new Date(start); d <= new Date(); d.setDate(d.getDate() + 1))
+    labels.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+  const datasets = rows.length ? ["success", "warning", "error"].map(s => ({ label: STATUS[s][1], backgroundColor: COLORS[s], stack: "s",
+    data: labels.map(l => rows.filter(r => r.d === l && r.status === s).reduce((a, r) => a + Number(r.n), 0)) })) : [];
+  return LG.chart(id, { type: "bar", data: { labels: labels.map(l => new Date(l + "T12:00").toLocaleDateString(undefined, { month: "short", day: "2-digit" })), datasets },
+    options: { maintainAspectRatio: false, animation: false, scales: { x: { stacked: true, ticks: { maxTicksLimit: 12, maxRotation: 0 } },
+      y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } } }, plugins: { legend: { position: "bottom", labels: { boxWidth: 10 } } } } });
+}
+
+/* ---- Main tab: every tool ---- */
+async function loadMain() {
+  try { M = await LG.api(`/api/backups?days=${days}`); } catch (e) { return; }
+  const jobs = M.jobs, n = s => jobs.filter(j => j.state === s).length;
+  const runs = jobs.reduce((a, j) => a + (j.ok || 0) + (j.warned || 0) + (j.failed || 0), 0);
+  const good = jobs.reduce((a, j) => a + (j.ok || 0) + (j.warned || 0), 0);
+  const last = jobs.map(j => j.last_started).filter(Boolean).sort().pop();
+  document.getElementById("m-kpis").innerHTML = kpi("Backup jobs", jobs.length) + kpi("Healthy", n("ok") + n("running"), n("ok") ? "ok" : "") +
+    kpi("Failed", n("failed"), n("failed") ? "bad" : "") + kpi("Overdue", n("overdue"), n("overdue") ? "warn" : "") +
+    kpi("With warnings", n("warning"), n("warning") ? "warn" : "") + kpi("Running now", n("running")) +
+    kpi(`Backups (${days}d)`, LG.num(runs)) + kpi("Success rate", pctOf(good, runs), runs && good < runs ? "warn" : runs ? "ok" : "",
+      "successful and with-warnings backups of all backups in the period") +
+    kpi("Latest backup", last ? LG.ago(last) : "never");
+  document.getElementById("m-sources").innerHTML = M.sources.map(s => {
+    const st = s.status, ok = st && st.ok;
+    const line = !st ? `<span class="muted">not set up – <a href="/settings#${s.source}">Settings › ${LG.esc(s.label)}</a></span>`
+      : ok ? `connected${st.instance ? ` to <b>${LG.esc(st.instance)}</b>` : ""} · checked ${LG.ago(st.last)}`
+      : `<span class="state-EXITED">not reachable: ${LG.esc(st.error || "?")}</span>`;
+    return `<div class="kv"><div><span class="dot ${!st ? "" : ok ? "ok" : "bad"}"></span><a href="#${s.source}" data-tab="${s.source}">${LG.esc(s.label)}</a></div>` +
+      `<div>${line}<div class="small muted">${s.jobs} job${s.jobs === 1 ? "" : "s"}</div></div></div>`;
+  }).join("") + `<p class="small muted">More backup tools can be added here later; this tab shows all of them together.</p>`;
+  document.querySelectorAll("[data-tab]").forEach(a => a.onclick = e => { e.preventDefault(); showTab(a.dataset.tab); });
+  dailyChart("c-daily", M.daily);
+  LG.table("#m-jobs", [
+    {k: "state", l: "State", s: r => ["failed", "overdue", "warning", "running", "never", "ok"].indexOf(r.state), f: (v, r) => state(v) + (r.state === "running" ? progress((r.last_data || {}).progress, r.last_started) : "")},
+    {k: "job", l: "Job", f: (v, r) => `<b>${LG.esc(v)}</b> ${LG.src(r.source_label)}${r.configured ? "" : ` <span class="pill" title="no longer in the tool's configuration">removed</span>`}` +
+      (["failed", "warning"].includes(r.state) && r.last_message ? `<div class="small muted">${LG.esc(r.last_message.slice(0, 200))}</div>` : "")},
+    {k: "repo", l: "Repository"},
+    {k: "schedule", l: "Schedule", f: (v, r) => `${LG.esc(v || "")}${r.threshold_s ? `<div class="small muted">overdue after ${dur(r.threshold_s)}</div>` : ""}`},
+    {k: "last_started", l: "Last run", desc: true, f: when}, {k: "last_finished_status", l: "Result", f: v => v ? status(v) : ""},
+    {k: "last_good", l: "Last successful", desc: true, f: when}, {k: "next_run", l: "Next run", f: until},
+    {k: "ok", l: `Runs (${days}d)`, s: r => (r.ok || 0) + (r.warned || 0) + (r.failed || 0), f: (v, r) => `<span class="state-RUNNING">${r.ok || 0}</span>` +
+      (r.warned ? ` · <span class="state-PAUSED">${r.warned} warn</span>` : "") + (r.failed ? ` · <span class="state-EXITED">${r.failed} failed</span>` : "")},
+    {k: "avg_duration", l: "Avg duration", num: true, f: dur}, {k: "last_size", l: "Size", num: true, f: v => v ? LG.bytes(v) : ""},
+  ], M.jobs, "No backup jobs yet - connect a backup tool under Settings › Backrest", undefined, { sortAll: true, order: null });
+  LG.table("#m-recent", [
+    {k: "started", l: "Started", desc: true, f: LG.time}, {k: "source", l: "Tool", f: LG.src},
+    {k: "kind", l: "Task"}, {k: "job", l: "Job / repository", f: (v, r) => LG.esc(v || r.repo)},
+    {k: "status", l: "Result", f: status}, {k: "duration_s", l: "Duration", num: true, f: dur},
+    {k: "bytes_added", l: "New data", num: true, f: v => v === null ? "" : LG.bytes(v)},
+    {k: "message", l: "Message", f: v => v ? `<span class="small">${LG.esc(v.slice(0, 200))}</span>` : ""},
+  ], M.recent.slice(0, 30), `No runs in the last ${days} days`, undefined, { sortAll: true, order: { k: "started", dir: -1 } });
+  document.getElementById("updated").textContent = `updated ${LG.clock()}`;
+}
+
+/* ---- Backrest tab ---- */
+const planSel = document.getElementById("b-plan");
+planSel.onchange = () => B && drawBackrest();
+async function loadBackrest() {
+  try { B = await LG.api(`/api/backups/backrest?days=${days}`); } catch (e) { return; }
+  document.getElementById("b-notconf").hidden = B.configured;
+  const st = B.status || {}, err = document.getElementById("b-err");
+  err.hidden = !(B.configured && st.ok === false);
+  if (!err.hidden) err.innerHTML = `<span class="dot bad"></span>Backrest not reachable: ${LG.esc(st.error || "")} – check <a href="/settings#backrest">Settings › Backrest</a> (URL and port).`;
+  const cfg = B.config || { plans: [], repos: [] }, cur = planSel.value;
+  planSel.innerHTML = `<option value="">all plans</option>` + cfg.plans.map(p => `<option value="${LG.esc(p.id)}">${LG.esc(p.id)}</option>`).join("");
+  planSel.value = cfg.plans.some(p => p.id === cur) ? cur : "";
+  document.getElementById("updated").textContent = B.updated ? `Backrest${cfg.instance ? " “" + cfg.instance + "”" : ""} · updated ${LG.ago(B.updated)}` : "";
+  drawBackrest();
+}
+function drawBackrest() {
+  const cfg = B.config || { plans: [], repos: [] }, plan = planSel.value;
+  const runs = B.runs.filter(r => !plan || r.job === plan), done = runs.filter(r => ["success", "warning", "error"].includes(r.status));
+  const good = done.filter(r => r.status !== "error"), timed = good.filter(r => r.duration_s > 0);
+  const sum = (rows, k) => rows.reduce((a, r) => a + (Number(r[k]) || 0), 0);
+  const speed = sum(timed.filter(r => r.bytes_processed !== null), "bytes_processed") / (sum(timed.filter(r => r.bytes_processed !== null), "duration_s") || NaN);
+  const upload = sum(timed.filter(r => r.bytes_added !== null), "bytes_added") / (sum(timed.filter(r => r.bytes_added !== null), "duration_s") || NaN);
+  const repos = plan ? cfg.repos.filter(r => r.id === (cfg.plans.find(p => p.id === plan) || {}).repo) : cfg.repos;
+  const stats = B.latest_stats.filter(s => repos.some(r => r.id === s.repo));
+  const failed = done.filter(r => r.status === "error").length;
+  document.getElementById("b-info").textContent = `${done.length} backups in the last ${days} days`;
+  document.getElementById("b-kpis").innerHTML = (plan ? "" : kpi("Plans", cfg.plans.length) + kpi("Repositories", cfg.repos.length)) +
+    kpi(`Backups (${days}d)`, LG.num(done.length)) + kpi("Failed", failed, failed ? "bad" : "") +
+    kpi("Success rate", pctOf(good.length, done.length), done.length && good.length < done.length ? "warn" : done.length ? "ok" : "") +
+    kpi("Avg processing speed", rate(speed), "", "all data scanned ÷ all backup time in the period") +
+    kpi("Avg upload speed", rate(upload), "", "all new data added ÷ all backup time in the period") +
+    kpi("New data", LG.bytes(sum(good, "bytes_added"))) +
+    kpi("Avg duration", dur(timed.length ? sum(timed, "duration_s") / timed.length : null)) +
+    (stats.length ? kpi("Repository size", LG.bytes(sum(stats, "total_size")), "", "stored (after compression and deduplication), from the latest stats run") +
+      kpi("Snapshots", LG.num(sum(stats, "snapshots"))) : "");
+  // running now
+  const running = runs.filter(r => r.status === "running");
+  document.getElementById("b-running").innerHTML = running.length ? `<div class="card" style="margin-top:14px"><h3>Running now</h3>` +
+    running.map(r => `<div style="margin:6px 0"><b>${LG.esc(r.job)}</b> <span class="muted small">→ ${LG.esc(r.repo)} · started ${LG.ago(r.started)}</span>` +
+      progress((r.data || {}).progress, r.started) + `</div>`).join("") + `</div>` : "";
+  // charts: one series per plan
+  const per = (k, rows = good) => { const s = {}; for (const r of rows) if (r[k] !== null && r[k] !== undefined && r.started)
+    (s[r.job || "?"] = s[r.job || "?"] || []).push({ x: ms(r.started), y: Number(r[k]) }); return s; };
+  runChart("c-speed", per("speed_bps", timed), rate);
+  runChart("c-upload", per("added_bps", timed), rate);
+  runChart("c-duration", per("duration_s"), dur);
+  runChart("c-added", per("bytes_added"), v => LG.bytes(v));
+  runChart("c-scanned", per("bytes_processed"), v => LG.bytes(v));
+  const size = {}, snaps = {};
+  for (const s of B.repo_stats.filter(s => repos.some(r => r.id === s.repo))) {
+    if (s.total_size !== null) (size[s.repo + " (stored)"] = size[s.repo + " (stored)"] || []).push({ x: ms(s.t), y: s.total_size });
+    if (s.uncompressed) (size[s.repo + " (original)"] = size[s.repo + " (original)"] || []).push({ x: ms(s.t), y: s.uncompressed });
+    if (s.snapshots !== null) (snaps[s.repo] = snaps[s.repo] || []).push({ x: ms(s.t), y: s.snapshots });
+  }
+  runChart("c-size", size, v => LG.bytes(v));
+  runChart("c-snaps", snaps, v => Math.round(v));
+  const byDay = {};
+  for (const r of done) { const d = new Date(r.started), k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}|${r.status}`; byDay[k] = (byDay[k] || 0) + 1; }
+  dailyChart("c-bdaily", Object.entries(byDay).map(([k, n]) => { const [d, status] = k.split("|"); return { d, status, n }; }));
+  // plans
+  const sumPlans = Object.fromEntries(((B.summary || {}).plans || []).map(s => [s.id, s]));
+  const perJob = Object.fromEntries(B.per_job.map(j => [j.job, j]));
+  const jobs = Object.fromEntries(B.jobs.map(j => [j.job, j]));
+  const lastRun = {}; for (const r of B.runs) if (!lastRun[r.job] && r.status !== "pending") lastRun[r.job] = r;  // not the next scheduled run
+  LG.table("#b-plans", [
+    {k: "id", l: "Plan", f: (v, r) => `<b>${LG.esc(v)}</b>${r.disabled ? ` <span class="pill">not scheduled</span>` : ""}<div class="small muted" title="${LG.esc(r.paths.join("\n"))}">${LG.esc(r.paths.slice(0, 3).join(", "))}${r.paths.length > 3 ? ` +${r.paths.length - 3}` : ""}${r.excludes ? ` · ${r.excludes} excludes` : ""}</div>`},
+    {k: "repo", l: "Repository"},
+    {k: "schedule", l: "Schedule", f: (v, r) => `${LG.esc(v)}${(jobs[r.id] || {}).threshold_s ? `<div class="small muted">overdue after ${dur(jobs[r.id].threshold_s)}</div>` : ""}`},
+    {k: "retention", l: "Retention"},
+    {k: "last", l: "Last backup", s: r => (lastRun[r.id] || {}).started, desc: true, f: (v, r) => { const l = lastRun[r.id]; return l ? `${status(l.status)} ${when(l.started)}` : `<span class="muted">none in period</span>`; }},
+    {k: "next", l: "Next run", s: r => (sumPlans[r.id] || {}).next_backup, f: (v, r) => until((sumPlans[r.id] || {}).next_backup)},
+    {k: "runs", l: `Runs (${days}d)`, num: true, s: r => (perJob[r.id] || {}).runs, f: (v, r) => { const j = perJob[r.id]; return j ? `${j.runs}${j.failed ? ` <span class="state-EXITED">(${j.failed} failed)</span>` : ""}` : "0"; }},
+    {k: "rate", l: "Success", num: true, s: r => { const j = perJob[r.id]; return j && j.runs ? (j.ok + j.warned) / j.runs : null; }, f: (v, r) => { const j = perJob[r.id]; return j ? pctOf(j.ok + j.warned, j.runs) : "–"; }},
+    {k: "dur", l: "Avg / max duration", num: true, s: r => (perJob[r.id] || {}).avg_duration, f: (v, r) => { const j = perJob[r.id] || {}; return j.avg_duration ? `${dur(j.avg_duration)} / ${dur(j.max_duration)}` : "–"; }},
+    {k: "speed", l: "Avg speed", num: true, s: r => (perJob[r.id] || {}).speed_bps, f: (v, r) => rate((perJob[r.id] || {}).speed_bps)},
+    {k: "upload", l: "Avg upload", num: true, s: r => (perJob[r.id] || {}).added_bps, f: (v, r) => rate((perJob[r.id] || {}).added_bps)},
+    {k: "added", l: "New data", num: true, s: r => (perJob[r.id] || {}).added, f: (v, r) => LG.bytes((perJob[r.id] || {}).added || 0)},
+    {k: "size", l: "Size", num: true, s: r => (perJob[r.id] || {}).last_size, f: (v, r) => { const x = (perJob[r.id] || {}).last_size; return x ? LG.bytes(x) : ""; }},
+    {k: "snaps", l: "Snapshots", num: true, s: r => (sumPlans[r.id] || {}).snapshots, f: (v, r) => LG.num((sumPlans[r.id] || {}).snapshots ?? null)},
+  ], cfg.plans.filter(p => !plan || p.id === plan), B.configured ? "No plans in Backrest" : "Backrest not configured", undefined, { sortAll: true, order: null });
+  // repositories
+  const st = Object.fromEntries(B.latest_stats.map(s => [s.repo, s]));
+  const task = (repo, kind) => { const t = B.last_tasks.find(x => x.repo === repo && x.kind === kind);
+    return t ? `${status(t.status)} ${when(t.started)}${t.status === "error" && t.message ? `<div class="small muted">${LG.esc(t.message.slice(0, 150))}</div>` : ""}` : `<span class="muted">–</span>`; };
+  LG.table("#b-repos", [
+    {k: "id", l: "Repository", f: (v, r) => `<b>${LG.esc(v)}</b><div class="mono small muted">${LG.esc(r.uri)}</div>`},
+    {k: "size", l: "Stored", num: true, s: r => (st[r.id] || {}).total_size, f: (v, r) => (st[r.id] || {}).total_size ? LG.bytes(st[r.id].total_size) : "–"},
+    {k: "orig", l: "Original", num: true, s: r => (st[r.id] || {}).uncompressed, f: (v, r) => (st[r.id] || {}).uncompressed ? LG.bytes(st[r.id].uncompressed) : "–"},
+    {k: "ratio", l: "Compression", num: true, s: r => (st[r.id] || {}).ratio, f: (v, r) => (st[r.id] || {}).ratio ? st[r.id].ratio.toFixed(2) + "×" : "–"},
+    {k: "snaps", l: "Snapshots", num: true, s: r => (st[r.id] || {}).snapshots, f: (v, r) => LG.num((st[r.id] || {}).snapshots ?? null)},
+    {k: "stats", l: "Stats from", s: r => (st[r.id] || {}).t, desc: true, f: (v, r) => (st[r.id] || {}).t ? when(st[r.id].t) : `<span class="muted">no stats run yet</span>`},
+    {k: "check", l: "Last check", f: (v, r) => task(r.id, "check") + `<div class="small muted">${LG.esc(r.check)}</div>`},
+    {k: "prune", l: "Last prune", f: (v, r) => task(r.id, "prune") + `<div class="small muted">${LG.esc(r.prune)}</div>`},
+    {k: "forget", l: "Last forget", f: (v, r) => task(r.id, "forget")},
+  ], repos, B.configured ? "No repositories in Backrest" : "Backrest not configured", undefined, { sortAll: true, order: null });
+  // runs
+  const shown = runs.slice(0, 500);
+  document.getElementById("b-runs-info").textContent = runs.length > shown.length ? `latest ${shown.length} of ${runs.length}` : "";
+  LG.table("#b-runs", [
+    {k: "started", l: "Started", desc: true, f: LG.time}, {k: "job", l: "Plan"},
+    {k: "status", l: "Result", f: (v, r) => status(v) + (v === "running" ? progress((r.data || {}).progress, r.started) : "")},
+    {k: "duration_s", l: "Duration", num: true, f: dur},
+    {k: "bytes_processed", l: "Scanned", num: true, f: v => v === null ? "" : LG.bytes(v)},
+    {k: "bytes_added", l: "New data", num: true, f: v => v === null ? "" : LG.bytes(v)},
+    {k: "files_new", l: "Files new / changed / total", num: true, f: (v, r) => r.files_total === null ? "" : `${LG.num(v)} / ${LG.num(r.files_changed)} / ${LG.num(r.files_total)}`},
+    {k: "speed_bps", l: "Speed", num: true, f: rate}, {k: "added_bps", l: "Upload", num: true, f: rate},
+    {k: "snapshot_id", l: "Snapshot", f: v => v ? `<span class="mono small">${LG.esc(v.slice(0, 8))}</span>` : ""},
+    {k: "message", l: "Message", f: (v, r) => { const n = (r.data || {}).error_count; return (v ? `<span class="small">${LG.esc(v.slice(0, 300))}</span>` : "") +
+      (n ? `<div class="small muted">${n} file error${n === 1 ? "" : "s"}: ${LG.esc(((r.data.errors || [])[0] || {}).item || "")}${n > 1 ? " …" : ""}</div>` : ""); }},
+  ], shown, `No backups in the last ${days} days`, undefined, { sortAll: true, order: { k: "started", dir: -1 } });
+  LG.table("#b-maint", [
+    {k: "started", l: "Started", desc: true, f: LG.time}, {k: "kind", l: "Task"}, {k: "repo", l: "Repository"},
+    {k: "job", l: "Plan"}, {k: "status", l: "Result", f: status}, {k: "duration_s", l: "Duration", num: true, f: dur},
+    {k: "message", l: "Detail", f: (v, r) => { const d = r.data || {};
+      return (r.kind === "forget" && d.forgot !== undefined ? `${d.forgot} snapshot${d.forgot === 1 ? "" : "s"} removed ` : "") +
+        (r.kind === "restore" && d.path ? `${LG.esc(d.path)} → ${LG.esc(d.target || "")} ` : "") +
+        (v ? `<span class="small">${LG.esc(v.slice(0, 300))}</span>` : ""); }},
+  ], B.maintenance.filter(r => !plan || !r.job || r.job === plan), `No repository tasks in the last ${days} days`, undefined, { sortAll: true, order: { k: "started", dir: -1 } });
+}
+
+function load() { return tab === "backrest" ? loadBackrest() : loadMain(); }
+showTab(tab);
+LG.autoRefresh(load, 60000);
+</script>
+{% endblock %}

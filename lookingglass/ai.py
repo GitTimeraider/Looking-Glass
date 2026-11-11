@@ -69,6 +69,14 @@ metrics also: cpu_used_pct, swap_used_pct, unraid_cpu_pct / unraid_mem_pct / unr
        unifi_clients (labels wifi|wired), unifi_ssid_clients / unifi_ap_clients (labels = SSID / AP name), unifi_wifi_satisfaction,
        unifi_device_cpu / unifi_device_mem / unifi_device_tx_bps / unifi_device_rx_bps (labels = device name)
 
+backup_runs(source /*backrest*/, ext_id, kind /*backup|forget|prune|check|stats|restore|dry-run*/, job /*Backrest plan*/,
+       repo, status /*success|warning|error|running|pending|cancelled*/, started, ended, duration_s, bytes_processed
+       /*data scanned*/, bytes_added /*new data in the repository*/, files_new, files_changed, files_total, snapshot_id,
+       message /*error text*/, data jsonb /*errors[], progress, stats {total_size, total_uncompressed_size,
+       compression_ratio, snapshot_count}*/)  -- every run of the backup tools; speed = bytes_processed / duration_s
+snapshots also: backrest:config (plans with schedule / retention, repositories), backrest:summary, backrest:status,
+       backup_jobs:<source> (jobs with schedule and overdue threshold_s)
+
 Tips: use host(src_ip) to print addresses, `src_ip << '10.0.0.0/8'::inet` for subnet tests, ts > now() - interval '24 hours'
 for time windows. Always aggregate (GROUP BY / count) rather than pulling raw rows when looking at large volumes.
 """
@@ -76,7 +84,8 @@ for time windows. Always aggregate (GROUP BY / count) rather than pulling raw ro
 SYSTEM_PROMPT = """You are Looking Glass's security analyst, a senior SOC / network security engineer investigating an
 OPNsense firewall, the network behind it (UniFi access points / switches when configured) and the user's Unraid
 server(s). You have tools that query the log database (firewall, nginx, Unbound DNS, CrowdSec, Suricata, Zenarmor,
-Q-Feeds threat intel, authentication, VPN, DHCP, UniFi and system logs) plus OPNsense and UniFi state.
+Q-Feeds threat intel, authentication, VPN, DHCP, UniFi and system logs) plus OPNsense and UniFi state and
+the backups (Backrest / restic: failed, overdue or slow backups are a resilience risk - e.g. against ransomware).
 
 How to work:
 - Investigate with the tools before answering; base every claim on data you actually retrieved and cite the concrete
@@ -147,6 +156,12 @@ TOOLS: list[dict[str, Any]] = [
                        "with AP / switch port, SSID, signal and traffic, health and neighbouring / evil-twin APs. Optional filter "
                        "on a client name, IP or MAC.",
         "parameters": {"type": "object", "properties": {"client": {"type": "string", "description": "optional name / IP / MAC filter"}}}}},
+    {"type": "function", "function": {
+        "name": "backup_status",
+        "description": "Backups (Backrest / restic): every backup job with its state (ok, warning, failed, overdue, running, "
+                       "never), last and last successful run, schedule, runs and failures in the period, plus recent "
+                       "failed or warning runs with their error text.",
+        "parameters": {"type": "object", "properties": {"days": {"type": "integer", "description": "period, default 7"}}}}},
     {"type": "function", "function": {
         "name": "traffic_overview",
         "description": "Aggregated statistics (top blocked sources, ports, countries, DNS, web, auth failures, IDS signatures ...) for a period.",
@@ -310,9 +325,20 @@ async def tool_unifi_status(client: str | None = None) -> Any:
     return out
 
 
+async def tool_backup_status(days: int = 7) -> Any:
+    from . import backups
+
+    out = await backups.overview(max(1, min(int(days), 400)), "UTC")
+    if not out["jobs"] and not any(s["status"] for s in out["sources"]):
+        return {"configured": False, "hint": "No backup tool is connected: Settings › Backrest in Looking Glass"}
+    out["problems"] = [r for r in out.pop("recent") if r["status"] in ("error", "warning")][:30]
+    return out
+
+
 async def run_tool(name: str, args: dict[str, Any]) -> str:
     fn = {"sql_query": tool_sql_query, "search_events": tool_search_events, "ip_profile": tool_ip_profile,
           "list_alerts": tool_list_alerts, "alert_detail": tool_alert_detail, "system_status": tool_system_status, "unifi_status": tool_unifi_status,
+          "backup_status": tool_backup_status,
           "traffic_overview": lambda hours=24: build_report(float(hours))}.get(name)
     if fn is None:
         return json.dumps({"error": f"unknown tool {name}"})

@@ -186,8 +186,8 @@ function drawWeb(r) {
 const $ = id => document.getElementById(id);
 async function load() {
   let d;
-  try { d = await LG.api(`/api/overview?hours=${hours}`); }
-  catch (e) { document.getElementById("updated").textContent = "Failed to load: " + e.message; return; }
+  try { d = await LG.api(`/api/overview?hours=${hours}`, { signal: LG.latest("overview") }); }
+  catch (e) { if (!LG.aborted(e)) document.getElementById("updated").textContent = "Failed to load: " + e.message; return; }
   last = d;
   render(d);
 }
@@ -207,7 +207,7 @@ function render(d) {
     (on.unbound ? kpi("DNS queries", LG.num(k.dns)) : "") +
     (on.crowdsec ? kpi("CrowdSec bans", `${k.crowdsec_decisions ?? "–"}${k.crowdsec_blocklist != null ? ` <span class="small">+ ${LG.num(k.crowdsec_blocklist)} on the blocklist</span>` : ""}`) : "") +
     kpi("Devices (24h)", LG.num(k.devices));
-  document.getElementById("updated").textContent = "updated " + LG.clock();
+  LG.updated(document.getElementById("updated"), d, load);
 
   // timeline (stacked by source)
   const tl = d.timeline, buckets = [...new Set(tl.series.map(r => r.bucket))].sort();

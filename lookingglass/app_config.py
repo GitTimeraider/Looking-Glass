@@ -36,6 +36,7 @@ class Field:
 GROUPS = {
     "opnsense": "OPNsense",
     "unifi": "UniFi",
+    "backrest": "Backrest",
     "email": "Email",
     "ai": "AI analyst",
     "reports": "Reports",
@@ -108,6 +109,29 @@ FIELDS: list[Field] = [
           "offline' or 'controller unreachable' alert only once it has been down this long - a reboot of OPNsense, the "
           "controller or the device itself (updates) stays quiet. Such an alert closes by itself when the device / "
           "controller is back. 0 = alert right away.", min=0, max=240),
+    # Backrest (backups)
+    Field("backrest_url", "backrest", "Backrest URL (with port)", "str",
+          "Address of the Backrest web UI including its port - Backrest's default is 9898, use the port you mapped in "
+          "Docker if it is different. From another container on the same Docker network: http://<container name>:9898. "
+          "Behind a reverse proxy: its https address with port 443 and path, e.g. https://backup.example.com:443.",
+          placeholder="http://192.168.1.10:9898"),
+    Field("backrest_username", "backrest", "Username", "str",
+          "A Backrest user (Backrest › Settings › Users › Add user). Backrest has no read-only users: a separate user "
+          "only for Looking Glass is best. Leave empty when Backrest's authentication is disabled."),
+    Field("backrest_password", "backrest", "Password", "secret", "Password of that Backrest user."),
+    Field("backrest_verify_ssl", "backrest", "Verify TLS certificate", "bool",
+          "Only for an https URL. Off accepts a self-signed certificate."),
+    Field("backrest_poll_interval", "backrest", "Poll interval (seconds)", "int",
+          "How often plans, repositories and backup runs are read from Backrest.", min=60, max=3600),
+    Field("backrest_overdue_hours", "backrest", "Backup overdue after (hours)", "int",
+          "A 'backup overdue' alert when a plan has had no successful backup for this long. 0 = automatic: from each "
+          "plan's schedule (the longest normal gap between two runs, plus a margin).", min=0, max=2160),
+    Field("backrest_alert_warnings", "backrest", "Alert on backups with warnings", "bool",
+          "A backup that finished with warnings (usually files that could not be read) raises a low alert. Off: only "
+          "failed backups do."),
+    Field("backrest_offline_grace", "backrest", "Unreachable alert waits (minutes)", "int",
+          "A 'Backrest unreachable' alert only once it has not answered for this long (container restarts / updates "
+          "stay quiet). 0 = alert right away.", min=0, max=240),
     # email
     Field("smtp_host", "email", "SMTP server", "str", "Mail server that sends the notifications, e.g. smtp.gmail.com, "
           "smtp.office365.com, your provider's server or a local relay.", placeholder="smtp.example.com"),
@@ -349,7 +373,9 @@ BY_KEY = {f.key: f for f in FIELDS}
 SECRET_KEYS = {f.key for f in FIELDS if f.kind == "secret"}
 
 # which groups restart which component
-RESTART_GROUPS = {"unifi": ("unifi_url", "unifi_api_key", "unifi_username", "unifi_password", "unifi_site",
+RESTART_GROUPS = {"backrest": ("backrest_url", "backrest_username", "backrest_password", "backrest_verify_ssl",
+                               "backrest_poll_interval"),
+                  "unifi": ("unifi_url", "unifi_api_key", "unifi_username", "unifi_password", "unifi_site",
                             "unifi_verify_ssl", "unifi_poll_interval", "unifi_events"),
                   "opnsense": ("opnsense_url", "opnsense_api_key", "opnsense_api_secret", "opnsense_verify_ssl",
                                "opnsense_ca_pem", "poll_interval", "firewall_log_pull", "unbound_query_pull",
@@ -388,8 +414,19 @@ def _coerce(f: Field, value: Any) -> Any:
     v = "" if value is None else str(value).strip()
     if f.kind == "choice" and v not in f.choices:
         raise SettingsError(f"{f.label}: must be one of {', '.join(f.choices)}")
-    if f.key in ("opnsense_url", "ai_base_url") and v and not v.startswith(("http://", "https://")):
+    if f.key in ("opnsense_url", "ai_base_url", "backrest_url") and v and not v.startswith(("http://", "https://")):
         raise SettingsError(f"{f.label}: must start with http:// or https://")
+    if f.key == "backrest_url" and v:
+        from urllib.parse import urlsplit
+        try:
+            port, host = urlsplit(v).port, urlsplit(v).hostname
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: invalid port ({exc})") from exc
+        if not host:
+            raise SettingsError(f"{f.label}: no host name or IP address")
+        if port is None:
+            raise SettingsError(f"{f.label}: add the port, e.g. {v.rstrip('/')}:9898 (Backrest's default) or the "
+                                "port you mapped in Docker")
     if f.key in ("syslog_allowed_senders", "internal_networks", "zenarmor_es_allowed") and v:
         for part in v.split(","):
             try:  # an invalid line is named, nothing is saved

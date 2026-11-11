@@ -135,6 +135,14 @@ class Settings(BaseSettings):
     unifi_poll_interval: int = 60
     unifi_events: bool = True
     unifi_offline_grace: int = 10  # minutes
+    backrest_url: str = ""  # with the port, e.g. http://192.168.1.10:9898
+    backrest_username: str = ""
+    backrest_password: str = ""
+    backrest_verify_ssl: bool = False
+    backrest_poll_interval: int = 300
+    backrest_overdue_hours: int = 0  # 0 = from each plan's schedule
+    backrest_alert_warnings: bool = True
+    backrest_offline_grace: int = 15  # minutes
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_security: str = "starttls"
@@ -195,6 +203,10 @@ class Settings(BaseSettings):
     @property
     def unifi_enabled(self) -> bool:
         return bool(self.unifi_url and (self.unifi_api_key or (self.unifi_username and self.unifi_password)))
+
+    @property
+    def backrest_enabled(self) -> bool:
+        return bool(self.backrest_url)
 
     @property
     def smtp_enabled(self) -> bool:
