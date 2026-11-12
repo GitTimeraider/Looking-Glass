@@ -48,7 +48,6 @@ services:
     ports:
       - "514:5514/udp"
       - "514:5514/tcp"
-      - "9200:9200"        # Zenarmor Elasticsearch-compatible stream receiver
     volumes:
       - ./data:/data       # sudo chown -R 10001:10001 ./data (= PUID:PGID)
 

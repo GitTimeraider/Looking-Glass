@@ -52,7 +52,6 @@ const WIDGETS = [
   { id: "ids-int", title: "Suricata: internal hosts alerting", w: 1, body: "table", el: "ids-int", src: "suricata", optional: true },
   { id: "cs", title: "CrowdSec scenarios", w: 1, body: "table", el: "cs", src: "crowdsec" },
   { id: "qf", title: "Q-Feeds threat-intel hits", w: 1, body: "table", el: "qf", src: "qfeeds" },
-  { id: "zen", title: "Zenarmor", w: 1, body: "table", el: "zen", src: "zenarmor" },
   { id: "talkers", title: "Internal top talkers", w: 1, body: "table", el: "talkers" },
   { id: "devices", title: "New devices", w: 1, body: "table", el: "devices" },
 ];
@@ -249,7 +248,6 @@ function render(d) {
   T("#t-ids-int", [{k: "ip", l: "Host", f: LG.ip}, {k: "sigs", l: "Sigs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_internal_hosts, "No internal host triggered Suricata");
   T("#t-cs", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}], r.crowdsec_scenarios);
   T("#t-qf", [{k: "src", l: "Source", f: LG.ip}, {k: "dst", l: "Destination", f: LG.ip}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}], r.qfeeds_hits);
-  T("#t-zen", [{k: "app", l: "App / category"}, {k: "action", l: "Action"}, {k: "n", l: "Events", num: true}], r.zenarmor_top);
   T("#t-talkers", [{k: "ip", l: "Host", f: LG.ip}, {k: "peers", l: "Peers", num: true}, {k: "n", l: "Events", num: true}], r.top_talkers_internal);
   T("#t-devices", [{k: "mac", l: "MAC", f: LG.mac}, {k: "ip", l: "IP", f: LG.ip}, {k: "hostname", l: "Name"}, {k: "first_seen", l: "First seen", f: LG.ago}], r.new_devices, "No new devices", { k: "first_seen", dir: -1 });
 

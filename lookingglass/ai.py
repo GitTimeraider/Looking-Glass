@@ -32,7 +32,7 @@ events(id bigint, ts timestamptz, received_at timestamptz, source text, host tex
        proto text, interface text, direction text, username text, domain text, src_country text, dst_country text,
        message text, data jsonb, uid text)
   source values: firewall (pf filterlog), nginx (web server/reverse proxy), unbound (DNS), crowdsec, suricata (IDS/IPS),
-                 zenarmor (L7 firewall/NGFW), qfeeds (threat intel blocks), auth (ssh / web GUI logins), vpn, dhcp, system,
+                 qfeeds (threat intel blocks), auth (ssh / web GUI logins), vpn, dhcp, system,
                  unraid (Unraid syslog + notifications, host = server name), docker (Unraid container logs, program = container),
                  unifi (UniFi controller events: Wi-Fi / wired clients and APs / switches; src_ip = client IP when known)
   action examples: firewall: pass/block; nginx: http_200, http_404, waf_block, rate_limited; unbound: query, reply,
@@ -41,7 +41,7 @@ events(id bigint, ts timestamptz, received_at timestamptz, source text, host tex
                    device_offline, device_online, device_restart, rogue_ap, rogue_dhcp, poe_disconnect, login_success / login_failed (controller admin logins), ips_alert
   data keys: firewall {label (rule description), rid, reason, tcpflags}; nginx {method, path, status, user_agent, tags[]};
              unbound {qtype, rcode, blocklist, category}; suricata {sid, signature, classification, priority};
-             crowdsec {scenario, decisions}; zenarmor {app_name, app_category, security_tags, ...};
+             crowdsec {scenario, decisions};
              unifi {key (EVT_...), mac (client), ap, ap_from, ap_to, ssid, sw, port, subsystem}
 alerts(id, created_at, last_seen, rule, severity /*info|low|medium|high|critical*/, title, description, src_ip inet,
        dst_ip inet, count int, status /*open|acknowledged|closed*/, close_reason /*false_positive|resolved*/, fingerprint, data jsonb)
@@ -51,10 +51,10 @@ metrics(ts, name, labels, value)  names: memory_used_pct, load1, pf_states, pf_s
 devices(mac, ip, hostname, name_source, vendor, interface, sources text[], lease_type, lease_expires, online, trusted, notes,
         conn_type /*wifi|wired, from UniFi*/, conn_where /*'AP Living room · Home (5 GHz)' / 'Switch Office port 5'*/,
         conn_signal /*dBm*/, conn_seen, first_seen, last_seen,
-        limits jsonb /*per-device overrides (volume_factor, ml_sensitivity, risk_threshold, new_country..., alert modes alert|silent|off); missing = device type default, else global*/, device_type text /*computer|phone|server|iot|network|other*/)   -- network inventory: ARP, DHCP leases, UniFi clients, Zenarmor
+        limits jsonb /*per-device overrides (volume_factor, ml_sensitivity, risk_threshold, new_country..., alert modes alert|silent|off); missing = device type default, else global*/, device_type text /*computer|phone|server|iot|network|other*/)   -- network inventory: ARP, DHCP leases, UniFi clients
 device_profile(key /*MAC or IP*/, kind /*country|port|domain|tls|hour*/, value, first_seen, last_seen, hits)
        -- what is NORMAL for each device (learned); device_hourly(key, hour, ip, features jsonb: connections, destinations,
-       ports, countries, dns, failed_lookups, blocked, upload_mb) -- per device and hour
+       ports, countries, dns, failed_lookups, blocked) -- per device and hour
 risk_scores(entity /*IP*/, score, parts jsonb [{rule, severity, points}], updated)  -- alerts add points that fade
 intel_indicators(kind /*domain|ip|ja3*/, value, feed /*urlhaus|threatfox|feodo|sslbl_ja3|tor_relay|tor_exit*/, info)
 seen_domains(domain, first_seen, first_client, registered /*RDAP*/)  -- first lookup of each domain on the network
@@ -83,7 +83,7 @@ for time windows. Always aggregate (GROUP BY / count) rather than pulling raw ro
 
 SYSTEM_PROMPT = """You are Looking Glass's security analyst, a senior SOC / network security engineer investigating an
 OPNsense firewall, the network behind it (UniFi access points / switches when configured) and the user's Unraid
-server(s). You have tools that query the log database (firewall, nginx, Unbound DNS, CrowdSec, Suricata, Zenarmor,
+server(s). You have tools that query the log database (firewall, nginx, Unbound DNS, CrowdSec, Suricata,
 Q-Feeds threat intel, authentication, VPN, DHCP, UniFi and system logs) plus OPNsense and UniFi state and
 the backups (Backrest / restic: failed, overdue or slow backups are a resilience risk - e.g. against ransomware).
 
@@ -98,7 +98,7 @@ How to work:
   (anything ALLOWED, anything originating INSIDE the network, successful logins, repeated targeting).
 - Rate findings by severity (critical/high/medium/low/info), and give concrete remediation steps that reference the
   OPNsense UI (menu paths) where helpful.
-- Combine sources: OPNsense / Zenarmor / DNS tell WHAT a device does, UniFi tells WHERE it is (AP or switch port, SSID /
+- Combine sources: OPNsense / DNS tell WHAT a device does, UniFi tells WHERE it is (AP or switch port, SSID /
   VLAN, signal) and since when. Use that to name the device, judge whether it belongs on that network (e.g. an IoT plug on
   the main SSID, an unknown wired device on a free switch port) and to give exact containment steps (UniFi Network ›
   Client Devices › Block, move it to an isolated SSID / VLAN, disable the switch port, or an OPNsense rule).
@@ -123,7 +123,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "search_events",
         "description": "Search raw log events with simple filters. Prefer sql_query for aggregations.",
         "parameters": {"type": "object", "properties": {
-            "source": {"type": "string", "description": "firewall, nginx, unbound, crowdsec, suricata, zenarmor, qfeeds, auth, vpn, dhcp, system, unifi, unraid, docker"},
+            "source": {"type": "string", "description": "firewall, nginx, unbound, crowdsec, suricata, qfeeds, auth, vpn, dhcp, system, unifi, unraid, docker"},
             "ip": {"type": "string", "description": "match src_ip or dst_ip"},
             "action": {"type": "string"},
             "text": {"type": "string", "description": "case-insensitive substring of message/domain"},
@@ -250,7 +250,7 @@ async def tool_ip_profile(ip: str, hours: float = 168) -> Any:
     country = await pool.fetchval("SELECT coalesce(src_country, dst_country) FROM events WHERE (src_ip = $1::inet AND src_country IS NOT NULL) "
                                   "OR (dst_ip = $1::inet AND dst_country IS NOT NULL) LIMIT 1", ip)
     device = await pool.fetchrow("SELECT * FROM devices WHERE ip = $1::inet OR $1::inet = ANY(ips) "
-                                 "ORDER BY mac LIKE 'ip:%', last_seen DESC LIMIT 1", ip)
+                                 "ORDER BY last_seen DESC LIMIT 1", ip)
     return {"ip": ip, "country": country, "device": dict(device) if device else None, "activity": db.records(by_source),
             "top_ports_as_source": db.records(ports), "top_peers": db.records(peers), "dns_queries": db.records(domains),
             "alerts": db.records(alerts)}
@@ -622,7 +622,7 @@ class Analyst:
 
     async def analyse(self, hours: int = 24, data: dict[str, Any] | None = None) -> str:
         prompt = (f"Perform a full security review of the last {hours} hours. Check open alerts, blocked and allowed traffic, "
-                  "inbound exposure, outbound anomalies from internal hosts, DNS, web server, IDS, CrowdSec, Zenarmor, Q-Feeds, "
+                  "inbound exposure, outbound anomalies from internal hosts, DNS, web server, IDS, CrowdSec, Q-Feeds, "
                   "authentication and system health. Report: 1) executive summary, 2) findings ranked by severity with evidence, "
                   "3) recommended actions, 4) blind spots (missing log sources). Take the user's comments on alerts into "
                   "account (list_alerts / alert_detail).")

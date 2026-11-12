@@ -26,7 +26,7 @@ infection. The rest is the usual internet background noise, all blocked.
 ## Findings
 | Severity | Finding | Evidence |
 |---|---|---|
-| **Critical** | 192.168.1.33 talks to command & control | Allowed connection to 185.100.87.41:9001 (Tor), Zenarmor blocked *update-check.badsite.example* (Command and Control), IDS: *ET MALWARE Cobalt Strike Beacon Observed* |
+| **Critical** | 192.168.1.33 talks to command & control | Allowed connection to 185.100.87.41:9001 (Tor), IDS: *ET MALWARE Cobalt Strike Beacon Observed* |
 | **High** | DNS tunneling from 192.168.1.21 | 800 unique subdomains of *exfil-example.net* in 10 minutes |
 | **High** | Password guessed on the firewall | 7 failed logins for `root` from 192.168.1.66, then a successful one |
 | Low | Port scans from the internet | 203.0.113.5 tried 120 ports - all blocked |

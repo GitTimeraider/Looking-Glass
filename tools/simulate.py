@@ -78,15 +78,6 @@ def scenarios() -> list[str]:
     out.append(rfc5424("suricata", "[1:2027758:3] ET MALWARE Cobalt Strike Beacon Observed [Classification: A Network Trojan was detected] [Priority: 1] {TCP} 192.168.1.33:50000 -> 185.100.87.41:443", pri=33))
     # dhcp
     out.append(rfc5424("dhcpd", "DHCPACK on 192.168.1.38 to de:ad:be:ef:00:01 (unknown-laptop) via igb1", pri=30))
-    # zenarmor (json)
-    # Zenarmor syslog line shape: daemon=zenarmor, index=<family>, data=<json>
-    out.append(rfc5424("ipdrstreamer", 'daemon=zenarmor, index=conn, data={"start_time":%d,"ip_src_saddr":"192.168.1.33","ip_src_port":50000,'
-                                       '"ip_dst_saddr":"185.100.87.41","ip_dst_port":443,"transport_proto":"TCP","app_name":"TLS",'
-                                       '"dst_hostname":"update-check.badsite.example","is_blocked":1,"src_hwaddr":"de:ad:be:ef:00:33",'
-                                       '"src_hostname":"office-pc","device":{"name":"office-pc","vendor":"Dell","os":"Windows 11"}}' % (time.time() * 1000)))
-    out.append(rfc5424("ipdrstreamer", 'daemon=zenarmor, index=alert, data={"ip_src_saddr":"192.168.1.33","ip_dst_saddr":"185.100.87.41",'
-                                       '"alert_category":"Command and Control","alertinfo":{"category":["Malware"],"sid":"zen-1"},"is_blocked":1,'
-                                       '"dst_hostname":"update-check.badsite.example"}'))
     random.shuffle(out)
     return out
 

@@ -172,15 +172,12 @@ def test_new_behavior_respects_learning_peers_and_predictability():
         port = next(a for a in alerts if "tcp/22" in a["title"])
         assert port["severity"] == "high"  # low + no peer does it + SSH
         assert "cam1 (192.168.30.11)" in port["title"]
-        # another kind of device on the network does it too (a phone and a PC both fetching mail over IMAPS), and a
-        # blocked Zenarmor threat (an ad) is no corroboration: stays low
+        # another kind of device on the network does it too (a phone and a PC both fetching mail over IMAPS): stays low
         await pool.execute("INSERT INTO devices (mac, ip, vendor) VALUES ('cc:00:00:00:00:01', '192.168.30.60', 'Dell')")
         await pool.execute("INSERT INTO device_profile (key, kind, value, first_seen, last_seen, hits) VALUES "
                            "('cc:00:00:00:00:01', 'port', 'tcp/993', $1, $1, 5)", old)
         await db.copy_events([event(NOW, "firewall", severity=6, action="pass", src_ip="192.168.30.12", dst_ip="198.51.100.9",
-                                    dst_port=993, proto="tcp", dst_country="NL"),
-                              event(NOW, "zenarmor", severity=4, action="block", src_ip="192.168.30.12", domain="ad.example",
-                                    data={"security": "Malware"})])
+                                    dst_port=993, proto="tcp", dst_country="NL")])
         await Behavior(Settings(), DetectionEngine(Settings()).internal).update_profiles()
         imap = next(a for a in await rules(pool, "new_behavior") if "tcp/993" in a["title"])
         assert imap["severity"] == "low" and "other devices on the network do" in imap["description"]
@@ -211,9 +208,9 @@ def test_new_behavior_per_device_settings():
                 "aa:00:00:00:00:03": ("192.168.30.13", '{}'),                            # global settings
                 "aa:00:00:00:00:04": ("192.168.30.14", '{"new_port": true}'),            # on although globally off
                 "aa:00:00:00:00:05": ("192.168.30.15", '{"new_country": "silent"}'),     # stored muted
-                "ip:10.8.0.2": ("10.8.0.2", '{}'),                                       # WireGuard phone: silent by type
-                "ip:10.8.0.3": ("10.8.0.3", '{"new_country": "alert"}')}                 # own setting beats its type
-        types = {"ip:10.8.0.2": "phone", "ip:10.8.0.3": "phone"}
+                "aa:00:00:00:00:06": ("10.8.0.2", '{}'),                                 # phone: silent by type
+                "aa:00:00:00:00:07": ("10.8.0.3", '{"new_country": "alert"}')}           # own setting beats its type
+        types = {"aa:00:00:00:00:06": "phone", "aa:00:00:00:00:07": "phone"}
         for i, (mac, (ip, lim)) in enumerate(devs.items()):
             await pool.execute("INSERT INTO devices (mac, ip, vendor, limits, device_type) "
                                "VALUES ($1, $2::inet, $3, $4::text::jsonb, $5)", mac, ip, f"V{i}", lim, types.get(mac))
@@ -254,13 +251,12 @@ def test_volume_ml_and_hour_of_week():
         for i in range(1, 7 * 24):
             for d in range(4):
                 f = {"connections": 100 + r.randint(-20, 20), "destinations": 20 + r.randint(-3, 3), "ports": 3,
-                     "countries": 2, "dns": 200 + r.randint(-30, 30), "failed_lookups": r.randint(0, 2), "blocked": r.randint(0, 3),
-                     "upload_mb": 5 + r.random()}
+                     "countries": 2, "dns": 200 + r.randint(-30, 30), "failed_lookups": r.randint(0, 2), "blocked": r.randint(0, 3)}
                 rows.append((f"dev{d}", hour - timedelta(hours=i), f"192.168.1.{20 + d}", f))
         rows.append(("dev0", hour, "192.168.1.20", {"connections": 9000, "destinations": 900, "ports": 40, "countries": 25,
-                                                   "dns": 210, "failed_lookups": 1, "blocked": 2, "upload_mb": 6}))
+                                                   "dns": 210, "failed_lookups": 1, "blocked": 2}))
         rows.append(("dev1", hour, "192.168.1.21", {"connections": 105, "destinations": 21, "ports": 3, "countries": 2,
-                                                   "dns": 190, "failed_lookups": 1, "blocked": 1, "upload_mb": 5.5}))
+                                                   "dns": 190, "failed_lookups": 1, "blocked": 1}))
         await pool.executemany("INSERT INTO device_hourly (key, hour, ip, features) VALUES ($1, $2, $3::inet, $4)", rows)
         b = Behavior(Settings(), DetectionEngine(Settings()).internal)
         await b.volume(hour)
@@ -356,11 +352,10 @@ def test_per_device_limits():
         for i in range(1, 7 * 24):
             for d in range(4):
                 f = {"connections": 100 + r.randint(-20, 20), "destinations": 20 + r.randint(-3, 3), "ports": 3,
-                     "countries": 2, "dns": 200 + r.randint(-30, 30), "failed_lookups": r.randint(0, 2), "blocked": r.randint(0, 3),
-                     "upload_mb": 5 + r.random()}
+                     "countries": 2, "dns": 200 + r.randint(-30, 30), "failed_lookups": r.randint(0, 2), "blocked": r.randint(0, 3)}
                 rows.append((f"aa:00:00:00:00:0{d}", hour - timedelta(hours=i), f"192.168.1.{20 + d}", f))
         spike = {"connections": 9000, "destinations": 900, "ports": 40, "countries": 25, "dns": 210, "failed_lookups": 1,
-                 "blocked": 2, "upload_mb": 6}
+                 "blocked": 2}
         rows.append(("aa:00:00:00:00:00", hour, "192.168.1.20", spike))                     # 90x: busy-at-random device
         rows.append(("aa:00:00:00:00:01", hour, "192.168.1.21", {**spike, "connections": 600}))  # 6x: steady device
         await pool.executemany("INSERT INTO device_hourly (key, hour, ip, features) VALUES ($1, $2, $3::inet, $4)", rows)
@@ -496,7 +491,7 @@ def test_ml_ignores_small_absolute_changes():
     async def body(pool):
         hour = NOW.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
         base = {"connections": 100, "destinations": 20, "ports": 3, "countries": 2, "dns": 200, "failed_lookups": 0,
-                "blocked": 0, "upload_mb": 5}
+                "blocked": 0}
         rows = [(f"dev{d}", hour - timedelta(hours=i), f"192.168.1.{20 + d}", base) for i in range(1, 150) for d in range(4)]
         rows.append(("dev0", hour, "192.168.1.20", {**base, "failed_lookups": 12, "blocked": 9}))  # tiny, but "infinitely" more
         await pool.executemany("INSERT INTO device_hourly (key, hour, ip, features) VALUES ($1, $2, $3::inet, $4)", rows)
@@ -537,25 +532,20 @@ def test_exposure_watch_alerts_on_new_port_forward():
 
 
 @needs_db
-def test_firewall_block_wins_over_zenarmor_connection_record():
-    """Zenarmor logs connection attempts it sees before the firewall rules act: blocked by OPNsense = not allowed."""
+def test_firewall_verdict_in_tor_and_port_alerts():
+    """Blocked by OPNsense = not allowed; the alert names the blocking rule."""
     async def body(pool):
         await pool.executemany("INSERT INTO intel_indicators (kind, value, feed, info) VALUES ($1, $2, $3, $4)", [
             ("ip", "37.48.81.43", "tor_relay", "Tor relay"), ("ip", "198.51.100.77", "tor_relay", "Tor relay")])
         await db.kv_set("intel:version", 2)
         t = NOW - timedelta(minutes=1)
         await db.copy_events([
-            # PBCam: Zenarmor saw the attempt (no answer), the firewall's LAN -> WAN rule blocked it
-            event(t, "zenarmor", severity=6, action="conn", src_ip="192.168.2.7", dst_ip="37.48.81.43", dst_port=9001,
-                  data={"family": "conn", "src_nbytes": 120, "dst_nbytes": 0}),
+            # PBCam: the firewall's LAN -> WAN rule blocked it
             event(t, "firewall", severity=6, action="block", src_ip="192.168.2.7", dst_ip="37.48.81.43", dst_port=9001,
                   data={"label": "Block LAN to WAN"}),
-            # another device: Zenarmor saw a real two-way connection, no firewall block
-            event(t, "zenarmor", severity=6, action="conn", src_ip="192.168.2.8", dst_ip="198.51.100.77", dst_port=9001,
-                  data={"family": "conn", "src_nbytes": 900, "dst_nbytes": 15000}),
-            # suspicious port, only a Zenarmor attempt + firewall block
-            event(t, "zenarmor", severity=6, action="conn", src_ip="192.168.2.9", dst_ip="203.0.113.70", dst_port=3389,
-                  data={"family": "conn", "dst_npackets": 0}),
+            # another device: the firewall let it through
+            event(t, "firewall", severity=6, action="pass", src_ip="192.168.2.8", dst_ip="198.51.100.77", dst_port=9001),
+            # suspicious port, blocked by the firewall
             event(t, "firewall", severity=6, action="block", src_ip="192.168.2.9", dst_ip="203.0.113.70", dst_port=3389,
                   data={"label": "Block LAN to WAN"})])
         eng = DetectionEngine(Settings())
@@ -813,16 +803,14 @@ def test_api_pulled_alert_remembers_when_its_events_happened():
 
 @needs_db
 def test_tor_relay_behind_a_dns_ntp_redirect_is_not_raised():
-    """A LaMetric asks a pool NTP server that is also a Tor relay; the NAT port forward answers it locally. Zenarmor /
-    the firewall still log the relay as destination."""
+    """A LaMetric asks a pool NTP server that is also a Tor relay; the NAT port forward answers it locally. The
+    firewall still logs the relay as destination."""
     async def body(pool):
         await pool.execute("INSERT INTO intel_indicators (kind, value, feed, info) VALUES ('ip', '37.48.81.43', 'tor_relay', 'Tor relay')")
         await db.kv_set("intel:version", 2)
         t = NOW - timedelta(minutes=1)
-        evs = [event(t, "zenarmor", severity=6, action="conn", src_ip="192.168.20.12", dst_ip="37.48.81.43", dst_port=p,
-                     proto="udp") for p in (53, 123)]
-        evs.append(event(t, "firewall", severity=6, action="pass", direction="in", src_ip="192.168.20.12",
-                         dst_ip="37.48.81.43", dst_port=123, proto="udp"))
+        evs = [event(t, "firewall", severity=6, action="pass", direction="in", src_ip="192.168.20.12",
+                     dst_ip="37.48.81.43", dst_port=p, proto="udp") for p in (53, 123)]
         evs.append(event(t, "firewall", severity=6, action="pass", src_ip="192.168.20.13", dst_ip="37.48.81.43",
                          dst_port=9001, proto="tcp"))  # a real Tor connection
         await db.copy_events(evs)

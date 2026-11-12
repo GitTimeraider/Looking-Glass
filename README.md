@@ -24,7 +24,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 |---|---|
 | **Alerts** - every alert says why it got its severity, which device it is and where it is connected; mute, re-rate or ask the AI | **AI analyst** - asks the database itself and answers with findings and actions |
 | ![Alerts](docs/screenshots/alerts.png) | ![AI analyst](docs/screenshots/ai-analyst.png) |
-| **Firewall dashboard** - one of nine dashboards (DNS, web server, threats, Zenarmor, logins, VPN, Wi-Fi, logs) | **Devices** - inventory from ARP, DHCP, UniFi and Zenarmor, with risk score and learned behaviour |
+| **Firewall dashboard** - one of eight dashboards (DNS, web server, threats, logins, VPN, Wi-Fi, logs) | **Devices** - inventory from ARP, DHCP and UniFi, with risk score and learned behaviour |
 | ![Firewall dashboard](docs/screenshots/firewall.png) | ![Devices](docs/screenshots/devices.png) |
 | **OPNsense** - hardware, load, temperatures, gateways, interfaces and services | **UniFi** - access points, switches, Wi-Fi and wired clients, neighbouring Wi-Fi |
 | ![OPNsense](docs/screenshots/opnsense.png) | ![UniFi](docs/screenshots/unifi.png) |
@@ -42,8 +42,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 | Unbound DNS | API (reporting DB) and/or syslog (`log-queries`) | per-client queries, blocklist hits, NXDOMAIN, DNS tunneling / DGA detection |
 | CrowdSec | API (alerts + decisions) + syslog | scenarios, bans |
 | Suricata | API + syslog | signatures, classifications |
-| Zenarmor | built-in Elasticsearch-compatible receiver (**works on the free edition**) or syslog (paid editions) | flows, DNS, TLS/SNI, HTTP, threat alerts, apps/categories, traffic volume, **device fingerprints** (name, vendor, OS) |
-| Q-Feeds | API (events + stats) | threat-intel matches, especially **internal hosts contacting malicious IPs** (needs logged block rules, see step 5) |
+| Q-Feeds | API (events + stats) | threat-intel matches, especially **internal hosts contacting malicious IPs** (needs logged block rules, see step 6) |
 | SSH / web GUI / OpenVPN / IPsec | syslog | failed and successful logins, config changes |
 | DHCP leases (Kea, dnsmasq, ISC) + ARP | API + syslog | **device list**: name, IP, MAC, vendor, interface, lease, online state, per-device activity; **new/rogue device** alerts |
 | System / hardware | API | CPU %, load, memory, swap, ZFS ARC, disks, temperatures, states, interface throughput/errors, gateways, services, top processes, firmware updates |
@@ -54,7 +53,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 ## Built-in detections
 
 Port scans, host sweeps, brute force (SSH / web GUI / VPN), **successful login after failures**, logins from public IPs,
-web attacks & scanners, Suricata signatures, CrowdSec alerts, Q-Feeds hits (inbound probing / outbound C2), Zenarmor threats,
+web attacks & scanners, Suricata signatures, CrowdSec alerts, Q-Feeds hits (inbound probing / outbound C2),
 DNS tunneling, DGA domains, NXDOMAIN storms, malicious-domain lookups, internal hosts blocked to many destinations,
 outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), new devices, UniFi access point / switch
 offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, gateway down, resources
@@ -75,10 +74,9 @@ login after failures, logins from the internet and logins from a new country. Al
 | Beaconing | a device contacting a domain / address nobody else uses at a near-constant rhythm for hours - malware check-ins (T1071) |
 | Lateral movement | one device reaching SSH / SMB / RDP / WinRM / VNC / Docker API on 5+ internal hosts in 15 min (T1021) |
 | DNS bypass | devices using DNS servers on the internet directly, past your resolver and blocklists |
-| Unusual upload | 1 GB+ sent to the internet in an hour and 5× more than the device's 7-day average (Zenarmor; T1048) |
 | Attack chain | ties **open** alerts about one address together: outside *recon → attack → access*, or inside *threat sign → command & control → spreading* (plus "new device"); needs one strong link (threat intel, IDS, lateral movement, scan, canary … or a behaviour alert rated high), so e.g. beaconing to a time server plus a big download is no chain; acknowledged alerts and a rule you closed as false positive for that address (30 days) are left out; high or critical |
 
-*NAT redirects*: a port forward that sends DNS / NTP (or any port) to your own server, e.g. *VLAN_IoT TCP/UDP to !RFC1918 port domain ⇒ VLAN_IoT address*, answers those packets locally, but Zenarmor (it sees packets before NAT) and the firewall's pass log still show the original destination. DNS bypass, Tor and threat-feed alerts therefore skip traffic on redirected ports that the firewall never logged leaving towards the internet - e.g. an NTP query to a pool server that is also a Tor relay. Looking Glass knows the redirects from the API (privilege *Firewall: NAT: Port Forward*) or from the NAT rule's own log lines (tick *Log* on it).
+*NAT redirects*: a port forward that sends DNS / NTP (or any port) to your own server, e.g. *VLAN_IoT TCP/UDP to !RFC1918 port domain ⇒ VLAN_IoT address*, answers those packets locally, but the firewall's pass log still shows the original destination. DNS bypass, Tor and threat-feed alerts therefore skip traffic on redirected ports that the firewall never logged leaving towards the internet - e.g. an NTP query to a pool server that is also a Tor relay. Looking Glass knows the redirects from the API (privilege *Firewall: NAT: Port Forward*) or from the NAT rule's own log lines (tick *Log* on it).
 
 *DGA domains* are random-looking names such as `kq3v9x7w2m8p4z1r.com`, which malware generates by the thousands
 (Domain Generation Algorithm) to find its control server. Some CDNs and latency probes use random names too: list
@@ -154,8 +152,8 @@ excludes devices from all of them.
 | **Predictable devices only** | "new …" alerts only for devices that rarely pick up anything new (cameras, TVs, plugs) - PCs and phones are skipped automatically | *max. new things per day* (0 = all devices) |
 | **Similar devices** | devices of the same vendor form a group: what the others do too is normal, what none of them do weighs heavier - unless other devices on the network do it too (a phone and a PC both using WhatsApp or IMAP) | on / off |
 | **Odd hours** | activity at an hour the device has never been active | on / off |
-| **Traffic spike** | connections, DNS lookups or upload of one hour N× the device's median | factor (0 = off); per device on the Devices page |
-| **Machine learning** | an Isolation Forest (one per pair of 8 features, pure Python, nothing leaves the server) scores each device-hour against the device's own history; alerts name the features that were off ("connections 9,000, normally ~100") | sensitivity low / medium / high; per device (incl. off) on the Devices page |
+| **Traffic spike** | connections or DNS lookups of one hour N× the device's median | factor (0 = off); per device on the Devices page |
+| **Machine learning** | an Isolation Forest (one per pair of 7 features, pure Python, nothing leaves the server) scores each device-hour against the device's own history; alerts name the features that were off ("connections 9,000, normally ~100") | sensitivity low / medium / high; per device (incl. off) on the Devices page |
 | **Hour of the week** | network totals (blocks, failed logins, DNS, NXDOMAIN, per log source) against the same hour in previous weeks | sensitivity, metrics to ignore - always or only on some days / hours (e.g. `source:unraid tue 01-02`) |
 | **Risk score** | every open alert (not acknowledged / closed) adds points (info 1 … critical 40, once per rule) that fade with a half-life; one alert when a device's total is high; shown on the Devices page | threshold, half-life, addresses to skip; threshold per device on the Devices page |
 | **Learning from false positives** | **Close as false positive** on the Alerts page; the same rule + address 3× in 30 days becomes a suggestion (mute / lower to info), or in *auto* mode a "Learned: …" severity rule (visible and removable under Alert filters) | suggest / auto / off, how many |
@@ -168,7 +166,7 @@ global ones above. Every setting has a **Use default** box: ticked, the device f
 the global setting (also when that changes later); unticked, the value next to it is the device's own.
 
 * **Device type** - *Laptop / desktop*, *Phone / tablet*, *Server / NAS*, *IoT*, *Network equipment* or *Other*, for
-  every device, also clients without a MAC address such as WireGuard peers. Laptops / desktops and phones / tablets
+  every device. Laptops / desktops and phones / tablets
   reach new countries, domains and apps all the time (travel, a VPN, updates), so their *new country*, *new port* and
   *odd hours* alerts are **silent** and *new domain* / *new TLS program* **off** by default. The other types use the
   global settings. A device's own setting wins over its type.
@@ -313,8 +311,8 @@ decide it for every rule:
    Allowed connections, successful logins and attacks that got a 2xx/3xx answer are what matter.
 2. **Where does it come from?** The same behaviour from *inside* your network (a scan, password guessing, contact with a
    malicious address) is worse than from the internet: it means a device of yours misbehaves.
-3. **Do other sources confirm it?** When the same IP also has IDS alerts, threat-intel (Q-Feeds) hits, Zenarmor threat
-   events Zenarmor did *not* block (a blocked ad or link is no sign of anything) or other open alerts in the last 24 hours, the alert goes up one or two steps.
+3. **Do other sources confirm it?** When the same IP also has IDS alerts, threat-intel (Q-Feeds) hits or other open
+   alerts in the last 24 hours, the alert goes up one or two steps.
    For a device of yours, Q-Feeds hits only count when it keeps coming back (blocked attempts in 6 separate 10-minute
    periods or to 5 listed addresses): one blocked visit is Q-Feeds doing its job, as is a threat-intel alert rated low.
    The hits and the threat-intel alert made of them count once. Suricata: a priority 1–2 alert that got through
@@ -322,7 +320,7 @@ decide it for every rule:
    never. CrowdSec, Suricata and threat-intel alerts rated low (handled, blocked, policy noise) don't count; an
    internal CrowdSec detection (rated high) does. Alerts built from the same
    events (e.g. a brute force and the login after it) don't count as confirmation for each other. Traffic that was
-   **blocked** - by the firewall, Zenarmor, Q-Feeds, Suricata in IPS mode or a DNS blocklist, in any rule (scans,
+   **blocked** - by the firewall, Q-Feeds, Suricata in IPS mode or a DNS blocklist, in any rule (scans,
    threat feeds, Tor, suspicious ports, beaconing, lateral movement, ...) - stays at **high** at most, however much
    confirms it, and so does an attack chain whose steps were all blocked: critical is for what got through. Only your
    own *Change the severity* rules can still set critical.
@@ -340,7 +338,6 @@ decide it for every rule:
 | Suricata (IDS) from the internet / from inside | a signature hit is **no alert** on its own, like CrowdSec / Q-Feeds - an internet address only once it triggers 20+ hits in 24h (one alert per address: info when IPS mode dropped every hit, else low); a device inside: high for a priority-1 signature that was NOT dropped, otherwise low and only an alert when other sources confirm it or it repeats (same signature in 6+ separate 10-minute periods, or 5+ different signatures, in 24h). *Settings › OPNsense*: which priorities count and SIDs that never do |
 | CrowdSec decision for an internet IP / for an internal IP | low (it is handled) / high |
 | Internal device contacted a threat-intel address (blocked by Q-Feeds) / internet address of a threat list probes you | low - medium / high when other sources confirm it or the device keeps coming back (blocked threat traffic in 6+ separate 10-minute periods, or to 5+ different sites, in 24h - retries and subdomains of one page visit count once) / info |
-| Zenarmor malware / C2 / phishing: blocked / NOT blocked; other categories: blocked / not blocked | blocked: **no alert** on its own (a blocked ad or link is Zenarmor doing its job) - medium / high when the device keeps trying or other sources confirm it; NOT blocked: critical; other categories: none / medium (blocked ones per *Settings › Zenarmor › Alert on traffic Zenarmor blocked*: threats = only repeated or confirmed (default), every_threat, all or never) |
 | DNS tunneling, DGA names, NXDOMAIN storm | high, medium, low - each up when confirmed |
 | Malicious domain looked up (blocked): 1-2 domains / 3+ | medium / high, up when confirmed |
 | Suspicious outbound port (Tor, IRC, RDP, SMB, mining…) blocked / allowed | low / medium, up when confirmed |
@@ -464,7 +461,7 @@ Next logins ask for password + TOTP code or passkey.
   *Theme*: dark (default), light, or auto (follows the browser / operating system), and an *Accent color* (blue,
   indigo, purple, pink, red, orange, green, teal, cyan or gray) for buttons, links and a light tint of the background -
   e.g. light + purple, dark + purple. The page previews your pick right away; *Save* keeps it.
-* **Zenarmor** / **Unraid servers** / **Data & detection** tabs – optional (see the sections below).
+* **Unraid servers** / **Data & detection** tabs – optional (see the sections below).
 
 Everything applies immediately. API keys, secrets and passwords are encrypted (Fernet/AES) with a key that is
 generated on first start in the data volume (`/data/lookingglass.key`, readable only by the app user). They are
@@ -528,17 +525,7 @@ These steps were checked against the current OPNsense documentation and source (
    and IPsec tunnels are read from the API (*Pull VPN status*). A WireGuard peer going online or offline becomes an event.
 5. **Suricata** – nothing to do: alerts are pulled from the API. Don't also tick *Enable syslog alerts* in
    Intrusion Detection, that would count every alert twice.
-6. **Zenarmor** – choose one (both are mirrors; Zenarmor's own reports stay intact):
-   * **Any edition, incl. free Home (recommended)**: **Zenarmor › Settings › Streaming Data › Stream Reporting Data to
-     External Elasticsearch**: URI `http://<docker-host>:9200`, Elasticsearch version `8.11.3`, username/password empty
-     (or the username/password you set under Looking Glass *Settings › Zenarmor*), Apply. Looking Glass answers as an Elasticsearch node.
-     ⚠️ Do **not** use the install wizard's *Remote Elasticsearch Database* option – that replaces Zenarmor's local
-     storage and cannot be changed afterwards.
-   * **Paid editions**: the same page, *Stream Reporting Data to External Syslog*: server = Docker host, port 514,
-     select Connections, DNS, TLS, Web (HTTP) and Alerts.
-   Not using Zenarmor? Then the *Zenarmor* menu entry, its Overview widget and the report section stay hidden. They
-   appear as soon as the first Zenarmor record arrives, and hide again after 7 days without any.
-7. **Q-Feeds** – the plugin only creates firewall aliases. Its *Events* (which Looking Glass reads) only appear when you
+6. **Q-Feeds** – the plugin only creates firewall aliases. Its *Events* (which Looking Glass reads) only appear when you
    add **block rules that use the Q-Feeds aliases with logging enabled**, e.g. on LAN: *block, destination = Q-Feeds
    alias, Log ✓* and on WAN: *block, source = Q-Feeds alias, Log ✓* (**Firewall › Rules**). The domain feeds are
    applied through Unbound's blocklist (*Register domain feeds* in **Security › Q-Feeds Connect**).
@@ -546,7 +533,7 @@ These steps were checked against the current OPNsense documentation and source (
    Q-Feeds*, for alerts and in reports - also blocks the plugin's own *Events* miss. While they arrive, the plugin's
    events (read from the same log) are not stored again. In / out is taken from the addresses: a LAN rule logs an
    outgoing connection as "in" on the LAN interface.
-8. **CrowdSec** needs nothing extra – alerts and decisions are read through the API. These are only CrowdSec's own detections; the community blocklist (usually by far the most bans) blocks in the firewall, through the rules that use its aliases. *Settings › OPNsense › Blocklist aliases* names those aliases per tool (default `CrowdSec: crowdsec_blocklists, crowdsec6_blocklists` and `Q-Feeds: __qfeeds_*`, `*` as wildcard - change it when a plugin renames them, or add your own lists): Looking Glass finds every rule using them, reads the addresses in the tables and the packets the rules blocked, and marks their firewall log lines. Needs the API user's *Firewall: Alias: Edit* and *Diagnostics: Firewall statistics* privileges; for the logged blocks enable *Services › CrowdSec › Settings › Enable log for rules*.
+7. **CrowdSec** needs nothing extra – alerts and decisions are read through the API. These are only CrowdSec's own detections; the community blocklist (usually by far the most bans) blocks in the firewall, through the rules that use its aliases. *Settings › OPNsense › Blocklist aliases* names those aliases per tool (default `CrowdSec: crowdsec_blocklists, crowdsec6_blocklists` and `Q-Feeds: __qfeeds_*`, `*` as wildcard - change it when a plugin renames them, or add your own lists): Looking Glass finds every rule using them, reads the addresses in the tables and the packets the rules blocked, and marks their firewall log lines. Needs the API user's *Firewall: Alias: Edit* and *Diagnostics: Firewall statistics* privileges; for the logged blocks enable *Services › CrowdSec › Settings › Enable log for rules*.
 
 Check **Setup & Status** in Looking Glass: every source should show a recent "last message" and every API job "ok"
 (jobs for plugins you don't have show `n/a`).
@@ -660,7 +647,7 @@ mkdir -p /srv/looking-glass && sudo chown 99:100 /srv/looking-glass
 docker run -d --name looking-glass --restart unless-stopped \
   --user 99:100 --cap-drop=ALL --security-opt=no-new-privileges:true \
   -v /srv/looking-glass:/data \
-  -p 8080:8080 -p 514:5514/udp -p 514:5514/tcp -p 9200:9200 \
+  -p 8080:8080 -p 514:5514/udp -p 514:5514/tcp \
   ghcr.io/gittimeraider/looking-glass:latest
 docker logs looking-glass    # setup code; then open http://<docker-host>:8080 for the wizard
 ```
@@ -674,7 +661,7 @@ Things to know:
   bit, like `/tmp`. The encryption key inside it is always created with mode `0600`.
 * **Changing the user later:** chown the folder to the new uid:gid first, otherwise the container stops with
   `ERROR: the encryption key … belongs to another user`.
-* The container ports (8080, 5514, 9200) are above 1024, so `NET_BIND_SERVICE` is not needed. Map host port 514 to
+* The container ports (8080, 5514) are above 1024, so `NET_BIND_SERVICE` is not needed. Map host port 514 to
   container port 5514 as the examples do.
 * Any uid/gid works; it doesn't have to exist inside the image.
 * **Legacy root mode:** started as root (`--user 0`) with `PUID`/`PGID`, the container fixes the ownership of
@@ -908,7 +895,7 @@ How UniFi and OPNsense data are combined:
 * **Alerts** about an internal device (threat intel, IDS, DNS, new device…) say where it is connected and how to cut it
   off (*UniFi Network › Client Devices › … › Block*, or an OPNsense rule).
 * **UniFi network › Wi-Fi & clients** has *Clients with security events*: firewall blocks, DNS blocks and threat events
-  from OPNsense / Zenarmor per Wi-Fi or wired client, with its location. Reports have the same section.
+  from OPNsense per Wi-Fi or wired client, with its location. Reports have the same section.
 * The **AI analyst** can read UniFi state (tool `unifi_status`) and is told to use location / SSID / VLAN when judging a
   device and to give UniFi containment steps.
 
@@ -957,9 +944,7 @@ as the configuration is read - they are never stored. Runs are kept for 400 days
   tall, remove them and add others (e.g. *Firewall system*); *Done* saves the layout for your account, *Reset to
   default* brings back the standard one. Widgets of sources you switched off (e.g. Suricata) hide themselves.
   Extra Suricata widgets (top sources, targeted hosts, classifications, internal hosts alerting) are under
-  *+ Add widget…*. *Settings › OPNsense › Receive Zenarmor data* off closes the Elasticsearch receiver port (9200,
-  within a few seconds; on opens it again), discards Zenarmor records sent over syslog and hides its widget, menu
-  entry and settings tab. Stored Zenarmor events are kept.
+  *+ Add widget…*.
 * **Menu**: *General* (overview, alerts, event search over all sources), *OPNsense security* (the OPNsense security
   dashboards; other security products get their own group), *Infrastructure* (OPNsense and Unraid hardware & status,
   devices), *Tools* (system logs, reports, AI analyst) and *Admin*.
@@ -977,8 +962,6 @@ as the configuration is read - they are never stored. Runs are kept for 400 days
   JA3/JA4 fingerprints and SNI). Switching a source off (Settings › OPNsense › Pull …) hides its tab, its tiles
   and its Overview widgets right away;
   */dash/threats#suricata* opens a tab directly,
-  *Zenarmor* (record types, applications and app categories, web categories, DNS/TLS/HTTP, hosts and devices, blocked
-  destinations, threats, top talkers),
   *Authentication* (failed/successful logins, IPs with failed logins, usernames tried, config changes),
   *VPN* (live WireGuard peers, OpenVPN sessions and IPsec tunnels, connects/disconnects, VPN logins) and
   *System logs* (OPNsense and Unraid, per host and program).
@@ -991,25 +974,22 @@ as the configuration is read - they are never stored. Runs are kept for 400 days
   SSID, signal, traffic) and *Neighbouring Wi-Fi* (foreign APs, evil-twin warnings).
 * **UniFi network › Wi-Fi & clients** – connects, roams, device offline and rogue events over time, clients per SSID /
   AP, weakest signal, most roaming, top traffic, device events and clients with security events (see above).
-* **Devices** – everything connected to OPNsense (ARP + DHCP leases from dnsmasq / Kea / ISC + Zenarmor device
-  fingerprints): online state, name,
+* **Devices** – everything connected to OPNsense (ARP + DHCP leases from dnsmasq / Kea / ISC + UniFi clients):
+  online state, name,
   IP, MAC, vendor, interface, lease, first/last seen, events/blocks/DNS queries/alerts per device; mark devices as
   trusted, rename them, add notes.
   Names come from, best first: a name you typed (never replaced; clear it to go back to automatic) → OPNsense's own interfaces (the ARP table marks their addresses *permanent*): one device per interface, "OPNsense (LAN)", "OPNsense (VLAN_IoT)" - also when VLANs share the port's MAC; alerts, counts and learned behaviour follow each interface's own addresses → a dnsmasq
   *Hosts* entry for the MAC or IP (*Services > Dnsmasq DNS & DHCP > Hosts*) → the host name the device sent with its
-  DHCP request → the name Unbound shows for the IP → the ARP table / Zenarmor (the host name Zenarmor learned, else the name of its entry under *Zenarmor › Devices*; an IP address or a bare OS / vendor label such as "Steam OS" is not used as a name). The placeholders dnsmasq (`*`) and the
+  DHCP request → the name Unbound shows for the IP → the ARP table. The placeholders dnsmasq (`*`) and the
   ARP table (`-`, `?`) use for "no name" are ignored. A device that still has no name sends none and has no Hosts
   entry: add one in OPNsense (host name + its MAC) or name it on the Devices page.
-  Every client Zenarmor sees is added, also those without a MAC address - **WireGuard peers** and networks routed
-  behind another router: they are listed under their IP ("no MAC"), named by Zenarmor, online when Zenarmor sees
-  their traffic. A device with a MAC that already has that IP is not listed twice.
-  Offline: a device with a MAC once it leaves the ARP table; one without a MAC after 20 minutes without traffic.
+  Offline: once it leaves the ARP table.
   Devices stay on the list until you **delete** them (Devices page, next to *edit*; what was learned about them goes
   too) or *Settings › Data & detection › Remove devices not seen for (days)* removes them (default 0 = never; trusted
   devices, devices you named, devices with notes and devices with a type or their own settings are kept).
 * **Unraid** – see above.
 * **Settings › Data & detection › Delete collected data** – wipe logs/events, alerts, graphs, reports, AI conversations
-  and optionally the device list to start over; or only the Zenarmor events (deleted in the background) or only the
+  and optionally the device list to start over; or only the
   backup run history (what Backrest still lists comes back on its next poll). Settings, credentials, accounts/MFA, Unraid servers and the encryption
   key are kept; needs your password and typing DELETE.
 * **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range; filters that come
@@ -1031,7 +1011,7 @@ as the configuration is read - they are never stored. Runs are kept for 400 days
 **In the web UI (Settings, stored in the database, secrets encrypted, applied live):** OPNsense URL / API key /
 secret / TLS verification / custom CA / poll interval / per-source pulls · UniFi URL / API key / username / password /
 site / TLS verification / poll interval / events · AI base URL / API key / model / limits /
-scheduled report (every N days, hour, mail recipients) · Zenarmor stream username / password / allowed senders · syslog allowed senders, extra internal
+scheduled report (every N days, hour, mail recipients) · syslog allowed senders, extra internal
 networks, time zone · retention, detection interval, GeoIP path · Unraid servers (URL, API key, Docker API) · container packages (on/off, image source, exclusions, registry
 login, Syft options).
 
@@ -1051,7 +1031,7 @@ user / password / SSL mode · first account.
 | `PUBLIC_URL` / `WEBAUTHN_RP_ID` | auto | public https URL / passkey relying-party id when behind a reverse proxy |
 | `COOKIE_SECURE` | `false` | mark the session cookie HTTPS-only |
 | `SECRET_KEY` (or `SECRET_KEY_FILE`) | generated, stored in DB | cookie signing key |
-| `WEB_PORT` / `SYSLOG_UDP_PORT` / `SYSLOG_TCP_PORT` / `ZENARMOR_ES_PORT` | `8080` / `5514` / `5514` / `9200` | container listen ports (`ZENARMOR_ES_PORT=0` disables the receiver; it is also closed while *Receive Zenarmor data* is off) |
+| `WEB_PORT` / `SYSLOG_UDP_PORT` / `SYSLOG_TCP_PORT` | `8080` / `5514` / `5514` | container listen ports |
 | `LOG_LEVEL` | `INFO` | logging verbosity |
 | `LOG_AI_REQUESTS` | `false` | `true` logs every request to the AI endpoint and what started it (chat / Ask AI, report, daily report, connection test) |
 
@@ -1082,7 +1062,6 @@ Integration details were checked against current upstream sources: the OPNsense
 [core](https://github.com/opnsense/core), [plugins](https://github.com/opnsense/plugins) and
 [docs](https://github.com/opnsense/docs) repositories (API controllers, syslog model, nginx syslog targets, Q-Feeds,
 CrowdSec, DHCP leases), the [Unraid API](https://github.com/unraid/api) schema and [Unraid docs](https://github.com/unraid/docs),
-[opnsense2otel](https://github.com/rknightion/opnsense2otel) (Zenarmor wire formats),
 UniFi Network controller OpenAPI specs 9.0–11.0 ([beezly/unifi-apis](https://github.com/beezly/unifi-apis)),
 [aiounifi](https://github.com/Kane610/aiounifi), [unpoller](https://github.com/unpoller/unifi) and the
 [Art-of-WiFi UniFi API client](https://github.com/Art-of-WiFi/UniFi-API-client),

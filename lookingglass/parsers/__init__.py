@@ -30,10 +30,6 @@ def parse_line(raw: str, sender: str | None = None, local_tz=timezone.utc, now: 
         ev = security.parse_crowdsec(sm.ts, host, sm.program, msg)
     elif prog.startswith("suricata"):
         ev = security.parse_suricata(sm.ts, host, sm.program, msg)
-    elif prog.startswith(("zenarmor", "sensei", "ipdrstreamer", "eastpect")):
-        ev = security.parse_zenarmor(sm.ts, host, sm.program, msg)
-    elif security.is_zenarmor_line(msg) or (msg.lstrip().startswith("{") and "ip_src_saddr" in msg):
-        ev = security.parse_zenarmor(sm.ts, host, sm.program or "zenarmor", msg)
     if ev is None:
         ev = security.parse_generic(sm.ts, host, sm.program, sm.severity, msg)
     if ev.get("severity") is None:

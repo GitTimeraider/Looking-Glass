@@ -5,22 +5,16 @@ import asyncio
 import logging
 import secrets
 import signal
-import socket
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import uvicorn
 
-from . import __version__, app_config, auth, crypto, db, db_config, notify, optional_sources, rollup
+from . import __version__, app_config, auth, crypto, db, db_config, notify, rollup
 from .ai import Analyst, request_log
 from .backrest import BackrestPoller
 from .config import get_settings
-from .detections import (
-    DetectionEngine,
-    device_upkeep,
-    dhcp_listener,
-    zenarmor_device_listener,
-)
+from .detections import DetectionEngine, device_upkeep, dhcp_listener
 from .enrich import Enricher
 from .ingest import EventWriter, SyslogServer
 from .opnsense import Poller
@@ -29,7 +23,6 @@ from .unifi import UnifiPoller
 from .unraid import UnraidManager
 from .web.app import create_app
 from .web.wizard import Wizard
-from .zenarmor_es import create_es_app
 
 log = logging.getLogger("lookingglass")
 
@@ -54,6 +47,13 @@ async def housekeeping(settings) -> None:
                 if int(status.split()[-1]) < 50000:
                     break
                 await asyncio.sleep(0.5)
+            while True:  # Zenarmor is no longer supported: what older versions stored of it
+                status = await pool.execute(
+                    "DELETE FROM events WHERE id IN (SELECT id FROM events WHERE source = 'zenarmor' LIMIT 50000)")
+                if int(status.split()[-1]) < 50000:
+                    break
+                await asyncio.sleep(0.5)
+            await pool.execute("DELETE FROM event_rollup WHERE source = 'zenarmor'")
             await rollup.prune(settings.retention_days)
             await pool.execute("DELETE FROM metrics WHERE ts < now() - make_interval(days => $1)", settings.metrics_retention_days)
             await pool.execute("DELETE FROM backup_runs WHERE started < now() - interval '400 days'")
@@ -68,7 +68,7 @@ async def housekeeping(settings) -> None:
 
 
 async def device_upkeep_loop(settings) -> None:
-    """Every minute: quiet clients without a MAC -> offline, and the device removal of Settings › Data & detection."""
+    """Every minute: the device removal of Settings › Data & detection."""
     while True:
         await asyncio.sleep(60)
         try:
@@ -186,70 +186,6 @@ async def backrest_supervisor(settings) -> None:
             await _stop_poller(poller, task)
 
 
-def _listen(host: str, port: int) -> socket.socket:
-    """The receiver's listening socket, opened here so a port that cannot be opened is a normal error (uvicorn would
-    end the whole program)."""
-    family = socket.AF_INET6 if ":" in host else socket.AF_INET
-    sock = socket.socket(family, socket.SOCK_STREAM)
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((host, port))
-        sock.listen(128)
-        sock.setblocking(False)
-    except OSError:
-        sock.close()
-        raise
-    return sock
-
-
-ES_CHECK_S = 5  # how often the Zenarmor receiver follows its switch
-
-
-async def zenarmor_es_supervisor(settings, writer: EventWriter) -> None:
-    """The Zenarmor Elasticsearch receiver: its port is open only while Zenarmor is switched on (Settings › OPNsense ›
-    Receive Zenarmor data) and ZENARMOR_ES_PORT is not 0. Switching it off closes the port within a few seconds,
-    switching it on opens it again - no restart needed."""
-    server: uvicorn.Server | None = None
-    task: asyncio.Task | None = None
-    retry_at = 0.0
-    loop = asyncio.get_running_loop()
-
-    async def stop() -> None:
-        nonlocal server, task
-        if server is not None:
-            server.should_exit = True
-            await asyncio.gather(task, return_exceptions=True)
-        server = task = None
-
-    try:
-        while True:
-            want = bool(settings.zenarmor_enabled and settings.zenarmor_es_port)
-            if task is not None and task.done():
-                log.error("Zenarmor receiver stopped (%r), opening it again in 30s",
-                          None if task.cancelled() else task.exception())
-                server = task = None
-                retry_at = loop.time() + 30
-            if want and server is None and loop.time() >= retry_at:
-                try:
-                    sock = _listen(settings.web_host, settings.zenarmor_es_port)
-                except OSError as exc:
-                    log.error("Zenarmor receiver: port %s cannot be opened (%s), trying again in 30s",
-                              settings.zenarmor_es_port, exc)
-                    retry_at = loop.time() + 30
-                else:
-                    server = uvicorn.Server(uvicorn.Config(create_es_app(settings, writer), log_level="warning",
-                                                           lifespan="off"))
-                    server.install_signal_handlers = lambda: None
-                    task = asyncio.create_task(server.serve(sockets=[sock]), name="zenarmor-es")
-                    log.info("Zenarmor Elasticsearch-compatible receiver on port %s", settings.zenarmor_es_port)
-            elif not want and server is not None:
-                await stop()
-                log.info("Zenarmor switched off: receiver port %s closed", settings.zenarmor_es_port)
-            await asyncio.sleep(ES_CHECK_S)
-    finally:
-        await stop()
-
-
 async def daily_ai_report(settings, analyst: Analyst) -> None:
     """The scheduled report: every ``report_every_days`` days at the set hour, covering those days; mailed when
     recipients are set."""
@@ -351,12 +287,6 @@ async def amain() -> None:
     enricher = Enricher(settings)
     writer = EventWriter(enricher)
     writer.listeners.append(dhcp_listener)
-    writer.listeners.append(zenarmor_device_listener)
-    writer.listeners.append(optional_sources.listener)
-    try:  # before the web UI starts: the menu shows Zenarmor only when it is set up
-        await optional_sources.refresh()
-    except Exception:  # noqa: BLE001
-        log.exception("checking whether Zenarmor is set up failed")
     analyst = Analyst(settings)
 
     tasks: list[asyncio.Task] = []
@@ -372,7 +302,6 @@ async def amain() -> None:
     background("event_rollup", rollup.loop)
     background("dashboard_indexes", db.background_indexes_loop, once=True)
     background("device_upkeep", lambda: device_upkeep_loop(settings))
-    background("optional_sources", optional_sources.loop)
     if settings.syslog_enabled:
         await SyslogServer(settings, writer).start()
     background("opnsense", lambda: opnsense_supervisor(settings, writer))
@@ -380,7 +309,6 @@ async def amain() -> None:
     background("unraid", unraid.run)
     background("unifi", lambda: unifi_supervisor(settings, writer))
     background("backrest", lambda: backrest_supervisor(settings))
-    background("zenarmor_es", lambda: zenarmor_es_supervisor(settings, writer))
     background("daily_report", lambda: daily_ai_report(settings, analyst))
     background("notifier", lambda: notify.notifier(settings))
     from .intel import Intel

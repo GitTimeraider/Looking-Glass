@@ -1,7 +1,7 @@
 """Setup checklist: per data source, what is arriving, through which channel, and what (not) to do.
 
 Channels are told apart by the event's dedupe id: API pulls set ``uid`` (dns:, ngx:, ids:, cs-, qf:),
-syslog lines don't. Zenarmor's Elasticsearch stream uses program ``zenarmor-es``.
+syslog lines don't.
 Each check returns a status:
   ok        - receiving, nothing to do
   action    - something has to be done to get this data (``todo``)
@@ -60,8 +60,6 @@ async def run(settings: Settings) -> dict[str, Any]:
         src = r["source"]
         add(src, r)
         add(f"{src}:{'api' if r['api'] else 'syslog'}", r)
-        if src == "zenarmor":
-            add("zenarmor:es" if r["program"] == "zenarmor-es" else "zenarmor:syslog", r)
     # Q-Feeds blocks also arrive as the firewall log lines of its rules (tagged with the blocklist)
     qf = await pool.fetchrow("SELECT count(*) n, max(ts) last FROM events WHERE source = 'firewall' "
                              "AND lower(data->>'blocklist') = 'q-feeds' AND ts > now() - interval '24 hours'")
@@ -78,7 +76,7 @@ async def run(settings: Settings) -> dict[str, Any]:
     poller = await db.get_snapshot("poller_status") or {}
     vpn = await db.get_snapshot("vpn") or {}
     # syslog evidence: lines received since start, or syslog-born events stored in the last 24 hours
-    syslog_db = sum(r["n"] for r in rows if not r["api"] and r["program"] != "zenarmor-es" and r["source"] not in ("unraid", "docker"))
+    syslog_db = sum(r["n"] for r in rows if not r["api"] and r["source"] not in ("unraid", "docker"))
     syslog_total = max(STATS.received, syslog_db)
     checks: list[dict[str, Any]] = []
 
@@ -235,30 +233,6 @@ async def run(settings: Settings) -> dict[str, Any]:
         else:
             check(key, name, "optional", [], f"{name} plugin not installed (or the pull is off).")
 
-    # ----------------------------------------------------------- Zenarmor ---
-    zes, zsys = n("zenarmor:es"), n("zenarmor:syslog")
-    if not settings.zenarmor_enabled:
-        check("zenarmor", "Zenarmor", "optional", [], "Switched off (Settings › OPNsense › Receive Zenarmor data): "
-              "records are discarded.")
-    elif zes and zsys:
-        # Before program "zenarmor-es" existed, stream records were stored as "zenarmor" too: only syslog records
-        # received after the first labelled stream record prove a real second channel.
-        zsys = await pool.fetchval(
-            "SELECT count(*) FROM events WHERE source = 'zenarmor' AND program = 'zenarmor' AND ts > now() - interval '24 hours' "
-            "AND received_at > (SELECT min(received_at) FROM events WHERE source = 'zenarmor' AND program = 'zenarmor-es' "
-            "AND ts > now() - interval '24 hours')") or 0
-    if not settings.zenarmor_enabled:
-        pass
-    elif zes and zsys:
-        check("zenarmor", "Zenarmor", "duplicate", ["ES stream", "syslog"], "Zenarmor streams both to the Elasticsearch receiver and to syslog.",
-              ["OPNsense › Zenarmor › Settings › Streaming Data: keep one of the two streams."], count=zes, last_seen=last("zenarmor"), link="/dash/zenarmor")
-    elif zes or zsys:
-        check("zenarmor", "Zenarmor", "ok", ["ES stream" if zes else "syslog"], "Receiving Zenarmor records.",
-              count=zes or zsys, last_seen=last("zenarmor"), link="/dash/zenarmor")
-    else:
-        check("zenarmor", "Zenarmor", "optional", [], "Nothing received. If you use Zenarmor: Zenarmor › Settings › Streaming Data › "
-              "Stream Reporting Data to External Elasticsearch, URI http://<docker-host>:9200, version 8.11.3.")
-
     # -------------------------------------------------------- logins, VPN ---
     auth = n("auth")
     if auth:
@@ -375,8 +349,8 @@ async def run(settings: Settings) -> dict[str, Any]:
         total = sum(v.get("count") or 0 for v in feeds.values())
         check("intel", "Threat feeds", "ok", ["internet"], f"{total:,} indicators from "
               f"{sum(1 for v in feeds.values() if v.get('ok'))} feeds.", link="/settings#intel")
-    tls = await db.pool().fetchval("SELECT count(*) FROM events WHERE ts > now() - interval '1 day' AND source IN "
-                                   "('suricata', 'zenarmor') AND coalesce(data->>'ja3', data->>'ja4', data->>'ja3_hash') IS NOT NULL")
+    tls = await db.pool().fetchval("SELECT count(*) FROM events WHERE ts > now() - interval '1 day' AND source = 'suricata' "
+                                   "AND coalesce(data->>'ja3', data->>'ja4', data->>'ja3_hash') IS NOT NULL")
     if settings.intel_ja3 or settings.behavior_new_tls:
         check("tls", "TLS fingerprints (JA3/JA4)", "ok" if tls else "optional", ["syslog"],
               f"{tls:,} TLS records with fingerprints in 24 h." if tls else

@@ -23,7 +23,6 @@ services:
       - "8080:8080"        # web UI
       - "514:5514/udp"     # syslog from OPNsense (UDP)
       - "514:5514/tcp"     # syslog from OPNsense (TCP)
-      - "9200:9200"        # Zenarmor "Stream Reporting Data to External Elasticsearch" (free edition)
     volumes:
       - ./data:/data       # encryption key, saved database connection (back it up!) + optional GeoLite2-City.mmdb
     logging:               # setup and reset codes are printed to this log - keep a few MB of it

@@ -25,8 +25,8 @@ RUN groupadd --system --gid 10001 lookingglass \
     && mkdir -p /data && chown 10001:10001 /data && chmod 1777 /data
 USER 10001:10001
 VOLUME ["/data"]
-# 8080 = web UI, 5514 = syslog (udp + tcp), 9200 = Zenarmor Elasticsearch-compatible stream receiver
-EXPOSE 8080 5514/udp 5514/tcp 9200
+# 8080 = web UI, 5514 = syslog (udp + tcp)
+EXPOSE 8080 5514/udp 5514/tcp
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status == 200 else 1)"

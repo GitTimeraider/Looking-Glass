@@ -14,13 +14,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # No environment needed: database and login are entered in the setup wizard, OPNsense / AI / Zenarmor / Unraid
+    # No environment needed: database and login are entered in the setup wizard, OPNsense / AI / Unraid
     # under Settings - all stored encrypted. Do not put passwords or API keys in this file.
     ports:
       - "8080:8080"
       - "514:5514/udp"
       - "514:5514/tcp"
-      - "9200:9200"        # Zenarmor Elasticsearch-compatible stream receiver
     volumes:
       - lookingglass_data:/data
 
