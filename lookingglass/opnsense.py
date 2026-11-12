@@ -517,6 +517,27 @@ class Poller:
             d.update(hostname=self._dns_ip_names[d["ip"]], name_source="dns")
         return d
 
+    async def _track_peers(self, peers: list[dict[str, Any]]) -> None:
+        """WireGuard peers in the device list, so alerts show their name instead of the tunnel IP. Name: your dnsmasq
+        Hosts entry for the tunnel IP, else the peer's name in OPNsense."""
+        from .detections import track_wireguard_peers, wireguard_ips
+        if not self._static_names:
+            await self._load_static_names()
+        devices: dict[str, dict[str, Any]] = {}
+        for p in peers:
+            ips = wireguard_ips(p.get("allowed-ips"))
+            if not ips:
+                continue
+            static = next((self._static_names[ip] for ip in ips if ip in self._static_names), None)
+            name = static or real_name(p.get("name"))
+            status = p.get("peer-status") or ("online" if (p.get("latest-handshake-age") or 1e9) <= 300 else "offline")
+            devices.setdefault(f"wg:{ips[0]}", {
+                "mac": f"wg:{ips[0]}", "ip": ips[0], "ips": ips, "hostname": name,
+                "name_source": "dnsmasq-static" if static else "wireguard", "vendor": "WireGuard",
+                "interface": p.get("ifname") or p.get("if"), "online": status == "online"})
+        if devices:
+            await track_wireguard_peers(list(devices.values()))
+
     async def poll_activity(self) -> None:
         """CPU usage and top processes from the 'top' based activity endpoint."""
         res = await self.api.get("diagnostics/activity/getActivity")
@@ -684,6 +705,7 @@ class Poller:
                         rx_rows.append((f"wg_peer_{direction}_bytes", f"{p.get('if')}:{name}", v))
             out["wireguard"]["online"] = sum(1 for p in peers if p.get("peer-status") == "online")
             await db.add_metrics(rx_rows + [("wg_peers_online", "", float(out["wireguard"]["online"]))])
+            await self._track_peers(peers)
         except ApiError as exc:
             if exc.status not in (400, 403, 404):
                 raise

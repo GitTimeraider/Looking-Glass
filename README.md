@@ -523,6 +523,8 @@ These steps were checked against the current OPNsense documentation and source (
    nginx then sends straight to Looking Glass over UDP.
    **VPN** – WireGuard writes no connection logs, so WireGuard peers (status, last handshake, traffic), OpenVPN sessions
    and IPsec tunnels are read from the API (*Pull VPN status*). A WireGuard peer going online or offline becomes an event.
+   Each peer is also listed under **Devices** (by its tunnel IP), named after your dnsmasq *Hosts* entry for that IP or
+   else the peer name, so alerts show the name instead of the IP.
 5. **Suricata** – nothing to do: alerts are pulled from the API. Don't also tick *Enable syslog alerts* in
    Intrusion Detection, that would count every alert twice.
 6. **Q-Feeds** – the plugin only creates firewall aliases. Its *Events* (which Looking Glass reads) only appear when you
