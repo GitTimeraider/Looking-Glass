@@ -440,7 +440,7 @@ CREATE TABLE IF NOT EXISTS period_results (
 );
 
 -- ------------------------------------------------- Zenarmor removed ---
--- what older versions stored for Zenarmor (its events and their hourly counts are deleted by housekeeping, main.py)
+-- what older versions stored for Zenarmor (events still there are removed by the normal retention)
 DELETE FROM app_settings WHERE key LIKE 'zenarmor%';
 DELETE FROM kv WHERE key = 'wm:zenarmor';
 -- its dashboard's cached 7 / 30 day results (periods.py)

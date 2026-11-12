@@ -47,13 +47,6 @@ async def housekeeping(settings) -> None:
                 if int(status.split()[-1]) < 50000:
                     break
                 await asyncio.sleep(0.5)
-            while True:  # Zenarmor is no longer supported: what older versions stored of it
-                status = await pool.execute(
-                    "DELETE FROM events WHERE id IN (SELECT id FROM events WHERE source = 'zenarmor' LIMIT 50000)")
-                if int(status.split()[-1]) < 50000:
-                    break
-                await asyncio.sleep(0.5)
-            await pool.execute("DELETE FROM event_rollup WHERE source = 'zenarmor'")
             await rollup.prune(settings.retention_days)
             await pool.execute("DELETE FROM metrics WHERE ts < now() - make_interval(days => $1)", settings.metrics_retention_days)
             await pool.execute("DELETE FROM backup_runs WHERE started < now() - interval '400 days'")
