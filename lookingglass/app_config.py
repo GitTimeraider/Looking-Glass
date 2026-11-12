@@ -292,7 +292,7 @@ FIELDS: list[Field] = [
           "or operating system. Applies to everyone using this Looking Glass.", choices=("dark", "light", "auto")),
     Field("accent", "display", "Accent color", "choice", "Color of buttons, links and highlights; the background gets a "
           "light tint of it too (light + purple = lavender). The preview changes as you pick; Save to keep it.",
-          choices=("blue", "indigo", "purple", "pink", "red", "orange", "green", "teal", "cyan", "gray")),
+          choices=("blue", "indigo", "purple", "pink", "red", "crimson", "darkred", "orange", "green", "teal", "cyan", "gray")),
     # data
     Field("retention_days", "data", "Keep events (days)", "int", "", min=1, max=3650),
     Field("metrics_retention_days", "data", "Keep metrics (days)", "int", "", min=1, max=3650),

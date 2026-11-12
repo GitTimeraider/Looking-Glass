@@ -13,6 +13,8 @@
 [data-accent=purple] { --a4: #a78bfa; --a5: #8b5cf6; --a6: #7c3aed; --a7: #6d28d9; --tint: 8%; }
 [data-accent=pink]   { --a4: #f472b6; --a5: #ec4899; --a6: #db2777; --a7: #be185d; --tint: 6%; }
 [data-accent=red]    { --a4: #f87171; --a5: #ef4444; --a6: #dc2626; --a7: #b91c1c; --tint: 5%; }
+[data-accent=crimson] { --a4: #ff6b6b; --a5: #e0101e; --a6: #c20a17; --a7: #a00812; --tint: 6%; }
+[data-accent=darkred] { --a4: #e57373; --a5: #9f1717; --a6: #8a1212; --a7: #6e0e0e; --tint: 9%; }
 [data-accent=orange] { --a4: #fb923c; --a5: #f97316; --a6: #ea580c; --a7: #c2410c; --tint: 5%; }
 [data-accent=green]  { --a4: #34d399; --a5: #10b981; --a6: #059669; --a7: #047857; --tint: 5%; }
 [data-accent=teal]   { --a4: #2dd4bf; --a5: #14b8a6; --a6: #0d9488; --a7: #0f766e; --tint: 5%; }
