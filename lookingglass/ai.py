@@ -140,6 +140,12 @@ TOOLS: list[dict[str, Any]] = [
                        "and address (with their status, close reason and comments).",
         "parameters": {"type": "object", "properties": {"alert_id": {"type": "integer"}}, "required": ["alert_id"]}}},
     {"type": "function", "function": {
+        "name": "event_detail",
+        "description": "One log event in full (all fields and its raw data) with context: the devices behind its addresses, "
+                       "what the same source address did 15 minutes before and after, how often this kind of event "
+                       "happened in the last 7 days, and alerts about its addresses (with the user's comments).",
+        "parameters": {"type": "object", "properties": {"event_id": {"type": "integer"}}, "required": ["event_id"]}}},
+    {"type": "function", "function": {
         "name": "list_alerts",
         "description": "List alerts raised by the detection engine, with the user's comments on them.",
         "parameters": {"type": "object", "properties": {
@@ -293,6 +299,47 @@ async def tool_alert_detail(alert_id: int) -> Any:
     return {"alert": alert, "earlier_alerts_same_rule_and_source": similar}
 
 
+async def tool_event_detail(event_id: int) -> Any:
+    pool = db.pool()
+    row = await pool.fetchrow(
+        "SELECT id, ts, received_at, source, host, program, severity, action, host(src_ip) src_ip, src_port, "
+        "host(dst_ip) dst_ip, dst_port, proto, interface, direction, username, domain, src_country, dst_country, "
+        "message, data FROM events WHERE id = $1", int(event_id))
+    if not row:
+        return {"error": f"event #{event_id} does not exist (older than the retention, or deleted)"}
+    ev = db.jsonable(dict(row))
+    ips = [ip for ip in (ev["src_ip"], ev["dst_ip"]) if ip]
+    devices = {}
+    for ip in ips:
+        dev = await pool.fetchrow("SELECT mac, hostname, vendor, interface, device_type, trusted, notes, first_seen, last_seen "
+                                  "FROM devices WHERE ip = $1::inet OR $1::inet = ANY(ips) ORDER BY last_seen DESC LIMIT 1", ip)
+        if dev:
+            devices[ip] = db.jsonable(dict(dev))
+    around = []
+    if ev["src_ip"]:
+        around = db.records(await pool.fetch(
+            "SELECT id, ts, source, action, host(dst_ip) dst, dst_port, proto, domain, left(message, 200) message FROM events "
+            "WHERE src_ip = $1::inet AND ts BETWEEN $2::timestamptz - interval '15 minutes' AND $2::timestamptz + interval '15 minutes' "
+            "AND id <> $3 ORDER BY abs(extract(epoch FROM ts - $2::timestamptz)) LIMIT 40", ev["src_ip"], row["ts"], row["id"]))
+    similar = db.records(await pool.fetch(
+        "SELECT count(*) n, count(DISTINCT src_ip) sources, min(ts) first, max(ts) last FROM events "
+        "WHERE ts > now() - interval '7 days' AND source = $1 AND action IS NOT DISTINCT FROM $2 "
+        "AND dst_port IS NOT DISTINCT FROM $3 AND (src_ip IS NOT DISTINCT FROM $4::inet OR domain IS NOT DISTINCT FROM $5)",
+        row["source"], row["action"], row["dst_port"], ev["src_ip"], row["domain"]))
+    alerts = []
+    if ips:
+        alerts = db.records(await pool.fetch(
+            "SELECT id, created_at, last_seen, rule, severity, title, status, close_reason FROM alerts "
+            "WHERE (src_ip = ANY($1::inet[]) OR dst_ip = ANY($1::inet[])) AND last_seen > now() - interval '7 days' "
+            "ORDER BY last_seen DESC LIMIT 20", ips))
+        comments = await _comments([a["id"] for a in alerts])
+        for a in alerts:
+            if a["id"] in comments:
+                a["comments"] = comments[a["id"]]
+    return {"event": ev, "devices": devices, "same_source_15_minutes_around": around,
+            "similar_events_last_7_days": similar[0] if similar else None, "alerts_about_these_addresses": alerts}
+
+
 async def tool_system_status() -> Any:
     from .ingest import STATS
 
@@ -337,7 +384,7 @@ async def tool_backup_status(days: int = 7) -> Any:
 
 async def run_tool(name: str, args: dict[str, Any]) -> str:
     fn = {"sql_query": tool_sql_query, "search_events": tool_search_events, "ip_profile": tool_ip_profile,
-          "list_alerts": tool_list_alerts, "alert_detail": tool_alert_detail, "system_status": tool_system_status, "unifi_status": tool_unifi_status,
+          "list_alerts": tool_list_alerts, "alert_detail": tool_alert_detail, "event_detail": tool_event_detail, "system_status": tool_system_status, "unifi_status": tool_unifi_status,
           "backup_status": tool_backup_status,
           "traffic_overview": lambda hours=24: build_report(float(hours))}.get(name)
     if fn is None:

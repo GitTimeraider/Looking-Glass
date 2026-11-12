@@ -242,7 +242,7 @@ data; only the AI provider sees pseudonyms.
 6. **Save**. It applies from the next question / report on, no restart needed. A **🔒 Privacy mode** badge appears next
    to the model name on the **AI Analyst** page.
 
-**Where it applies**: everything that is sent to the AI - the AI Analyst chat, **Ask AI** on an alert, and the AI
+**Where it applies**: everything that is sent to the AI - the AI Analyst chat, **Ask AI** on an alert or an event, and the AI
 analysis of **reports** (written by hand, scheduled, or *Retry AI analysis*; the report's statistics are sent to the AI
 as part of the prompt and are pseudonymized too). Not affected (nothing goes to the AI): the report itself and its
 numbers, report and notification **mails** (they go through your own mail server and keep the real values), and
@@ -941,6 +941,9 @@ as the configuration is read - they are never stored. Runs are kept for 400 days
 * **Alerts** – detections ranked by severity, naming the device behind an IP (from the device list) and the evidence
   (e.g. the non-existent domains looked up); **Events** opens exactly the events behind an alert; acknowledge / close;
   **Ask AI** investigates one alert.
+* **Event search** – filter the raw log events; click an event for all its fields. **Ask AI** (with the AI analyst
+  enabled) explains that one event: what it means, whether it is normal, and what to do - looking at what the same
+  address did around it, how often it happens and alerts about its addresses.
 * **Overview** – key figures, events over time and per source, open alerts and the top-N tables of every source.
   **Customize** (top right) lets you drag widgets around (or use ◀ ▶), make them ⅓ / ⅔ / full width and normal or
   tall, remove them and add others (e.g. *Firewall system*); *Done* saves the layout for your account, *Reset to
