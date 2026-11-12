@@ -1098,6 +1098,19 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 "status": snaps.get("status"), "config": snaps.get("config"), "summary": snaps.get("summary"),
                 "jobs": jobs.get("jobs", []), **await backups.source_detail("backrest", days)}
 
+    @app.post("/api/backups/runs/remove")
+    async def backups_remove_runs(payload: dict = Body(...)):
+        """Remove runs from the list (e.g. deleted in Backrest already); the tool's next poll does not add them again.
+        The job and repository alerts are checked again right away, so an alert that came from a removed run closes."""
+        from .. import backups
+        source, ids = payload.get("source"), payload.get("ids")
+        if source not in backups.SOURCES or not isinstance(ids, list) or not ids or len(ids) > 1000 \
+                or not all(isinstance(i, str) and 0 < len(i) <= 200 for i in ids):
+            raise HTTPException(400, "source and a list of run ids are required")
+        removed = await backups.remove_runs(source, ids)
+        await backups.recheck_alerts(source, removed, warnings=settings.backrest_alert_warnings)
+        return {"ok": True, "removed": len(removed)}
+
     @app.get("/api/metrics/multi")
     async def metrics_multi(names: str, hours: float = Query(24, gt=0), prefix: str | None = None):
         """Several metric series at once: {name: {labels: [[t, v], ...]}}; ``prefix`` filters labels (e.g. unraid server id)."""

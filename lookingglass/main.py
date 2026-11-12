@@ -56,6 +56,7 @@ async def housekeeping(settings) -> None:
             await rollup.prune(settings.retention_days)
             await pool.execute("DELETE FROM metrics WHERE ts < now() - make_interval(days => $1)", settings.metrics_retention_days)
             await pool.execute("DELETE FROM backup_runs WHERE started < now() - interval '400 days'")
+            await pool.execute("DELETE FROM backup_runs_removed WHERE removed_at < now() - interval '400 days'")
             await pool.execute("DELETE FROM alerts WHERE status = 'closed' AND last_seen < now() - make_interval(days => $1)",
                                max(settings.retention_days, 90))
             # comments of alerts that are gone (deleted here, by hand or with an older version)

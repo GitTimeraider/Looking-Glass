@@ -112,7 +112,7 @@ def test_backup_alerts_open_and_close_by_themselves():
         await db.connect(DSN)
         try:
             pool = db.pool()
-            await pool.execute("TRUNCATE alerts, alert_filters, backup_runs")
+            await pool.execute("TRUNCATE alerts, alert_filters, backup_runs, backup_runs_removed")
             await pool.execute("DELETE FROM snapshots WHERE key LIKE 'backup_jobs:%' OR key LIKE 'backrest:%'")
             alert_filters.invalidate()
             alerts = lambda: pool.fetch("SELECT rule, status, severity, count FROM alerts ORDER BY id")  # noqa: E731
@@ -206,7 +206,7 @@ def test_a_replaced_pending_run_is_not_kept_twice():
         await db.connect(DSN)
         try:
             pool = db.pool()
-            await pool.execute("TRUNCATE backup_runs")
+            await pool.execute("TRUNCATE backup_runs, backup_runs_removed")
             await backups.store_runs("backrest", [
                 r(100, "success", now - timedelta(hours=2)), r(101, "pending", now + timedelta(days=5)),
                 r(50, "pending", now + timedelta(days=3)),    # e.g. a weekly check, scheduled long ago
@@ -220,6 +220,53 @@ def test_a_replaced_pending_run_is_not_kept_twice():
             # an empty answer removes nothing that may still be valid
             await backups.store_runs("backrest", [], replace_pending=True)
             assert {x["ext_id"] for x in await pool.fetch("SELECT ext_id FROM backup_runs")} == ids
+        finally:
+            await db.close()
+
+    asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_a_removed_run_is_gone_and_not_added_again():
+    """Backups › remove: the run leaves every list, the tool listing it again does not bring it back, and the failure
+    alert it caused closes right away."""
+    import asyncio
+
+    from lookingglass import alert_filters, db
+
+    now = datetime.now(timezone.utc)
+    job = {"job": "docs", "repo": "nas", "schedule": "cron 0 2 * * *", "gap_s": 86400.0,
+           "threshold_s": backups.overdue_threshold(86400.0), "disabled": False, "next_run": None}
+
+    def r(i, status, hours_ago, kind="backup"):
+        t = now - timedelta(hours=hours_ago)
+        return {"ext_id": str(i), "kind": kind, "job": "docs" if kind == "backup" else "", "repo": "nas",
+                "status": status, "started": t, "ended": t, "duration_s": 60.0, "message": "boom", "data": {}}
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE alerts, alert_filters, backup_runs, backup_runs_removed")
+            await db.set_snapshot("backup_jobs:backrest", {"label": "Backrest", "jobs": [job]})
+            alert_filters.invalidate()
+            fetched = [r(1, "success", 5), r(2, "error", 1), r(3, "error", 2, "check")]
+            await backups.store_runs("backrest", fetched, replace_pending=True)
+            await backups.check_jobs("backrest", "Backrest", [job])
+            await backups.check_repos("backrest", "Backrest", ["nas"])
+            assert {a["rule"] for a in await pool.fetch("SELECT rule FROM alerts WHERE status = 'open'")} == \
+                {"backup_failed", "backup_repo_problem"}
+            removed = await backups.remove_runs("backrest", ["2", "3", "does-not-exist"])
+            assert sorted(x["ext_id"] for x in removed) == ["2", "3"]
+            await backups.recheck_alerts("backrest", removed)
+            assert await pool.fetchval("SELECT count(*) FROM alerts WHERE status = 'open'") == 0
+            # Backrest still lists them on the next poll: not stored again
+            await backups.store_runs("backrest", fetched, replace_pending=True)
+            assert [x["ext_id"] for x in await pool.fetch("SELECT ext_id FROM backup_runs")] == ["1"]
+            assert [x["ext_id"] for x in (await backups.source_detail("backrest", 30))["runs"]] == ["1"]
+            # Backrest was reset and uses id 2 again for a new run: that one is stored
+            await backups.store_runs("backrest", [r(2, "success", 0.5)])
+            assert sorted(x["ext_id"] for x in await pool.fetch("SELECT ext_id FROM backup_runs")) == ["1", "2"]
         finally:
             await db.close()
 
