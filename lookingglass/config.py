@@ -158,6 +158,7 @@ class Settings(BaseSettings):
     ai_daily_report: bool = False
     ai_daily_report_hour: int = 7
     report_every_days: int = 1
+    report_categories: str = "OPNsense, UniFi, Unraid, Backups"  # what the scheduled report covers (reports.CATEGORIES)
     report_mail_to: str = ""
     geoip_db: str = "/data/GeoLite2-City.mmdb"
     # container packages (Settings › Unraid servers › Container packages, packages.py)
