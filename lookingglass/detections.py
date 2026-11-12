@@ -17,13 +17,12 @@ from .parsers.filterlog import QFEEDS, QFEEDS_NAME
 from .config import Settings
 from .ingest import STATS
 from .parsers.common import is_internal_ip, parse_networks
-from .parsers.security import zen_describe
 
 log = logging.getLogger(__name__)
 
 SEVERITIES = ["info", "low", "medium", "high", "critical"]
 # OPNsense services whose outage removes protection or visibility
-SECURITY_SERVICES = ("suricata", "crowdsec", "zenarmor", "sensei", "unbound", "dnscrypt", "syslog", "openvpn", "wireguard",
+SECURITY_SERVICES = ("suricata", "crowdsec", "unbound", "dnscrypt", "syslog", "openvpn", "wireguard",
                      "strongswan", "ipsec", "pf", "configd", "qfeeds")
 
 SUSPICIOUS_OUT_PORTS = {
@@ -34,17 +33,10 @@ SUSPICIOUS_OUT_PORTS = {
 }
 
 
-# Was a connection ALLOWED? The firewall's own verdict wins. Zenarmor also logs connection ATTEMPTS ("conn" records -
-# it sees the packets on the LAN side before the firewall rules act), so a Zenarmor record only counts as allowed when
-# the destination answered (packets / bytes came back) - a connection a firewall rule blocked gets no answer.
-ZEN_ANSWERED = ("(source = 'zenarmor' AND action = 'conn' AND (coalesce(data->>'dst_npackets', '') ~ '^[1-9]' "
-                "OR coalesce(data->>'dst_nbytes', '') ~ '^[1-9]' OR coalesce(data->>'dst_pbytes', '') ~ '^[1-9]'))")
-ALLOWED_ROW = (f"((source = 'firewall' AND action = 'pass') OR {ZEN_ANSWERED} "
-               "OR (source NOT IN ('firewall', 'zenarmor') AND action IN ('pass', 'allow')))")
-# per group of events (src, dst, ...): allowed unless only Zenarmor says so and the firewall blocked it
-ALLOWED_AGG = (f"(bool_or(source = 'firewall' AND action = 'pass') OR bool_or(source NOT IN ('firewall', 'zenarmor') "
-               f"AND action IN ('pass', 'allow')) OR (bool_or({ZEN_ANSWERED}) AND NOT bool_or(source = 'firewall' "
-               "AND action IN ('block', 'drop'))))")
+# Was a connection ALLOWED? The firewall's own verdict, or another source's pass / allow.
+ALLOWED_ROW = "((source = 'firewall' AND action = 'pass') OR (source <> 'firewall' AND action IN ('pass', 'allow')))"
+# per group of events (src, dst, ...)
+ALLOWED_AGG = "bool_or((source = 'firewall' AND action = 'pass') OR (source <> 'firewall' AND action IN ('pass', 'allow')))"
 FW_BLOCKED_AGG = "count(*) FILTER (WHERE source = 'firewall' AND action IN ('block', 'drop'))"
 # a blocked packet that tries to open a connection (or is not TCP); out-of-state packets (ACK / RST: a device closing
 # sessions the firewall already forgot, e.g. after waking from standby) are no scan
@@ -72,24 +64,24 @@ COUNTS_SQL = "(status = 'open' OR close_reason = 'muted')"
 EXTERNAL_CHAIN = [("Recon", {"port_scan", "host_sweep", "web_scanner", "threat_intel_inbound"}),
                   ("Attack", {"web_attack", "ids", "crowdsec", "brute_force", "password_spray", "distributed_brute_force"}),
                   ("Access", {"success_after_failures", "admin_login", "login_new_location"})]
-INTERNAL_CHAIN = [("Threat sign", {"threat_intel_outbound", "zenarmor_threat", "dns_malicious_blocked", "dns_dga", "ids",
+INTERNAL_CHAIN = [("Threat sign", {"threat_intel_outbound", "dns_malicious_blocked", "dns_dga", "ids",
                                    "threat_feed", "malicious_tls", "young_domain", "crypto_mining", "new_behavior",
                                    "ml_anomaly"}),
                   ("Command & control", {"beaconing", "suspicious_outbound_port", "dns_tunnel", "dns_bypass",
                                          "internal_blocked_outbound", "tor"}),
                   ("Spreading / theft", {"port_scan", "host_sweep", "lateral_movement", "password_spray", "brute_force",
-                                         "large_upload", "canary", "arp_spoofing", "volume_spike"})]
+                                         "canary", "arp_spoofing", "volume_spike"})]
 # signs of a compromise on their own: one of these (at any severity) makes a chain worth an alert. The other chain rules
 # are behaviour heuristics (beaconing, traffic spike, new behaviour ...): a chain of only those needs one of them rated
 # high or critical. Not medium: two of them on one device lift each other to medium ("also seen: open alerts"), and a
 # time server checked every few minutes plus a game download is not "a compromised device".
-STRONG_CHAIN_RULES = {"threat_intel_outbound", "zenarmor_threat", "dns_malicious_blocked", "dns_dga", "ids", "threat_feed",
+STRONG_CHAIN_RULES = {"threat_intel_outbound", "dns_malicious_blocked", "dns_dga", "ids", "threat_feed",
                       "malicious_tls", "crypto_mining", "dns_tunnel", "tor", "lateral_movement", "canary", "arp_spoofing",
                       "port_scan", "host_sweep", "password_spray", "brute_force", "web_attack", "crowdsec",
                       "distributed_brute_force", "success_after_failures", "login_new_location", "threat_intel_inbound"}
 
 # a name from a better source replaces one from a worse source, never the other way round
-NAME_RANK = {"manual": 100, "opnsense": 90, "unifi-alias": 70, "dnsmasq-static": 60, "unifi": 45, "dhcp": 50, "dns": 30, "zenarmor": 25, "arp": 20}
+NAME_RANK = {"manual": 100, "opnsense": 90, "unifi-alias": 70, "dnsmasq-static": 60, "unifi": 45, "dhcp": 50, "dns": 30, "arp": 20}
 
 
 def name_rank(source: str) -> int:
@@ -103,7 +95,7 @@ async def device_info(ip: str | None) -> dict[str, Any] | None:
     try:
         row = await db.pool().fetchrow(
             "SELECT mac, hostname, vendor, notes, device_type, conn_type, conn_where, conn_signal FROM devices "
-            "WHERE ip = $1::inet OR $1::inet = ANY(ips) ORDER BY mac LIKE 'ip:%', last_seen DESC LIMIT 1", ip)
+            "WHERE ip = $1::inet OR $1::inet = ANY(ips) ORDER BY last_seen DESC LIMIT 1", ip)
     except Exception:  # noqa: BLE001 - invalid ip text etc.
         return None
     if not row:
@@ -162,14 +154,9 @@ class Rating:
         return f"Severity {self.severity}: " + "; ".join(self.why) + "."
 
 
-# Zenarmor verdicts / categories that mean the device itself is probably infected - whole words, so an ordinary
-# "Cryptocurrency" category block or the app "Amazon EC2" do not count
-ZEN_BAD = re.compile(r"\b(malware|botnets?|phishing|ransom\w*|command\s*(and|&)\s*control|c2|c&c|"
-                     r"crypto[\s-]?min\w*|cryptojack\w*|coin[\s-]?min\w*)\b", re.I)
-
 # blocked threat traffic from one device in 24h that no longer looks like a stray ad / link: malware calling home.
-# Counted in separate 10-minute periods and different sites (registered domains): one page load fires many DNS /
-# QUIC / TLS retries to several subdomains (file1., file2. …) within seconds - that is one visit, not persistence.
+# Counted in separate 10-minute periods and different addresses: one page load fires many retries within seconds -
+# that is one visit, not persistence.
 REPEAT_PERIODS, REPEAT_TARGETS = 6, 5
 
 # alerts built from the same events must not confirm each other
@@ -219,11 +206,7 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
             f"count(*) FILTER (WHERE {QFEEDS}) AS qfeeds, "
             f"count(DISTINCT date_bin('10 minutes', ts, 'epoch')) FILTER (WHERE {QFEEDS}) AS qf_periods, "
             f"count(DISTINCT dst_ip) FILTER (WHERE {QFEEDS}) AS qf_targets, "
-            "count(*) FILTER (WHERE source = 'crowdsec') AS crowdsec, "
-            # only threat traffic Zenarmor did NOT block: a blocked ad / link is Zenarmor doing its job, no sign of
-            # anything (repeated blocked threats raise their own zenarmor_threat alert, which counts below)
-            "count(*) FILTER (WHERE source = 'zenarmor' AND action IS DISTINCT FROM 'block' "
-            "AND coalesce(data->>'security', data->>'security_tags', '') <> '') AS zen "
+            "count(*) FILTER (WHERE source = 'crowdsec') AS crowdsec "
             "FROM events WHERE src_ip = $1::inet AND ts > now() - make_interval(hours => $2)", ip, hours)
         others = await pool.fetch(
             # acknowledged = you looked at it and know it: no longer a sign that something else is wrong
@@ -253,8 +236,7 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
 
 def threat_signals(ev: dict[str, Any]) -> list[str]:
     """Independent signs that a host is compromised / malicious (for corroboration)."""
-    sig = [f"{ev[k]} {label}" for k, label in (("ids", "Suricata alert(s)"), ("qfeeds", "threat-intel hit(s)"),
-                                                 ("zen", "Zenarmor threat event(s) NOT blocked")) if ev.get(k)]
+    sig = [f"{ev[k]} {label}" for k, label in (("ids", "Suricata alert(s)"), ("qfeeds", "threat-intel hit(s)")) if ev.get(k)]
     if ev.get("other_alerts"):
         sig.append("open alerts: " + ", ".join(ev["other_alerts"][:5]))
     return sig
@@ -267,32 +249,21 @@ def corroborate(r: Rating, ev: dict[str, Any], max_steps: int = 2) -> Rating:
     return r
 
 
-async def blocked_threat_history(src: str, source: str) -> tuple[int, int, int]:
-    """(attempts, distinct 10-minute periods, distinct targets) of threat traffic from one device that Zenarmor /
-    Q-Feeds blocked in the last 24h; targets are sites (registered domains) or addresses."""
-    pool = db.pool()
-    if source == "qfeeds":
-        r = await pool.fetchrow("SELECT count(*) n, count(DISTINCT date_bin('10 minutes', ts, 'epoch')) p, "
-                                f"count(DISTINCT dst_ip) t FROM events WHERE {QFEEDS} "
-                                "AND src_ip = $1::inet AND ts > now() - interval '24 hours'", src)
-        return r["n"], r["p"], r["t"]
-    rows = await pool.fetch(
-        "SELECT domain, host(dst_ip) AS ip, date_bin('10 minutes', ts, 'epoch') AS period, count(*) AS n, "
-        "concat_ws(' ', data->>'security', data->>'security_tags', data->'zen'->>'app_category', "
-        "data->'zen'->>'web_category') AS cats FROM events "
-        "WHERE source = 'zenarmor' AND action = 'block' AND src_ip = $1::inet AND ts > now() - interval '24 hours' "
-        "GROUP BY 1, 2, 3, 5", src)
-    bad = [r for r in rows if ZEN_BAD.search(r["cats"] or "")]
-    return (sum(r["n"] for r in bad), len({r["period"] for r in bad}),
-            len({registered_domain(r["domain"]) if r["domain"] else r["ip"] for r in bad}))
+async def blocked_threat_history(src: str) -> tuple[int, int, int]:
+    """(attempts, distinct 10-minute periods, distinct addresses) of threat traffic from one device that Q-Feeds blocked
+    in the last 24h."""
+    r = await db.pool().fetchrow("SELECT count(*) n, count(DISTINCT date_bin('10 minutes', ts, 'epoch')) p, "
+                                 f"count(DISTINCT dst_ip) t FROM events WHERE {QFEEDS} "
+                                 "AND src_ip = $1::inet AND ts > now() - interval '24 hours'", src)
+    return r["n"], r["p"], r["t"]
 
 
 def repeated(r: Rating, hits: int, periods: int, targets: int) -> Rating:
-    """One step up when a device keeps coming back to blocked threat sites - one visit is usually an ad or a stray link,
-    however many retries and subdomains it fires."""
+    """One step up when a device keeps coming back to blocked threat addresses - one visit is usually an ad or a stray
+    link, however many retries it fires."""
     if periods >= REPEAT_PERIODS or targets >= REPEAT_TARGETS:
-        why = f"in {periods} separate 10-minute periods" if periods >= REPEAT_PERIODS else f"to {targets} different sites"
-        r.up(f"repeated: blocked threat traffic {why} in the last 24h ({hits} attempt(s), {targets} site(s)) - "
+        why = f"in {periods} separate 10-minute periods" if periods >= REPEAT_PERIODS else f"to {targets} different addresses"
+        r.up(f"repeated: blocked threat traffic {why} in the last 24h ({hits} attempt(s), {targets} address(es)) - "
              "can be malware calling home; check which program on the device does it")
     return r
 
@@ -341,7 +312,7 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
     the alerts page links to them for the alert's time span. The device name of ``src_ip`` is added.
     ``span``: (first, last) time of the events behind it, when they can lie outside the alert's own time span - events
     pulled from an API carry the time the tool saw them, which can be long before Looking Glass raised the alert.
-    ``blocked``: the traffic behind it was blocked (True, or the reason: "Zenarmor blocked it") - never critical then,
+    ``blocked``: the traffic behind it was blocked (True, or the reason: "Q-Feeds blocked it") - never critical then,
     however much confirms it; only your own severity rules (Settings › Alert filters) can still set critical.
     ``silent``: the device has this kind of alert set to "silent" (Devices page): stored as closed (close_reason
     'muted') so it is never shown as open or notified, but it still counts for combinations - corroboration
@@ -451,7 +422,7 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
             sev = "high"
         count_sql = "count + $2" if mode == "add" else "GREATEST(count, $2)"
         await pool.execute(
-            # the title too: it can say what changed ("Zenarmor blocked: …" once the block record arrived)
+            # the title too: it can say what changed
             f"UPDATE alerts SET last_seen = now(), count = {count_sql}, severity = $3, description = $4, data = $5, "
             f"status = CASE WHEN $6 = 'closed' THEN 'closed' ELSE status END, title = $7 WHERE id = $1",
             row["id"], count, sev, description, data, status, title)
@@ -526,21 +497,15 @@ def registered_domain(domain: str) -> str:
     return ".".join(parts[-2:])
 
 
-def ipless_key(ip: Any) -> str:
-    """Device key for a client without a MAC address (WireGuard peer, a routed network behind another router)."""
-    return f"ip:{ip}"
-
-
 async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online: bool = False) -> None:
     """Upsert devices (from ARP, DHCP leases or DHCP logs) and alert on MAC addresses never seen before.
 
-    ``mark_online``: the list is a complete snapshot of present devices (ARP table) -> others become offline; devices
-    without a MAC (``ip:`` keys) are never in the ARP table and keep their state.
+    ``mark_online``: the list is a complete snapshot of present devices (ARP table) -> others become offline.
     """
     pool = db.pool()
     if dismissed := await db.kv_get(DISMISSED_KEY):
         # devices you deleted: the same old lease that OPNsense still lists does not bring them back; any real sign of
-        # them (ARP, UniFi, Zenarmor, a DHCP request, a renewed or new lease) does
+        # them (ARP, UniFi, a DHCP request, a renewed or new lease) does
         keep = [d for d in devices if not (origin.startswith("dhcp-") and d["mac"] in dismissed
                                             and dismissed[d["mac"]] == (d.get("lease_expires") or ""))]
         back = {d["mac"] for d in keep} & set(dismissed)
@@ -548,8 +513,7 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
             await db.kv_set(DISMISSED_KEY, {k: v for k, v in dismissed.items() if k not in back})
         devices = keep
     if mark_online:
-        await pool.execute("UPDATE devices SET online = false WHERE online AND NOT (mac = ANY($1::text[])) "
-                           "AND mac NOT LIKE 'ip:%'",
+        await pool.execute("UPDATE devices SET online = false WHERE online AND NOT (mac = ANY($1::text[]))",
                            [d["mac"] for d in devices])
     if not devices:
         return
@@ -584,50 +548,26 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
             source, name_rank(source) if source else 0, d.get("conn_type"), d.get("conn_where"), d.get("conn_signal"),
             d.get("ips"), d.get("hwaddr"))
         if new and not first_run and not d["mac"].startswith("if:"):  # OPNsense itself (a new interface)
-            ipless = d["mac"].startswith("ip:")
             await raise_alert(
-                "new_device", Rating("low", ("a client without a MAC address (VPN / WireGuard peer or a routed network) "
-                                             "appeared on a new IP" if ipless else
-                                             "an unknown MAC address appeared - usually a new phone, guest or randomised "
-                                             "Wi-Fi address") + "; mark it trusted on the Devices page when you know it",
+                "new_device", Rating("low", "an unknown MAC address appeared - usually a new phone, guest or randomised "
+                                            "Wi-Fi address; mark it trusted on the Devices page when you know it",
                                      sticky=True),
                 f"New device on network: {d['mac']} ({d.get('hostname') or d.get('ip') or '?'})",
                 f"new_device:{d['mac']}",
-                description=f"{'A client without a MAC address' if ipless else 'A MAC address'} never seen before appeared via {origin}: "
+                description=f"A MAC address never seen before appeared via {origin}: "
                             f"ip={d.get('ip')} hostname={d.get('hostname')} vendor={d.get('vendor')} interface={d.get('interface')}. "
                             "Verify it is a known device (intruder / rogue device check) and mark it trusted on the Devices page.",
                 src_ip=d.get("ip"), data={k: v for k, v in d.items() if v is not None})
 
 
-_zen_seen: dict[str, tuple[float, bool]] = {}  # MAC -> (when, had a name)
-
-
-def zen_device_name(d: dict[str, Any], ip: Any) -> str | None:
-    """The name Zenarmor knows for a client: the host name it learned (DHCP / DNS), else the name of its device entry
-    (Zenarmor › Devices). Not an IP address, nor a bare fingerprint label that only repeats the OS / vendor / type."""
-    dev = d.get("device") if isinstance(d.get("device"), dict) else {}
-    generic = {str(dev.get(k) or "").strip().lower() for k in ("os", "vendor", "category")} - {""}
-    for name in (d.get("src_hostname"), dev.get("name")):
-        name = real_name(name)
-        if not name or name == str(ip or "") or name.lower() in generic:
-            continue
-        try:
-            ipaddress.ip_address(name)
-            continue
-        except ValueError:
-            return name
-    return None
-
-
 async def absorb_ip_devices(mac: str, ips: list[str], old_keys: list[str] | tuple = ()) -> None:
-    """``ips`` belong to the device ``mac`` (an OPNsense interface): entries listed under one of them (``ip:`` keys from
-    Zenarmor) and the devices ``old_keys`` are merged into it - their learned behaviour (profile, hourly features)
-    moves along - and removed."""
-    keys = [k for ip in ips for k in (ipless_key(ip), ip)] + [k for k in old_keys if k != mac]
+    """``ips`` belong to the device ``mac`` (an OPNsense interface): behaviour learned under one of them and the devices
+    ``old_keys`` are merged into it - their learned behaviour (profile, hourly features) moves along - and removed."""
+    keys = list(ips) + [k for k in old_keys if k != mac]
     if not keys:
         return
     async with db.pool().acquire() as con, con.transaction():
-        # a device type / own settings you gave a merged entry (a WireGuard peer) move along when the device has none
+        # a device type / own settings you gave a merged entry move along when the device has none
         await con.execute(
             "UPDATE devices m SET device_type = COALESCE(m.device_type, (SELECT d.device_type FROM devices d WHERE "
             "d.mac = ANY($2::text[]) AND d.mac <> $1 AND d.device_type IS NOT NULL ORDER BY d.last_seen DESC LIMIT 1)), "
@@ -646,13 +586,7 @@ async def absorb_ip_devices(mac: str, ips: list[str], old_keys: list[str] | tupl
             "INSERT INTO device_hourly (key, hour, ip, features) SELECT DISTINCT ON (hour) $1, hour, ip, features "
             "FROM device_hourly WHERE key = ANY($2::text[]) ORDER BY hour ON CONFLICT (key, hour) DO NOTHING", mac, keys)
         await con.execute("DELETE FROM device_hourly WHERE key = ANY($1::text[])", keys)
-        await con.execute("DELETE FROM devices WHERE mac = ANY($1::text[]) AND mac <> $2",
-                          [ipless_key(ip) for ip in ips] + list(old_keys), mac)
-
-
-# a client without a MAC (WireGuard peer) is never in the ARP table: offline when Zenarmor has not seen it for this long
-# (it refreshes a known, named device at most every 10 minutes)
-IPLESS_OFFLINE_MINUTES = 20
+        await con.execute("DELETE FROM devices WHERE mac = ANY($1::text[]) AND mac <> $2", list(old_keys), mac)
 
 
 # kv key: MAC -> the lease expiry it had when you deleted it ("" = none). That lease does not bring the device back.
@@ -665,7 +599,7 @@ async def delete_devices(keys: list[str]) -> None:
     if not keys:
         return
     leases = {r["mac"]: r["lease_expires"] or "" for r in await db.pool().fetch(
-        "SELECT mac, lease_expires FROM devices WHERE mac = ANY($1::text[]) AND mac NOT LIKE 'ip:%' "
+        "SELECT mac, lease_expires FROM devices WHERE mac = ANY($1::text[]) "
         "AND mac NOT LIKE 'if:%' AND EXISTS (SELECT 1 FROM unnest(sources) s WHERE s LIKE 'dhcp-%')", keys)}
     if leases:
         await db.kv_set(DISMISSED_KEY, {**(await db.kv_get(DISMISSED_KEY) or {}), **leases})
@@ -675,46 +609,11 @@ async def delete_devices(keys: list[str]) -> None:
         await con.execute("DELETE FROM devices WHERE mac = ANY($1::text[])", keys)
 
 
-async def merge_ip_duplicates() -> int:
-    """``ip:`` entries (Zenarmor saw the client without a MAC) whose IP a device with a MAC (ARP / DHCP / UniFi) now
-    holds are the same device: they are merged into it. Zenarmor can see a client on a new IP before the next lease /
-    ARP poll knows it there (new APs, a renewed lease), and the duplicate would otherwise stay. A name, trusted mark,
-    notes, device type or own settings you gave the ``ip:`` entry move along when the device has none. Returns the number merged."""
+async def device_upkeep(remove_days: int) -> int:
+    """With ``remove_days`` > 0, devices not seen for that long are removed - except the ones you marked trusted, named
+    yourself, wrote notes for, gave a type or their own settings, and OPNsense's own interfaces.
+    Returns the number removed."""
     pool = db.pool()
-    rows = await pool.fetch(
-        "SELECT DISTINCT ON (d.mac) d.mac dup, host(d.ip) ip, m.mac owner FROM devices d "
-        "JOIN devices m ON m.mac NOT LIKE 'ip:%' AND NOT (m.sources <@ ARRAY['zenarmor']) "
-        "AND d.ip = ANY(coalesce(m.ips, '{}'::inet[]) || m.ip) "
-        "WHERE d.mac LIKE 'ip:%' AND d.ip IS NOT NULL ORDER BY d.mac, m.last_seen DESC")
-    for r in rows:
-        await pool.execute(
-            "UPDATE devices m SET "
-            "hostname = CASE WHEN d.hostname IS NOT NULL AND (m.hostname IS NULL OR d.name_rank > m.name_rank) "
-            "THEN d.hostname ELSE m.hostname END, "
-            "name_source = CASE WHEN d.hostname IS NOT NULL AND (m.hostname IS NULL OR d.name_rank > m.name_rank) "
-            "THEN d.name_source ELSE m.name_source END, name_rank = GREATEST(m.name_rank, d.name_rank), "
-            "trusted = m.trusted OR d.trusted, notes = COALESCE(NULLIF(btrim(m.notes), ''), d.notes), "
-            "device_type = COALESCE(m.device_type, d.device_type), "
-            "limits = CASE WHEN m.limits = '{}'::jsonb THEN d.limits ELSE m.limits END, "
-            "vendor = COALESCE(m.vendor, d.vendor), first_seen = LEAST(m.first_seen, d.first_seen), "
-            "sources = (SELECT array_agg(DISTINCT s) FROM unnest(m.sources || d.sources) s) "
-            "FROM devices d WHERE m.mac = $1 AND d.mac = $2", r["owner"], r["dup"])
-        await absorb_ip_devices(r["owner"], [r["ip"]], [r["dup"]])
-        _zen_seen.pop(r["dup"], None)
-        log.info("merged %s into %s (same IP)", r["dup"], r["owner"])
-    return len(rows)
-
-
-async def device_upkeep(remove_days: int) -> tuple[int, int]:
-    """Clients without a MAC that went quiet -> offline; with ``remove_days`` > 0, devices not seen for that long are
-    removed - except the ones you marked trusted, named yourself, wrote notes for, gave a type or their own settings, and
-    OPNsense's own interfaces.
-    Returns (marked offline, removed)."""
-    pool = db.pool()
-    await merge_ip_duplicates()
-    offline = await pool.execute(
-        "UPDATE devices SET online = false WHERE online AND mac LIKE 'ip:%' "
-        "AND last_seen < now() - make_interval(mins => $1)", IPLESS_OFFLINE_MINUTES)
     removed: list[str] = []
     if remove_days > 0:
         removed = [r["mac"] for r in await pool.fetch(
@@ -725,62 +624,7 @@ async def device_upkeep(remove_days: int) -> tuple[int, int]:
         await delete_devices(removed)
         if removed:
             log.info("removed %d device(s) not seen for %d days", len(removed), remove_days)
-    return int(offline.split()[-1]), len(removed)
-
-
-def real_mac(value: Any) -> str | None:
-    """A device's MAC address ("AA-BB-.." -> "aa:bb:.."), or None for a missing one and the placeholders a tunnel
-    client (WireGuard) gets instead: 00:00:00:00:00:00, ff:ff:ff:ff:ff:ff, a multicast address, "-", "unknown"."""
-    mac = str(value or "").strip().lower().replace("-", ":")
-    if not re.fullmatch(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", mac) or mac in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff") \
-            or int(mac[:2], 16) & 1:
-        return None
-    return mac
-
-
-async def zenarmor_device_listener(events: list[dict[str, Any]]) -> None:
-    """Zenarmor records carry the client MAC, hostname and a device fingerprint (name/vendor/OS). A MAC is looked at
-    again after 10 minutes - right away while no record of it carried a name yet. A client without a MAC (WireGuard
-    peer, routed network) is kept under its IP (``ip:`` key), unless a device with a MAC already has that IP."""
-    now = time.time()
-    found: dict[str, dict[str, Any]] = {}
-    for e in events:
-        d = e.get("data") if e.get("source") == "zenarmor" else None
-        if not isinstance(d, dict):
-            continue
-        # a tunnel interface (WireGuard wg0, OpenVPN ovpns1 / tun0) carries no client MAC, whatever the record says
-        tunnel = re.match(r"(wg|tun|ovpn|ipsec|enc)\d", str(d.get("interface") or "").lower())
-        mac = None if tunnel else real_mac(d.get("src_hwaddr"))
-        if not mac:
-            if not e.get("src_ip") or not is_internal_ip(e["src_ip"]):
-                continue
-            mac = ipless_key(e["src_ip"])
-        if mac in found and found[mac]["hostname"]:
-            continue
-        name = zen_device_name(d, e.get("src_ip"))
-        when, named = _zen_seen.get(mac, (0, False))
-        if now - when < 600 and (named or not name):
-            continue
-        dev = d.get("device") if isinstance(d.get("device"), dict) else {}
-        vendor = " / ".join(x for x in (dev.get("vendor"), dev.get("os")) if x) or None
-        found[mac] = {"mac": mac, "ip": e.get("src_ip"), "hostname": name, "vendor": vendor,
-                      "interface": d.get("interface"), "online": True}
-    if any(not k.startswith("ip:") for k in found):
-        # the firewall's own MAC (traffic it sends itself): that is an OPNsense interface device, not a new one
-        own = {r["hwaddr"] for r in await db.pool().fetch("SELECT hwaddr FROM devices WHERE mac LIKE 'if:%'")}
-        found = {k: v for k, v in found.items() if k not in own}
-    ipless = [str(dev["ip"]) for key, dev in found.items() if key.startswith("ip:")]
-    if ipless:
-        taken = {r["ip"] for r in await db.pool().fetch(
-            # a device with a MAC known from ARP / DHCP / UniFi; one only Zenarmor reported may be a tunnel client
-            # merged under a bogus MAC by an older version
-            # OPNsense's own interfaces (all their addresses) too: traffic the firewall sends itself
-            "SELECT DISTINCT host(x) ip FROM devices, unnest(coalesce(ips, '{}'::inet[]) || ip) x "
-            "WHERE x = ANY($1::inet[]) AND mac NOT LIKE 'ip:%' AND NOT (sources <@ ARRAY['zenarmor'])", ipless)}
-        found = {k: v for k, v in found.items() if not (k.startswith("ip:") and str(v["ip"]) in taken)}
-    for mac, dev in found.items():
-        _zen_seen[mac] = (now, bool(dev["hostname"]))
-    await track_devices(list(found.values()), origin="zenarmor")
+    return len(removed)
 
 
 async def dhcp_listener(events: list[dict[str, Any]]) -> None:
@@ -805,10 +649,10 @@ class DetectionEngine:
             started = time.monotonic()
             for rule in (self.port_scan, self.host_sweep, self.brute_force, self.success_after_failures,
                          self.external_admin_login, self.web_attacks, self.web_scanner, self.ids_alerts,
-                         self.crowdsec_alerts, self.qfeeds_hits, self.zenarmor_threats, self.dns_anomalies,
+                         self.crowdsec_alerts, self.qfeeds_hits, self.dns_anomalies,
                          self.internal_blocked_outbound, self.suspicious_outbound_ports, self.config_changes,
                          self.password_spray, self.distributed_brute_force, self.login_location, self.dns_bypass,
-                         self.beaconing, self.lateral_movement, self.large_upload,
+                         self.beaconing, self.lateral_movement,
                          self.threat_intel, self.canary, self.arp_spoofing, self.young_domains,
                          self.behavior_profiles, self.behavior_hourly, self.behavior_cleanup,
                          self.system_health, self.log_silence, self.attack_chains, self.risk_scores):
@@ -917,7 +761,7 @@ class DetectionEngine:
         rows = await db.pool().fetch(
             f"SELECT src_ip, dst_ip, dst_port, count(*) AS hits, {ALLOWED_AGG} AS passed, {FW_BLOCKED_AGG} AS fw_blocked, "
             f"{FW_RULE_AGG} AS fw_rule FROM events WHERE id > $1 AND id <= $2 "
-            "AND source IN ('firewall', 'zenarmor') AND dst_port = ANY($3::int[]) AND src_ip IS NOT NULL "
+            "AND source = 'firewall' AND dst_port = ANY($3::int[]) AND src_ip IS NOT NULL "
             "GROUP BY src_ip, dst_ip, dst_port", last, current, list(SUSPICIOUS_OUT_PORTS))
         for r in rows:
             src, dst = str(r["src_ip"]), str(r["dst_ip"])
@@ -1097,7 +941,7 @@ class DetectionEngine:
 
     # -------------------------------------------------- 3rd party sources ---
     async def ids_alerts(self) -> None:
-        """Suricata, set up like CrowdSec / Q-Feeds / Zenarmor: a signature that fires (or a packet IPS mode drops) is
+        """Suricata, set up like CrowdSec / Q-Feeds: a signature that fires (or a packet IPS mode drops) is
         no alert on its own. An internet address: one alert per address once it keeps at it (``IDS_INBOUND_MIN`` hits
         in 24h). A device inside: a priority-1 signature that got through, or a hit that repeats / other sources
         confirm."""
@@ -1216,7 +1060,7 @@ class DetectionEngine:
                 ev = await evidence(src, "threat_intel_outbound")
                 ev["qfeeds"] = 0  # that is this alert
                 corroborate(rating, ev, 2)
-                repeated(rating, *await blocked_threat_history(src, "qfeeds"))
+                repeated(rating, *await blocked_threat_history(src))
                 await raise_alert(
                     "threat_intel_outbound", rating, f"Internal host {src} contacted threat-intel listed IP {dst}",
                     f"qf_out:{src}:{dst}", src_ip=src, events={"source": "firewall,qfeeds", "d_blocklist": QFEEDS_NAME, "ip": src}, dst_ip=dst, count=r["hits"],
@@ -1236,74 +1080,6 @@ class DetectionEngine:
                                   f"qf_in:{src}", src_ip=src, events={"source": "firewall,qfeeds", "d_blocklist": QFEEDS_NAME, "ip": src}, count=hits,
                                   span=spans.get(src), blocked="Q-Feeds blocked it", description=f"{hits} connection attempts from {src} (Q-Feeds listed) were blocked.")
         await self._commit("qfeeds", current)
-
-    async def zenarmor_threats(self) -> None:
-        last, current = await self._watermark("zenarmor")
-        mode = self.settings.zenarmor_blocked_alerts  # Settings › Zenarmor
-        rows = await db.pool().fetch(
-            "SELECT src_ip, coalesce(domain, host(dst_ip)) AS target, coalesce(data->>'security', data->>'security_tags', '') AS threat, "
-            "bool_or(action = 'block') AS blocked, count(*) AS hits, max(data->'zen'->>'app') app, "
-            "max(data->'zen'->>'app_category') app_category, max(data->'zen'->>'web_category') web_category, "
-            "max(data->'zen'->>'policy') policy "
-            "FROM events WHERE id > $1 AND id <= $2 AND source = 'zenarmor' "
-            "AND (data->>'family' = 'alert' OR coalesce(data->>'security', data->>'security_tags', '') <> '' "
-            "     OR action = 'block') "  # blocked by category / policy: judged below (setting)
-            "GROUP BY 1, 2, 3", last, current)
-        for r in rows:
-            what = zen_describe({k: r[k] for k in ("app", "app_category", "web_category", "policy") if r[k]})
-            threat = r["threat"] or r["app_category"] or r["web_category"] or r["app"] or "threat alert"
-            src = str(r["src_ip"]) if r["src_ip"] else None
-            fingerprint = f"zen:{src}:{r['target']}"
-            # Zenarmor writes a threat as an "alert" record (without the blocked flag) and the blocked DNS / TLS / flow
-            # record, which can arrive in different batches: judge "blocked" on all records of this device and target in
-            # the last 24h. NOT blocked = no block at all, or flagged DNS / TLS / flow records that got through.
-            seen = await db.pool().fetchrow(
-                "SELECT bool_or(action = 'block') AS blocked, bool_or(action <> 'block' AND coalesce(data->>'family', '') <> 'alert' "
-                "AND coalesce(data->>'security', data->>'security_tags', '') <> '') AS passed FROM events "
-                "WHERE source = 'zenarmor' AND src_ip IS NOT DISTINCT FROM $1::inet AND coalesce(domain, host(dst_ip)) = $2 "
-                "AND ts > now() - interval '24 hours'", src, r["target"])
-            blocked = bool(r["blocked"] or seen["blocked"]) and not seen["passed"]
-            partly = bool(r["blocked"] or seen["blocked"]) and bool(seen["passed"])
-            # only Zenarmor's own verdict / categories, never the app name ("Amazon EC2" is no C2 server)
-            bad = bool(ZEN_BAD.search(" ".join(x for x in (r["threat"], r["app_category"], r["web_category"]) if x)))
-            # an open alert for it is always updated (e.g. re-rated once the block record arrived)
-            is_open = bool(await db.pool().fetchval(
-                "SELECT 1 FROM alerts WHERE fingerprint = $1 AND status <> 'closed' "
-                "AND last_seen > now() - interval '24 hours'", fingerprint))
-            if blocked and not is_open and (mode == "never" or (mode in ("threats", "every_threat") and not bad)):
-                continue  # blocked by policy (or all blocks, if chosen): Zenarmor did its job, nothing to look into
-            # not sticky: re-rated from the 24h verdict, so an alert raised before the block record arrived drops back
-            got = "some of it was NOT blocked" if partly else "was NOT blocked"
-            if bad:
-                # blocked: Zenarmor did its job - only repeated attempts or other signs make the device suspicious
-                rating = Rating("low", f"'{threat[:40]}' traffic from this device, blocked by Zenarmor - working as "
-                                       "intended") if blocked else \
-                    Rating("critical", f"'{threat[:40]}' traffic from this device {got}")
-            else:
-                rating = Rating("low", "flagged and blocked by Zenarmor") if blocked else \
-                    Rating("medium", f"flagged by Zenarmor, {got}")
-            if src and self.internal(src):
-                ev = await evidence(src, "zenarmor_threat")
-                ev["zen"] = 0  # that is this alert
-                corroborate(rating, ev, 2 if bad and blocked else 1)
-                if bad and blocked:
-                    repeated(rating, *await blocked_threat_history(src, "zenarmor"))
-            if blocked and bad and mode == "threats" and rating.severity == "low" and not is_open:
-                # a blocked threat on its own (an ad, a link, one page): Zenarmor did its job. Only an alert when the
-                # device keeps coming back (repeated) or other sources / alerts point at it too (raised above low)
-                continue
-            label = threat if not r["app"] or r["app"] in threat else f"{r['app']}, {threat}"
-            state = "blocked" if blocked else "partly blocked" if partly else "NOT blocked"
-            await raise_alert("zenarmor_threat", rating,
-                              f"Zenarmor{' blocked' if blocked else ''}: {src} → {r['target']} ({label[:60]})",
-                              fingerprint, src_ip=src, events={"source": "zenarmor", "ip": src}, count=r["hits"],
-                              blocked=blocked and "Zenarmor blocked it",
-                              data={k: r[k] for k in ("app", "app_category", "web_category", "policy") if r[k]},
-                              description=f"Zenarmor flagged traffic from {src} to {r['target']} as '{threat}' ({state})."
-                                          + (f" Details: {what}." if what else "")
-                                          + (f" Blocked by Zenarmor policy {r['policy']} (Zenarmor › Policies) - change the "
-                                             "policy there if this traffic should be allowed." if blocked and r["policy"] else ""))
-        await self._commit("zenarmor", current)
 
     # --------------------------------------------------------- DNS rules ---
     async def dns_anomalies(self) -> None:
@@ -1523,11 +1299,11 @@ class DetectionEngine:
         rows = await db.pool().fetch(
             "SELECT src_ip, dst_port, count(*) AS hits, (array_agg(DISTINCT host(dst_ip)))[1:8] AS dsts, "
             "bool_or(source = 'firewall' AND direction = 'out') AS left_wan FROM events "
-            "WHERE id > $1 AND id <= $2 AND source IN ('firewall', 'zenarmor') AND dst_port IN (53, 853) "
+            "WHERE id > $1 AND id <= $2 AND source = 'firewall' AND dst_port IN (53, 853) "
             f"AND {ALLOWED_ROW} AND src_ip IS NOT NULL AND dst_ip IS NOT NULL "
             "GROUP BY src_ip, dst_port", last, current)
-        # A NAT port forward that sends port 53 to Unbound catches these queries, but Zenarmor (it sees the packets
-        # before NAT) and the firewall's pass log still show the original destination (8.8.8.8). Only a pass OUT
+        # A NAT port forward that sends port 53 to Unbound catches these queries, but the firewall's pass log still
+        # shows the original destination (8.8.8.8). Only a pass OUT
         # (on the way to the internet, after NAT) proves the query really left. Known redirect: the configured port
         # forwards (OPNsense API) or the redirect's own log lines ('rdr', NAT rule with logging on).
         redirects = dns_redirects(await db.get_snapshot("nat_rules"))
@@ -1571,12 +1347,12 @@ class DetectionEngine:
                     "AND src_ip IS NOT NULL AND domain IS NOT NULL",
                     "SELECT domain AS dst FROM events WHERE source = 'unbound' AND ts > now() - interval '7 days' "
                     "AND domain = ANY($1::text[]) GROUP BY domain HAVING count(DISTINCT src_ip) > 2"),
-            "conn": ("SELECT src_ip, host(dst_ip) AS dst, ts FROM events WHERE source IN ('zenarmor', 'firewall') "
+            "conn": ("SELECT src_ip, host(dst_ip) AS dst, ts FROM events WHERE source = 'firewall' "
                      # every attempt counts, blocked ones too: malware keeps retrying at its rhythm
-                     "AND action IN ('pass', 'allow', 'conn', 'block', 'drop') AND ts > now() - interval '6 hours' "
+                     "AND action IN ('pass', 'block', 'drop') AND ts > now() - interval '6 hours' "
                      "AND src_ip IS NOT NULL "
                      "AND dst_ip IS NOT NULL",
-                     "SELECT host(dst_ip) AS dst FROM events WHERE source IN ('zenarmor', 'firewall') "
+                     "SELECT host(dst_ip) AS dst FROM events WHERE source = 'firewall' "
                      "AND ts > now() - interval '7 days' AND host(dst_ip) = ANY($1::text[]) GROUP BY dst_ip "
                      "HAVING count(DISTINCT src_ip) > 2"),
         }
@@ -1621,7 +1397,7 @@ class DetectionEngine:
                     v = await db.pool().fetchrow(
                         f"SELECT {ALLOWED_AGG} passed, {FW_BLOCKED_AGG} fw_blocked, {FW_RULE_AGG} fw_rule FROM events "
                         "WHERE src_ip = $1::inet AND dst_ip = $2::inet AND ts > now() - interval '6 hours' "
-                        "AND source IN ('firewall', 'zenarmor')", src, r["dst"])
+                        "AND source = 'firewall'", src, r["dst"])
                     how = verdict(v["passed"], v["fw_blocked"], v["fw_rule"])
                     if not v["passed"]:
                         rating.note(f"{how} - the firewall stops it, but the device keeps trying (malware retries like this)")
@@ -1649,7 +1425,7 @@ class DetectionEngine:
         rows = await db.pool().fetch(
             "SELECT src_ip, array_agg(DISTINCT host(dst_ip)) AS dsts, count(*) AS hits, array_agg(DISTINCT dst_port) AS ports, "
             f"count(*) FILTER (WHERE {ALLOWED_ROW}) AS passed FROM events "
-            "WHERE source IN ('firewall', 'zenarmor') AND ts > now() - interval '15 minutes' AND dst_port = ANY($1::int[]) "
+            "WHERE source = 'firewall' AND ts > now() - interval '15 minutes' AND dst_port = ANY($1::int[]) "
             "AND src_ip IS NOT NULL AND dst_ip IS NOT NULL AND src_ip <> dst_ip GROUP BY src_ip HAVING count(DISTINCT dst_ip) >= 5",
             list(LATERAL_PORTS))
         for r in rows:
@@ -1671,30 +1447,6 @@ class DetectionEngine:
                 blocked=not r["passed"] and "every connection was blocked",
                 description=f"{src} contacted {services} on {internal_dsts} internal hosts within 15 minutes "
                             f"({r['passed']} allowed). Is this a backup / management tool? Otherwise isolate the device.")
-
-    async def large_upload(self) -> None:
-        """Much more data sent to the internet than the device normally sends: possible exfiltration."""
-        if not self._due("large_upload", 900):
-            return
-        up = ("greatest(coalesce((data->>'src_nbytes')::numeric, 0), coalesce((data->>'src_pbytes')::numeric, 0))")
-        rows = await db.pool().fetch(
-            f"SELECT src_ip, sum({up}) FILTER (WHERE ts > now() - interval '1 hour') AS last_hour, "
-            f"sum({up}) FILTER (WHERE ts <= now() - interval '1 hour') / 167.0 AS per_hour, "
-            f"(array_agg(DISTINCT host(dst_ip)) FILTER (WHERE ts > now() - interval '1 hour'))[1:5] AS dsts "
-            "FROM events WHERE source = 'zenarmor' AND data->>'family' = 'conn' AND ts > now() - interval '7 days' "
-            "AND src_ip IS NOT NULL GROUP BY src_ip")
-        for r in rows:
-            src, hour, base = str(r["src_ip"]), float(r["last_hour"] or 0), float(r["per_hour"] or 0)
-            if not self.internal(src) or hour < 1024 ** 3 or hour < 5 * max(base, 50 * 1024 ** 2):
-                continue
-            rating = corroborate(Rating("low", f"{hour / 1024 ** 3:.1f} GB sent in the last hour, normally "
-                                               f"{base / 1024 ** 2:.0f} MB per hour - a cloud backup or upload, or data "
-                                               "being stolen"), await evidence(src, "large_upload"))
-            await raise_alert(
-                "large_upload", rating, f"Unusual upload: {src} sent {hour / 1024 ** 3:.1f} GB in 1 hour",
-                f"upload:{src}", src_ip=src, events={"source": "zenarmor", "ip": src}, mode="max",
-                description=f"{src} uploaded {hour / 1024 ** 3:.1f} GB in the last hour (7-day average {base / 1024 ** 2:.0f} "
-                            f"MB per hour), to e.g. {', '.join(r['dsts'] or [])}.")
 
     async def attack_chains(self) -> None:
         """Connect the dots: separate alerts about one address that together tell a story (MITRE ATT&CK stages).

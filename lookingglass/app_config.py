@@ -40,7 +40,6 @@ GROUPS = {
     "email": "Email",
     "ai": "AI analyst",
     "reports": "Reports",
-    "zenarmor": "Zenarmor stream",
     "ingest": "Log ingestion & network",
     "data": "Data & detection",
     "display": "Display",
@@ -82,10 +81,6 @@ FIELDS: list[Field] = [
     Field("ids_ignore_sids", "opnsense", "Suricata: SIDs that never raise an alert", "list",
           "Signature IDs (the SID column under Threats › Suricata). Their hits are still stored and shown.",
           placeholder="2210050"),
-    Field("zenarmor_enabled", "opnsense", "Receive Zenarmor data", "bool",
-          "Off: the Elasticsearch receiver (port 9200) is closed, Zenarmor records sent over syslog are discarded "
-          "and the Zenarmor overview widget, menu entry and settings tab are hidden. Stored Zenarmor events are kept "
-          "(delete them under Data & detection › Delete collected data)."),
     Field("nginx_pull", "opnsense", "Pull nginx access / error logs", "bool",
           "nginx plugin: its access logs are never sent by OPNsense remote syslog, so they are read via the API."),
     Field("vpn_pull", "opnsense", "Pull VPN status (WireGuard, OpenVPN, IPsec)", "bool",
@@ -191,17 +186,6 @@ FIELDS: list[Field] = [
           "Ingestion & network).", min=0, max=23),
     Field("report_mail_to", "reports", "Email the report to", "list", "Mail addresses, one per line; uses the mail server "
           "under Email & notifications. Empty = not mailed.", placeholder="you@example.com"),
-    # Zenarmor
-    Field("zenarmor_es_user", "zenarmor", "Stream username", "str", "Optional basic auth; must match Zenarmor's streaming username."),
-    Field("zenarmor_es_password", "zenarmor", "Stream password", "secret", "Must match Zenarmor's streaming password."),
-    Field("zenarmor_es_allowed", "zenarmor", "Allowed senders", "list",
-          "IPs / CIDRs allowed to stream (empty = same as syslog allowed senders).", placeholder="192.168.1.1"),
-    Field("zenarmor_blocked_alerts", "zenarmor", "Alert on traffic Zenarmor blocked", "choice",
-          "threats = blocked malware, botnet / command & control, phishing, ransomware or crypto mining only when the "
-          "device keeps trying (repeated over time / many sites) or other sources and alerts point at it too - a single "
-          "blocked ad or link is Zenarmor doing its job; every_threat = every blocked threat (low); all = also policy / "
-          "app category blocks (low); never = no alerts for blocked traffic at all. Traffic Zenarmor flagged but did "
-          "NOT block is always alerted.", choices=("threats", "every_threat", "all", "never")),
     # ingest
     Field("syslog_allowed_senders", "ingest", "Syslog allowed senders", "list",
           "IPs / CIDRs (your OPNsense). Empty accepts everyone - not recommended.", placeholder="192.168.1.1"),
@@ -226,14 +210,14 @@ FIELDS: list[Field] = [
     Field("behavior_new_port", "behavior", "Alert: first use of a new port / protocol", "bool"),
     Field("behavior_new_domain", "behavior", "Alert: first lookup of a new domain", "bool"),
     Field("behavior_new_tls", "behavior", "Alert: new TLS program (JA3/JA4)", "bool", "Needs TLS records with JA3/JA4 "
-          "from Suricata (eve) or Zenarmor."),
+          "from Suricata (eve)."),
     Field("behavior_odd_hours", "behavior", "Alert: activity at hours the device is never active", "bool"),
     Field("behavior_peers", "behavior", "Compare with similar devices", "bool", "Devices of the same vendor form a "
           "group: something the others do too is not alerted; something none of them do weighs heavier."),
     Field("behavior_volume_factor", "behavior", "Alert: traffic N times the device's normal", "int", "Connections / "
-          "data / DNS lookups in one hour compared to the device's median for that hour. 0 = off.", min=0, max=1000),
+          "DNS lookups in one hour compared to the device's median for that hour. 0 = off.", min=0, max=1000),
     Field("anomaly_ml_enabled", "behavior", "Machine learning (Isolation Forest)", "bool", "Scores every device-hour on "
-          "8 features (connections, destinations, ports, countries, DNS, failed lookups, blocks, upload) against the "
+          "7 features (connections, destinations, ports, countries, DNS, failed lookups, blocks) against the "
           "device's own history and alerts on combinations that are rare. Runs locally, nothing leaves the server."),
     Field("anomaly_ml_sensitivity", "behavior", "Machine learning: sensitivity", "choice", "low = only hours rarer "
           "than 1 in 2000 normal hours with a feature 4+ deviations off; medium = 1 in 500, 3.5; high = 1 in 200, 3.",
@@ -439,7 +423,7 @@ def _coerce(f: Field, value: Any) -> Any:
         if port is None:
             raise SettingsError(f"{f.label}: add the port, e.g. {v.rstrip('/')}:9898 (Backrest's default) or the "
                                 "port you mapped in Docker")
-    if f.key in ("syslog_allowed_senders", "internal_networks", "zenarmor_es_allowed") and v:
+    if f.key in ("syslog_allowed_senders", "internal_networks") and v:
         for part in v.split(","):
             try:  # an invalid line is named, nothing is saved
                 ipaddress.ip_network(part.strip(), strict=False)

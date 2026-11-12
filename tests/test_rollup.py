@@ -14,7 +14,7 @@ DSN = os.environ.get("TEST_DATABASE_URL")
 SEED = """
 INSERT INTO events (ts, received_at, source, action, proto, interface, direction, dst_port, src_country, severity, src_ip)
 SELECT now() - (i * interval '97 seconds'), now() - (i * interval '97 seconds'),
-       (ARRAY['firewall','firewall','unbound','nginx','zenarmor','vpn','unifi','system','auth'])[1 + i % 9],
+       (ARRAY['firewall','firewall','unbound','nginx','suricata','vpn','unifi','system','auth'])[1 + i % 9],
        (ARRAY['block','pass','query','http_404','block','vpn_connect','client_roam',NULL,'login_failed'])[1 + i % 9],
        CASE WHEN i % 7 = 0 THEN NULL ELSE (ARRAY['tcp','udp','icmp'])[1 + i % 3] END,
        (ARRAY['igb0','igb1',NULL])[1 + i % 3], (ARRAY['in','out'])[1 + i % 2],

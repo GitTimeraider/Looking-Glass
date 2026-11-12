@@ -46,7 +46,7 @@ def test_validation_accepts():
 
 
 def test_public_view_never_contains_secrets():
-    s = Settings(opnsense_api_key="very-secret", ai_api_key="sk-abc", zenarmor_es_password="pw")
+    s = Settings(opnsense_api_key="very-secret", ai_api_key="sk-abc", smtp_password="pw")
     view = repr(app_config.public_view(s))
     assert "very-secret" not in view and "sk-abc" not in view and "'pw'" not in view
     fields = {f["key"]: f for f in app_config.public_view(s)["fields"]}

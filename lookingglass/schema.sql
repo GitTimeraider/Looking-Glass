@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS events (
     id           BIGSERIAL PRIMARY KEY,
     ts           TIMESTAMPTZ NOT NULL,
     received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    source       TEXT NOT NULL,            -- firewall, nginx, unbound, crowdsec, suricata, zenarmor, qfeeds, auth, vpn, dhcp, system
+    source       TEXT NOT NULL,            -- firewall, nginx, unbound, crowdsec, suricata, qfeeds, auth, vpn, dhcp, system
     host         TEXT,
     program      TEXT,
     severity     SMALLINT NOT NULL DEFAULT 6,  -- syslog severity 0 (emerg) .. 7 (debug)
@@ -138,7 +138,7 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS lease_expires TEXT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS online BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS notes TEXT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS trusted BOOLEAN NOT NULL DEFAULT false;
--- where the name came from (manual, dnsmasq-static, dhcp-*, dns, arp, zenarmor); a better source replaces a worse one
+-- where the name came from (manual, dnsmasq-static, dhcp-*, dns, arp, unifi); a better source replaces a worse one
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS name_source TEXT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS name_rank SMALLINT NOT NULL DEFAULT 0;
 -- where the device is connected, from UniFi: "wifi" / "wired", "AP Living room · Home (5 GHz)" / "Switch Office port 5"
@@ -162,12 +162,6 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS hwaddr TEXT;
 -- dnsmasq writes "*" and the ARP table "-" / "?" when a device has no name: these are no names
 UPDATE devices SET hostname = NULL, name_source = NULL, name_rank = 0
  WHERE hostname IS NOT NULL AND name_rank < 100 AND lower(btrim(hostname)) IN ('', '*', '-', '?', 'unknown', '<unknown>', '(unknown)');
--- tunnel clients (WireGuard) that Zenarmor reported with a placeholder MAC were merged into one bogus device; they
--- are listed under their IP now (ip: keys)
-DELETE FROM devices WHERE mac IN ('00:00:00:00:00:00', 'ff:ff:ff:ff:ff:ff');
--- Zenarmor reports the IP as host name when it knows none: no name either
-UPDATE devices SET hostname = NULL, name_source = NULL, name_rank = 0
- WHERE name_source = 'zenarmor' AND hostname ~ '^[0-9.]+$|^[0-9a-fA-F:]*:[0-9a-fA-F:]*$';
 
 -- ------------------------------------------------------------- unraid ---
 CREATE TABLE IF NOT EXISTS unraid_servers (

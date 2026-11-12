@@ -131,7 +131,7 @@ def interface_device(entries: list[dict[str, Any]]) -> dict[str, Any]:
 def addressless_interfaces(stats: Any, arp_intfs: set[str]) -> list[dict[str, Any]]:
     """OPNsense itself on interfaces the ARP table has no own entry for - WireGuard (wg1), OpenVPN (ovpns1), PPPoE: their
     addresses from the interface statistics ("[WireGuard] (wg1) / 10.0.3.1"), as ARP-like entries for
-    ``interface_device``. Otherwise traffic the firewall sends on such an interface looks like a client without a MAC."""
+    ``interface_device``, so traffic the firewall sends on such an interface is named after it."""
     entries: dict[str, list[dict[str, Any]]] = {}
     for key, v in stats.items() if isinstance(stats, dict) else []:
         name = str(v.get("name") or "") if isinstance(v, dict) else ""
@@ -152,7 +152,7 @@ def main_interface(keys: list[str]) -> str:
 
 
 async def absorb_into_interfaces(own_devices: list[dict[str, Any]]) -> None:
-    """Each interface device takes over the entries of its addresses (Zenarmor 'no MAC' entries); the port also takes
+    """Each interface device takes over what was learned under its addresses; the port also takes
     over the device an older version kept under the MAC for all interfaces of the port."""
     from .detections import absorb_ip_devices
     by_mac: dict[str, list[str]] = {}

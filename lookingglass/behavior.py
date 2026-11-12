@@ -3,8 +3,8 @@
 * Profiles (device_profile): per device (MAC, or IP when unknown) the countries, ports, domains, TLS programs
   (JA3/JA4) and hours it uses. A value appearing for the first time on a *predictable* device (one that rarely picked
   up anything new while learning) is alerted - unless similar devices (same vendor) do it too.
-* Hourly features (device_hourly): connections, destinations, ports, countries, DNS lookups, failed lookups, blocks
-  and upload per device and hour. Used for volume spikes and a machine learning model (Isolation Forest on feature
+* Hourly features (device_hourly): connections, destinations, ports, countries, DNS lookups, failed lookups and blocks
+  per device and hour. Used for volume spikes and a machine learning model (Isolation Forest on feature
   pairs, see mlforest.py) that finds hours unlike the device's own history.
 * Hour-of-week baselines (hourly_stats): network-wide totals compared to the same hour in previous weeks.
 * Risk score per address: all alerts add points that fade over time.
@@ -41,13 +41,12 @@ from .parsers.common import INTERNAL_NETS, parse_networks
 log = logging.getLogger(__name__)
 
 KINDS = {"country": "country", "port": "port / protocol", "domain": "domain", "tls": "TLS program (JA3/JA4)"}
-FEATURES = ["connections", "destinations", "ports", "countries", "dns", "failed_lookups", "blocked", "upload_mb"]
+FEATURES = ["connections", "destinations", "ports", "countries", "dns", "failed_lookups", "blocked"]
 FEATURE_LABEL = {"connections": "connections", "destinations": "destinations", "ports": "ports", "countries": "countries",
-                 "dns": "DNS lookups", "failed_lookups": "failed lookups", "blocked": "blocked connections",
-                 "upload_mb": "MB uploaded"}
+                 "dns": "DNS lookups", "failed_lookups": "failed lookups", "blocked": "blocked connections"}
 # an increase only counts when it is also meaningful in absolute terms (5 failed lookups instead of 0 is not news)
 MIN_INCREASE = {"connections": 200, "destinations": 30, "ports": 10, "countries": 5, "dns": 200, "failed_lookups": 50,
-                "blocked": 50, "upload_mb": 100}
+                "blocked": 50}
 ML_LEVELS = {"low": (0.9995, 4.0), "medium": (0.998, 3.5), "high": (0.995, 3.0)}  # training percentile, deviation
 RISK_POINTS = {"info": 1, "low": 3, "medium": 8, "high": 20, "critical": 40}
 # per-device overrides of global settings (devices.limits); a missing key means "use the global setting".
@@ -157,9 +156,9 @@ async def device_limits() -> dict[str, dict[str, Any]]:
     rows = await db.pool().fetch(
         "SELECT mac, limits, device_type, (SELECT array_agg(DISTINCT host(x)) FROM unnest(coalesce(ips, '{}'::inet[]) || ip) x "
         "WHERE x IS NOT NULL) ips FROM devices WHERE limits <> '{}'::jsonb OR device_type IS NOT NULL "
-        "ORDER BY mac NOT LIKE 'ip:%', last_seen")
+        "ORDER BY last_seen")
     out: dict[str, dict[str, Any]] = {}
-    for r in rows:  # later rows win: a device with a MAC over an ip: entry, the most recently seen one
+    for r in rows:  # later rows win: the most recently seen device
         merged = {**(DEVICE_TYPES.get(r["device_type"] or "") or {}).get("limits", {}), **dict(r["limits"] or {})}
         if not merged:
             continue  # a type without defaults of its own
@@ -294,10 +293,10 @@ class Behavior:
         return Matcher(self.s.behavior_exclude)
 
     async def ip_to_mac(self) -> dict[str, dict[str, Any]]:
-        # every address of a device (OPNsense: a port and its VLANs); a device with a MAC wins over an ip: entry
+        # every address of a device (OPNsense: a port and its VLANs); the most recently seen device wins
         rows = await db.pool().fetch(
             "SELECT host(x) ip, mac, vendor, hostname FROM devices, unnest(coalesce(ips, '{}'::inet[]) || ip) x "
-            "WHERE x IS NOT NULL ORDER BY mac NOT LIKE 'ip:%', last_seen")
+            "WHERE x IS NOT NULL ORDER BY last_seen")
         return {r["ip"]: dict(r) for r in rows}
 
     @staticmethod
@@ -340,7 +339,7 @@ class Behavior:
 
         conns = await pool.fetch(
             "SELECT host(src_ip) ip, dst_country, coalesce(proto, 'ip') proto, dst_port, count(*) n, min(ts) f, max(ts) l "
-            "FROM events WHERE id > $1 AND id <= $2 AND source IN ('firewall', 'zenarmor') "
+            "FROM events WHERE id > $1 AND id <= $2 AND source = 'firewall' "
             f"AND {ALLOWED_ROW} AND src_ip IS NOT NULL AND dst_ip IS NOT NULL AND NOT (dst_ip <<= ANY($3::inet[])) "
             "GROUP BY 1, 2, 3, 4", last, upto, nets)
         for r in conns:
@@ -349,20 +348,20 @@ class Behavior:
                 add(r["ip"], "port", f"{r['proto']}/{r['dst_port']}", r["n"], r["f"], r["l"])
         dns = await pool.fetch(
             "SELECT host(src_ip) ip, domain, count(*) n, min(ts) f, max(ts) l FROM events WHERE id > $1 AND id <= $2 "
-            "AND (source = 'unbound' OR (source = 'zenarmor' AND data->>'family' = 'dns')) AND src_ip IS NOT NULL "
+            "AND source = 'unbound' AND src_ip IS NOT NULL "
             "AND domain IS NOT NULL GROUP BY 1, 2", last, upto)
         for r in dns:
             add(r["ip"], "domain", registered_domain(r["domain"].lower().rstrip(".")), r["n"], r["f"], r["l"])
         tls = await pool.fetch(
             "SELECT host(src_ip) ip, coalesce(data->>'ja4', data->>'ja3', data->>'ja3_hash') fp, count(*) n, min(ts) f, "
-            "max(ts) l FROM events WHERE id > $1 AND id <= $2 AND source IN ('suricata', 'zenarmor') AND src_ip IS NOT NULL "
+            "max(ts) l FROM events WHERE id > $1 AND id <= $2 AND source = 'suricata' AND src_ip IS NOT NULL "
             "AND coalesce(data->>'ja4', data->>'ja3', data->>'ja3_hash') IS NOT NULL GROUP BY 1, 2", last, upto)
         for r in tls:
             add(r["ip"], "tls", r["fp"], r["n"], r["f"], r["l"])
         tz = self.s.timezone or "UTC"
         hours = await pool.fetch(
             "SELECT host(src_ip) ip, extract(hour FROM ts AT TIME ZONE $3)::int h, count(*) n, min(ts) f, max(ts) l FROM events "
-            "WHERE id > $1 AND id <= $2 AND source IN ('firewall', 'zenarmor', 'unbound') AND src_ip IS NOT NULL GROUP BY 1, 2",
+            "WHERE id > $1 AND id <= $2 AND source IN ('firewall', 'unbound') AND src_ip IS NOT NULL GROUP BY 1, 2",
             last, upto, tz)
         for r in hours:
             add(r["ip"], "hour", r["h"], r["n"], r["f"], r["l"])
@@ -513,12 +512,11 @@ class Behavior:
         pool = db.pool()
         end = hour + timedelta(hours=1)
         nets = internal_cidrs(self.s)
-        up = "greatest(coalesce((data->>'src_nbytes')::numeric, 0), coalesce((data->>'src_pbytes')::numeric, 0))"
         conns = await pool.fetch(
             "SELECT host(src_ip) ip, count(*) c, count(DISTINCT dst_ip) d, count(DISTINCT dst_port) p, "
-            f"count(DISTINCT dst_country) k, count(*) FILTER (WHERE action IN ('block', 'drop')) b, coalesce(sum({up}), 0) u "
-            "FROM events WHERE ts >= $1 AND ts < $2 AND source IN ('firewall', 'zenarmor') AND src_ip <<= ANY($3::inet[]) "
-            "AND coalesce(data->>'family', 'conn') = 'conn' GROUP BY 1", hour, end, nets)
+            "count(DISTINCT dst_country) k, count(*) FILTER (WHERE action IN ('block', 'drop')) b "
+            "FROM events WHERE ts >= $1 AND ts < $2 AND source = 'firewall' AND src_ip <<= ANY($3::inet[]) "
+            "GROUP BY 1", hour, end, nets)
         dns = await pool.fetch(
             "SELECT host(src_ip) ip, count(*) q, count(*) FILTER (WHERE upper(coalesce(data->>'rcode', '')) = 'NXDOMAIN' "
             "OR action = 'nxdomain') nx FROM events WHERE ts >= $1 AND ts < $2 AND source = 'unbound' "
@@ -529,8 +527,7 @@ class Behavior:
             feats: dict[str, dict[str, float]] = defaultdict(lambda: dict.fromkeys(FEATURES, 0.0))
             for r in conns:
                 f = feats[r["ip"]]
-                f.update(connections=r["c"], destinations=r["d"], ports=r["p"], countries=r["k"], blocked=r["b"],
-                         upload_mb=round(float(r["u"]) / 1048576, 2))
+                f.update(connections=r["c"], destinations=r["d"], ports=r["p"], countries=r["k"], blocked=r["b"])
             for r in dns:
                 feats[r["ip"]].update(dns=r["q"], failed_lookups=r["nx"])
             rows = [(self.key_of(ip, macs), hour, ip, f) for ip, f in feats.items()
@@ -569,12 +566,12 @@ class Behavior:
         return out
 
     async def volume(self, hour: datetime) -> None:
-        """Connections, DNS lookups or upload of one device far above its own normal."""
+        """Connections or DNS lookups of one device far above its own normal."""
         default = self.s.behavior_volume_factor
         limits = await device_limits() if self.s.behavior_enabled else {}
         if not self.s.behavior_enabled or not (default or any(v.get("volume_factor") for v in limits.values())):
             return
-        floors = {"connections": 500, "dns": 500, "upload_mb": 200}
+        floors = {"connections": 500, "dns": 500}
         for key, rows in (await self._history(hour)).items():
             cur = rows[-1] if rows and rows[-1]["hour"] == hour else None
             hist = [r["features"] for r in rows if r["hour"] != hour]

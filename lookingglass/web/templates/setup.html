@@ -60,11 +60,6 @@
     <li><b>CrowdSec</b> (os-crowdsec) — nothing extra: alerts and decisions are pulled via the API (CrowdSec writes no syslog on OPNsense).</li>
     <li><b>Suricata</b> — nothing extra: alerts are pulled from the API (<i>Pull Suricata alerts</i>). Do <b>not</b>
       also tick <i>Enable syslog alerts</i> in Intrusion Detection, that would count every alert twice.</li>
-    <li><b>Zenarmor</b> — <i>Zenarmor › Settings › Streaming Data</i>. Works on every edition including free Home:
-      <i>Stream Reporting Data to External Elasticsearch</i> with URI <code>http://&lt;docker-host&gt;:9200</code> and Elasticsearch
-      version <code>8.11.3</code> (Looking Glass acts as the Elasticsearch node). Paid editions can alternatively stream to syslog
-      (Docker host, port 514). Don't pick the install wizard's <i>Remote Elasticsearch Database</i> - that replaces local storage.
-      See <a href="https://www.zenarmor.com/docs/opnsense/configuring/streaming-reporting-data" target="_blank" rel="noopener">Zenarmor docs</a>.</li>
     <li><b>Q-Feeds</b> (os-q-feeds-connector) — events only exist for <b>logged</b> firewall block rules that use the Q-Feeds
       aliases (e.g. LAN: block to alias, WAN: block from alias, <i>Log</i> ✓). Looking Glass pulls them from
       <i>Security › Q-Feeds Connect › Events</i> via the API. Domain feeds go into Unbound's blocklist.</li>
@@ -105,14 +100,13 @@ checks(); LG.autoRefresh(checks, 60000);
 (async () => {
   const s = await LG.api("/api/status");
   const ing = s.ingest, now = Date.now() / 1000;
-  const SOURCES = ["firewall", "nginx", "unbound", "crowdsec", "suricata", "zenarmor", "qfeeds", "auth", "vpn", "dhcp", "system", "unraid", "docker"];
+  const SOURCES = ["firewall", "nginx", "unbound", "crowdsec", "suricata", "qfeeds", "auth", "vpn", "dhcp", "system", "unraid", "docker"];
   LG.table("#ingest", [{k: "source", l: "Source", f: LG.src}, {k: "n", l: "Since start", num: true},
     {k: "last", l: "Last message", f: v => v ? `<span class="dot ${now - v < 900 ? "ok" : "warn"}"></span>${LG.ago(v)}` : `<span class="dot"></span><span class="muted">none yet</span>`}],
     SOURCES.map(x => ({ source: x, n: ing.by_source[x] || 0, last: ing.last_by_source[x] })));
   document.getElementById("ingest").insertAdjacentHTML("beforeend", `<p class="small muted">Received ${LG.num(ing.received)} · parsed ${LG.num(ing.parsed)} ·
     written ${LG.num(ing.written)} · dropped ${LG.num(ing.dropped)} · errors ${LG.num(ing.errors)}<br>Senders: ${Object.entries(ing.senders).map(([ip, t]) => `${LG.esc(ip)} (${LG.ago(t)})`).join(", ") || "none"}.
-    Only syslog is counted here; API and Zenarmor-stream sources are in the Data sources list above.
-    ${ing.zenarmor_es ? `<br>Zenarmor Elasticsearch stream: ${LG.num(ing.zenarmor_es.docs)} records from ${LG.esc(ing.zenarmor_es.peer)} (${LG.ago(ing.zenarmor_es.last)})` : ""}</p>`);
+    Only syslog is counted here; API sources are in the Data sources list above.</p>`);
   const p = s.poller || {};
   LG.table("#poller", [{k: "job", l: "Job"}, {k: "ok", l: "State", f: (v, r) => r.unsupported ? `<span class="badge warn">n/a</span>` : v ? `<span class="badge ok">ok</span>` : v === false ? `<span class="badge bad">error</span>` : "…"},
     {k: "last", l: "Last", f: LG.ago}, {k: "error", l: "Detail", f: v => `<span class="small muted">${LG.esc(v || "")}</span>`}],

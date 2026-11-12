@@ -28,7 +28,7 @@ QUERIES: dict[str, str] = {
                           "WHERE source = 'firewall' AND action = 'pass' AND direction = 'in' AND ts > now() - make_interval(secs => $1) "
                           "AND NOT (src_ip << '10.0.0.0/8' OR src_ip << '172.16.0.0/12' OR src_ip << '192.168.0.0/16' OR src_ip << 'fc00::/7' "
                           "OR src_ip << 'fe80::/10' OR src_ip << '127.0.0.0/8') GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 15",
-    "top_talkers_internal": "SELECT host(src_ip) ip, count(*) n, count(DISTINCT dst_ip) peers FROM events WHERE source IN ('firewall', 'zenarmor') "
+    "top_talkers_internal": "SELECT host(src_ip) ip, count(*) n, count(DISTINCT dst_ip) peers FROM events WHERE source = 'firewall' "
                             "AND ts > now() - make_interval(secs => $1) AND (src_ip << '10.0.0.0/8' OR src_ip << '172.16.0.0/12' "
                             "OR src_ip << '192.168.0.0/16') GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
     "dns_top_domains": "SELECT domain, count(*) n, count(DISTINCT src_ip) clients FROM events WHERE source = 'unbound' AND ts > now() - make_interval(secs => $1) "
@@ -64,8 +64,6 @@ QUERIES: dict[str, str] = {
                           "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
     "crowdsec_scenarios": "SELECT coalesce(data->>'scenario', data->>'reason') scenario, count(*) n, count(DISTINCT src_ip) ips FROM events "
                           "WHERE source = 'crowdsec' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
-    "zenarmor_top": "SELECT coalesce(data->>'app_name', data->>'app_category', action) app, action, count(*) n FROM events "
-                    "WHERE source = 'zenarmor' AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
     # Q-Feeds: its firewall log lines too; direction from the addresses (a LAN rule logs outgoing traffic as "in")
     "qfeeds_hits": "SELECT host(src_ip) src, host(dst_ip) dst, CASE WHEN src_ip << '10.0.0.0/8' OR src_ip << '172.16.0.0/12' "
                    "OR src_ip << '192.168.0.0/16' OR src_ip << 'fc00::/7' OR src_ip << '100.64.0.0/10' THEN 'out' ELSE 'in' END direction, "
@@ -86,9 +84,9 @@ QUERIES: dict[str, str] = {
     # UniFi location + OPNsense findings: which device, where it is connected and what it did
     "clients_with_security_events": "WITH ev AS (SELECT src_ip, count(*) FILTER (WHERE source = 'firewall' AND action = 'block') fw, "
         "count(*) FILTER (WHERE source = 'unbound' AND action IN ('block', 'drop')) dns, "
-        "count(*) FILTER (WHERE source IN ('suricata', 'crowdsec', 'qfeeds') OR lower(data->>'blocklist') = 'q-feeds' OR (source = 'zenarmor' AND action = 'block')) threats "
+        "count(*) FILTER (WHERE source IN ('suricata', 'crowdsec', 'qfeeds') OR lower(data->>'blocklist') = 'q-feeds') threats "
         "FROM events WHERE ts > now() - make_interval(secs => $1) AND src_ip IS NOT NULL "
-        "AND source IN ('firewall', 'unbound', 'suricata', 'crowdsec', 'qfeeds', 'zenarmor') GROUP BY 1) "
+        "AND source IN ('firewall', 'unbound', 'suricata', 'crowdsec', 'qfeeds') GROUP BY 1) "
         "SELECT coalesce(d.hostname, d.mac) name, host(d.ip) ip, d.conn_where, ev.fw, ev.dns, ev.threats FROM devices d "
         "JOIN ev ON ev.src_ip = d.ip WHERE d.conn_where IS NOT NULL ORDER BY 6 DESC, 4 + 5 DESC LIMIT 15",
 }

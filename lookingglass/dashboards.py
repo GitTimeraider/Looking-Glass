@@ -344,55 +344,6 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
              "sql": f"SELECT domain sni, count(DISTINCT src_ip) clients, count(*) n FROM events "
                     f"WHERE source = 'suricata' AND action = 'tls' AND domain IS NOT NULL AND {W} GROUP BY 1 ORDER BY 3 DESC LIMIT 25"},
         ]},
-    "zenarmor": {
-        # field names: Zenarmor ES/syslog stream (see parsers/security.py). Only conn records carry app_name /
-        # app_category; dns/tls/http carry a web "category" (dns: domain_categories) instead.
-        "title": "Zenarmor", "source": "zenarmor", "group": "opnsense", "panels": [
-            {"id": "kpi", "type": "stat", "span": 3, "sql":
-                f"SELECT count(*) AS \"Events\", count(*) FILTER (WHERE action = 'block') AS \"Blocked\", "
-                f"count(*) FILTER (WHERE data->>'family' = 'alert' OR coalesce(data->>'security', '') <> '') AS \"Threats\", "
-                f"count(DISTINCT src_ip) AS \"Hosts\", count(DISTINCT data->>'app_name') AS \"Applications\", "
-                f"count(DISTINCT domain) AS \"Domains\" "
-                f"FROM events WHERE source = 'zenarmor' AND {W}",
-             "drill": {"tiles": {"Blocked": {"action": "block"}, "Threats": {"d_family": "alert"}, "Applications": {"d_family": "conn"}}}},
-            {"id": "act", "title": "Records by type", "type": "timeseries", "span": 2, "drill": {"series": "d_family"},
-             "sql": f"SELECT {B} t, coalesce(data->>'family', '?') series, count(*) v FROM events WHERE source = 'zenarmor' AND {W} GROUP BY 1, 2 ORDER BY 1"},
-            {"id": "blk", "title": "Blocked vs allowed", "type": "pie",
-             "sql": f"SELECT CASE WHEN action = 'block' THEN 'blocked' ELSE 'allowed' END label, count(*) v, CASE WHEN action = 'block' THEN 'block' END o_action FROM events WHERE source = 'zenarmor' AND {W} GROUP BY 1, 3"},
-            {"id": "apps", "title": "Top applications (connections)", "type": "hbar", "drill": {"by": "d_app_name"},
-             "sql": f"SELECT data->>'app_name' label, count(*) v FROM events WHERE source = 'zenarmor' AND data->>'app_name' IS NOT NULL AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 15"},
-            {"id": "cat", "title": "Application categories", "type": "pie", "drill": {"by": "d_app_category"},
-             "sql": f"SELECT data->>'app_category' label, count(*) v FROM events WHERE source = 'zenarmor' AND data->>'app_category' IS NOT NULL AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 10"},
-            {"id": "webcat", "title": "Web categories (DNS / TLS / HTTP)", "type": "hbar", "drill": {"by": "d_category"},
-             "sql": f"SELECT data->>'category' label, count(*) v FROM events WHERE source = 'zenarmor' AND data->>'family' IN ('dns', 'tls', 'http') AND coalesce(data->>'category', '') <> '' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 15"},
-            {"id": "hosts", "title": "Top local hosts", "type": "hbar",
-             "sql": f"SELECT coalesce(nullif(data->>'src_hostname', host(src_ip)::text), data->'device'->>'name', host(src_ip)) label, count(*) v, host(src_ip) o_ip FROM events WHERE source = 'zenarmor' AND {W} GROUP BY 1, 3 ORDER BY 2 DESC LIMIT 15"},
-            {"id": "blocked", "title": "Blocked destinations", "type": "table", "drill": {"base": {"action": "block"}},
-             "cols": [["dest", "Destination"], ["cat", "Category"], ["hosts", "Hosts", "num"], ["n", "Hits", "num"], ["last", "Last", "ago"]],
-             "sql": f"SELECT coalesce(domain, host(dst_ip)) dest, max(coalesce(data->>'app_category', data->>'category')) cat, count(DISTINCT src_ip) hosts, count(*) n, max(ts) last, domain o_domain, CASE WHEN domain IS NULL THEN max(host(dst_ip)) END o_ip FROM events WHERE source = 'zenarmor' AND action = 'block' AND {W} GROUP BY 1, 6 ORDER BY 4 DESC LIMIT 25"},
-            {"id": "threats", "title": "Threats", "type": "table", "drill": {"by": {"ip": "src"}},
-             "cols": [["src", "Host", "ip"], ["name", "Device"], ["dest", "Destination"], ["what", "Threat / rule"], ["n", "Hits", "num"], ["last", "Last", "ago"]],
-             "sql": f"SELECT host(src_ip) src, max(coalesce(nullif(data->>'src_hostname', host(src_ip)::text), data->'device'->>'name', host(src_ip))) name, coalesce(domain, host(dst_ip)) dest, "
-                    f"coalesce(nullif(data->>'security', ''), data->'alertinfo'->>'signature', data->'alertinfo'->>'category') what, count(*) n, max(ts) last "
-                    f"FROM events WHERE source = 'zenarmor' AND (data->>'family' = 'alert' OR coalesce(data->>'security', '') <> '') AND {W} GROUP BY 1, 3, 4 ORDER BY 5 DESC LIMIT 25"},
-            {"id": "dns", "title": "Top DNS queries", "type": "table", "drill": {"base": {"d_family": "dns"}, "by": {"domain": "domain"}},
-             "cols": [["domain", "Domain"], ["cat", "Category"], ["clients", "Clients", "num"], ["n", "Queries", "num"]],
-             "sql": f"SELECT domain, max(data->>'category') cat, count(DISTINCT src_ip) clients, count(*) n FROM events WHERE source = 'zenarmor' AND data->>'family' = 'dns' AND domain IS NOT NULL AND {W} GROUP BY 1 ORDER BY 4 DESC LIMIT 25"},
-            {"id": "tls", "title": "Top TLS server names (SNI)", "type": "table", "drill": {"base": {"d_family": "tls"}, "by": {"domain": "sni"}},
-             "cols": [["sni", "Server name"], ["cat", "Category"], ["clients", "Clients", "num"], ["n", "Sessions", "num"]],
-             "sql": f"SELECT domain sni, max(data->>'category') cat, count(DISTINCT src_ip) clients, count(*) n FROM events WHERE source = 'zenarmor' AND data->>'family' = 'tls' AND {W} GROUP BY 1 ORDER BY 4 DESC LIMIT 25"},
-            {"id": "http", "title": "Plain HTTP requests", "type": "table", "drill": {"base": {"d_family": "http"}, "by": {"domain": "host"}},
-             "cols": [["host", "Host"], ["cat", "Category"], ["ua", "Browser / agent"], ["n", "Requests", "num"]],
-             "sql": f"SELECT domain host, max(data->>'category') cat, max(coalesce(data->>'browser', data->>'user_agent')) ua, count(*) n FROM events WHERE source = 'zenarmor' AND data->>'family' = 'http' AND {W} GROUP BY 1 ORDER BY 4 DESC LIMIT 25"},
-            {"id": "devices", "title": "Devices seen by Zenarmor", "type": "table", "drill": {"by": {"ip": "ip"}},
-             "cols": [["name", "Device"], ["cat", "Type"], ["os", "OS"], ["vendor", "Vendor"], ["ip", "IP", "ip"], ["n", "Records", "num"]],
-             "sql": f"SELECT coalesce(nullif(data->>'src_hostname', host(src_ip)::text), data->'device'->>'name', host(src_ip)) name, max(data->'device'->>'category') cat, max(concat_ws(' ', data->'device'->>'os', data->'device'->>'osver')) os, max(data->'device'->>'vendor') vendor, max(host(src_ip)) ip, count(*) n FROM events WHERE source = 'zenarmor' AND {W} GROUP BY 1 ORDER BY 6 DESC LIMIT 30"},
-            {"id": "bytes", "title": "Top talkers by volume, MB (connections)", "type": "hbar",
-             "sql": f"SELECT coalesce(nullif(data->>'src_hostname', host(src_ip)::text), data->'device'->>'name', host(src_ip)) label, round(sum(greatest(coalesce((data->>'src_nbytes')::numeric, 0), coalesce((data->>'src_pbytes')::numeric, 0)) + greatest(coalesce((data->>'dst_nbytes')::numeric, 0), coalesce((data->>'dst_pbytes')::numeric, 0))) / 1048576, 1) v, host(src_ip) o_ip FROM events WHERE source = 'zenarmor' AND data->>'family' = 'conn' AND {W} GROUP BY 1, 3 ORDER BY 2 DESC LIMIT 15"},
-            {"id": "countries", "title": "Destination countries", "type": "hbar", "drill": False,
-             "sql": f"SELECT dst_country label, count(*) v FROM events WHERE source = 'zenarmor' AND dst_country IS NOT NULL AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 15"},
-            log_panel("source = 'zenarmor'"),
-        ]},
     "auth": {
         "title": "Authentication", "source": "auth,vpn", "group": "opnsense", "panels": [
             {"id": "kpi", "type": "stat", "span": 3, "sql":
@@ -480,8 +431,8 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                       ["alerts", "Open alerts", "num"]],
              "sql": "WITH ev AS (SELECT src_ip, count(*) FILTER (WHERE source = 'firewall' AND action = 'block') fw, "
                     "count(*) FILTER (WHERE source = 'unbound' AND action IN ('block', 'drop')) dns, "
-                    "count(*) FILTER (WHERE source IN ('suricata', 'crowdsec', 'qfeeds') OR lower(data->>'blocklist') = 'q-feeds' OR (source = 'zenarmor' AND action = 'block')) threats "
-                    f"FROM events WHERE {W} AND src_ip IS NOT NULL AND source IN ('firewall', 'unbound', 'suricata', 'crowdsec', 'qfeeds', 'zenarmor') GROUP BY 1) "
+                    "count(*) FILTER (WHERE source IN ('suricata', 'crowdsec', 'qfeeds') OR lower(data->>'blocklist') = 'q-feeds') threats "
+                    f"FROM events WHERE {W} AND src_ip IS NOT NULL AND source IN ('firewall', 'unbound', 'suricata', 'crowdsec', 'qfeeds') GROUP BY 1) "
                     "SELECT coalesce(d.hostname, d.mac) name, host(d.ip) ip, d.conn_where \"where\", d.conn_signal signal, ev.fw, ev.dns, ev.threats, "
                     "(SELECT count(*) FROM alerts a WHERE a.src_ip = d.ip AND a.status = 'open') alerts "
                     "FROM devices d JOIN ev ON ev.src_ip = d.ip WHERE d.conn_where IS NOT NULL "
@@ -573,7 +524,7 @@ def step_for(hours: float) -> int:
 # over 2+ days they read the hourly counts (rollup.py) - same numbers, a fraction of the work
 ROLLUP_PANELS = {("firewall", "actions"), ("firewall", "proto"), ("firewall", "iface"), ("firewall", "dir"),
                  ("firewall", "ports"), ("firewall", "countries"), ("firewall", "hour"), ("dns", "q"), ("web", "status"),
-                 ("web", "codes"), ("web", "countries"), ("zenarmor", "blk"), ("auth", "ts"), ("vpn", "vpnev"),
+                 ("web", "codes"), ("web", "countries"), ("auth", "ts"), ("vpn", "vpnev"),
                  ("unifi", "ts"), ("syslog", "sev"), ("threats", "ids_act"), ("threats", "ids_countries"),
                  ("threats", "ids_iface")}
 

@@ -4,7 +4,7 @@
 <form class="filters card" id="f">
   <select name="source">
     <option value="">all sources</option>
-    {% for s in ["firewall","nginx","unbound","crowdsec","suricata","zenarmor","qfeeds","auth","vpn","dhcp","system","unraid","docker"] %}<option>{{ s }}</option>{% endfor %}
+    {% for s in ["firewall","nginx","unbound","crowdsec","suricata","qfeeds","auth","vpn","dhcp","system","unraid","docker"] %}<option>{{ s }}</option>{% endfor %}
   </select>
   <input name="ip" placeholder="any IP (source or destination)" title="IP or CIDR, several: comma separated">
   <input name="src" placeholder="source IP" title="Source IP or CIDR, several: comma separated">

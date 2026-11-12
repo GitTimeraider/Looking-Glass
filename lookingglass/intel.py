@@ -405,7 +405,7 @@ class Intel:
                 f"{FW_BLOCKED_AGG} fw_blocked, {FW_RULE_AGG} fw_rule, array_agg(DISTINCT dst_port) ports, "
                 "bool_or(source = 'firewall' AND action = 'pass' AND direction = 'out') left_wan "
                 "FROM events WHERE id > $1 AND id <= $2 "
-                "AND source IN ('firewall', 'zenarmor', 'suricata') AND src_ip IS NOT NULL AND dst_ip IS NOT NULL "
+                "AND source IN ('firewall', 'suricata') AND src_ip IS NOT NULL AND dst_ip IS NOT NULL "
                 "GROUP BY 1, 2", last, current)
             redirect = await self._redirected(conns)
             for r in conns:
@@ -477,7 +477,7 @@ class Intel:
     async def _redirected(self, conns: list[Any]):
         """A test for a group of connection events (src, dst, ports, left_wan): every port is one a NAT port forward
         sends to a local server (DNS / NTP redirect), and the firewall never logged it leaving towards the internet.
-        Zenarmor sees packets before NAT and the firewall's pass log keeps the original destination, so a redirected
+        The firewall's pass log keeps the original destination, so a redirected
         NTP query to a pool server that is also a Tor relay still shows that relay. Known redirects: the configured
         port forwards (OPNsense API) or the redirect's own log lines ('rdr', NAT rule with logging on)."""
         redirects = nat_redirects(await db.get_snapshot("nat_rules"))
@@ -557,7 +557,7 @@ class Intel:
         rows = await db.pool().fetch(
             "SELECT host(src_ip) src, host(dst_ip) dst, dst_port port, coalesce(proto, '') proto, count(*) n, "
             f"{ALLOWED_AGG} passed FROM events WHERE id > $1 AND id <= $2 "
-            "AND source IN ('firewall', 'zenarmor', 'suricata') AND src_ip IS NOT NULL AND dst_ip <<= ANY($3::inet[]) "
+            "AND source IN ('firewall', 'suricata') AND src_ip IS NOT NULL AND dst_ip <<= ANY($3::inet[]) "
             "GROUP BY 1, 2, 3, 4", last, current, sorted({str(n) for n, _ in targets}))
         skip = Matcher(self.s.canary_exclude)
         for r in rows:

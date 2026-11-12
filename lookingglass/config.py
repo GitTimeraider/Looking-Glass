@@ -5,7 +5,7 @@ Two kinds of settings live on the same object:
 * **Infrastructure**: how the container runs - listen ports, reverse proxy, log level. These come from environment
   variables (or ``<NAME>_FILE`` for Docker secrets) and need a restart. The database connection and the first
   account can be given here too, but normally the first-start wizard in the web UI asks for them.
-* **Application** (everything in ``app_config.FIELDS``): OPNsense / AI / Zenarmor credentials, retention, detection
+* **Application** (everything in ``app_config.FIELDS``): OPNsense / AI credentials, retention, detection
   tuning ... These are edited in the web UI (Settings), stored in the database (secrets encrypted) and applied
   live. Environment values for them are only imported once on first start, then ignored.
 """
@@ -45,7 +45,6 @@ class Settings(BaseSettings):
     syslog_host: str = "0.0.0.0"
     syslog_udp_port: int = 5514
     syslog_tcp_port: int = 5514
-    zenarmor_es_port: int = 9200  # Zenarmor Elasticsearch-compatible receiver port, 0 disables
     log_level: str = "INFO"
     log_ai_requests: bool = False  # LOG_AI_REQUESTS=true: log every AI request and what started it
 
@@ -105,10 +104,6 @@ class Settings(BaseSettings):
     arp_flips: int = 3
     syslog_allowed_senders: str = ""
     internal_networks: str = ""
-    zenarmor_es_user: str = ""
-    zenarmor_es_password: str = ""
-    zenarmor_es_allowed: str = ""
-    zenarmor_blocked_alerts: str = "threats"
     opnsense_url: str = ""
     opnsense_api_key: str = ""
     opnsense_api_secret: str = ""
@@ -121,7 +116,6 @@ class Settings(BaseSettings):
     blocklist_aliases: str = "CrowdSec: crowdsec_blocklists, crowdsec6_blocklists\nQ-Feeds: __qfeeds_*"
     qfeeds_pull: bool = True
     ids_pull: bool = True
-    zenarmor_enabled: bool = True
     ids_alert_priority: int = 3
     ids_ignore_sids: str = ""
     nginx_pull: bool = True

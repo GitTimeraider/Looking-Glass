@@ -33,14 +33,13 @@ class Stats:
         self.clock_offsets: dict[str, int] = {}  # sender -> seconds its timestamps are ahead of real time (corrected)
         self.future_clamped = 0                   # events that still claimed to be from the future
         self.future_by_source: dict[str, dict[str, Any]] = {}  # source -> {n, max_ahead (s), last, sender}
-        self.extra: dict[str, Any] = {}
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "received": self.received, "parsed": self.parsed, "dropped": self.dropped,
             "written": self.written, "errors": self.errors, "by_source": self.by_source,
             "last_by_source": self.last_by_source, "senders": self.senders, "clock_offsets": self.clock_offsets,
-            "future_clamped": self.future_clamped, "future_by_source": self.future_by_source, **self.extra,
+            "future_clamped": self.future_clamped, "future_by_source": self.future_by_source,
         }
 
 
@@ -192,9 +191,6 @@ class SyslogServer:
             log.debug("unparseable line from %s: %r", sender, line[:500], exc_info=True)
             return
         if ev is None:
-            return
-        if ev.get("source") == "zenarmor" and not self.settings.zenarmor_enabled:
-            STATS.dropped += 1
             return
         STATS.parsed += 1
         if isinstance(ev.get("ts"), datetime):

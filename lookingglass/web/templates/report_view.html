@@ -28,7 +28,6 @@ const SECTIONS = [
   ["ids_signatures", "Suricata signatures", [{k: "signature", l: "Signature"}, {k: "classification", l: "Class"}, {k: "n", l: "Hits", num: true}]],
   ["crowdsec_scenarios", "CrowdSec scenarios", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}]],
   ["qfeeds_hits", "Q-Feeds hits", [{k: "src", l: "Source"}, {k: "dst", l: "Destination"}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}]],
-  ["zenarmor_top", "Zenarmor", [{k: "app", l: "App"}, {k: "action", l: "Action"}, {k: "n", l: "Events", num: true}]],
   ["web_status", "Web responses", [{k: "status", l: "Status"}, {k: "n", l: "Requests", num: true}]],
   ["web_attack_tags", "Web attack patterns", [{k: "tag", l: "Pattern"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Requests", num: true}]],
   ["web_top_clients", "Web top clients", [{k: "ip", l: "IP"}, {k: "country", l: "Country", f: LG.flag}, {k: "errors", l: "Errors", num: true}, {k: "n", l: "Requests", num: true}]],
@@ -82,7 +81,6 @@ function showAI(r) {
     k("Medium alerts", LG.num(sev.medium || 0)) + k("DNS queries", LG.num(tot.unbound || 0)) + k("Web requests", LG.num(tot.nginx || 0));
   const box = document.getElementById("sections");
   for (const [key, title, cols] of SECTIONS) {
-    if (key === "zenarmor_top" && !(d[key] || []).length) continue;  // Zenarmor not used in this period
     const c = document.createElement("div"); c.className = "card";
     c.innerHTML = `<h3>${title}</h3><div></div>`; box.appendChild(c);
     LG.table(c.lastElementChild, cols, d[key] || []);

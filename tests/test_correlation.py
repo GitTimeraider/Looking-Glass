@@ -81,9 +81,7 @@ def test_correlation_rules():
             assert (await alerts(pool, "dns_bypass"))[0]["ip"] == "192.168.1.60"
             # with a DNS redirect (port forward 53 -> Unbound) the logged 8.8.8.8 queries were answered locally ...
             await db.set_snapshot("nat_rules", [{"interface": "lan", "destination_port": "53", "target": "127.0.0.1"}])
-            await db.copy_events([ev("zenarmor", 1, action="conn", src_ip="192.168.1.61", dst_ip="8.8.8.8", dst_port=53,
-                                     data={"dst_npackets": "1"}),
-                                  ev("firewall", 1, action="pass", src_ip="192.168.1.61", dst_ip="8.8.8.8", dst_port=53),
+            await db.copy_events([ev("firewall", 1, action="pass", src_ip="192.168.1.61", dst_ip="8.8.8.8", dst_port=53),
                                   # ... unless the firewall logged it leaving towards the internet
                                   ev("firewall", 1, action="pass", src_ip="192.168.1.62", dst_ip="8.8.4.4", dst_port=53,
                                      direction="out"),
@@ -119,151 +117,30 @@ def test_correlation_rules():
 
 
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
-def test_zenarmor_blocked_alert_setting():
-    async def main():
-        await db.connect(DSN)
-        try:
-            pool = db.pool()
-            await pool.execute("TRUNCATE events, alerts")
-
-            async def run(mode):
-                await pool.execute("TRUNCATE alerts")
-                await pool.execute("DELETE FROM kv WHERE key = 'wm:zenarmor'")
-                await db.kv_set("wm:zenarmor", 0)
-                await DetectionEngine(Settings(zenarmor_blocked_alerts=mode)).zenarmor_threats()
-                return sorted((r["title"].split(" (")[-1].rstrip(")"), r["severity"]) for r in
-                              await pool.fetch("SELECT title, severity FROM alerts WHERE rule = 'zenarmor_threat'"))
-
-            evs = [ev("zenarmor", 1, action="block", src_ip="192.168.1.5", domain="db.example", data={"security": "Database"}),
-                   ev("zenarmor", 1, action="block", src_ip="192.168.1.6", domain="c2.example", data={"security": "Malware"}),
-                   ev("zenarmor", 1, action="conn", src_ip="192.168.1.7", domain="p.example", data={"security": "Phishing"})]
-            await db.copy_events(evs)
-            assert await run("all") == [("Database", "low"), ("Malware", "low"), ("Phishing", "critical")]
-            assert await run("every_threat") == [("Malware", "low"), ("Phishing", "critical")]
-            assert await run("threats") == [("Phishing", "critical")]  # the default: a single blocked threat is no alert
-            assert await run("never") == [("Phishing", "critical")]                           # not blocked: always
-            await pool.execute("TRUNCATE events, alerts")
-        finally:
-            await db.close()
-
-    asyncio.run(main())
-
-
-@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
 def test_blocked_threat_traffic_is_low_unless_repeated_or_confirmed():
     async def main():
         await db.connect(DSN)
         try:
             pool = db.pool()
             await pool.execute("TRUNCATE events, alerts")
-            # a single blocked ad / link: Zenarmor did its job - no alert (Q-Feeds: low)
-            evs = [ev("zenarmor", 1, action="block", src_ip="192.168.1.5", domain="ad.example", data={"security": "Malware"}),
-                   ev("qfeeds", 1, action="block", src_ip="192.168.1.8", dst_ip="91.92.1.1", dst_port=443)]
+            # a single blocked visit: Q-Feeds did its job - low
+            evs = [ev("qfeeds", 1, action="block", src_ip="192.168.1.8", dst_ip="91.92.1.1", dst_port=443)]
             # calling home: many blocked attempts / many different threat targets
-            evs += [ev("zenarmor", 2 + 30 * i, action="block", src_ip="192.168.1.6", domain="c2.example",
-                       data={"security": "Botnet"}) for i in range(6)]  # every 30 minutes for 3 hours
-            # one visit to a phishing page: many retries to 4 subdomains within a minute - not repeated
-            evs += [ev("zenarmor", 1, action="block", src_ip="192.168.1.11", domain=f"file{i % 4}.acgnngca.com",
-                       data={"security": '["Phishing"]'}) for i in range(54)]
-            evs += [ev("zenarmor", 2, action="block", src_ip="192.168.1.7", domain=f"m{i}.example",
-                       data={"security": "Malware"}) for i in range(5)]
+            evs += [ev("qfeeds", 2 + 30 * i, action="block", src_ip="192.168.1.6", dst_ip="91.92.2.1", dst_port=443)
+                    for i in range(6)]  # every 30 minutes for 3 hours
             evs += [ev("qfeeds", 2, action="block", src_ip="192.168.1.9", dst_ip=f"91.92.1.{i}", dst_port=443) for i in range(5)]
             # confirmed by two other sources
             evs += [ev("suricata", 2, action="alert", src_ip="192.168.1.10", data={"priority": 1}),
-                    ev("zenarmor", 1, action="block", src_ip="192.168.1.10", domain="x.example", data={"security": "Phishing"})]
+                    ev("qfeeds", 1, action="block", src_ip="192.168.1.10", dst_ip="91.92.3.1", dst_port=443)]
             await db.copy_events(evs)
             await raise_alert("dns_tunneling", "medium", "x", "t:1", src_ip="192.168.1.10")
-            for rule in ("zenarmor", "qfeeds"):
-                await db.kv_set(f"wm:{rule}", 0)
-            await DetectionEngine(Settings()).zenarmor_threats()
+            await db.kv_set("wm:qfeeds", 0)
             await DetectionEngine(Settings()).qfeeds_hits()
             sev = {r["ip"]: r["severity"] for r in await pool.fetch(
-                "SELECT host(src_ip) ip, severity FROM alerts WHERE rule IN ('zenarmor_threat', 'threat_intel_outbound')")}
-            assert sev == {"192.168.1.8": "low", "192.168.1.6": "medium", "192.168.1.7": "medium",
-                           "192.168.1.9": "medium", "192.168.1.10": "high"}  # .5 / .11: one blocked visit, no alert
+                "SELECT host(src_ip) ip, severity FROM alerts WHERE rule = 'threat_intel_outbound'")}
+            assert sev == {"192.168.1.8": "low", "192.168.1.6": "medium", "192.168.1.9": "medium", "192.168.1.10": "high"}
             why = await pool.fetchval("SELECT description FROM alerts WHERE host(src_ip) = '192.168.1.6'")
             assert "working as intended" in why and "in 6 separate 10-minute periods" in why
-            await pool.execute("TRUNCATE events, alerts")
-        finally:
-            await db.close()
-
-    asyncio.run(main())
-
-
-@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
-def test_zenarmor_alerts_name_app_category_and_policy():
-    from lookingglass.parsers.security import zenarmor_record
-
-    async def main():
-        await db.connect(DSN)
-        try:
-            pool = db.pool()
-            await pool.execute("TRUNCATE events, alerts")
-            t = NOW - timedelta(minutes=1)
-            await db.copy_events([
-                zenarmor_record("conn", {"is_blocked": 1, "ip_src_saddr": "192.168.30.5", "ip_dst_saddr": "155.133.230.1",
-                                         "ip_dst_port": 27015, "app_name": "MySQL", "app_category": "Database", "policyid": "2"}, t),
-                zenarmor_record("dns", {"is_blocked": 1, "ip_src_saddr": "192.168.30.6", "query": "bad.example",
-                                        "domain_categories": ["Phishing"]}, t)])
-            msg = await pool.fetchval("SELECT message FROM events WHERE host(src_ip) = '192.168.30.5'")
-            assert msg == "BLOCKED MySQL -> 155.133.230.1 - app MySQL (Database) · policy 2"
-            await db.kv_set("wm:zenarmor", 0)
-            await DetectionEngine(Settings(zenarmor_blocked_alerts="all")).zenarmor_threats()
-            a = {r["ip"]: r for r in await pool.fetch(
-                "SELECT host(src_ip) ip, title, severity, description FROM alerts WHERE rule = 'zenarmor_threat'")}
-            assert a["192.168.30.5"]["title"] == "Zenarmor blocked: 192.168.30.5 → 155.133.230.1 (MySQL, Database)"
-            assert "app MySQL (Database) · policy 2" in a["192.168.30.5"]["description"]
-            assert "Zenarmor › Policies" in a["192.168.30.5"]["description"] and a["192.168.30.5"]["severity"] == "low"
-            assert a["192.168.30.6"]["severity"] == "low" and "Phishing" in a["192.168.30.6"]["title"]  # blocked once
-            # every_threat: the policy block is skipped, the phishing lookup alerts
-            await pool.execute("TRUNCATE alerts")
-            await db.kv_set("wm:zenarmor", 0)
-            await DetectionEngine(Settings(zenarmor_blocked_alerts="every_threat")).zenarmor_threats()
-            assert [r["ip"] for r in await pool.fetch("SELECT host(src_ip) ip FROM alerts")] == ["192.168.30.6"]
-            # default: one blocked phishing lookup is Zenarmor doing its job - no alert
-            await pool.execute("TRUNCATE alerts")
-            await db.kv_set("wm:zenarmor", 0)
-            await DetectionEngine(Settings()).zenarmor_threats()
-            assert await pool.fetchval("SELECT count(*) FROM alerts") == 0
-            await pool.execute("TRUNCATE events, alerts")
-        finally:
-            await db.close()
-
-    asyncio.run(main())
-
-
-@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
-def test_zenarmor_alert_record_before_its_block_is_not_critical():
-    """Zenarmor's threat "alert" record has no blocked flag; the blocked DNS record can come in a later batch. The alert
-    must end up as blocked (low), not stay critical."""
-    from lookingglass.parsers.security import zenarmor_record
-
-    async def main():
-        await db.connect(DSN)
-        try:
-            pool = db.pool()
-            await pool.execute("TRUNCATE events, alerts")
-            t = NOW - timedelta(minutes=2)
-            src, dom = {"ip_src_saddr": "10.0.3.3"}, "file.acgnngca.com"
-            await db.copy_events([zenarmor_record("alert", {**src, "dst_hostname": dom, "alert_category": "Phishing"}, t)])
-            await db.kv_set("wm:zenarmor", 0)
-            await DetectionEngine(Settings()).zenarmor_threats()
-            assert await pool.fetchval("SELECT severity FROM alerts") == "critical"  # nothing says it was blocked (yet)
-            await db.copy_events([zenarmor_record("dns", {**src, "query": dom, "is_blocked": 1, "alert_category": "Phishing"}, t)
-                                  for _ in range(3)])
-            await DetectionEngine(Settings()).zenarmor_threats()
-            a = await pool.fetchrow("SELECT title, severity, description FROM alerts WHERE rule = 'zenarmor_threat'")
-            assert a["severity"] == "low" and a["title"].startswith("Zenarmor blocked:")
-            assert "NOT blocked" not in a["description"] and "(blocked)" in a["description"]
-            # a later alert record alone: the block of the last 24h still counts
-            await db.copy_events([zenarmor_record("alert", {**src, "dst_hostname": dom, "alert_category": "Phishing"}, NOW)])
-            await DetectionEngine(Settings()).zenarmor_threats()
-            assert await pool.fetchval("SELECT severity FROM alerts") == "low"
-            # flagged traffic that got through: critical again
-            await db.copy_events([zenarmor_record("tls", {**src, "server_name": dom, "alert_category": "Phishing"}, NOW)])
-            await DetectionEngine(Settings()).zenarmor_threats()
-            a = await pool.fetchrow("SELECT severity, description FROM alerts")
-            assert a["severity"] == "critical" and "some of it was NOT blocked" in a["description"]
             await pool.execute("TRUNCATE events, alerts")
         finally:
             await db.close()
@@ -317,38 +194,6 @@ def test_config_change_says_what_and_who():
 
 
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
-def test_blocked_traffic_is_never_critical():
-    async def main():
-        await db.connect(DSN)
-        try:
-            pool = db.pool()
-            await pool.execute("TRUNCATE events, alerts")
-            await db.copy_events([
-                # Suricata and Q-Feeds also flagged 192.168.1.6 and it keeps trying - that would push the blocked malware
-                # hit to critical
-                ev("suricata", 5, action="alert", src_ip="192.168.1.6", dst_ip="198.51.100.1", message="ET MALWARE x", data={"priority": 1}),
-                *[ev("qfeeds", 5 + 30 * i, action="block", src_ip="192.168.1.6", dst_ip="198.51.100.1") for i in range(6)],
-                *[ev("zenarmor", 1 + 30 * i, action="block", src_ip="192.168.1.6", domain="c2.example",
-                     data={"security": "Malware"}) for i in range(6)],
-                ev("zenarmor", 1, action="conn", src_ip="192.168.1.7", domain="p.example", data={"security": "Phishing"}),
-                # ordinary categories / app names: no malware
-                ev("zenarmor", 1, action="block", src_ip="192.168.1.8", domain="coins.example", data={"security": "Cryptocurrency"}),
-                ev("zenarmor", 1, action="block", src_ip="192.168.1.9", domain="ec2.example",
-                   data={"security": "", "zen": {"app": "Amazon EC2", "app_category": "Cloud"}})])
-            await db.kv_set("wm:zenarmor", 0)
-            await DetectionEngine(Settings()).zenarmor_threats()
-            a = {r["ip"]: r for r in await alerts(pool, "zenarmor_threat")}
-            assert a["192.168.1.6"]["severity"] == "high" and "Zenarmor blocked it" in " ".join(a["192.168.1.6"]["data"]["severity_why"])
-            assert a["192.168.1.7"]["severity"] == "critical"  # NOT blocked: still critical
-            assert "192.168.1.8" not in a and "192.168.1.9" not in a  # policy blocks, skipped by default
-            await pool.execute("TRUNCATE events, alerts")
-        finally:
-            await db.close()
-
-    asyncio.run(main())
-
-
-@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
 def test_no_blocked_traffic_is_critical():
     from lookingglass import alert_filters
     from lookingglass.detections import Rating, raise_alert
@@ -395,100 +240,6 @@ def test_no_blocked_traffic_is_critical():
             await db.close()
 
     asyncio.run(main())
-
-
-def test_zenarmor_device_name_skips_ips_and_fingerprint_labels():
-    from lookingglass.detections import zen_device_name
-
-    steam = {"name": "Steam OS", "os": "Steam OS", "vendor": "ASUSTek", "category": "Computer"}
-    assert zen_device_name({"src_hostname": "Desktop-PB", "device": steam}, "192.168.3.3") == "Desktop-PB"
-    assert zen_device_name({"src_hostname": "192.168.3.3", "device": steam}, "192.168.3.3") is None  # IP / OS label
-    assert zen_device_name({"src_hostname": "10.0.3.9", "device": {"name": "Living room TV", "os": "Tizen"}},
-                           "10.0.3.3") == "Living room TV"
-    assert zen_device_name({"src_hostname": "*", "device": {}}, None) is None
-
-
-@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
-def test_zenarmor_device_listener_names_devices_without_a_better_source():
-    from lookingglass import detections
-    from lookingglass.detections import track_devices, zenarmor_device_listener
-
-    def rec(mac, ip, **kw):
-        return {"source": "zenarmor", "src_ip": ip, "data": {"src_hwaddr": mac, **kw}}
-
-    async def main():
-        await db.connect(DSN)
-        try:
-            pool = db.pool()
-            await pool.execute("TRUNCATE devices")
-            detections._zen_seen.clear()
-            await track_devices([{"mac": "aa:00:00:00:00:09", "ip": "10.0.3.9", "hostname": "tv-dhcp"}], origin="dhcp")
-            # first record without a name, the next one (same batch) has it; the IP as host name is ignored
-            await zenarmor_device_listener([
-                rec("aa:00:00:00:00:03", "10.0.3.3", src_hostname="10.0.3.3", device={"os": "Android"}),
-                rec("aa:00:00:00:00:03", "10.0.3.3", device={"name": "Pixel-7", "os": "Android"}),
-                rec("aa:00:00:00:00:09", "10.0.3.9", src_hostname="zen-tv")])
-            # a name arriving later is still picked up (no 10-minute wait while there was none)
-            await zenarmor_device_listener([rec("aa:00:00:00:00:04", "10.0.3.4", src_hostname="10.0.3.4")])
-            await zenarmor_device_listener([rec("aa:00:00:00:00:04", "10.0.3.4", src_hostname="laptop-jo")])
-            names = {r["mac"]: (r["hostname"], r["name_source"]) for r in await pool.fetch("SELECT mac, hostname, name_source FROM devices")}
-            assert names["aa:00:00:00:00:03"] == ("Pixel-7", "zenarmor")
-            assert names["aa:00:00:00:00:04"] == ("laptop-jo", "zenarmor")
-            assert names["aa:00:00:00:00:09"] == ("tv-dhcp", "dhcp")  # a better source wins
-            await pool.execute("TRUNCATE devices")
-        finally:
-            await db.close()
-
-    asyncio.run(main())
-
-
-@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
-def test_macless_zenarmor_clients_become_devices():
-    """WireGuard clients (no MAC) seen by Zenarmor are listed under their IP."""
-    from lookingglass import detections
-    from lookingglass.detections import track_devices, zenarmor_device_listener
-
-    async def main():
-        await db.connect(DSN)
-        try:
-            pool = db.pool()
-            await pool.execute("TRUNCATE devices, alerts")
-            detections._zen_seen.clear()
-            await track_devices([{"mac": "aa:00:00:00:00:01", "ip": "192.168.1.5"}], origin="arp")  # not the first run
-            # WireGuard clients (no MAC, or a placeholder one), one with a MAC device already on that IP, an internet address
-            await zenarmor_device_listener([
-                {"source": "zenarmor", "src_ip": "10.10.0.2", "data": {"src_hostname": "pixel-jo", "interface": "wg1"}},
-                {"source": "zenarmor", "src_ip": "10.0.3.3", "data": {"src_hwaddr": "00:00:00:00:00:00",
-                                                                      "device": {"name": "Wireguard Phone"}}},
-                {"source": "zenarmor", "src_ip": "10.0.3.4", "data": {"src_hwaddr": "-", "src_hostname": "tablet"}},
-                # the firewall's own interface MAC on a WireGuard interface: still no client MAC
-                {"source": "zenarmor", "src_ip": "10.0.3.5", "data": {"src_hwaddr": "a8:b8:e0:01:02:03", "interface": "wg0",
-                                                                      "src_hostname": "laptop"}},
-                {"source": "zenarmor", "src_ip": "192.168.1.5", "data": {}},
-                {"source": "zenarmor", "src_ip": "203.0.113.5", "data": {}}])
-            # the ARP table never lists it: it keeps its state
-            await track_devices([{"mac": "aa:00:00:00:00:01", "ip": "192.168.1.5"}], origin="arp", mark_online=True)
-            d = {r["mac"]: dict(r) for r in await pool.fetch(
-                "SELECT mac, host(ip) ip, hostname, name_source, online, interface FROM devices")}
-            assert set(d) == {"aa:00:00:00:00:01", "ip:10.10.0.2", "ip:10.0.3.3", "ip:10.0.3.4", "ip:10.0.3.5"}
-            assert d["ip:10.0.3.3"]["hostname"] == "Wireguard Phone" and d["ip:10.0.3.4"]["hostname"] == "tablet"
-            assert d["ip:10.10.0.2"] == {"mac": "ip:10.10.0.2", "ip": "10.10.0.2", "hostname": "pixel-jo",
-                                         "name_source": "zenarmor", "online": True, "interface": "wg1"}
-            assert "New device on network: ip:10.10.0.2 (pixel-jo)" in \
-                [r["title"] for r in await pool.fetch("SELECT title FROM alerts WHERE rule = 'new_device'")]
-            await pool.execute("TRUNCATE devices, alerts")
-        finally:
-            await db.close()
-
-    asyncio.run(main())
-
-
-def test_real_mac_skips_placeholders():
-    from lookingglass.detections import real_mac
-
-    assert real_mac("E8-9C-25-6E-46-D1") == "e8:9c:25:6e:46:d1"
-    for bad in (None, "", "-", "unknown", "00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff", "01:00:5e:00:00:01", "e8:9c:25"):
-        assert real_mac(bad) is None
 
 
 def test_opnsense_own_interfaces_are_named_after_the_interface():
@@ -555,16 +306,10 @@ def test_opnsense_interface_name_replaces_a_guessed_one():
 
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
 def test_opnsense_interfaces_are_separate_and_absorb_their_entries():
-    """The port and its VLAN are separate devices. Each takes over the Zenarmor 'no MAC' entries of its addresses, the
-    port the device an older version kept under the shared MAC - learned behaviour moves along; Zenarmor adds none
-    again, also not under the firewall's MAC."""
-    from lookingglass import detections
+    """The port and its VLAN are separate devices. Each takes over what was learned under its addresses, the port the
+    device an older version kept under the shared MAC - learned behaviour moves along."""
     from lookingglass.behavior import Behavior
-    from lookingglass.detections import (
-        device_info,
-        track_devices,
-        zenarmor_device_listener,
-    )
+    from lookingglass.detections import device_info, track_devices
     from lookingglass.opnsense import absorb_into_interfaces, interface_device
 
     async def main():
@@ -572,15 +317,12 @@ def test_opnsense_interfaces_are_separate_and_absorb_their_entries():
         try:
             pool = db.pool()
             await pool.execute("TRUNCATE devices, device_profile, device_hourly")
-            detections._zen_seen.clear()
             mac = "64:62:66:21:4a:79"
-            await track_devices([{"mac": "ip:192.168.2.1", "ip": "192.168.2.1", "hostname": "madsense.madnesss.net"},
-                                 {"mac": "ip:192.168.20.1", "ip": "192.168.20.1"},
-                                 {"mac": mac, "ip": "192.168.2.1", "ips": ["192.168.2.1", "192.168.20.1"],
+            await track_devices([{"mac": mac, "ip": "192.168.2.1", "ips": ["192.168.2.1", "192.168.20.1"],
                                   "hostname": "OPNsense (LAN_2_WLAN, VLAN_IoT)", "name_source": "opnsense"}], origin="arp")
             await pool.execute("INSERT INTO device_profile (key, kind, value, hits) VALUES "
-                               "('ip:192.168.2.1', 'port', '53', 5), ($1, 'port', '53', 3), ('192.168.20.1', 'port', '53', 2), "
-                               "('ip:192.168.20.1', 'country', 'NL', 1)", mac)
+                               "($1, 'port', '53', 3), ('192.168.20.1', 'port', '53', 2), ('192.168.20.1', 'country', 'NL', 1)",
+                               mac)
             base = {"mac": mac, "permanent": True}
             own = [interface_device([{**base, "ip": "192.168.2.1", "intf": "igc1", "intf_description": "LAN_2_WLAN"}]),
                    interface_device([{**base, "ip": "192.168.20.1", "intf": "vlan0.20", "intf_description": "VLAN_IoT"}])]
@@ -592,13 +334,8 @@ def test_opnsense_interfaces_are_separate_and_absorb_their_entries():
                             "if:vlan0.20": ("192.168.20.1", "OPNsense (VLAN_IoT)", mac)}
             prof = {(r["key"], r["kind"], r["value"]): r["hits"] for r in
                     await pool.fetch("SELECT key, kind, value, hits FROM device_profile")}
-            assert prof == {("if:igc1", "port", "53"): 8, ("if:vlan0.20", "port", "53"): 2,
+            assert prof == {("if:igc1", "port", "53"): 3, ("if:vlan0.20", "port", "53"): 2,
                             ("if:vlan0.20", "country", "NL"): 1}
-            # Zenarmor sees the firewall again (no MAC, and with its MAC): no new entry
-            await zenarmor_device_listener([
-                {"source": "zenarmor", "src_ip": "192.168.20.1", "data": {"src_hostname": "x"}},
-                {"source": "zenarmor", "src_ip": "192.168.2.1", "data": {"src_hwaddr": mac, "src_hostname": "y"}}])
-            assert await pool.fetchval("SELECT count(*) FROM devices") == 2
             assert (await device_info("192.168.20.1"))["hostname"] == "OPNsense (VLAN_IoT)"
             assert (await Behavior(Settings(), lambda ip: True).ip_to_mac())["192.168.20.1"]["mac"] == "if:vlan0.20"
             await pool.execute("TRUNCATE devices, device_profile, device_hourly")
@@ -609,7 +346,7 @@ def test_opnsense_interfaces_are_separate_and_absorb_their_entries():
 
 
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
-def test_device_upkeep_offline_and_removal():
+def test_device_upkeep_removal():
     from lookingglass.detections import device_upkeep, track_devices
     from lookingglass.web.app import create_app
 
@@ -620,69 +357,25 @@ def test_device_upkeep_offline_and_removal():
             await pool.execute("TRUNCATE devices, device_profile, device_hourly")
             await track_devices([{"mac": m, "ip": f"192.168.1.{i}", "online": True} for i, m in enumerate(
                 ["aa:00:00:00:00:01", "aa:00:00:00:00:02", "aa:00:00:00:00:03", "aa:00:00:00:00:04", "aa:00:00:00:00:05",
-                 "ip:10.0.3.3", "ip:10.0.3.4", "if:igc1"], 1)], origin="arp")
+                 "if:igc1"], 1)], origin="arp")
             old = "now() - interval '40 days'"
-            await pool.execute(f"UPDATE devices SET last_seen = {old} WHERE mac <> 'aa:00:00:00:00:05' AND mac <> 'ip:10.0.3.4'")
-            await pool.execute("UPDATE devices SET last_seen = now() - interval '30 minutes' WHERE mac = 'ip:10.0.3.4'")
+            await pool.execute(f"UPDATE devices SET last_seen = {old} WHERE mac <> 'aa:00:00:00:00:05'")
             await pool.execute("UPDATE devices SET trusted = true WHERE mac = 'aa:00:00:00:00:02'")
             await pool.execute("UPDATE devices SET hostname = 'Mine', name_source = 'manual', name_rank = 100 WHERE mac = 'aa:00:00:00:00:03'")
             await pool.execute("UPDATE devices SET notes = 'spare laptop' WHERE mac = 'aa:00:00:00:00:04'")
             await pool.execute("INSERT INTO device_profile (key, kind, value) VALUES ('aa:00:00:00:00:01', 'port', '443')")
-            # 0 = never remove; quiet clients without a MAC go offline
-            assert await device_upkeep(0) == (2, 0)
-            online = {r["mac"]: r["online"] for r in await pool.fetch("SELECT mac, online FROM devices")}
-            assert not online["ip:10.0.3.3"] and not online["ip:10.0.3.4"] and online["aa:00:00:00:00:01"]
-            # 30 days: the unknown old ones go (also what was learned); trusted / named / notes / interfaces / recent stay
-            assert (await device_upkeep(30))[1] == 2
+            # 0 = never remove
+            assert await device_upkeep(0) == 0
+            # 30 days: the unknown old one goes (also what was learned); trusted / named / notes / interfaces / recent stay
+            assert await device_upkeep(30) == 1
             left = {r["mac"] for r in await pool.fetch("SELECT mac FROM devices")}
-            assert left == {"aa:00:00:00:00:02", "aa:00:00:00:00:03", "aa:00:00:00:00:04", "aa:00:00:00:00:05",
-                            "ip:10.0.3.4", "if:igc1"}
+            assert left == {"aa:00:00:00:00:02", "aa:00:00:00:00:03", "aa:00:00:00:00:04", "aa:00:00:00:00:05", "if:igc1"}
             assert await pool.fetchval("SELECT count(*) FROM device_profile") == 0
             # the Delete button
             ep = next(r.endpoint for r in create_app(Settings(), None).routes
                       if getattr(r, "path", "") == "/api/devices/{mac}" and "DELETE" in getattr(r, "methods", set()))
-            await ep("IP:10.0.3.4")
-            assert "ip:10.0.3.4" not in {r["mac"] for r in await pool.fetch("SELECT mac FROM devices")}
-            await pool.execute("TRUNCATE devices, device_profile, device_hourly")
-        finally:
-            await db.close()
-
-    asyncio.run(main())
-
-
-@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
-def test_zenarmor_ip_duplicate_merged_into_device_with_mac():
-    """Zenarmor saw a client (no MAC) on an IP before the lease poll knew it there: the ip: entry is merged into the
-    device with the MAC once that one holds the IP - with what was learned and what you set on it."""
-    from lookingglass import detections
-    from lookingglass.detections import device_upkeep, track_devices, zenarmor_device_listener
-
-    async def main():
-        await db.connect(DSN)
-        try:
-            pool = db.pool()
-            await pool.execute("TRUNCATE devices, device_profile, device_hourly")
-            detections._zen_seen.clear()
-            mac = "aa:00:00:00:00:21"
-            await track_devices([{"mac": mac, "ip": "192.168.1.50", "hostname": "P1-meter"}], origin="dhcp-dnsmasq")
-            await track_devices([{"mac": "aa:00:00:00:00:22", "ip": "192.168.1.60"}], origin="arp")
-            # the lease moved to .51; Zenarmor sees it there first
-            await zenarmor_device_listener([{"source": "zenarmor", "src_ip": "192.168.1.51",
-                                             "data": {"src_hostname": "P1-meter"}},
-                                            {"source": "zenarmor", "src_ip": "10.8.0.2",
-                                             "data": {"src_hostname": "phone-wg", "interface": "wg0"}}])
-            await pool.execute("UPDATE devices SET trusted = true, notes = 'meter cupboard' WHERE mac = 'ip:192.168.1.51'")
-            await pool.execute("INSERT INTO device_profile (key, kind, value, hits) VALUES ('ip:192.168.1.51', 'port', '443', 4)")
-            assert await pool.fetchval("SELECT count(*) FROM devices") == 4
-            await device_upkeep(0)
-            assert await pool.fetchval("SELECT count(*) FROM devices") == 4  # nothing holds .51 with a MAC yet
-            await track_devices([{"mac": mac, "ip": "192.168.1.51", "hostname": "P1-meter"}], origin="dhcp-dnsmasq")
-            await device_upkeep(0)
-            rows = {r["mac"]: r for r in await pool.fetch("SELECT * FROM devices")}
-            assert set(rows) == {mac, "aa:00:00:00:00:22", "ip:10.8.0.2"}  # the WireGuard peer stays
-            assert rows[mac]["hostname"] == "P1-meter" and rows[mac]["trusted"] and rows[mac]["notes"] == "meter cupboard"
-            assert "zenarmor" in rows[mac]["sources"]
-            assert await pool.fetchval("SELECT key FROM device_profile") == mac
+            await ep("AA:00:00:00:00:05")
+            assert "aa:00:00:00:00:05" not in {r["mac"] for r in await pool.fetch("SELECT mac FROM devices")}
             await pool.execute("TRUNCATE devices, device_profile, device_hourly")
         finally:
             await db.close()

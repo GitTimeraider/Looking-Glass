@@ -94,17 +94,12 @@ def test_device_limits_api():
             await update(mac="aa:bb:cc:dd:ee:01", payload={"limits": {}})
             dev = (await listing(hours=24))[0]
             assert dev["limits"] == {} and dev["risk_threshold"] == Settings().risk_threshold
-            # a device type (also for a client without a MAC); empty = not set; its defaults are listed
-            await pool.execute("INSERT INTO devices (mac, ip) VALUES ('ip:10.8.0.2', '10.8.0.2')")
-            await update(mac="ip:10.8.0.2", payload={"device_type": "phone"})
-            assert await pool.fetchval("SELECT device_type FROM devices WHERE mac = 'ip:10.8.0.2'") == "phone"
-            with pytest.raises(HTTPException):
-                await update(mac="ip:10.8.0.2", payload={"device_type": "toaster"})
-            # merged into the device that now holds its IP: the type moves along
-            from lookingglass.detections import merge_ip_duplicates
+            # a device type; empty = not set; its defaults are listed
             await pool.execute("INSERT INTO devices (mac, ip, sources) VALUES ('aa:bb:cc:dd:ee:02', '10.8.0.2', '{arp}')")
-            assert await merge_ip_duplicates() == 1
+            await update(mac="aa:bb:cc:dd:ee:02", payload={"device_type": "phone"})
             assert await pool.fetchval("SELECT device_type FROM devices WHERE mac = 'aa:bb:cc:dd:ee:02'") == "phone"
+            with pytest.raises(HTTPException):
+                await update(mac="aa:bb:cc:dd:ee:02", payload={"device_type": "toaster"})
             await update(mac="aa:bb:cc:dd:ee:02", payload={"device_type": ""})
             assert await pool.fetchval("SELECT device_type FROM devices WHERE mac = 'aa:bb:cc:dd:ee:02'") is None
             defaults = await routes[("/api/devices/limits", "GET")]()

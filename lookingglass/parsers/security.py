@@ -1,4 +1,4 @@
-"""Parsers for Unbound, CrowdSec, Suricata, Zenarmor and authentication / VPN / DHCP messages."""
+"""Parsers for Unbound, CrowdSec, Suricata and authentication / VPN / DHCP messages."""
 from __future__ import annotations
 
 import json
@@ -246,152 +246,6 @@ def ids_from_api(row: dict[str, Any]) -> dict[str, Any]:
     return suricata_from_eve(row, datetime.now(timezone.utc), uid=uid)
 
 
-# --------------------------------------------------------------- Zenarmor ---
-# Zenarmor (ipdrstreamer) streams one record per line, both over syslog and Elasticsearch _bulk:
-#   syslog:  "daemon=zenarmor, index=conn, data={...json...}"
-#   ES bulk: index "zenarmor_<id>_<uuid>_conn_write" with the JSON document
-# Families: conn (flows), dns, tls, http, alert, sip. Field names verified against
-# github.com/rknightion/opnsense2otel internal/logship/zenarmor/parse.go (zenDoc).
-ZEN_FAMILIES = {"conn": "conn", "dns": "dns", "tls": "tls", "http": "http", "alert": "alert", "sip": "sip"}
-_ZEN_SYSLOG = re.compile(r"index=(?P<fam>[\w-]+)\s*,?\s*.*?data=(?P<data>\{.*\})\s*$", re.S)
-
-
-def zen_family_from_index(index: str) -> str | None:
-    tok = index[:-len("_write")] if index.endswith("_write") else index
-    tok = tok.rsplit("_", 1)[-1]
-    if "-" in tok:
-        tok = tok.rsplit("-", 1)[0]  # dated index: ..._conn-260716
-    return ZEN_FAMILIES.get(tok)
-
-
-def _zen_ts(d: dict[str, Any], fallback: datetime) -> datetime:
-    for k in ("start_time", "end_time", "timestamp", "@timestamp", "time"):
-        v = d.get(k)
-        if isinstance(v, (int, float)) and v > 0:
-            return datetime.fromtimestamp(v / 1000 if v > 1e11 else v, tz=timezone.utc)
-        if isinstance(v, str) and parse_iso(v):
-            return parse_iso(v)
-    return fallback
-
-
-def _flat(v: Any) -> str:
-    if isinstance(v, list):
-        return ", ".join(str(x) for x in v)
-    return "" if v is None else str(v)
-
-
-def zen_details(d: dict[str, Any]) -> dict[str, str]:
-    """What a Zenarmor record is about - application, its category, web category, security category, policy - from
-    whichever fields this record type carries (Zenarmor has no separate "block reason": these say why)."""
-    alert_info = d.get("alertinfo") if isinstance(d.get("alertinfo"), dict) else {}
-    out = {
-        "app": d.get("app_name") or d.get("application") or d.get("app_proto"),
-        "app_category": d.get("app_category") or d.get("application_category"),
-        "web_category": d.get("category") or _flat(d.get("domain_categories")) or d.get("web_category"),
-        "security": d.get("alert_category") or _flat(alert_info.get("category")) or _flat(d.get("security_tags"))
-                    or alert_info.get("signature"),
-        "policy": d.get("policy_name") or d.get("policy") or d.get("policyid"),
-    }
-    return {k: str(v) for k, v in out.items() if v not in (None, "", [], {})}
-
-
-def zen_describe(z: dict[str, str]) -> str:
-    """'app Steam (Games) · web category Games · policy 3'"""
-    parts = []
-    if z.get("app"):
-        parts.append(f"app {z['app']}" + (f" ({z['app_category']})" if z.get("app_category") else ""))
-    elif z.get("app_category"):
-        parts.append(f"app category {z['app_category']}")
-    if z.get("web_category") and z.get("web_category") != z.get("app_category"):
-        parts.append(f"web category {z['web_category']}")
-    if z.get("security"):
-        parts.append(f"security {z['security']}")
-    if z.get("policy"):
-        parts.append(f"policy {z['policy']}")
-    return " · ".join(parts)
-
-
-def zenarmor_record(family: str, d: dict[str, Any], ts: datetime, host: str | None = None,
-                    program: str = "zenarmor") -> dict[str, Any]:
-    """Normalise one Zenarmor document (any family) into an event."""
-    blocked = str(d.get("is_blocked", "")).lower() in ("1", "true")
-    alert_info = d.get("alertinfo") if isinstance(d.get("alertinfo"), dict) else {}
-    category = d.get("app_category") or d.get("category") or _flat(d.get("domain_categories")) or None
-    security = d.get("alert_category") or _flat(alert_info.get("category")) or d.get("security_tags") or None
-    device = d.get("device") if isinstance(d.get("device"), dict) else {}
-    src_geo = d.get("src_geoip") if isinstance(d.get("src_geoip"), dict) else {}
-    dst_geo = d.get("dst_geoip") if isinstance(d.get("dst_geoip"), dict) else {}
-
-    if family == "dns":
-        domain = d.get("query")
-        summary = " ".join(x for x in ("DNS", str(d.get("qtype") or ""), str(domain or "")) if x) + (f" [{category}]" if category else "")
-    elif family == "tls":
-        domain = d.get("server_name")
-        summary = f"TLS {domain}" + (f" [{category}]" if category else "")
-    elif family == "http":
-        domain = d.get("host")
-        summary = f"HTTP {d.get('method', '')} {domain}{d.get('uri', '')}"
-    elif family == "alert":
-        domain = d.get("dst_hostname") or d.get("server_name") or d.get("query")
-        summary = f"Threat alert: {security or alert_info or 'unknown'} {domain or ''}"
-    else:
-        domain = d.get("dst_hostname") or d.get("server_name")
-        summary = f"{d.get('app_name') or d.get('app_proto') or 'flow'} -> {domain or d.get('ip_dst_saddr')}" + \
-                  (f" [{category}]" if category else "")
-    action = "block" if blocked else ("threat" if family == "alert" else family)
-    z = zen_details(d)
-    what = zen_describe(z)
-    if what:  # e.g. "BLOCKED TLS store.steampowered.com - app Steam (Games) · policy 2"
-        base = f"Threat alert: {domain or d.get('ip_dst_saddr') or ''}".strip() if family == "alert" else summary.split(" [")[0]
-        summary = f"{base} - {what}"
-    data = {k: v for k, v in d.items() if k not in ("src_geoip", "dst_geoip") and v not in (None, "", [], {})}
-    if device:
-        data["device"] = device
-    return event(
-        _zen_ts(d, ts), "zenarmor", host=host, program=program,
-        severity=3 if family == "alert" else 4 if blocked else 6, action=action,
-        src_ip=d.get("ip_src_saddr") or d.get("src_ip"), dst_ip=d.get("ip_dst_saddr") or d.get("dst_ip"),
-        src_port=d.get("ip_src_port"), dst_port=d.get("ip_dst_port"),
-        proto=str(d.get("transport_proto") or "").lower() or None,
-        interface=d.get("interface"), direction=d.get("direction"),
-        domain=str(domain).lower().rstrip(".") if domain else None,
-        username=d.get("src_username") or None,
-        src_country=src_geo.get("country_code2") or None, dst_country=dst_geo.get("country_code2") or None,
-        message=(("BLOCKED " if blocked else "") + summary)[:4000],
-        data={"family": family, "security": security, "category": category, **data, "zen": z},
-    )
-
-
-def parse_zenarmor(ts: datetime, host: str | None, program: str | None, message: str) -> dict[str, Any]:
-    msg = message.strip()
-    m = _ZEN_SYSLOG.search(msg)
-    if m:
-        try:
-            d = json.loads(m["data"])
-            if isinstance(d, dict):
-                fam = ZEN_FAMILIES.get(m["fam"].lower(), m["fam"].lower())
-                return zenarmor_record(fam, d, ts, host, program or "zenarmor")
-        except ValueError:
-            pass
-    start = msg.find("{")
-    if start >= 0:
-        try:
-            d = json.loads(msg[start:])
-            if isinstance(d, dict):
-                fam = "dns" if "query" in d else "alert" if ("alertinfo" in d or "alert_category" in d) else \
-                      "http" if "uri" in d else "tls" if "server_name" in d else "conn"
-                return zenarmor_record(fam, d, ts, host, program or "zenarmor")
-        except ValueError:
-            pass
-    ips = find_ips(msg)
-    return event(ts, "zenarmor", host=host, program=program, severity=6, src_ip=ips[0] if ips else None,
-                 dst_ip=ips[1] if len(ips) > 1 else None, message=msg[:4000])
-
-
-def is_zenarmor_line(message: str) -> bool:
-    return "daemon=zenarmor" in message or ("index=" in message and "data={" in message and "ip_src_saddr" in message)
-
-
 # ----------------------------------------------------- auth / vpn / dhcp ---
 AUTH_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     # (regex, action, source)
@@ -439,7 +293,7 @@ CONFIG_AREAS = {
     "firewall": "Firewall", "filter": "Firewall", "nginx": "Nginx", "unbound": "Unbound DNS", "ids": "Intrusion detection",
     "interfaces": "Interfaces", "routes": "Routes", "routing": "Gateways", "core": "System", "system": "System",
     "wireguard": "WireGuard", "openvpn": "OpenVPN", "ipsec": "IPsec", "kea": "Kea DHCP", "dhcpv4": "DHCP", "dhcpv6": "DHCPv6",
-    "services_dhcp": "DHCP", "dnsmasq": "Dnsmasq", "cron": "Cron", "zenarmor": "Zenarmor", "crowdsec": "CrowdSec",
+    "services_dhcp": "DHCP", "dnsmasq": "Dnsmasq", "cron": "Cron", "crowdsec": "CrowdSec",
     "haproxy": "HAProxy", "acmeclient": "ACME", "monit": "Monit", "syslog": "Logging", "diagnostics": "Diagnostics",
     "trust": "Certificates", "auth": "Users & groups", "system_usermanager": "Users & groups", "captiveportal": "Captive portal",
     "trafficshaper": "Traffic shaper", "dyndns": "Dynamic DNS", "vlan": "VLANs", "ntpd": "NTP", "unboundplus": "Unbound DNS",

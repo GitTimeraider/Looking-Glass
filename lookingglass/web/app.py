@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 from starlette.middleware.sessions import SessionMiddleware
 
-from .. import __version__, app_config, auth, crypto, db, event_filter, optional_sources
+from .. import __version__, app_config, auth, crypto, db, event_filter
 from ..ai import Analyst, request_log
 from ..config import Settings
 from . import asset_version
@@ -46,12 +46,6 @@ DASH_NAV = [(k, v["title"].split(" (")[0], v.get("group", "tools")) for k, v in 
 templates.env.globals["dashboards"] = DASH_NAV
 
 
-def dash_nav() -> list[tuple[str, str, str]]:
-    """Menu entries of the dashboards; Zenarmor only when it is set up (in-memory flag, optional_sources.py)."""
-    return DASH_NAV if optional_sources.zenarmor() else [d for d in DASH_NAV if d[0] != "zenarmor"]
-
-
-templates.env.globals["dash_nav"] = dash_nav
 
 # alert list orders (?sort=): highest priority first (the default), newest / oldest alert number, latest activity
 _PRIO = "array_position(ARRAY['critical','high','medium','low','info'], severity)"
@@ -127,8 +121,6 @@ async def until_disconnected(request: Request, aw, poll: float = 0.5):
 
 def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, Any] | None = None) -> FastAPI:
     templates.env.globals["time_format"] = lambda: settings.time_format  # live setting, read per page
-    # sidebar dashboards of sources that are switched off (live as well)
-    templates.env.globals["dash_hidden"] = lambda: set() if settings.zenarmor_enabled else {"zenarmor"}
     templates.env.globals["theme_attrs"] = lambda: Markup(  # <html> attributes for the theme (style.css), live as well
         f' data-theme="{escape(settings.theme)}" data-mode="{"light" if settings.theme == "light" else "dark"}" '
         f'data-accent="{escape(settings.accent)}"')
@@ -301,8 +293,6 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         for k, on in (("suricata", settings.ids_pull), ("crowdsec", settings.crowdsec_pull), ("qfeeds", settings.qfeeds_pull)):
             if not on:  # switched off: hidden like its Threats tab, even with older data in the period
                 enabled[k] = False
-        # Settings › OPNsense › Receive Zenarmor data off: hidden even while older Zenarmor events are in the period
-        enabled["zenarmor"] = settings.zenarmor_enabled and (optional_sources.zenarmor() or "zenarmor" in has)
         return {
             "sources": enabled,
             "kpi": {**kpi, "open_alerts": {r["severity"]: r["n"] for r in alerts},
@@ -369,7 +359,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         ips = list({a["src_ip"] for a in out if a.get("src_ip") and not a["src_name"]})
         names = {r["ip"]: r["hostname"] for r in await db.pool().fetch(
             "SELECT DISTINCT ON (x) host(x) ip, hostname FROM devices, unnest(coalesce(ips, '{}'::inet[]) || ip) x "
-            "WHERE x = ANY($1::inet[]) AND hostname IS NOT NULL ORDER BY x, mac LIKE 'ip:%', last_seen DESC", ips)} if ips else {}
+            "WHERE x = ANY($1::inet[]) AND hostname IS NOT NULL ORDER BY x, last_seen DESC", ips)} if ips else {}
         # which enabled alert filter (mute) matches each alert - the alerts page offers "Unmute" for those
         from .. import alert_filters
 
@@ -745,50 +735,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                      "Learned behaviour (device profiles, hourly baselines, risk scores, seen domains)"),
     }
 
-    # parts that are not whole tables: only the rows of one source
+    # parts that are not plain tables
     PURGE_PARTS = {
-        "zenarmor": "Zenarmor data only (its events, also in the counts behind the dashboards)",
         "backups": "Backups (the run history of all backup tools; Backrest's own history is not touched)",
     }
     BACKUP_TABLES = "backup_runs, backup_runs_removed"
-
-    async def purge_zenarmor() -> None:
-        """Zenarmor events in batches (there can be millions; events of other sources keep being written meanwhile),
-        then its rows of the dashboard counts and the cached 7 / 30 day results."""
-        pool = db.pool()
-        total = 0
-        while True:
-            status = await pool.execute("DELETE FROM events WHERE id IN (SELECT id FROM events WHERE source = 'zenarmor' "
-                                        "LIMIT 20000)")
-            n = int(status.split()[-1])
-            total += n
-            if n < 20000:
-                break
-            await asyncio.sleep(0.2)
-        await pool.execute("DELETE FROM event_rollup WHERE source = 'zenarmor'")
-        await pool.execute("TRUNCATE period_results")
-        results.clear()
-        long_periods.forget()
-        await optional_sources.refresh()  # its menu entry and widgets hide again
-        log.warning("deleted %s Zenarmor events", total)
-
-    async def zenarmor_rows() -> dict[str, Any]:
-        """Zenarmor's share of the events. Counting millions of rows takes long: with a large table it is estimated
-        from the database statistics (like the other rows here); exact when the table is small or Zenarmor is rare
-        there (then the source index finds them quickly)."""
-        pool = db.pool()
-        row = await pool.fetchrow(
-            "SELECT greatest(reltuples, 0)::bigint total, pg_total_relation_size('events') bytes, "
-            "(SELECT s.most_common_freqs[array_position(s.most_common_vals::text::text[], 'zenarmor')] FROM pg_stats s "
-            " WHERE s.schemaname = 'public' AND s.tablename = 'events' AND s.attname = 'source') freq "
-            "FROM pg_class WHERE relname = 'events'")
-        total = row["total"] if row else 0
-        if total >= 100000 and row["freq"] is not None:
-            n = int(total * row["freq"])
-        else:
-            n = await pool.fetchval("SELECT count(*) FROM events WHERE source = 'zenarmor'")
-        size = int((row["bytes"] if row else 0) * min(1.0, n / max(total, n, 1)))
-        return {"rows": n, "size": await pool.fetchval("SELECT pg_size_pretty($1::bigint)", size)}
 
     @app.get("/api/admin/data")
     async def data_sizes():
@@ -802,7 +753,6 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             exact = sum([await db.pool().fetchval(f"SELECT count(*) FROM {t}") for t in tables]) \
                 if (row["approx"] or 0) < 100000 else None
             out.append({"key": key, "label": label, "size": row["size"], "rows": exact if exact is not None else max(0, row["approx"])})
-        out.append({"key": "zenarmor", "label": PURGE_PARTS["zenarmor"], **await zenarmor_rows()})
         row = await db.pool().fetchrow("SELECT pg_size_pretty(pg_total_relation_size('backup_runs') + "
                                        "pg_total_relation_size('backup_runs_removed')) size, "
                                        "(SELECT count(*) FROM backup_runs) rows")
@@ -826,20 +776,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if "backups" in parts:
             await db.pool().execute("DELETE FROM snapshots WHERE key LIKE 'backup_jobs:%'")
         results.clear()
-        background = None
-        if "zenarmor" in parts and "events" not in parts:  # all events deleted already includes Zenarmor's
-            background = "zenarmor"
-            task = asyncio.create_task(purge_zenarmor(), name="purge-zenarmor")
-            app.state.purge_tasks = getattr(app.state, "purge_tasks", set())
-            app.state.purge_tasks.add(task)
-            task.add_done_callback(app.state.purge_tasks.discard)
         if "events" in parts:
             long_periods.forget()
         if "ai_chats" in parts:
             from .. import privacy
             privacy.invalidate()
         log.warning("user %s deleted collected data: %s", user["username"], ", ".join(parts))
-        return {"ok": True, "deleted": parts, "background": background}
+        return {"ok": True, "deleted": parts}
 
     @app.get("/api/setup/checks")
     async def setup_status():
