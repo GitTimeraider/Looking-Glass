@@ -327,7 +327,7 @@ loadSettings();
 /* ---------- delete collected data ---------- */
 async function loadPurge() {
   const rows = await LG.api("/api/admin/data");
-  document.getElementById("purge-parts").innerHTML = rows.map(r => `<label class="chk purge-row"><input type="checkbox" value="${r.key}" ${["devices", "zenarmor", "backups"].includes(r.key) ? "" : "checked"}>
+  document.getElementById("purge-parts").innerHTML = rows.map(r => `<label class="chk purge-row"><input type="checkbox" value="${r.key}">
     <span>${LG.esc(r.label)}</span><span class="muted small">${LG.num(r.rows)} rows · ${LG.esc(r.size)}</span></label>`).join("");
 }
 document.getElementById("purge-go").onclick = async () => {
