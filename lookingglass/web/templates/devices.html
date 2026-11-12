@@ -126,7 +126,7 @@ const modeFmt = v => v === "silent" ? "silent" : v === "off" ? "off" : "alert";
 const LIM = [
   { group: "Alert limits" },
   { k: "volume_factor", l: "Traffic spike: alert at N times the device's normal hour", t: "int", min: 0, max: 1000,
-    fmt: v => v ? v + "×" : "off", hint: "Connections, DNS lookups or upload in one hour against the device's median for that hour. 0 = no spike alerts." },
+    fmt: v => v ? v + "×" : "off", hint: "Connections or DNS lookups in one hour against the device's median for that hour. 0 = no spike alerts." },
   { k: "volume_alerts", l: "Traffic spike alerts", t: "choice", opts: ALERT_SILENT, fmt: modeFmt,
     hint: "silent = stored, never shown or notified, but it counts for attack chains and the risk score." },
   { k: "ml_sensitivity", l: "Machine learning (unusual activity)", t: "choice",

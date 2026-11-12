@@ -155,8 +155,8 @@ class Rating:
 
 
 # blocked threat traffic from one device in 24h that no longer looks like a stray ad / link: malware calling home.
-# Counted in separate 10-minute periods and different sites (registered domains): one page load fires many DNS /
-# QUIC / TLS retries to several subdomains (file1., file2. …) within seconds - that is one visit, not persistence.
+# Counted in separate 10-minute periods and different addresses: one page load fires many retries within seconds -
+# that is one visit, not persistence.
 REPEAT_PERIODS, REPEAT_TARGETS = 6, 5
 
 # alerts built from the same events must not confirm each other
@@ -259,11 +259,11 @@ async def blocked_threat_history(src: str) -> tuple[int, int, int]:
 
 
 def repeated(r: Rating, hits: int, periods: int, targets: int) -> Rating:
-    """One step up when a device keeps coming back to blocked threat sites - one visit is usually an ad or a stray link,
-    however many retries and subdomains it fires."""
+    """One step up when a device keeps coming back to blocked threat addresses - one visit is usually an ad or a stray
+    link, however many retries it fires."""
     if periods >= REPEAT_PERIODS or targets >= REPEAT_TARGETS:
-        why = f"in {periods} separate 10-minute periods" if periods >= REPEAT_PERIODS else f"to {targets} different sites"
-        r.up(f"repeated: blocked threat traffic {why} in the last 24h ({hits} attempt(s), {targets} site(s)) - "
+        why = f"in {periods} separate 10-minute periods" if periods >= REPEAT_PERIODS else f"to {targets} different addresses"
+        r.up(f"repeated: blocked threat traffic {why} in the last 24h ({hits} attempt(s), {targets} address(es)) - "
              "can be malware calling home; check which program on the device does it")
     return r
 
