@@ -941,9 +941,6 @@ as the configuration is read - they are never stored. Runs are kept for 400 days
 * **Alerts** – detections ranked by severity, naming the device behind an IP (from the device list) and the evidence
   (e.g. the non-existent domains looked up); **Events** opens exactly the events behind an alert; acknowledge / close;
   **Ask AI** investigates one alert.
-* **Event search** – filter the raw log events; click an event for all its fields. **Ask AI** (with the AI analyst
-  enabled) explains that one event: what it means, whether it is normal, and what to do - looking at what the same
-  address did around it, how often it happens and alerts about its addresses.
 * **Overview** – key figures, events over time and per source, open alerts and the top-N tables of every source.
   **Customize** (top right) lets you drag widgets around (or use ◀ ▶), make them ⅓ / ⅔ / full width and normal or
   tall, remove them and add others (e.g. *Firewall system*); *Done* saves the layout for your account, *Reset to
@@ -999,7 +996,9 @@ as the configuration is read - they are never stored. Runs are kept for 400 days
   key are kept; needs your password and typing DELETE.
 * **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range; filters that come
   from a dashboard click (program, host, domain, user, port, protocol, interface, country, time span, any data field)
-  show as removable chips. Click an event for all its fields.
+  show as removable chips. Click an event for all its fields; **Ask AI** there (with the AI analyst enabled) explains
+  that one event - what it means, whether it is normal and what to do - looking at what the same address did around
+  it, how often it happens and alerts about its addresses.
 * **Reports** – 24h / 7d / 30d reports, optionally with an AI-written analysis; print to PDF, download JSON or
   **Email** it. *Settings › Reports*: a *Scheduled report* every N days (1 = daily, 7 = weekly; it covers those days) at
   the hour you choose, optionally mailed to the addresses under *Email the report to* (with the mail server from
