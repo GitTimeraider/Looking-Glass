@@ -773,11 +773,22 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         log.warning("deleted %s Zenarmor events", total)
 
     async def zenarmor_rows() -> dict[str, Any]:
-        row = await db.pool().fetchrow(
-            "SELECT count(*) n, (SELECT greatest(reltuples, 1) FROM pg_class WHERE relname = 'events') total, "
-            "pg_total_relation_size('events') bytes FROM events WHERE source = 'zenarmor'")
-        size = int(row["bytes"] * min(1.0, row["n"] / row["total"]))
-        return {"rows": row["n"], "size": await db.pool().fetchval("SELECT pg_size_pretty($1::bigint)", size)}
+        """Zenarmor's share of the events. Counting millions of rows takes long: with a large table it is estimated
+        from the database statistics (like the other rows here); exact when the table is small or Zenarmor is rare
+        there (then the source index finds them quickly)."""
+        pool = db.pool()
+        row = await pool.fetchrow(
+            "SELECT greatest(reltuples, 0)::bigint total, pg_total_relation_size('events') bytes, "
+            "(SELECT s.most_common_freqs[array_position(s.most_common_vals::text::text[], 'zenarmor')] FROM pg_stats s "
+            " WHERE s.schemaname = 'public' AND s.tablename = 'events' AND s.attname = 'source') freq "
+            "FROM pg_class WHERE relname = 'events'")
+        total = row["total"] if row else 0
+        if total >= 100000 and row["freq"] is not None:
+            n = int(total * row["freq"])
+        else:
+            n = await pool.fetchval("SELECT count(*) FROM events WHERE source = 'zenarmor'")
+        size = int((row["bytes"] if row else 0) * min(1.0, n / max(total, n, 1)))
+        return {"rows": n, "size": await pool.fetchval("SELECT pg_size_pretty($1::bigint)", size)}
 
     @app.get("/api/admin/data")
     async def data_sizes():

@@ -45,3 +45,26 @@ def test_delete_only_zenarmor_or_only_backups():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_zenarmor_share_of_a_large_table_is_estimated():
+    """Delete collected data: with many events the Zenarmor row count comes from the statistics (no slow count)."""
+    from lookingglass.web.app import create_app
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events")
+            await pool.execute("INSERT INTO events (ts, source, message) SELECT now(), "
+                               "CASE WHEN i % 4 = 0 THEN 'zenarmor' ELSE 'firewall' END, 'x' FROM generate_series(1, 120000) i")
+            await pool.execute("ANALYZE events")
+            ep = next(r.endpoint for r in create_app(Settings(), None).routes if getattr(r, "path", "") == "/api/admin/data")
+            zen = next(r for r in await ep() if r["key"] == "zenarmor")
+            assert 27000 <= zen["rows"] <= 33000 and zen["size"]  # about a quarter of 120 000
+            await pool.execute("TRUNCATE events")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
