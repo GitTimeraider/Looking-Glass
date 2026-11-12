@@ -98,7 +98,7 @@
     <h3>Delete collected data</h3>
     <p class="small muted">Start again with an empty history. Everything you configured is kept: these settings, all
       credentials, accounts and MFA, Unraid servers and the encryption key. Collecting continues right away.</p>
-    <div id="purge-parts"></div>
+    <div id="purge-parts"><div class="muted small purge-loading"><span class="spinner"></span> Counting the stored data… (can take a moment with a large history)</div></div>
     <div class="purge-confirm">
       <input type="password" id="purge-pw" placeholder="Your password" autocomplete="current-password">
       <input id="purge-confirm" placeholder="Type DELETE" autocomplete="off">
@@ -325,8 +325,14 @@ document.querySelectorAll("[data-test]").forEach(b => b.onclick = async () => {
 });
 loadSettings();
 /* ---------- delete collected data ---------- */
+const PURGE_LOADING = `<div class="muted small purge-loading"><span class="spinner"></span> Counting the stored data… (can take a moment with a large history)</div>`;
 async function loadPurge() {
-  const rows = await LG.api("/api/admin/data");
+  const el = document.getElementById("purge-parts"), go = document.getElementById("purge-go");
+  el.innerHTML = PURGE_LOADING; go.disabled = true;
+  let rows;
+  try { rows = await LG.api("/api/admin/data"); }
+  catch (e) { el.innerHTML = `<div class="small err">Could not count the stored data: ${LG.esc(e.message)} – reload the page to try again.</div>`; return; }
+  go.disabled = false;
   document.getElementById("purge-parts").innerHTML = rows.map(r => `<label class="chk purge-row"><input type="checkbox" value="${r.key}">
     <span>${LG.esc(r.label)}</span><span class="muted small">${LG.num(r.rows)} rows · ${LG.esc(r.size)}</span></label>`).join("");
 }
