@@ -243,6 +243,10 @@ function fieldHtml(f) {
   const id = "s-" + f.key, help = f.help ? `<div class="small muted">${LG.esc(f.help)}</div>` : "";
   let input;
   if (f.kind === "bool") input = `<label class="chk"><input type="checkbox" id="${id}" ${f.value ? "checked" : ""}> ${LG.esc(f.label)}</label>`;
+  else if (f.kind === "multi") {  // a checkbox per choice (stored ", " separated)
+    const on = new Set(splitList(f.value).map(x => x.toLowerCase()));
+    input = `<div id="${id}" class="multi-choice">${f.choices.map(c => `<label><input type="checkbox" value="${LG.esc(c)}" ${on.has(c.toLowerCase()) ? "checked" : ""}> ${LG.esc(c)}</label>`).join(" ")}</div>`;
+  }
   else if (f.kind === "choice") input = `<select id="${id}">${f.choices.map(c => `<option ${c === f.value ? "selected" : ""}>${LG.esc(c)}</option>`).join("")}</select>`;
   else if (f.kind === "list") {  // one entry per line; grows with its content (see wireLists)
     const items = splitList(f.value);
@@ -275,6 +279,7 @@ function groupValues(g) {
   for (const f of FIELDS.filter(x => x.group === g)) {
     const el = document.getElementById("s-" + f.key);
     if (f.kind === "bool") out[f.key] = el.checked;
+    else if (f.kind === "multi") out[f.key] = [...el.querySelectorAll("input:checked")].map(x => x.value);
     else if (f.kind === "secret") { const clr = document.getElementById("s-" + f.key + "-clear"); out[f.key] = clr && clr.checked ? null : el.value; }
     else out[f.key] = el.value;
   }

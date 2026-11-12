@@ -30,7 +30,7 @@ from .. import rollup
 from ..cache import ResultCache, stale_for, ttl_for
 from ..periods import Periods, is_long, key_of
 from ..dashboards import DASHBOARDS, run_dashboard
-from ..reports import build_report, report_mail, run_ai_summary, timeline
+from ..reports import CATEGORIES, build_report, parse_categories, report_mail, report_title, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
 from ..parsers.common import real_name
 from ..unraid import test_connection as unraid_test
@@ -791,21 +791,36 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     # ----------------------------------------------------------- reports ---
     @app.get("/api/reports")
     async def list_reports():
-        rows = await db.pool().fetch("SELECT id, created_at, period_h, title, ai_summary IS NOT NULL has_ai, ai_state FROM reports "
-                                     "ORDER BY id DESC LIMIT 200")
-        return db.records(rows)
+        rows = await db.pool().fetch("SELECT id, created_at, period_h, title, ai_summary IS NOT NULL has_ai, ai_state, "
+                                     "data->'categories' categories FROM reports ORDER BY id DESC LIMIT 200")
+        # reports from before the categories cover everything
+        return [{**r, "categories": parse_categories(r["categories"])} for r in db.records(rows)]
+
+    @app.get("/api/reports/categories")
+    async def report_categories():
+        """What a report can cover, whether it is set up (OPNsense: its syslog works without the API) and the ones of
+        the scheduled report (Settings › Reports)."""
+        unraid = bool(await db.pool().fetchval("SELECT count(*) FROM unraid_servers WHERE enabled"))
+        configured = {"opnsense": True, "unifi": settings.unifi_enabled, "unraid": unraid,
+                      "backups": settings.backrest_enabled}
+        return {"categories": [{"key": k, "name": n, "configured": configured[k]} for k, n in CATEGORIES.items()],
+                "scheduled": parse_categories(settings.report_categories)}
 
     @app.post("/api/reports")
     async def create_report(payload: dict = Body(...)):
         hours = int(payload.get("hours", 24))
         if hours <= 0 or hours > 24 * 90:
             raise HTTPException(400, "hours out of range")
-        data = await build_report(hours)
+        raw = payload.get("categories")
+        if raw is not None and not (isinstance(raw, list) and {str(c).lower() for c in raw} & set(CATEGORIES)):
+            raise HTTPException(400, f"categories: pick one or more of {', '.join(CATEGORIES)}")
+        cats = parse_categories(raw)  # missing = all
+        data = await build_report(hours, cats)
         ai = bool(payload.get("ai") and settings.ai_enabled)
         label = {24: "Daily", 168: "Weekly", 720: "Monthly"}.get(hours, f"{hours}h")
         rid = await db.pool().fetchval(
             "INSERT INTO reports (period_h, title, data, ai_state) VALUES ($1, $2, $3, $4) RETURNING id",
-            hours, f"{label} security report", data, "running" if ai else None)
+            hours, report_title(label, cats), data, "running" if ai else None)
         if ai:  # the AI analysis takes minutes: in the background, the report page shows its progress
             _background(run_ai_summary(analyst, rid))
         return {"id": rid}
