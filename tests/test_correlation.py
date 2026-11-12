@@ -508,3 +508,63 @@ def test_suricata_alerts_like_crowdsec_and_qfeeds():
             await db.close()
 
     asyncio.run(main())
+
+
+def test_wireguard_peer_tunnel_addresses():
+    from lookingglass.detections import wireguard_ips
+
+    assert wireguard_ips("fd00::2/128, 10.8.0.2/32") == ["10.8.0.2", "fd00::2"]
+    assert wireguard_ips(["10.8.0.3/32", "192.168.50.0/24"]) == ["10.8.0.3"]  # a routed network is no address of its own
+    assert wireguard_ips("10.8.0.4") == ["10.8.0.4"]
+    assert wireguard_ips(None) == [] and wireguard_ips("0.0.0.0/0") == []
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_wireguard_peers_become_devices_named_by_dnsmasq_hosts():
+    """WireGuard peers (no MAC, in no lease or ARP table) are listed from the WireGuard status: named by your dnsmasq
+    Hosts entry for the tunnel IP, else the peer name; online / offline from the status; no 'new device' alert."""
+    from lookingglass.detections import device_info, track_devices
+    from lookingglass.opnsense import Poller
+
+    p = Poller.__new__(Poller)
+    p._static_names = {"10.8.0.2": "phone-jo", "aa:00:00:00:00:01": "nas"}
+
+    def peer(name, allowed, status):
+        return {"type": "peer", "name": name, "if": "wg0", "ifname": "HomeVPN", "allowed-ips": allowed,
+                "peer-status": status}
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE devices, alerts")
+            await track_devices([{"mac": "aa:00:00:00:00:01", "ip": "192.168.1.5"}], origin="arp")  # not the first run
+            await p._track_peers([peer("Phone", "10.8.0.2/32", "online"), peer("Laptop", "10.8.0.3/32,fd00::3/128", "offline"),
+                                  peer("Site B", "192.168.50.0/24", "online")])
+            d = {r["mac"]: dict(r) for r in await pool.fetch(
+                "SELECT mac, host(ip) ip, hostname, name_source, online, interface FROM devices WHERE mac LIKE 'wg:%'")}
+            assert d == {"wg:10.8.0.2": {"mac": "wg:10.8.0.2", "ip": "10.8.0.2", "hostname": "phone-jo",
+                                         "name_source": "dnsmasq-static", "online": True, "interface": "HomeVPN"},
+                         "wg:10.8.0.3": {"mac": "wg:10.8.0.3", "ip": "10.8.0.3", "hostname": "Laptop",
+                                         "name_source": "wireguard", "online": False, "interface": "HomeVPN"}}
+            assert (await device_info("10.8.0.2"))["hostname"] == "phone-jo"  # what alerts show
+            assert await pool.fetchval("SELECT count(*) FROM alerts WHERE rule = 'new_device'") == 0
+            # the ARP table never lists them: they keep their state; the next status flips it
+            await track_devices([{"mac": "aa:00:00:00:00:01", "ip": "192.168.1.5"}], origin="arp", mark_online=True)
+            assert await pool.fetchval("SELECT online FROM devices WHERE mac = 'wg:10.8.0.2'")
+            await pool.execute("UPDATE devices SET last_seen = now() - interval '3 days' WHERE mac = 'wg:10.8.0.3'")
+            await p._track_peers([peer("Phone", "10.8.0.2/32", "offline"), peer("Laptop", "10.8.0.3/32", "offline")])
+            r = {x["mac"]: x for x in await pool.fetch("SELECT mac, online, last_seen < now() - interval '1 day' old "
+                                                       "FROM devices WHERE mac LIKE 'wg:%'")}
+            assert not r["wg:10.8.0.2"]["online"] and r["wg:10.8.0.3"]["old"]  # offline: last seen stays
+            # your own name wins over the Hosts entry
+            await pool.execute("UPDATE devices SET hostname = 'Mine', name_source = 'manual', name_rank = 100 "
+                               "WHERE mac = 'wg:10.8.0.2'")
+            await p._track_peers([peer("Phone", "10.8.0.2/32", "online")])
+            assert await pool.fetchval("SELECT hostname FROM devices WHERE mac = 'wg:10.8.0.2'") == "Mine"
+            assert not await pool.fetchval("SELECT online FROM devices WHERE mac = 'wg:10.8.0.3'")
+            await pool.execute("TRUNCATE devices, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())

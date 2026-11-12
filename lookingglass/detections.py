@@ -81,7 +81,7 @@ STRONG_CHAIN_RULES = {"threat_intel_outbound", "dns_malicious_blocked", "dns_dga
                       "distributed_brute_force", "success_after_failures", "login_new_location", "threat_intel_inbound"}
 
 # a name from a better source replaces one from a worse source, never the other way round
-NAME_RANK = {"manual": 100, "opnsense": 90, "unifi-alias": 70, "dnsmasq-static": 60, "unifi": 45, "dhcp": 50, "dns": 30, "arp": 20}
+NAME_RANK = {"manual": 100, "opnsense": 90, "unifi-alias": 70, "dnsmasq-static": 60, "unifi": 45, "dhcp": 50, "wireguard": 40, "dns": 30, "arp": 20}
 
 
 def name_rank(source: str) -> int:
@@ -512,9 +512,9 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
         if back:
             await db.kv_set(DISMISSED_KEY, {k: v for k, v in dismissed.items() if k not in back})
         devices = keep
-    if mark_online:
-        await pool.execute("UPDATE devices SET online = false WHERE online AND NOT (mac = ANY($1::text[]))",
-                           [d["mac"] for d in devices])
+    if mark_online:  # WireGuard peers are never in the ARP table: their state comes from the WireGuard status
+        await pool.execute("UPDATE devices SET online = false WHERE online AND NOT (mac = ANY($1::text[])) "
+                           "AND mac NOT LIKE 'wg:%'", [d["mac"] for d in devices])
     if not devices:
         return
     first_run = not await pool.fetchval("SELECT EXISTS (SELECT 1 FROM devices)")
@@ -547,7 +547,8 @@ async def track_devices(devices: list[dict[str, Any]], origin: str, mark_online:
             d.get("interface") or None, origin, d.get("lease_type"), d.get("lease_expires"), bool(d.get("online")),
             source, name_rank(source) if source else 0, d.get("conn_type"), d.get("conn_where"), d.get("conn_signal"),
             d.get("ips"), d.get("hwaddr"))
-        if new and not first_run and not d["mac"].startswith("if:"):  # OPNsense itself (a new interface)
+        # OPNsense itself (a new interface) and a WireGuard peer (you configured it in OPNsense) are no unknown device
+        if new and not first_run and not d["mac"].startswith(("if:", "wg:")):
             await raise_alert(
                 "new_device", Rating("low", "an unknown MAC address appeared - usually a new phone, guest or randomised "
                                             "Wi-Fi address; mark it trusted on the Devices page when you know it",
@@ -625,6 +626,33 @@ async def device_upkeep(remove_days: int) -> int:
         if removed:
             log.info("removed %d device(s) not seen for %d days", len(removed), remove_days)
     return len(removed)
+
+
+def wireguard_ips(allowed: Any) -> list[str]:
+    """The tunnel addresses of a WireGuard peer: the single-host entries (/32, /128) of its allowed IPs
+    ("10.8.0.2/32, fd00::2/128"); a routed network behind the peer is no address of its own. IPv4 first."""
+    parts = allowed if isinstance(allowed, list) else re.split(r"[,\s]+", str(allowed or ""))
+    ips = []
+    for p in parts:
+        try:
+            net = ipaddress.ip_network(str(p).strip(), strict=False)
+        except ValueError:
+            continue
+        if net.num_addresses == 1:
+            ips.append(net.network_address)
+    return [str(ip) for ip in sorted(set(ips), key=lambda ip: (ip.version, ip))]
+
+
+async def track_wireguard_peers(peers: list[dict[str, Any]]) -> None:
+    """WireGuard peers (no MAC, never in the ARP table or a lease) as devices under ``wg:<tunnel IP>``. The live status
+    sets online / offline; a peer that is offline is only added when it is not listed yet, so its "last seen" stays the
+    last time it was connected. A peer removed from OPNsense goes offline (and is removed like any other device)."""
+    pool = db.pool()
+    keys = [p["mac"] for p in peers]
+    known = {r["mac"] for r in await pool.fetch("SELECT mac FROM devices WHERE mac = ANY($1::text[])", keys)}
+    await track_devices([p for p in peers if p.get("online") or p["mac"] not in known], origin="wireguard")
+    await pool.execute("UPDATE devices SET online = false WHERE online AND mac LIKE 'wg:%' AND NOT (mac = ANY($1::text[]))",
+                       [p["mac"] for p in peers if p.get("online")])
 
 
 async def dhcp_listener(events: list[dict[str, Any]]) -> None:
