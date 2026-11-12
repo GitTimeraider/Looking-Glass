@@ -242,7 +242,7 @@ data; only the AI provider sees pseudonyms.
 6. **Save**. It applies from the next question / report on, no restart needed. A **🔒 Privacy mode** badge appears next
    to the model name on the **AI Analyst** page.
 
-**Where it applies**: everything that is sent to the AI - the AI Analyst chat, **Ask AI** on an alert, and the AI
+**Where it applies**: everything that is sent to the AI - the AI Analyst chat, **Ask AI** on an alert or an event, and the AI
 analysis of **reports** (written by hand, scheduled, or *Retry AI analysis*; the report's statistics are sent to the AI
 as part of the prompt and are pseudonymized too). Not affected (nothing goes to the AI): the report itself and its
 numbers, report and notification **mails** (they go through your own mail server and keep the real values), and
@@ -996,7 +996,9 @@ as the configuration is read - they are never stored. Runs are kept for 400 days
   key are kept; needs your password and typing DELETE.
 * **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range; filters that come
   from a dashboard click (program, host, domain, user, port, protocol, interface, country, time span, any data field)
-  show as removable chips. Click an event for all its fields.
+  show as removable chips. Click an event for all its fields; **Ask AI** there (with the AI analyst enabled) explains
+  that one event - what it means, whether it is normal and what to do - looking at what the same address did around
+  it, how often it happens and alerts about its addresses.
 * **Reports** – 24h / 7d / 30d reports, optionally with an AI-written analysis; print to PDF, download JSON or
   **Email** it. *Settings › Reports*: a *Scheduled report* every N days (1 = daily, 7 = weekly; it covers those days) at
   the hour you choose, optionally mailed to the addresses under *Email the report to* (with the mail server from

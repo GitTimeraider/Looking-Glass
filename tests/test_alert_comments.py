@@ -76,3 +76,37 @@ def test_comments_on_alerts_in_every_status():
             await db.close()
 
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_ai_event_detail_with_context():
+    """'Ask AI' on an event: the analyst loads the event with its device, what the source did around it, how often it
+    happened and alerts about its addresses (with comments)."""
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE alerts, alert_comments, devices")
+            await pool.execute("DELETE FROM events WHERE src_ip = '192.168.1.77'")
+            await pool.execute("INSERT INTO devices (mac, ip, hostname) VALUES ('aa:00:00:00:00:77', '192.168.1.77', 'nas')")
+            ids = [await pool.fetchval(
+                "INSERT INTO events (ts, source, action, src_ip, dst_ip, dst_port, proto, message, data) VALUES "
+                "(now() - make_interval(mins => $1), 'firewall', 'block', '192.168.1.77', '203.0.113.9', 23, 'tcp', $2, "
+                "'{\"rule\": \"x\"}') RETURNING id", m, f"block {m}") for m in (0, 5, 60)]
+            aid = await pool.fetchval("INSERT INTO alerts (rule, severity, title, fingerprint, src_ip) VALUES "
+                                      "('port_scan', 'low', 't', 'f77', '192.168.1.77') RETURNING id")
+            await pool.execute("INSERT INTO alert_comments (alert_id, author, body) VALUES ($1, 'rod', 'known backup job')", aid)
+            d = await ai.tool_event_detail(ids[0])
+            assert d["event"]["id"] == ids[0] and d["event"]["data"] == {"rule": "x"}
+            assert d["devices"]["192.168.1.77"]["hostname"] == "nas"
+            assert [e["id"] for e in d["same_source_15_minutes_around"]] == [ids[1]]  # not itself, not an hour earlier
+            assert d["similar_events_last_7_days"]["n"] == 3
+            assert d["alerts_about_these_addresses"][0]["comments"][0]["comment"] == "known backup job"
+            assert "error" in await ai.tool_event_detail(-1)
+            assert "event_detail" in ai.TOOL_NAMES and "known backup job" in await ai.run_tool("event_detail", {"event_id": ids[0]})
+            await pool.execute("DELETE FROM events WHERE src_ip = '192.168.1.77'")
+            await pool.execute("TRUNCATE alerts, alert_comments, devices")
+        finally:
+            await db.close()
+
+    asyncio.run(main())

@@ -104,6 +104,13 @@ const BLOCKED = new Set(["block", "drop", "reject", "deny", "waf_block", "rate_l
 const ALLOWED = new Set(["pass", "allow", "accept", "login_success", "vpn_connect"]);
 const kind = r => BLOCKED.has(r.action) ? "block" : ALLOWED.has(r.action) ? "allow" : "info";
 const KIND_TITLE = { block: "Blocked / denied", allow: "Allowed", info: "Informational" };
+// the AI analyst, asked about one event (it loads the event and its context with the event_detail tool)
+function askAI(r) {
+  const what = [r.source, r.action, r.program].filter(Boolean).join(" / ");
+  const q = `Explain event #${r.id} (${what}, ${LG.time(r.ts)}): "${String(r.message || "").slice(0, 300)}". ` +
+    "What does it mean and what caused it, is it normal for my network or a sign of a problem, and should I do anything?";
+  return "/ai?q=" + encodeURIComponent(q);
+}
 function render() {
   const el = document.getElementById("results");
   if (!rows.length) { el.innerHTML = `<div class="empty">No events match.</div>`; return; }
@@ -122,7 +129,8 @@ function render() {
     if (next && next.classList.contains("detail")) { next.remove(); return; }
     const r = rows[tr.dataset.i];
     const d = document.createElement("tr"); d.className = "detail";
-    d.innerHTML = `<td colspan="6"><pre>${LG.esc(JSON.stringify(r, null, 2))}</pre></td>`;
+    d.innerHTML = `<td colspan="6">{% if ai_enabled %}<div class="actions"><a class="btn secondary small" href="${askAI(r)}" title="Let the AI analyst explain this event (it also looks at what happened around it)">Ask AI</a></div>{% endif %}<pre>${LG.esc(JSON.stringify(r, null, 2))}</pre></td>`;
+    d.querySelector("a")?.addEventListener("click", e => e.stopPropagation());
     tr.after(d);
   });
 }
