@@ -58,12 +58,32 @@ async def store_runs(source: str, runs: list[dict[str, Any]], replace_pending: b
                 "AND (CASE WHEN ext_id ~ '^[0-9]{1,18}$' THEN ext_id::bigint >= $3 ELSE false END "
                 "OR started < now() - interval '1 day')",
                 source, [r["ext_id"] for r in runs], min(ids) if ids else 2 ** 62)
+        removed = {r["ext_id"]: r["started"] for r in await conn.fetch(
+            "SELECT ext_id, started FROM backup_runs_removed WHERE source = $1 AND ext_id = ANY($2::text[])",
+            source, [r["ext_id"] for r in runs])}
+        # removed by hand: not added again (unless the id now belongs to another run, after the tool was reset)
+        runs = [r for r in runs if r["ext_id"] not in removed
+                or (removed[r["ext_id"]] is not None and removed[r["ext_id"]] != r.get("started"))]
         if not runs:
             return
         await conn.executemany(f"INSERT INTO backup_runs ({cols}) VALUES ({params}) "
                                f"ON CONFLICT (source, ext_id) DO UPDATE SET {update}",
                                [(source, *(r.get(c) if c != "data" else (r.get("data") or {}) for c in COLUMNS))
                                 for r in runs])
+
+
+async def remove_runs(source: str, ext_ids: list[str]) -> list[dict[str, Any]]:
+    """Remove runs by hand (e.g. deleted in the tool, or a test run). They are remembered, so a run the tool still lists
+    is not stored again on its next poll. Returns the removed runs (kind, job, repo), for checking the alerts again."""
+    async with db.pool().acquire() as conn, conn.transaction():
+        rows = await conn.fetch("DELETE FROM backup_runs WHERE source = $1 AND ext_id = ANY($2::text[]) "
+                                "RETURNING ext_id, kind, job, repo, started", source, ext_ids)
+        started = {r["ext_id"]: r["started"] for r in rows}
+        await conn.executemany("INSERT INTO backup_runs_removed (source, ext_id, started) VALUES ($1, $2, $3) "
+                               "ON CONFLICT (source, ext_id) DO UPDATE SET removed_at = now(), "
+                               "started = coalesce(EXCLUDED.started, backup_runs_removed.started)",
+                               [(source, i, started.get(i)) for i in ext_ids])
+    return db.records(rows)
 
 
 def _when(t: datetime | None) -> str:
@@ -160,6 +180,35 @@ async def check_repos(source: str, label: str, repos: list[str]) -> None:
                               data={"source": source, "repo": r["repo"], "task": r["kind"]}, mode="max")
         else:
             await close_alerts("backup_repo_problem", [fp], f"the next {r['kind']} succeeded")
+
+
+async def recheck_alerts(source: str, removed: list[dict[str, Any]], warnings: bool = True) -> None:
+    """After runs were removed by hand: the alerts of their jobs / repositories follow the runs that are left, so an
+    alert that came from a removed run closes now instead of on the next poll (or never, when no run is left)."""
+    snap = await db.get_snapshot(f"backup_jobs:{source}") or {}
+    label = snap.get("label") or SOURCES.get(source, source)
+    names = {r["job"] for r in removed if r["kind"] == "backup" and r["job"]}
+    repos = sorted({r["repo"] for r in removed if r["kind"] in REPO_TASKS and r["repo"]})
+    left = {(r["kind"], r["job"], r["repo"]) for r in await db.pool().fetch(
+        "SELECT DISTINCT kind, CASE WHEN kind = 'backup' THEN job ELSE '' END job, "
+        "CASE WHEN kind = 'backup' THEN '' ELSE repo END repo FROM backup_runs WHERE source = $1 "
+        "AND status IN ('success', 'warning', 'error') AND (job = ANY($2::text[]) OR repo = ANY($3::text[]))",
+        source, list(names), repos)}
+    jobs = [j for j in snap.get("jobs", []) if j["job"] in names]
+    if jobs:
+        await check_jobs(source, label, jobs, warnings=warnings)
+    for job in names:
+        if ("backup", job, "") not in left:  # no finished backup left: nothing to alert on
+            fp = f"{source}:{job}"
+            await close_alerts("backup_failed", [f"backup_fail:{fp}"], "its runs were removed")
+            await close_alerts("backup_warning", [f"backup_warn:{fp}"], "its runs were removed")
+            await close_alerts("backup_overdue", [f"backup_overdue:{fp}"], "its runs were removed")
+    if repos:
+        await check_repos(source, label, repos)
+    for repo in repos:
+        for kind in REPO_TASKS:
+            if (kind, "", repo) not in left:
+                await close_alerts("backup_repo_problem", [f"backup_repo:{source}:{repo}:{kind}"], "its runs were removed")
 
 
 # ---------------------------------------------------------------- web UI ---

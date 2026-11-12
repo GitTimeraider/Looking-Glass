@@ -83,6 +83,19 @@ function progress(p, started) {
   return `<div class="bar"><i style="width:${pct}%"></i></div><div class="small muted">${Math.round(pct)}% · ${LG.bytes(p.bytes_done)} of ${LG.bytes(p.total_bytes)}` +
     ` · ${LG.num(p.files_done)} / ${LG.num(p.total_files)} files${speed ? ` · ${rate(speed)}` : ""}${eta ? ` · about ${dur(eta)} left` : ""}</div>`;
 }
+/* remove a run from the list (e.g. already deleted in Backrest): a "remove" link in every run table */
+const rmCol = {k: "ext_id", l: "", f: (v, r) => r.status === "running" ? "" :
+  `<a href="#" class="small muted" data-rm="${LG.esc(v)}" data-src="${LG.esc(r.source || "backrest")}" title="Remove this run from the list (Looking Glass only - Backrest is not changed)">remove</a>`};
+document.addEventListener("click", async e => {
+  const a = e.target.closest("[data-rm]");
+  if (!a) return;
+  e.preventDefault();
+  if (!confirm("Remove this run from the list?\n\nOnly Looking Glass forgets it (Backrest is not changed) and it is not " +
+               "added again, also not while Backrest still lists it. Its alerts follow the runs that are left.")) return;
+  try { await LG.api("/api/backups/runs/remove", { method: "POST", body: { source: a.dataset.src, ids: [a.dataset.rm] } }); }
+  catch (err) { return alert("Could not remove the run: " + (err.message || err)); }
+  load();
+});
 /** per-run chart: {series label: [{x: ms, y}]} -> line chart with a point per run */
 function runChart(id, series, fmt) {
   const datasets = Object.entries(series).map(([label, pts], i) => ({ label, data: pts.sort((a, b) => a.x - b.x),
@@ -148,6 +161,7 @@ async function loadMain() {
     {k: "status", l: "Result", f: status}, {k: "duration_s", l: "Duration", num: true, f: dur},
     {k: "bytes_added", l: "New data", num: true, f: v => v === null ? "" : LG.bytes(v)},
     {k: "message", l: "Message", f: v => v ? `<span class="small">${LG.esc(v.slice(0, 200))}</span>` : ""},
+    rmCol,
   ], M.recent.slice(0, 30), `No runs in the last ${days} days`, undefined, { sortAll: true, order: { k: "started", dir: -1 } });
   document.getElementById("updated").textContent = `updated ${LG.clock()}`;
 }
@@ -261,6 +275,7 @@ function drawBackrest() {
     {k: "snapshot_id", l: "Snapshot", f: v => v ? `<span class="mono small">${LG.esc(v.slice(0, 8))}</span>` : ""},
     {k: "message", l: "Message", f: (v, r) => { const n = (r.data || {}).error_count; return (v ? `<span class="small">${LG.esc(v.slice(0, 300))}</span>` : "") +
       (n ? `<div class="small muted">${n} file error${n === 1 ? "" : "s"}: ${LG.esc(((r.data.errors || [])[0] || {}).item || "")}${n > 1 ? " …" : ""}</div>` : ""); }},
+    rmCol,
   ], shown, `No backups in the last ${days} days`, undefined, { sortAll: true, order: { k: "started", dir: -1 } });
   LG.table("#b-maint", [
     {k: "started", l: "Started", desc: true, f: LG.time}, {k: "kind", l: "Task"}, {k: "repo", l: "Repository"},
@@ -269,6 +284,7 @@ function drawBackrest() {
       return (r.kind === "forget" && d.forgot !== undefined ? `${d.forgot} snapshot${d.forgot === 1 ? "" : "s"} removed ` : "") +
         (r.kind === "restore" && d.path ? `${LG.esc(d.path)} → ${LG.esc(d.target || "")} ` : "") +
         (v ? `<span class="small">${LG.esc(v.slice(0, 300))}</span>` : ""); }},
+    rmCol,
   ], B.maintenance.filter(r => !plan || !r.job || r.job === plan), `No repository tasks in the last ${days} days`, undefined, { sortAll: true, order: { k: "started", dir: -1 } });
 }
 

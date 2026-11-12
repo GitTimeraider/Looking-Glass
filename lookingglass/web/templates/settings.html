@@ -327,7 +327,7 @@ loadSettings();
 /* ---------- delete collected data ---------- */
 async function loadPurge() {
   const rows = await LG.api("/api/admin/data");
-  document.getElementById("purge-parts").innerHTML = rows.map(r => `<label class="chk purge-row"><input type="checkbox" value="${r.key}" ${r.key === "devices" ? "" : "checked"}>
+  document.getElementById("purge-parts").innerHTML = rows.map(r => `<label class="chk purge-row"><input type="checkbox" value="${r.key}" ${["devices", "zenarmor", "backups"].includes(r.key) ? "" : "checked"}>
     <span>${LG.esc(r.label)}</span><span class="muted small">${LG.num(r.rows)} rows · ${LG.esc(r.size)}</span></label>`).join("");
 }
 document.getElementById("purge-go").onclick = async () => {
@@ -336,9 +336,12 @@ document.getElementById("purge-go").onclick = async () => {
   if (!parts.length) { m.className = "small err"; m.textContent = "Select what to delete."; return; }
   if (!confirm(`Permanently delete: ${parts.join(", ")}? This cannot be undone.`)) return;
   try {
-    await LG.api("/api/admin/purge", { method: "POST", body: { parts, password: document.getElementById("purge-pw").value,
+    const r = await LG.api("/api/admin/purge", { method: "POST", body: { parts, password: document.getElementById("purge-pw").value,
                                                                 confirm: document.getElementById("purge-confirm").value } });
-    m.className = "small ok-msg"; m.textContent = "Deleted. New data appears within a minute.";
+    m.className = "small ok-msg";
+    m.textContent = r.background === "zenarmor" ? "Deleted. The Zenarmor events are being deleted in the background " +
+      "(a large history can take a few minutes); the counts here update when you open this page again."
+      : "Deleted. New data appears within a minute.";
     document.getElementById("purge-pw").value = ""; document.getElementById("purge-confirm").value = "";
     loadPurge();
   } catch (e) { m.className = "small err"; m.textContent = e.message; }

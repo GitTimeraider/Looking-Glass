@@ -423,6 +423,15 @@ CREATE TABLE IF NOT EXISTS backup_runs (
 );
 CREATE INDEX IF NOT EXISTS backup_runs_started ON backup_runs (started DESC);
 CREATE INDEX IF NOT EXISTS backup_runs_job ON backup_runs (source, kind, job, started DESC);
+-- runs removed by hand (Backups › Backrest › remove): not stored again while the tool still lists them; removed
+-- after 400 days (housekeeping), like the runs
+CREATE TABLE IF NOT EXISTS backup_runs_removed (
+    source     TEXT NOT NULL,
+    ext_id     TEXT NOT NULL,
+    started    TIMESTAMPTZ,                      -- of the removed run: a reused id (tool reset) is a new run
+    removed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source, ext_id)
+);
 
 -- 7 / 30 day results of the Overview and the dashboards (periods.py): counted in the background on a schedule (or
 -- with the refresh button) and shown from here - switching to such a period counts nothing. key = JSON
