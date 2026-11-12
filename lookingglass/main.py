@@ -18,7 +18,7 @@ from .detections import DetectionEngine, device_upkeep, dhcp_listener
 from .enrich import Enricher
 from .ingest import EventWriter, SyslogServer
 from .opnsense import Poller
-from .reports import build_report, report_due, report_mail, run_ai_summary
+from .reports import build_report, parse_categories, report_due, report_mail, report_title, run_ai_summary
 from .unifi import UnifiPoller
 from .unraid import UnraidManager
 from .web.app import create_app
@@ -195,12 +195,14 @@ async def daily_ai_report(settings, analyst: Analyst) -> None:
             continue
         key = now.strftime("%Y-%m-%d")
         every = max(1, settings.report_every_days)
-        title = f"Daily security report {key}" if every == 1 else f"Security report {key} ({every} days)"
+        cats = parse_categories(settings.report_categories)  # Settings › Reports › What the report covers
+        title = report_title("Daily", cats, key) if every == 1 else report_title("", cats, f"{key} ({every} days)")
+        title = title[:1].upper() + title[1:]
         try:
             if not report_due(await db.kv_get("daily_report"), now.date(), every):
                 continue
             await db.kv_set("daily_report", key)
-            data = await build_report(24 * every)
+            data = await build_report(24 * every, cats)
             rid = await db.pool().fetchval("INSERT INTO reports (period_h, title, data) VALUES ($1, $2, $3) RETURNING id",
                                            24 * every, title, data)
             if settings.ai_enabled:

@@ -6,6 +6,7 @@
 {% block body %}
 <header class="top">
   <h1 id="title">Report</h1>
+  <span id="covers" class="muted small"></span>
   <a class="btn secondary noprint" href="/api/reports/{{ report_id }}/download">Download JSON</a>
   <button class="secondary noprint" id="mail-report">Email</button>
   <button onclick="window.print()">Print / PDF</button>
@@ -18,27 +19,33 @@
 {% block scripts %}
 <script>
 const SECTIONS = [
-  ["alerts", "Alerts", [{k: "severity", l: "Sev", f: LG.sev}, {k: "title", l: "Alert"}, {k: "count", l: "#", num: true}, {k: "status", l: "Status"}]],
-  ["top_blocked_sources", "Top blocked sources", [{k: "ip", l: "IP"}, {k: "country", l: "Country", f: LG.flag}, {k: "ports", l: "Ports", num: true}, {k: "n", l: "Hits", num: true}]],
-  ["top_blocked_ports", "Top blocked ports", [{k: "port", l: "Port"}, {k: "proto", l: "Proto"}, {k: "sources", l: "Sources", num: true}, {k: "n", l: "Hits", num: true}]],
-  ["top_blocked_countries", "Blocked by country", [{k: "country", l: "Country", f: LG.flag}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Hits", num: true}]],
-  ["top_passed_inbound", "Allowed inbound from internet", [{k: "dst", l: "Destination"}, {k: "port", l: "Port"}, {k: "proto", l: "Proto"}, {k: "sources", l: "Sources", num: true}, {k: "n", l: "Hits", num: true}]],
-  ["auth_failures", "Authentication failures", [{k: "ip", l: "IP"}, {k: "source", l: "Service"}, {k: "users", l: "Users"}, {k: "n", l: "Failures", num: true}]],
-  ["auth_success", "Successful logins", [{k: "username", l: "User"}, {k: "ip", l: "From"}, {k: "program", l: "Via"}, {k: "n", l: "#", num: true}]],
-  ["ids_signatures", "Suricata signatures", [{k: "signature", l: "Signature"}, {k: "classification", l: "Class"}, {k: "n", l: "Hits", num: true}]],
-  ["crowdsec_scenarios", "CrowdSec scenarios", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}]],
-  ["qfeeds_hits", "Q-Feeds hits", [{k: "src", l: "Source"}, {k: "dst", l: "Destination"}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}]],
-  ["web_status", "Web responses", [{k: "status", l: "Status"}, {k: "n", l: "Requests", num: true}]],
-  ["web_attack_tags", "Web attack patterns", [{k: "tag", l: "Pattern"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Requests", num: true}]],
-  ["web_top_clients", "Web top clients", [{k: "ip", l: "IP"}, {k: "country", l: "Country", f: LG.flag}, {k: "errors", l: "Errors", num: true}, {k: "n", l: "Requests", num: true}]],
-  ["dns_top_domains", "DNS top domains", [{k: "domain", l: "Domain"}, {k: "clients", l: "Clients", num: true}, {k: "n", l: "Queries", num: true}]],
-  ["dns_blocked", "DNS blocked", [{k: "domain", l: "Domain"}, {k: "blocklist", l: "List"}, {k: "n", l: "Hits", num: true}]],
-  ["dns_clients", "DNS clients", [{k: "client", l: "Client"}, {k: "blocked", l: "Blocked", num: true}, {k: "n", l: "Queries", num: true}]],
-  ["top_talkers_internal", "Internal top talkers", [{k: "ip", l: "Host"}, {k: "peers", l: "Peers", num: true}, {k: "n", l: "Events", num: true}]],
-  ["new_devices", "New devices", [{k: "mac", l: "MAC", f: LG.mac}, {k: "ip", l: "IP"}, {k: "hostname", l: "Hostname"}, {k: "conn_where", l: "Connected to"}, {k: "first_seen", l: "First seen", f: LG.time}]],
-  ["clients_with_security_events", "Clients with security events (UniFi + OPNsense)", [{k: "name", l: "Device"}, {k: "ip", l: "IP"}, {k: "conn_where", l: "Connected to"}, {k: "fw", l: "FW blocks", num: true}, {k: "dns", l: "DNS blocked", num: true}, {k: "threats", l: "Threats", num: true}]],
-  ["unifi_events", "UniFi events", [{k: "action", l: "Event"}, {k: "clients", l: "Clients", num: true}, {k: "n", l: "Count", num: true}]],
-  ["backups", "Backups", [{k: "job", l: "Job"}, {k: "source", l: "Tool"}, {k: "ok", l: "Successful", num: true}, {k: "warnings", l: "Warnings", num: true}, {k: "failed", l: "Failed", num: true}, {k: "added", l: "Data added", num: true, f: LG.bytes}, {k: "last_good", l: "Last good", f: LG.time}]],
+  ["alerts", "*", "Alerts", [{k: "severity", l: "Sev", f: LG.sev}, {k: "title", l: "Alert"}, {k: "count", l: "#", num: true}, {k: "status", l: "Status"}]],
+  ["top_blocked_sources", "opnsense", "Top blocked sources", [{k: "ip", l: "IP"}, {k: "country", l: "Country", f: LG.flag}, {k: "ports", l: "Ports", num: true}, {k: "n", l: "Hits", num: true}]],
+  ["top_blocked_ports", "opnsense", "Top blocked ports", [{k: "port", l: "Port"}, {k: "proto", l: "Proto"}, {k: "sources", l: "Sources", num: true}, {k: "n", l: "Hits", num: true}]],
+  ["top_blocked_countries", "opnsense", "Blocked by country", [{k: "country", l: "Country", f: LG.flag}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Hits", num: true}]],
+  ["top_passed_inbound", "opnsense", "Allowed inbound from internet", [{k: "dst", l: "Destination"}, {k: "port", l: "Port"}, {k: "proto", l: "Proto"}, {k: "sources", l: "Sources", num: true}, {k: "n", l: "Hits", num: true}]],
+  ["auth_failures", "opnsense unifi unraid", "Authentication failures", [{k: "ip", l: "IP"}, {k: "source", l: "Service"}, {k: "users", l: "Users"}, {k: "n", l: "Failures", num: true}]],
+  ["auth_success", "opnsense unifi unraid", "Successful logins", [{k: "username", l: "User"}, {k: "ip", l: "From"}, {k: "program", l: "Via"}, {k: "n", l: "#", num: true}]],
+  ["ids_signatures", "opnsense", "Suricata signatures", [{k: "signature", l: "Signature"}, {k: "classification", l: "Class"}, {k: "n", l: "Hits", num: true}]],
+  ["crowdsec_scenarios", "opnsense", "CrowdSec scenarios", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}]],
+  ["qfeeds_hits", "opnsense", "Q-Feeds hits", [{k: "src", l: "Source"}, {k: "dst", l: "Destination"}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}]],
+  ["web_status", "opnsense", "Web responses", [{k: "status", l: "Status"}, {k: "n", l: "Requests", num: true}]],
+  ["web_attack_tags", "opnsense", "Web attack patterns", [{k: "tag", l: "Pattern"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Requests", num: true}]],
+  ["web_top_clients", "opnsense", "Web top clients", [{k: "ip", l: "IP"}, {k: "country", l: "Country", f: LG.flag}, {k: "errors", l: "Errors", num: true}, {k: "n", l: "Requests", num: true}]],
+  ["dns_top_domains", "opnsense", "DNS top domains", [{k: "domain", l: "Domain"}, {k: "clients", l: "Clients", num: true}, {k: "n", l: "Queries", num: true}]],
+  ["dns_blocked", "opnsense", "DNS blocked", [{k: "domain", l: "Domain"}, {k: "blocklist", l: "List"}, {k: "n", l: "Hits", num: true}]],
+  ["dns_clients", "opnsense", "DNS clients", [{k: "client", l: "Client"}, {k: "blocked", l: "Blocked", num: true}, {k: "n", l: "Queries", num: true}]],
+  ["top_talkers_internal", "opnsense", "Internal top talkers", [{k: "ip", l: "Host"}, {k: "peers", l: "Peers", num: true}, {k: "n", l: "Events", num: true}]],
+  ["new_devices", "opnsense unifi", "New devices", [{k: "mac", l: "MAC", f: LG.mac}, {k: "ip", l: "IP"}, {k: "hostname", l: "Hostname"}, {k: "conn_where", l: "Connected to"}, {k: "first_seen", l: "First seen", f: LG.time}]],
+  ["clients_with_security_events", "opnsense unifi", "Clients with security events (UniFi + OPNsense)", [{k: "name", l: "Device"}, {k: "ip", l: "IP"}, {k: "conn_where", l: "Connected to"}, {k: "fw", l: "FW blocks", num: true}, {k: "dns", l: "DNS blocked", num: true}, {k: "threats", l: "Threats", num: true}]],
+  ["unifi_devices", "unifi", "UniFi access points / switches", [{k: "device", l: "Device"}, {k: "offline", l: "Offline", num: true}, {k: "restarts", l: "Restarts", num: true}, {k: "poe", l: "PoE drops", num: true}, {k: "n", l: "Events", num: true}]],
+  ["unifi_clients", "unifi", "UniFi clients dropping off / roaming", [{k: "client", l: "Client"}, {k: "mac", l: "MAC", f: LG.mac}, {k: "disconnects", l: "Disconnects", num: true}, {k: "roams", l: "Roams", num: true}, {k: "n", l: "Events", num: true}]],
+  ["unifi_events", "unifi", "UniFi events", [{k: "action", l: "Event"}, {k: "clients", l: "Clients", num: true}, {k: "n", l: "Count", num: true}]],
+  ["unraid_storage", "unraid", "Unraid storage (now)", [{k: "server", l: "Server"}, {k: "grp", l: "Array / pool"}, {k: "state", l: "Array state"}, {k: "used_pct", l: "Used %", num: true, f: v => v == null ? "" : Math.round(v) + "%"}, {k: "free", l: "Free", num: true, f: LG.bytes}, {k: "disks", l: "Disks", num: true}, {k: "errors", l: "Errors", num: true}, {k: "max_temp", l: "Max °C", num: true}]],
+  ["unraid_notifications", "unraid", "Unraid notifications", [{k: "importance", l: "Level"}, {k: "server", l: "Server"}, {k: "subject", l: "Notification"}, {k: "n", l: "#", num: true}, {k: "last", l: "Last", f: LG.time}]],
+  ["unraid_container_logs", "unraid", "Container log errors / warnings", [{k: "container", l: "Container"}, {k: "server", l: "Server"}, {k: "errors", l: "Errors", num: true}, {k: "warnings", l: "Warnings", num: true}]],
+  ["unraid_resources", "unraid", "Unraid CPU / memory", [{k: "server", l: "Server"}, {k: "cpu_avg", l: "CPU avg %", num: true}, {k: "cpu_max", l: "CPU max %", num: true}, {k: "mem_avg", l: "Mem avg %", num: true}, {k: "mem_max", l: "Mem max %", num: true}]],
+  ["backups", "backups", "Backups", [{k: "job", l: "Job"}, {k: "source", l: "Tool"}, {k: "ok", l: "Successful", num: true}, {k: "warnings", l: "Warnings", num: true}, {k: "failed", l: "Failed", num: true}, {k: "added", l: "Data added", num: true, f: LG.bytes}, {k: "last_good", l: "Last good", f: LG.time}]],
 ];
 /* the AI analysis runs in the background: show progress, then the result - or why it failed, with Retry */
 let aiStarted = Date.now();
@@ -75,12 +82,22 @@ function showAI(r) {
   showAI(r);
   const tot = d.totals || {}, fa = Object.fromEntries((d.firewall_actions || []).map(x => [x.action, x.n]));
   const sev = Object.fromEntries((d.alerts_by_severity || []).map(x => [x.severity, x.n]));
+  // what the report covers (reports from before this choice: everything)
+  const ALL = ["opnsense", "unifi", "unraid", "backups"], NAMES = {opnsense: "OPNsense", unifi: "UniFi", unraid: "Unraid", backups: "Backups"};
+  const cats = d.categories && d.categories.length ? d.categories : ALL, has = c => cats.includes(c);
+  document.getElementById("covers").textContent = cats.length < ALL.length ? "covers " + cats.map(c => NAMES[c]).join(" + ") : "";
+  const sum = (rows, key) => (rows || []).reduce((a, r) => a + (r[key] || 0), 0);
   const k = (l, v) => `<div class="card kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`;
-  document.getElementById("kpis").innerHTML = k("Events", LG.num(Object.values(tot).reduce((a, b) => a + b, 0))) + k("FW blocked", LG.num(fa.block || 0)) +
-    k("FW passed (logged)", LG.num(fa.pass || 0)) + k("Critical/high alerts", LG.num((sev.critical || 0) + (sev.high || 0))) +
-    k("Medium alerts", LG.num(sev.medium || 0)) + k("DNS queries", LG.num(tot.unbound || 0)) + k("Web requests", LG.num(tot.nginx || 0));
+  document.getElementById("kpis").innerHTML = (has("opnsense") || has("unifi") || has("unraid") ? k("Events", LG.num(Object.values(tot).reduce((a, b) => a + b, 0))) : "") +
+    k("Critical/high alerts", LG.num((sev.critical || 0) + (sev.high || 0))) + k("Medium alerts", LG.num(sev.medium || 0)) +
+    (has("opnsense") ? k("FW blocked", LG.num(fa.block || 0)) + k("FW passed (logged)", LG.num(fa.pass || 0)) +
+      k("DNS queries", LG.num(tot.unbound || 0)) + k("Web requests", LG.num(tot.nginx || 0)) : "") +
+    (has("unifi") ? k("UniFi events", LG.num(tot.unifi || 0)) + k("AP / switch offline", LG.num(sum(d.unifi_devices, "offline"))) : "") +
+    (has("unraid") ? k("Unraid notifications", LG.num(sum(d.unraid_notifications, "n"))) + k("Container log errors", LG.num(sum(d.unraid_container_logs, "errors"))) : "") +
+    (has("backups") ? k("Successful backups", LG.num(sum(d.backups, "ok"))) + k("Failed backups", LG.num(sum(d.backups, "failed"))) : "");
   const box = document.getElementById("sections");
-  for (const [key, title, cols] of SECTIONS) {
+  for (const [key, tag, title, cols] of SECTIONS) {
+    if (tag !== "*" && !tag.split(" ").some(has)) continue;
     const c = document.createElement("div"); c.className = "card";
     c.innerHTML = `<h3>${title}</h3><div></div>`; box.appendChild(c);
     LG.table(c.lastElementChild, cols, d[key] || []);

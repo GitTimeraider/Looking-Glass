@@ -28,7 +28,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 | ![Firewall dashboard](docs/screenshots/firewall.png) | ![Devices](docs/screenshots/devices.png) |
 | **OPNsense** - hardware, load, temperatures, gateways, interfaces and services | **UniFi** - access points, switches, Wi-Fi and wired clients, neighbouring Wi-Fi |
 | ![OPNsense](docs/screenshots/opnsense.png) | ![UniFi](docs/screenshots/unifi.png) |
-| **Unraid** - array, disks (never woken up), Docker, VMs, UPS, packages inside every container | **Reports** - daily / weekly / monthly, with an AI analysis |
+| **Unraid** - array, disks (never woken up), Docker, VMs, UPS, packages inside every container | **Reports** - daily / weekly / monthly, all or per part (OPNsense, UniFi, Unraid, Backups), with an AI analysis |
 | ![Unraid](docs/screenshots/unraid.png) | ![Report](docs/screenshots/report.png) |
 | **Setup & status** - checks every data source and says exactly what to change where | **Settings** - everything in the web UI (secrets encrypted), every detection with its own switches and exceptions |
 | ![Setup & status](docs/screenshots/setup-status.png) | ![Settings](docs/screenshots/settings-behaviour.png) |
@@ -1000,9 +1000,15 @@ as the configuration is read - they are never stored. Runs are kept for 400 days
   that one event - what it means, whether it is normal and what to do - looking at what the same address did around
   it, how often it happens and alerts about its addresses.
 * **Reports** – 24h / 7d / 30d reports, optionally with an AI-written analysis; print to PDF, download JSON or
-  **Email** it. *Settings › Reports*: a *Scheduled report* every N days (1 = daily, 7 = weekly; it covers those days) at
-  the hour you choose, optionally mailed to the addresses under *Email the report to* (with the mail server from
-  *Settings › Email & notifications*).
+  **Email** it. Tick what a report covers: **OPNsense** (firewall, DNS, web server, Suricata, CrowdSec, Q-Feeds,
+  logins), **UniFi** (APs / switches going offline, clients dropping off or roaming, UniFi events, clients with
+  security events), **Unraid** (array / pool state and free space, notifications, container log errors, CPU / memory)
+  and **Backups** (jobs, failures). All ticked (the default) is the full *security report*; otherwise only those parts
+  are collected (faster), the alerts are limited to their rules (the groups of *Settings › Alert filters*), the title
+  says what it covers (*Weekly Unraid + Backups report*) and the AI analysis reviews only those. *Settings › Reports*:
+  a *Scheduled report* every N days (1 = daily, 7 = weekly; it covers those days) at the hour you choose, covering what
+  is ticked under *What the report covers*, optionally mailed to the addresses under *Email the report to* (with the
+  mail server from *Settings › Email & notifications*).
 * **AI Analyst** – chat with the model (any OpenAI-compatible endpoint; with Claude it uses Anthropic's
   [OpenAI SDK compatibility layer](https://platform.claude.com/docs/en/api/openai-sdk)). It can run read-only SQL against the log database, search events, profile an
   IP, read alerts, OPNsense + Unraid status and traffic statistics, and answers with evidence and remediation steps.
@@ -1015,7 +1021,7 @@ as the configuration is read - they are never stored. Runs are kept for 400 days
 **In the web UI (Settings, stored in the database, secrets encrypted, applied live):** OPNsense URL / API key /
 secret / TLS verification / custom CA / poll interval / per-source pulls · UniFi URL / API key / username / password /
 site / TLS verification / poll interval / events · AI base URL / API key / model / limits /
-scheduled report (every N days, hour, mail recipients) · syslog allowed senders, extra internal
+scheduled report (every N days, hour, what it covers, mail recipients) · syslog allowed senders, extra internal
 networks, time zone · retention, detection interval, GeoIP path · Unraid servers (URL, API key, Docker API) · container packages (on/off, image source, exclusions, registry
 login, Syft options).
 

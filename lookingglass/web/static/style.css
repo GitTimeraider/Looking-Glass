@@ -252,6 +252,10 @@ td { max-width: 520px; }
 input[type=checkbox] { width: auto; min-width: 0; padding: 0; flex: none; }
 label.chk { white-space: nowrap; flex: none; }
 .settings-form .secret-row { display: flex; gap: 8px; align-items: center; }
+/* a checkbox per choice: Settings (kind multi) and Reports › what the report covers */
+.multi-choice { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
+.multi-choice label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.multi-choice label.unset { color: var(--muted); }
 .settings-form .secret-row input[type=password] { flex: 1; min-width: 0; }
 
 /* first-start wizard */

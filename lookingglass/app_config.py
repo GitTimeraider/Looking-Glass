@@ -26,6 +26,7 @@ class Field:
     group: str
     label: str
     kind: str  # str | secret | bool | int | choice | text | list (one entry per line in the UI, stored ', ' separated)
+    #            | multi (a checkbox per choice, at least one; stored ', ' separated in the order of the choices)
     help: str = ""
     choices: tuple[str, ...] = ()
     min: int | None = None
@@ -184,6 +185,9 @@ FIELDS: list[Field] = [
           "days.", min=1, max=31),
     Field("ai_daily_report_hour", "reports", "Hour (local time)", "int", "When the report is written (Time zone under "
           "Ingestion & network).", min=0, max=23),
+    Field("report_categories", "reports", "What the report covers", "multi", "All ticked = the full report. Untick "
+          "what you don't want, e.g. only Unraid and Backups for a weekly server report.",
+          choices=("OPNsense", "UniFi", "Unraid", "Backups")),
     Field("report_mail_to", "reports", "Email the report to", "list", "Mail addresses, one per line; uses the mail server "
           "under Email & notifications. Empty = not mailed.", placeholder="you@example.com"),
     # ingest
@@ -407,6 +411,15 @@ def _coerce(f: Field, value: Any) -> Any:
     if f.kind == "list":  # one entry per line (or comma separated): trimmed, duplicates dropped, stored ", " separated
         items = [p.strip() for p in re.split(r"[,;\n]+", "" if value is None else str(value))]
         value = ", ".join(dict.fromkeys(p for p in items if p))
+    if f.kind == "multi":  # a list or a ', ' separated text; case-insensitive, stored in the order of the choices
+        items = value if isinstance(value, (list, tuple)) else re.split(r"[,;\n]+", "" if value is None else str(value))
+        wanted = {str(p).strip().lower() for p in items if str(p).strip()}
+        unknown = wanted - {c.lower() for c in f.choices}
+        if unknown:
+            raise SettingsError(f"{f.label}: unknown {', '.join(sorted(unknown))} (one or more of {', '.join(f.choices)})")
+        if not wanted:
+            raise SettingsError(f"{f.label}: tick at least one")
+        return ", ".join(c for c in f.choices if c.lower() in wanted)
     v = "" if value is None else str(value).strip()
     if f.kind == "choice" and v not in f.choices:
         raise SettingsError(f"{f.label}: must be one of {', '.join(f.choices)}")

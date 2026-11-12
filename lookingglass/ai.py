@@ -18,7 +18,7 @@ import httpx
 
 from . import db, privacy
 from .config import Settings, local_time, time_style
-from .reports import build_report
+from .reports import CATEGORIES, build_report, category_label, is_all, parse_categories
 
 log = logging.getLogger(__name__)
 # every AI request with what started it - off unless LOG_AI_REQUESTS=true (main.py sets the level)
@@ -407,6 +407,35 @@ STATUS_TEXT = {400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 
 
+# what the AI looks at in a report of a category (Reports: what the report covers)
+REVIEW_FOCUS = {
+    "opnsense": "OPNsense: open alerts, blocked and allowed traffic, inbound exposure, outbound anomalies from internal "
+                "hosts, DNS, web server, IDS, CrowdSec, Q-Feeds, logins and OPNsense system health",
+    "unifi": "UniFi: access points / switches that went offline or restarted, clients that keep disconnecting or roaming, "
+             "rogue access points / DHCP servers, UniFi admin logins and which UniFi clients had security events",
+    "unraid": "Unraid: array and pool state and free space, disk health (status, I/O errors, SMART, temperatures), parity, "
+              "Docker containers (stopped, restarting, unhealthy, errors in their logs), Unraid notifications, CPU / memory "
+              "load and the UPS",
+    "backups": "Backups: failed, warning or overdue backup jobs, jobs without a recent good run, repository check / "
+               "prune problems and unusual growth of the backed up data",
+}
+
+
+def review_prompt(hours: float, categories: Any = None) -> str:
+    """The task of a report's AI analysis: all categories = the full review, else only the selected ones."""
+    cats = parse_categories(categories)
+    if is_all(cats):
+        intro = f"Perform a full security and health review of the last {hours:g} hours. Check:\n"
+    else:
+        others = ", ".join(CATEGORIES[c] for c in CATEGORIES if c not in cats)
+        intro = (f"Perform a review of the last {hours:g} hours of {category_label(cats)} only (this report leaves out "
+                 f"{others}: don't review those). Check:\n")
+    return (intro + "".join(f"- {REVIEW_FOCUS[c]}\n" for c in cats)
+            + "Report: 1) executive summary, 2) findings ranked by severity with evidence, 3) recommended actions, "
+              "4) blind spots (missing data sources). Take the user's comments on alerts into account (list_alerts / "
+              "alert_detail).")
+
+
 def _valid_json(arguments: Any) -> str:
     """Tool call arguments as a JSON object string: servers refuse the next request when they are cut off / invalid."""
     if isinstance(arguments, dict):
@@ -668,11 +697,7 @@ class Analyst:
             return new
 
     async def analyse(self, hours: int = 24, data: dict[str, Any] | None = None) -> str:
-        prompt = (f"Perform a full security review of the last {hours} hours. Check open alerts, blocked and allowed traffic, "
-                  "inbound exposure, outbound anomalies from internal hosts, DNS, web server, IDS, CrowdSec, Q-Feeds, "
-                  "authentication and system health. Report: 1) executive summary, 2) findings ranked by severity with evidence, "
-                  "3) recommended actions, 4) blind spots (missing log sources). Take the user's comments on alerts into "
-                  "account (list_alerts / alert_detail).")
+        prompt = review_prompt(hours, (data or {}).get("categories"))
         if data:
             # the report's numbers up front: the model only needs tools to dig into what stands out (fewer, shorter
             # requests - long agent runs are what gateways time out on)
