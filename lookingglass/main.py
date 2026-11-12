@@ -5,6 +5,7 @@ import asyncio
 import logging
 import secrets
 import signal
+import socket
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -185,6 +186,70 @@ async def backrest_supervisor(settings) -> None:
             await _stop_poller(poller, task)
 
 
+def _listen(host: str, port: int) -> socket.socket:
+    """The receiver's listening socket, opened here so a port that cannot be opened is a normal error (uvicorn would
+    end the whole program)."""
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+        sock.listen(128)
+        sock.setblocking(False)
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
+ES_CHECK_S = 5  # how often the Zenarmor receiver follows its switch
+
+
+async def zenarmor_es_supervisor(settings, writer: EventWriter) -> None:
+    """The Zenarmor Elasticsearch receiver: its port is open only while Zenarmor is switched on (Settings › OPNsense ›
+    Receive Zenarmor data) and ZENARMOR_ES_PORT is not 0. Switching it off closes the port within a few seconds,
+    switching it on opens it again - no restart needed."""
+    server: uvicorn.Server | None = None
+    task: asyncio.Task | None = None
+    retry_at = 0.0
+    loop = asyncio.get_running_loop()
+
+    async def stop() -> None:
+        nonlocal server, task
+        if server is not None:
+            server.should_exit = True
+            await asyncio.gather(task, return_exceptions=True)
+        server = task = None
+
+    try:
+        while True:
+            want = bool(settings.zenarmor_enabled and settings.zenarmor_es_port)
+            if task is not None and task.done():
+                log.error("Zenarmor receiver stopped (%r), opening it again in 30s",
+                          None if task.cancelled() else task.exception())
+                server = task = None
+                retry_at = loop.time() + 30
+            if want and server is None and loop.time() >= retry_at:
+                try:
+                    sock = _listen(settings.web_host, settings.zenarmor_es_port)
+                except OSError as exc:
+                    log.error("Zenarmor receiver: port %s cannot be opened (%s), trying again in 30s",
+                              settings.zenarmor_es_port, exc)
+                    retry_at = loop.time() + 30
+                else:
+                    server = uvicorn.Server(uvicorn.Config(create_es_app(settings, writer), log_level="warning",
+                                                           lifespan="off"))
+                    server.install_signal_handlers = lambda: None
+                    task = asyncio.create_task(server.serve(sockets=[sock]), name="zenarmor-es")
+                    log.info("Zenarmor Elasticsearch-compatible receiver on port %s", settings.zenarmor_es_port)
+            elif not want and server is not None:
+                await stop()
+                log.info("Zenarmor switched off: receiver port %s closed", settings.zenarmor_es_port)
+            await asyncio.sleep(ES_CHECK_S)
+    finally:
+        await stop()
+
+
 async def daily_ai_report(settings, analyst: Analyst) -> None:
     """The scheduled report: every ``report_every_days`` days at the set hour, covering those days; mailed when
     recipients are set."""
@@ -315,6 +380,7 @@ async def amain() -> None:
     background("unraid", unraid.run)
     background("unifi", lambda: unifi_supervisor(settings, writer))
     background("backrest", lambda: backrest_supervisor(settings))
+    background("zenarmor_es", lambda: zenarmor_es_supervisor(settings, writer))
     background("daily_report", lambda: daily_ai_report(settings, analyst))
     background("notifier", lambda: notify.notifier(settings))
     from .intel import Intel
@@ -332,13 +398,6 @@ async def amain() -> None:
 
     web = asyncio.create_task(server.serve(), name="web")
     servers = [web]  # web servers are stopped with should_exit: cancelling one logs a CancelledError traceback
-    es_server = None
-    if settings.zenarmor_es_port:
-        es_server = uvicorn.Server(uvicorn.Config(create_es_app(settings, writer), host=settings.web_host,
-                                                  port=settings.zenarmor_es_port, log_level="warning", lifespan="off"))
-        es_server.install_signal_handlers = lambda: None
-        servers.append(asyncio.create_task(es_server.serve(), name="zenarmor-es"))
-        log.info("Zenarmor Elasticsearch-compatible receiver on port %s", settings.zenarmor_es_port)
     log.info("web UI on http://%s:%s", settings.web_host, settings.web_port)
     done, _ = await asyncio.wait([*servers, asyncio.create_task(stop.wait()), *tasks], return_when=asyncio.FIRST_COMPLETED)
     for t in done:  # why Looking Glass stops (a signal is logged by on_signal)
@@ -346,8 +405,6 @@ async def amain() -> None:
             exc = t.exception() if not t.cancelled() else None
             log.error("%s stopped%s: shutting down", t.get_name(), f" ({exc!r})" if exc else "")
     server.should_exit = True
-    if es_server:
-        es_server.should_exit = True
     for t in tasks:
         t.cancel()
     await asyncio.gather(*servers, *tasks, return_exceptions=True)

@@ -83,8 +83,9 @@ FIELDS: list[Field] = [
           "Signature IDs (the SID column under Threats › Suricata). Their hits are still stored and shown.",
           placeholder="2210050"),
     Field("zenarmor_enabled", "opnsense", "Receive Zenarmor data", "bool",
-          "Off: Zenarmor records (Elasticsearch stream and syslog) are discarded and the Zenarmor overview widget, "
-          "menu entry and settings tab are hidden. Stored Zenarmor events are kept."),
+          "Off: the Elasticsearch receiver (port 9200) is closed, Zenarmor records sent over syslog are discarded "
+          "and the Zenarmor overview widget, menu entry and settings tab are hidden. Stored Zenarmor events are kept "
+          "(delete them under Data & detection › Delete collected data)."),
     Field("nginx_pull", "opnsense", "Pull nginx access / error logs", "bool",
           "nginx plugin: its access logs are never sent by OPNsense remote syslog, so they are read via the API."),
     Field("vpn_pull", "opnsense", "Pull VPN status (WireGuard, OpenVPN, IPsec)", "bool",

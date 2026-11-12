@@ -745,6 +745,40 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                      "Learned behaviour (device profiles, hourly baselines, risk scores, seen domains)"),
     }
 
+    # parts that are not whole tables: only the rows of one source
+    PURGE_PARTS = {
+        "zenarmor": "Zenarmor data only (its events, also in the counts behind the dashboards)",
+        "backups": "Backups (the run history of all backup tools; Backrest's own history is not touched)",
+    }
+    BACKUP_TABLES = "backup_runs, backup_runs_removed"
+
+    async def purge_zenarmor() -> None:
+        """Zenarmor events in batches (there can be millions; events of other sources keep being written meanwhile),
+        then its rows of the dashboard counts and the cached 7 / 30 day results."""
+        pool = db.pool()
+        total = 0
+        while True:
+            status = await pool.execute("DELETE FROM events WHERE id IN (SELECT id FROM events WHERE source = 'zenarmor' "
+                                        "LIMIT 20000)")
+            n = int(status.split()[-1])
+            total += n
+            if n < 20000:
+                break
+            await asyncio.sleep(0.2)
+        await pool.execute("DELETE FROM event_rollup WHERE source = 'zenarmor'")
+        await pool.execute("TRUNCATE period_results")
+        results.clear()
+        long_periods.forget()
+        await optional_sources.refresh()  # its menu entry and widgets hide again
+        log.warning("deleted %s Zenarmor events", total)
+
+    async def zenarmor_rows() -> dict[str, Any]:
+        row = await db.pool().fetchrow(
+            "SELECT count(*) n, (SELECT greatest(reltuples, 1) FROM pg_class WHERE relname = 'events') total, "
+            "pg_total_relation_size('events') bytes FROM events WHERE source = 'zenarmor'")
+        size = int(row["bytes"] * min(1.0, row["n"] / row["total"]))
+        return {"rows": row["n"], "size": await db.pool().fetchval("SELECT pg_size_pretty($1::bigint)", size)}
+
     @app.get("/api/admin/data")
     async def data_sizes():
         out = []
@@ -757,11 +791,16 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             exact = sum([await db.pool().fetchval(f"SELECT count(*) FROM {t}") for t in tables]) \
                 if (row["approx"] or 0) < 100000 else None
             out.append({"key": key, "label": label, "size": row["size"], "rows": exact if exact is not None else max(0, row["approx"])})
+        out.append({"key": "zenarmor", "label": PURGE_PARTS["zenarmor"], **await zenarmor_rows()})
+        row = await db.pool().fetchrow("SELECT pg_size_pretty(pg_total_relation_size('backup_runs') + "
+                                       "pg_total_relation_size('backup_runs_removed')) size, "
+                                       "(SELECT count(*) FROM backup_runs) rows")
+        out.append({"key": "backups", "label": PURGE_PARTS["backups"], "rows": row["rows"], "size": row["size"]})
         return out
 
     @app.post("/api/admin/purge")
     async def purge(request: Request, payload: dict = Body(...)):
-        parts = [p for p in payload.get("parts") or [] if p in PURGE]
+        parts = [p for p in payload.get("parts") or [] if p in PURGE or p in PURGE_PARTS]
         if not parts:
             raise HTTPException(400, "Select what to delete.")
         if str(payload.get("confirm", "")).strip() != "DELETE":
@@ -770,15 +809,26 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if not await asyncio.to_thread(auth.verify_password, str(payload.get("password", "")), user["password_hash"]):
             raise HTTPException(403, "Wrong password.")
         # TRUNCATE without RESTART IDENTITY: event ids keep growing, so the detection rules' watermarks stay valid
-        await db.pool().execute(f"TRUNCATE {', '.join(PURGE[p][0] for p in parts)}")
+        tables = [PURGE[p][0] for p in parts if p in PURGE] + ([BACKUP_TABLES] if "backups" in parts else [])
+        if tables:
+            await db.pool().execute(f"TRUNCATE {', '.join(tables)}")
+        if "backups" in parts:
+            await db.pool().execute("DELETE FROM snapshots WHERE key LIKE 'backup_jobs:%'")
         results.clear()
+        background = None
+        if "zenarmor" in parts and "events" not in parts:  # all events deleted already includes Zenarmor's
+            background = "zenarmor"
+            task = asyncio.create_task(purge_zenarmor(), name="purge-zenarmor")
+            app.state.purge_tasks = getattr(app.state, "purge_tasks", set())
+            app.state.purge_tasks.add(task)
+            task.add_done_callback(app.state.purge_tasks.discard)
         if "events" in parts:
             long_periods.forget()
         if "ai_chats" in parts:
             from .. import privacy
             privacy.invalidate()
         log.warning("user %s deleted collected data: %s", user["username"], ", ".join(parts))
-        return {"ok": True, "deleted": parts}
+        return {"ok": True, "deleted": parts, "background": background}
 
     @app.get("/api/setup/checks")
     async def setup_status():

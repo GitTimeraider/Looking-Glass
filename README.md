@@ -957,8 +957,9 @@ as the configuration is read - they are never stored. Runs are kept for 400 days
   tall, remove them and add others (e.g. *Firewall system*); *Done* saves the layout for your account, *Reset to
   default* brings back the standard one. Widgets of sources you switched off (e.g. Suricata) hide themselves.
   Extra Suricata widgets (top sources, targeted hosts, classifications, internal hosts alerting) are under
-  *+ Add widget…*. *Settings › OPNsense › Receive Zenarmor data* off discards Zenarmor records and hides its
-  widget, menu entry and settings tab.
+  *+ Add widget…*. *Settings › OPNsense › Receive Zenarmor data* off closes the Elasticsearch receiver port (9200,
+  within a few seconds; on opens it again), discards Zenarmor records sent over syslog and hides its widget, menu
+  entry and settings tab. Stored Zenarmor events are kept.
 * **Menu**: *General* (overview, alerts, event search over all sources), *OPNsense security* (the OPNsense security
   dashboards; other security products get their own group), *Infrastructure* (OPNsense and Unraid hardware & status,
   devices), *Tools* (system logs, reports, AI analyst) and *Admin*.
@@ -1008,7 +1009,8 @@ as the configuration is read - they are never stored. Runs are kept for 400 days
   devices, devices you named, devices with notes and devices with a type or their own settings are kept).
 * **Unraid** – see above.
 * **Settings › Data & detection › Delete collected data** – wipe logs/events, alerts, graphs, reports, AI conversations
-  and optionally the device list to start over. Settings, credentials, accounts/MFA, Unraid servers and the encryption
+  and optionally the device list to start over; or only the Zenarmor events (deleted in the background) or only the
+  backup run history (what Backrest still lists comes back on its next poll). Settings, credentials, accounts/MFA, Unraid servers and the encryption
   key are kept; needs your password and typing DELETE.
 * **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range; filters that come
   from a dashboard click (program, host, domain, user, port, protocol, interface, country, time span, any data field)
@@ -1049,7 +1051,7 @@ user / password / SSL mode · first account.
 | `PUBLIC_URL` / `WEBAUTHN_RP_ID` | auto | public https URL / passkey relying-party id when behind a reverse proxy |
 | `COOKIE_SECURE` | `false` | mark the session cookie HTTPS-only |
 | `SECRET_KEY` (or `SECRET_KEY_FILE`) | generated, stored in DB | cookie signing key |
-| `WEB_PORT` / `SYSLOG_UDP_PORT` / `SYSLOG_TCP_PORT` / `ZENARMOR_ES_PORT` | `8080` / `5514` / `5514` / `9200` | container listen ports (`ZENARMOR_ES_PORT=0` disables the receiver) |
+| `WEB_PORT` / `SYSLOG_UDP_PORT` / `SYSLOG_TCP_PORT` / `ZENARMOR_ES_PORT` | `8080` / `5514` / `5514` / `9200` | container listen ports (`ZENARMOR_ES_PORT=0` disables the receiver; it is also closed while *Receive Zenarmor data* is off) |
 | `LOG_LEVEL` | `INFO` | logging verbosity |
 | `LOG_AI_REQUESTS` | `false` | `true` logs every request to the AI endpoint and what started it (chat / Ask AI, report, daily report, connection test) |
 
