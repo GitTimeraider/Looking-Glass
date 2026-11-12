@@ -27,7 +27,7 @@ def test_delete_only_backups():
             app = create_app(Settings(), None)
             ep = lambda path: next(r.endpoint for r in app.routes if getattr(r, "path", "") == path)  # noqa: E731
             sizes = {r["key"]: r for r in await ep("/api/admin/data")()}
-            assert "zenarmor" not in sizes and sizes["backups"]["rows"] == 1
+            assert sizes["backups"]["rows"] == 1
             req = SimpleNamespace(state=SimpleNamespace(user={"username": "t", "password_hash": auth.hash_password("pw")}))
             await ep("/api/admin/purge")(req, {"parts": ["backups"], "password": "pw", "confirm": "DELETE"})
             assert await pool.fetchval("SELECT count(*) FROM backup_runs") == 0

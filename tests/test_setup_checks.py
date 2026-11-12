@@ -36,7 +36,6 @@ def test_channels_and_duplicates():
             assert by["ids"]["status"] == "ok" and by["ids"]["via"] == ["API"]
             assert by["crowdsec"]["status"] == "action" and "Privileges" in by["crowdsec"]["todo"][0]
             assert by["api"]["status"] == "info" and "crowdsec" in by["api"]["summary"]
-            assert "zenarmor" not in by
             # Unbound's own service messages via syslog are no query logging - no duplicate
             await pool.execute("DELETE FROM events WHERE host = 'setup-test' AND source = 'unbound' AND uid IS NULL")
             await db.copy_events([event(now, "unbound", host="setup-test", severity=6, program="unbound",

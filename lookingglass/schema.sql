@@ -438,25 +438,3 @@ CREATE TABLE IF NOT EXISTS period_results (
     data        JSONB,
     error       TEXT
 );
-
--- ------------------------------------------------- Zenarmor removed ---
--- what older versions stored for Zenarmor (events still there are removed by the normal retention)
-DELETE FROM app_settings WHERE key LIKE 'zenarmor%';
-DELETE FROM kv WHERE key = 'wm:zenarmor';
--- its dashboard's cached 7 / 30 day results (periods.py)
-DELETE FROM period_results WHERE key LIKE '["dash", "zenarmor",%';
--- its alert rules (zenarmor_threat, large_upload: upload volumes only came from Zenarmor); a filter or notification
--- rule made only for them goes too - with an empty rule list it would match every alert
-DELETE FROM alerts WHERE rule IN ('zenarmor_threat', 'large_upload');
-DELETE FROM alert_filters WHERE rules <> '{}' AND rules <@ ARRAY['zenarmor_threat', 'large_upload'];
-UPDATE alert_filters SET rules = array_remove(array_remove(rules, 'zenarmor_threat'), 'large_upload')
- WHERE rules && ARRAY['zenarmor_threat', 'large_upload'];
-DELETE FROM notification_rules WHERE rules <> '{}' AND rules <@ ARRAY['zenarmor_threat', 'large_upload'];
-UPDATE notification_rules SET rules = array_remove(array_remove(rules, 'zenarmor_threat'), 'large_upload')
- WHERE rules && ARRAY['zenarmor_threat', 'large_upload'];
--- devices only Zenarmor reported (clients without a MAC were listed as ip:<address>) and what was learned about them
-DELETE FROM device_profile WHERE key IN (SELECT mac FROM devices WHERE mac LIKE 'ip:%' OR (sources <> '{}' AND sources <@ ARRAY['zenarmor']));
-DELETE FROM device_hourly WHERE key IN (SELECT mac FROM devices WHERE mac LIKE 'ip:%' OR (sources <> '{}' AND sources <@ ARRAY['zenarmor']));
-DELETE FROM devices WHERE mac LIKE 'ip:%' OR (sources <> '{}' AND sources <@ ARRAY['zenarmor']);
-UPDATE devices SET sources = array_remove(sources, 'zenarmor') WHERE 'zenarmor' = ANY(sources);
-UPDATE devices SET hostname = NULL, name_source = NULL, name_rank = 0 WHERE name_source = 'zenarmor';
