@@ -503,10 +503,11 @@ These steps were checked against the current OPNsense documentation and source (
    * Enabled ✓, Transport `UDP(4)` (or `TCP(4)`)
    * Applications: leave **empty** (= everything, recommended). Only then are the general system logs (kernel,
      opnsense …), sshd logins and API-key failures sent, because none of them has an entry in the list.
-     Exception worth making: *configd* (OPNsense's backend) logs a *notice* line for every backend action it runs,
-     hundreds of thousands a day (partly from Looking Glass's own API polling). To keep only its warnings and errors,
-     send configd at *warning* and up (Looking Glass files configd's lines under *system*).
    * Levels: select everything from *info* up
+   * **Recommended: configd only from *warning* up.** *configd* (OPNsense's backend) logs a *notice* line for every
+     backend action it runs - hundreds of thousands a day, partly from Looking Glass's own API polling - and those
+     lines say nothing useful. Send configd at *warning*, *error* and *critical* only: its real problems still arrive,
+     the flood of *notice* / *info* / *debug* lines does not. Looking Glass files configd's lines under *system*.
    * Hostname: IP of your Docker host, Port: `514`
    * **rfc5424** ✓
    * Save, then **Apply**.
