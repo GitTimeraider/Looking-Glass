@@ -38,7 +38,13 @@ def test_configd_noise_cleanup(monkeypatch):
                          (ts, "auth", "configd.py", 3, None, None, "[x] action not allowed foo.bar for user www"),
                          (ts, "auth", "sshd", 5, "login_success", "192.168.1.10", "Accepted publickey for root"),
                          (ts, "auth", "audit", 5, "config_change", "192.168.1.10", "user changed configuration"),
-                         (ts, "firewall", "filterlog", 6, "block", "203.0.113.5", "block")]
+                         (ts, "firewall", "filterlog", 6, "block", "203.0.113.5", "block"),
+                         # more in front of the action (not at the start of the line)
+                         (ts, "auth", "configd.py", 5, None, None, "message 6f1c action allowed system.status for user root"),
+                         # already moved to system by the first version of this cleanup
+                         (ts, "system", "configd.py", 5, None, None,
+                          '[meta sequenceId="9"] [u] action allowed system.list.shells for user root'),
+                         (ts, "system", "kernel", 6, None, None, "action allowed by kernel for user x")]  # not configd
             await pool.executemany(ins, rows)
             await rollup.step()
             await rollup.step()  # counted (up to the newest id of the first run)
@@ -52,11 +58,12 @@ def test_configd_noise_cleanup(monkeypatch):
 
             monkeypatch.setattr(cleanup, "BATCH", 4)  # several steps
             res = await cleanup.configd_noise(delay=0, pause=0)
-            assert res == {"done": True, "deleted": 16, "moved": 6}
+            assert res == {"done": True, "deleted": 22, "moved": 6}
             assert await cleanup.configd_noise(delay=0, pause=0) is None  # once
 
             left = await pool.fetch("SELECT source, program, message FROM events ORDER BY id")
-            assert not [r for r in left if "action allowed" in r["message"] and "not allowed" not in r["message"]]
+            assert not [r for r in left if r["program"] == "configd.py" and "action allowed" in r["message"]]
+            assert sum(1 for r in left if r["program"] == "kernel") == 3
             assert {r["source"] for r in left if r["program"] == "configd.py"} == {"system"}
             assert sum(1 for r in left if r["source"] == "auth") == 6  # sshd + audit, 3 hours
             assert await pool.fetchval("SELECT count(*) FROM events WHERE action = 'config_change'") == 6

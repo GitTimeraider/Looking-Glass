@@ -324,12 +324,14 @@ AUTH_PROGRAMS = ("sshd", "sshd-session", "audit", "login", "su", "sudo", "lightt
 # configd logs every backend action it runs: "[uuid] action allowed system.status for user root". Every API call and GUI
 # page (Looking Glass's own polling included) makes some - hundreds of thousands a day, nothing in them worth keeping
 # (who changed what is in the audit log). Not stored.
-_CONFIGD_ROUTINE = re.compile(r"^(?:\[[^\]]*\]\s*)?action allowed \S+ for user \S+\s*$", re.I)
+# Anywhere in the line: what comes before it differs (a [uuid], "message <uuid>", syslog structured data ...).
+# "action not allowed" lines are kept (no match).
+_CONFIGD_ROUTINE = re.compile(r"\baction allowed \S+ for user \S+", re.I)
 
 
 def is_noise(program: str | None, message: str) -> bool:
     """Log lines that are not stored at all (see _CONFIGD_ROUTINE)."""
-    return (program or "").lower().startswith("configd") and bool(_CONFIGD_ROUTINE.match(message.strip()))
+    return (program or "").lower().startswith("configd") and bool(_CONFIGD_ROUTINE.search(message))
 DHCP_PROGRAMS = ("dhcpd", "dhcpd6", "kea-dhcp4", "kea-dhcp6", "dnsmasq", "dnsmasq-dhcp", "dhcp6c", "dhclient")
 
 

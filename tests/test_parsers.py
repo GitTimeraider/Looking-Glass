@@ -123,7 +123,9 @@ def test_configd_routine_lines_not_stored():
     # one per backend action (every API call / GUI page): not stored at all
     for msg in ("[4f3a9c1e-1b2c-4d5e-8f90-123456789abc] action allowed system.status for user root",
                 "action allowed nginx.autoblock for user nobody",
-                "[abc] Action allowed qfeeds.index for user root "):
+                "[abc] Action allowed qfeeds.index for user root ",
+                "message 6f1c2d3e action allowed system.status for user root",  # more in front of it
+                '[meta sequenceId="5"] [u] action allowed system.list.shells for user root'):
         assert parse_line(f"<38>Oct 18 11:59:01 fw configd.py[7]: {msg}", now=NOW) is None, msg
     # another program writing the same words is kept
     assert parse_line("<38>Oct 18 11:59:01 fw php[7]: action allowed x for user root", now=NOW) is not None
