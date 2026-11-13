@@ -117,3 +117,21 @@ def test_nginx_main_ext_and_ban_and_stream():
     assert ev["data"]["path"] == "/.env" and "sensitive_file" in ev["data"]["tags"]
     ev = parse_line("<190>Oct 18 11:59:01 fw nginx: 203.0.113.1 [18/Oct/2026:11:59:01 +0000] TCP 200 1234 567 3.002", now=NOW)
     assert ev["action"] == "stream_200" and ev["src_ip"] == "203.0.113.1"
+
+
+def test_configd_routine_lines_not_stored():
+    # one per backend action (every API call / GUI page): not stored at all
+    for msg in ("[4f3a9c1e-1b2c-4d5e-8f90-123456789abc] action allowed system.status for user root",
+                "action allowed nginx.autoblock for user nobody",
+                "[abc] Action allowed qfeeds.index for user root "):
+        assert parse_line(f"<38>Oct 18 11:59:01 fw configd.py[7]: {msg}", now=NOW) is None, msg
+    # another program writing the same words is kept
+    assert parse_line("<38>Oct 18 11:59:01 fw php[7]: action allowed x for user root", now=NOW) is not None
+    # configd is no login program: its other lines are system events; a save it reports is still a config change
+    ev = parse_line("<38>Oct 18 11:59:01 fw configd.py[7]: [abc] trigger config changed event", now=NOW)
+    assert ev["source"] == "system" and ev["action"] == "config_change"
+    ev = parse_line("<30>Oct 18 11:59:01 fw configd.py[1]: [abc] action not allowed foo.bar for user www", now=NOW)
+    assert ev["source"] == "system"
+    # real logins still are
+    ev = parse_line("<38>Oct 18 11:59:01 fw sshd[5]: Accepted publickey for root from 192.168.1.10 port 5000 ssh2", now=NOW)
+    assert ev["source"] == "auth" and ev["action"] == "login_success"

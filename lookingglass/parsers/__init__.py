@@ -19,6 +19,8 @@ def parse_line(raw: str, sender: str | None = None, local_tz=timezone.utc, now: 
     prog = (sm.program or "").lower()
     msg = sm.message
 
+    if security.is_noise(prog, msg):
+        return None
     ev: dict[str, Any] | None = None
     if prog == "filterlog":
         ev = filterlog.parse(sm.ts, host, msg)
