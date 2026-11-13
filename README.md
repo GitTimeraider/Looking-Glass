@@ -502,6 +502,9 @@ These steps were checked against the current OPNsense documentation and source (
    * Enabled ✓, Transport `UDP(4)` (or `TCP(4)`)
    * Applications: leave **empty** (= everything, recommended). Only then are the general system logs (kernel,
      opnsense …), sshd logins and API-key failures sent, because none of them has an entry in the list.
+     Exception worth making: *configd* (OPNsense's backend) logs a *notice* line for every backend action it runs,
+     hundreds of thousands a day (partly from Looking Glass's own API polling). To keep only its warnings and errors,
+     send configd at *warning* and up (Looking Glass files configd's lines under *system*).
    * Levels: select everything from *info* up
    * Hostname: IP of your Docker host, Port: `514`
    * **rfc5424** ✓
@@ -516,8 +519,9 @@ These steps were checked against the current OPNsense documentation and source (
 > 24 hours and through which channel, marked *to do* (what to change, and where), *duplicate* (the same data arrives
 > twice – which one to switch off), *tip*, *ok* or *optional*. Each source needs only one channel.
 4. **nginx plugin** – nothing to do. OPNsense remote syslog never forwards nginx *access* logs; they exist only as files.
-   Looking Glass therefore reads access, error and stream logs through the nginx log API every minute (*Settings ›
-   OPNsense › Pull nginx access / error logs*; the API user needs the nginx pages). For real-time delivery instead:
+   Looking Glass therefore reads access, error and stream logs through the nginx log API (*Settings ›
+   OPNsense › Pull nginx access / error logs*; the API user needs the nginx pages): a log with new lines every minute,
+   a quiet one less often (up to every 10 minutes; every read is a configd action on OPNsense). For real-time delivery instead:
    **Services › Nginx › Configuration**, tab **Other › SYSLOG Targets**, add a target (Host = Docker host,
    Port = 514, Severity *info*), then select it in each **HTTP(S) › HTTP Server** under *SYSLOG targets*.
    nginx then sends straight to Looking Glass over UDP.

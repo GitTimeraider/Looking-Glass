@@ -1,4 +1,4 @@
-"""One-time cleanup (cleanup.py): configd's routine lines out of the stored events, the hourly counts corrected."""
+"""One-time cleanup (cleanup.py): configd events below warning out of the stored events, the hourly counts corrected."""
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone
@@ -31,35 +31,45 @@ def test_configd_noise_cleanup(monkeypatch):
             rows = []
             for h in (5, 3, 1):  # three hours
                 ts = now - timedelta(hours=h)
+                # configd below warning (notice / info / debug): deleted, from auth and from system
                 rows += [(ts, "auth", "configd.py", 5, None, None, f"[u{h}{i}] action allowed system.status for user root")
                          for i in range(4)]
                 rows += [(ts, "auth", "configd.py", 6, None, None, "action allowed nginx.autoblock for user nobody"),
                          (ts, "auth", "configd.py", 5, "config_change", None, "[x] trigger config changed event"),
+                         (ts, "system", "configd.py", 5, None, None,
+                          '[meta sequenceId="9"] [u] action allowed system.list.shells for user root'),
+                         # configd warnings / errors: kept; in auth moved to system
                          (ts, "auth", "configd.py", 3, None, None, "[x] action not allowed foo.bar for user www"),
+                         (ts, "auth", "configd.py", 4, None, None, "[x] script returned an error"),
+                         (ts, "system", "configd.py", 4, None, None, "[y] warning already in system"),
+                         # not configd: untouched
                          (ts, "auth", "sshd", 5, "login_success", "192.168.1.10", "Accepted publickey for root"),
                          (ts, "auth", "audit", 5, "config_change", "192.168.1.10", "user changed configuration"),
-                         (ts, "firewall", "filterlog", 6, "block", "203.0.113.5", "block")]
+                         (ts, "firewall", "filterlog", 6, "block", "203.0.113.5", "block"),
+                         (ts, "system", "kernel", 6, None, None, "action allowed by kernel for user x")]
             await pool.executemany(ins, rows)
             await rollup.step()
             await rollup.step()  # counted (up to the newest id of the first run)
             assert await pool.fetchval("SELECT sum(n) FROM event_rollup") == len(rows)
             # arrived after the hourly counts ran: not counted yet, cleaned all the same
             await pool.executemany(ins, [(now - timedelta(hours=1), "auth", "configd.py", 5, None, None,
-                                          "[late] action allowed qfeeds.index for user root")])
+                                          "[late] action allowed qfeeds.index for user root")])  # notice
             # the hour-of-week baselines (behavior.py) as they were stored
             await pool.execute("INSERT INTO hourly_stats (metric, hour, value) SELECT 'source:' || source, "
                                "date_trunc('hour', ts), count(*) FROM events GROUP BY 1, 2")
 
             monkeypatch.setattr(cleanup, "BATCH", 4)  # several steps
             res = await cleanup.configd_noise(delay=0, pause=0)
-            assert res == {"done": True, "deleted": 16, "moved": 6}
+            assert res == {"done": True, "deleted": 22, "moved": 6}
             assert await cleanup.configd_noise(delay=0, pause=0) is None  # once
 
-            left = await pool.fetch("SELECT source, program, message FROM events ORDER BY id")
-            assert not [r for r in left if "action allowed" in r["message"] and "not allowed" not in r["message"]]
-            assert {r["source"] for r in left if r["program"] == "configd.py"} == {"system"}
+            left = await pool.fetch("SELECT source, program, severity, message FROM events ORDER BY id")
+            configd = [r for r in left if r["program"] == "configd.py"]
+            assert len(configd) == 9 and {r["source"] for r in configd} == {"system"}
+            assert max(r["severity"] for r in configd) == 4  # nothing below warning left
+            assert sum(1 for r in left if r["program"] == "kernel") == 3
             assert sum(1 for r in left if r["source"] == "auth") == 6  # sshd + audit, 3 hours
-            assert await pool.fetchval("SELECT count(*) FROM events WHERE action = 'config_change'") == 6
+            assert await pool.fetchval("SELECT count(*) FROM events WHERE action = 'config_change'") == 3  # audit
 
             # the hourly counts match a recount of the raw events
             await rollup.step()
