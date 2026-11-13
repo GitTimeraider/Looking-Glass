@@ -105,7 +105,7 @@ checks(); LG.autoRefresh(checks, 60000);
     {k: "last", l: "Last message", f: v => v ? `<span class="dot ${now - v < 900 ? "ok" : "warn"}"></span>${LG.ago(v)}` : `<span class="dot"></span><span class="muted">none yet</span>`}],
     SOURCES.map(x => ({ source: x, n: ing.by_source[x] || 0, last: ing.last_by_source[x] })));
   document.getElementById("ingest").insertAdjacentHTML("beforeend", `<p class="small muted">Received ${LG.num(ing.received)} · parsed ${LG.num(ing.parsed)} ·
-    written ${LG.num(ing.written)} · dropped ${LG.num(ing.dropped)} · errors ${LG.num(ing.errors)}<br>Senders: ${Object.entries(ing.senders).map(([ip, t]) => `${LG.esc(ip)} (${LG.ago(t)})`).join(", ") || "none"}.
+    written ${LG.num(ing.written)} · <span title="Routine lines that are not stored (OPNsense configd's 'action allowed … for user …', one per backend call)">ignored ${LG.num(ing.ignored || 0)}</span> · dropped ${LG.num(ing.dropped)} · errors ${LG.num(ing.errors)}<br>Senders: ${Object.entries(ing.senders).map(([ip, t]) => `${LG.esc(ip)} (${LG.ago(t)})`).join(", ") || "none"}.
     Only syslog is counted here; API sources are in the Data sources list above.</p>`);
   const p = s.poller || {};
   LG.table("#poller", [{k: "job", l: "Job"}, {k: "ok", l: "State", f: (v, r) => r.unsupported ? `<span class="badge warn">n/a</span>` : v ? `<span class="badge ok">ok</span>` : v === false ? `<span class="badge bad">error</span>` : "…"},
