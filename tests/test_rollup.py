@@ -179,6 +179,11 @@ def test_dashboard_and_overview_use_the_hourly_counts_from_two_days():
                     "FROM events WHERE ts > now() - make_interval(secs => $1)", hours * 3600)
                 assert (kpi["ids_dropped"], kpi["crowdsec_fw"], kpi["qfeeds"]) == (thr["ids"], thr["cs"], thr["qf"])
                 assert thr["cs"] and thr["qf"] and thr["ids"]
+                # the lists of the optional threat widgets, and the live part (UniFi / Unraid / Backups widgets)
+                lists = out["threats"]
+                assert sum(x["n"] for x in lists["crowdsec_ips"]) == thr["cs"]  # one blocked address in the seed
+                assert sum(x["n"] for x in lists["ids_dropped"]) == thr["ids"]
+                assert set(out["now"]) == {"unifi_devices", "unraid", "backup_jobs"} and "backups" in out["sources"]
             await pool.execute("TRUNCATE events, event_rollup")
         finally:
             await db.close()

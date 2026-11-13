@@ -1004,8 +1004,16 @@ backup failed / overdue** (overdue only when you set its hours: the backup sched
   **Customize** (top right) lets you drag widgets around (or use ◀ ▶), make them ⅓ / ⅔ / full width and normal or
   tall, remove them and add others (e.g. *Firewall system*); *Done* saves the layout for your account, *Reset to
   default* brings back the standard one. Widgets of sources you switched off (e.g. Suricata) hide themselves.
-  Extra Suricata widgets (top sources, targeted hosts, classifications, internal hosts alerting) are under
-  *+ Add widget…*.
+  More widgets are under *+ Add widget…*, grouped:
+  * *Threats* - Suricata (top sources, targeted hosts, classifications, internal hosts alerting, **dropped
+    signatures**), **threat blocks by source**, **CrowdSec firewall: top blocked IPs**, **devices with security
+    events** (with where they are connected in UniFi);
+  * *UniFi* - **devices now** (state, clients, firmware updates), **devices offline / restarted**, **Wi-Fi clients
+    dropping / roaming**;
+  * *Unraid* - **storage** (used, free, errors, temperature per array / pool), **CPU / memory**, **containers stopped /
+    unhealthy** now, **notifications**, **container log errors**;
+  * *Backups* - **backup jobs** of every tool (Backrest, Bichon) with their state.
+  The UniFi, Unraid and Backups widgets hide themselves while that part is not set up.
 * **Menu**: *General* (overview, alerts, event search over all sources), *OPNsense security* (the OPNsense security
   dashboards; other security products get their own group), *Infrastructure* (OPNsense and Unraid hardware & status,
   devices), *Tools* (system logs, reports, AI analyst) and *Admin*.
