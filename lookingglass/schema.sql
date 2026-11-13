@@ -438,3 +438,6 @@ CREATE TABLE IF NOT EXISTS period_results (
     data        JSONB,
     error       TEXT
 );
+
+-- the one-time configd cleanup (removed) marked itself done here; nothing reads these any more
+DELETE FROM kv WHERE key IN ('cleanup:configd_noise', 'cleanup:configd_noise_v2', 'cleanup:configd_below_warning');
