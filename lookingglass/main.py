@@ -13,6 +13,7 @@ import uvicorn
 from . import __version__, app_config, auth, crypto, db, db_config, notify, rollup
 from .ai import Analyst, request_log
 from .backrest import BackrestPoller
+from .bichon import BichonPoller
 from .config import get_settings
 from .detections import DetectionEngine, device_upkeep, dhcp_listener
 from .enrich import Enricher
@@ -157,22 +158,22 @@ async def unifi_supervisor(settings, writer: EventWriter) -> None:
             await _stop_poller(poller, task)
 
 
-async def backrest_supervisor(settings) -> None:
-    """Run the Backrest poller while it is configured; restart it whenever its settings change."""
-    poller: BackrestPoller | None = None
+async def backrest_supervisor(settings, group: str = "backrest") -> None:
+    """Run the Backrest (or Bichon) poller while it is configured; restart it whenever its settings change."""
+    poller: BackrestPoller | BichonPoller | None = None
     task: asyncio.Task | None = None
     sig = None
     try:
         while True:
-            new_sig = app_config.signature(settings, "backrest")
+            new_sig = app_config.signature(settings, group)
             if new_sig != sig or (task is not None and task.done()):
                 if poller is not None:
                     await _stop_poller(poller, task)
                     poller = task = None
                 sig = new_sig
-                if settings.backrest_enabled:
-                    poller = BackrestPoller(settings)
-                    task = asyncio.create_task(poller.run(), name="backrest")
+                if getattr(settings, f"{group}_enabled"):
+                    poller = (BackrestPoller if group == "backrest" else BichonPoller)(settings)
+                    task = asyncio.create_task(poller.run(), name=group)
             await asyncio.sleep(5)
     finally:  # shutdown: its jobs must not go on writing into the closing database
         if poller is not None:
@@ -304,6 +305,7 @@ async def amain() -> None:
     background("unraid", unraid.run)
     background("unifi", lambda: unifi_supervisor(settings, writer))
     background("backrest", lambda: backrest_supervisor(settings))
+    background("bichon", lambda: backrest_supervisor(settings, "bichon"))
     background("daily_report", lambda: daily_ai_report(settings, analyst))
     background("notifier", lambda: notify.notifier(settings))
     from .intel import Intel
