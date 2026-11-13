@@ -145,6 +145,15 @@ def test_dashboard_and_overview_use_the_hourly_counts_from_two_days():
                 assert d["step"] == step_for(hours)
                 tl = await timeline(hours)
                 assert tl["series"] and (tl["step"] % 3600 == 0) == (hours >= 48)
+            # Suricata drops and the firewall lines of the CrowdSec / Q-Feeds rules (tagged in data), some older than a day
+            await pool.execute(
+                "INSERT INTO events (ts, received_at, source, action, src_ip, data) SELECT now() - i * interval '1 hour', "
+                "now() - i * interval '1 hour', CASE WHEN i % 3 = 0 THEN 'suricata' ELSE 'firewall' END, "
+                "CASE WHEN i % 3 = 0 THEN 'drop' ELSE 'block' END, '198.51.100.7', CASE i % 3 WHEN 1 THEN "
+                "'{\"blocklist\": \"CrowdSec\"}'::jsonb WHEN 2 THEN '{\"blocklist\": \"Q-Feeds\"}'::jsonb END "
+                "FROM generate_series(1, 90) i")
+            await rollup.step()
+            await rollup.step()
             app = create_app(Settings(secret_key="x" * 40), None)
             ov = next(r.endpoint for r in app.routes if getattr(r, "path", "") == "/api/overview")
             await pool.execute("TRUNCATE period_results")
@@ -162,6 +171,14 @@ def test_dashboard_and_overview_use_the_hourly_counts_from_two_days():
                     "FROM events WHERE ts > now() - make_interval(secs => $1)", hours * 3600)
                 assert kpi["total"] == raw["total"] and kpi["blocked_ips"] == raw["ips"]
                 assert isinstance(kpi["login_failed"], int)
+                # the threat tiles: the same definitions as the Threats page (dashboards.IDS_DROP / CS_FW / QF)
+                thr = await pool.fetchrow(
+                    "SELECT count(*) FILTER (WHERE source = 'suricata' AND action IN ('drop', 'blocked')) ids, "
+                    "count(*) FILTER (WHERE source = 'firewall' AND lower(data->>'blocklist') = 'crowdsec') cs, "
+                    "count(*) FILTER (WHERE source = 'firewall' AND lower(data->>'blocklist') = 'q-feeds') qf "
+                    "FROM events WHERE ts > now() - make_interval(secs => $1)", hours * 3600)
+                assert (kpi["ids_dropped"], kpi["crowdsec_fw"], kpi["qfeeds"]) == (thr["ids"], thr["cs"], thr["qf"])
+                assert thr["cs"] and thr["qf"] and thr["ids"]
             await pool.execute("TRUNCATE events, event_rollup")
         finally:
             await db.close()

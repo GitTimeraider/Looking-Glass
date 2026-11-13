@@ -29,7 +29,7 @@ from ..ingest import STATS
 from .. import rollup
 from ..cache import ResultCache, stale_for, ttl_for
 from ..periods import Periods, is_long, key_of
-from ..dashboards import DASHBOARDS, run_dashboard
+from ..dashboards import CS_FW, DASHBOARDS, IDS_DROP, QF, run_dashboard
 from ..reports import CATEGORIES, build_report, parse_categories, report_mail, report_title, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
 from ..parsers.common import real_name
@@ -203,13 +203,21 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         # count(DISTINCT) FILTER sorts every event of the period (30 days: seconds instead of a fraction)
         counts = ("SELECT coalesce(count(*), 0) total, coalesce(count(*) FILTER (WHERE action IN ('block', 'drop', 'ban')), 0) blocked, "
                   "coalesce(count(*) FILTER (WHERE action = 'login_failed'), 0) login_failed, "
-                  "coalesce(count(*) FILTER (WHERE source = 'unbound'), 0) dns, coalesce(count(*) FILTER (WHERE source = 'suricata'), 0) ids "
+                  f"coalesce(count(*) FILTER (WHERE source = 'suricata' AND {IDS_DROP}), 0) ids_dropped "
                   "FROM events WHERE ts > now() - make_interval(secs => $1)")
+        # the blocks of the CrowdSec / Q-Feeds rules are firewall lines tagged in data (not in the hourly counts): raw,
+        # each on its own (partial) index - the same definitions as the Threats page
+        threats = (f"SELECT (SELECT count(*) FROM events WHERE {CS_FW} AND ts > now() - make_interval(secs => $1)) crowdsec_fw, "
+                   f"(SELECT count(*) FROM events WHERE {QF} AND ts > now() - make_interval(secs => $1)) qfeeds")
 
         async def kpi_counts() -> dict[str, Any]:
             async with db.heavy(hours), db.pool().acquire() as conn:
                 row = await (rollup.fetch(conn, counts, secs) if hours >= rollup.MIN_HOURS else conn.fetch(counts, secs))
             return dict(row[0])
+
+        async def threat_counts() -> dict[str, Any]:
+            async with db.heavy(hours), db.pool().acquire() as conn:
+                return dict(await conn.fetchrow(threats, secs))
 
         async def blocked_ips() -> int:
             async with db.heavy(hours), db.pool().acquire() as conn:
@@ -217,8 +225,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                     "SELECT count(*) FROM (SELECT DISTINCT src_ip FROM events WHERE action IN ('block', 'drop') "
                     "AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1)) x", secs)
 
-        kpi, ips, report, tl = await asyncio.gather(kpi_counts(), blocked_ips(), build_report(hours), timeline(hours))
-        return {"kpi": db.jsonable({**kpi, "blocked_ips": ips}), "report": report, "timeline": tl}
+        kpi, thr, ips, report, tl = await asyncio.gather(kpi_counts(), threat_counts(), blocked_ips(), build_report(hours),
+                                                         timeline(hours))
+        return {"kpi": db.jsonable({**kpi, **thr, "blocked_ips": ips}), "report": report, "timeline": tl}
 
     async def dash_compute_args(name: str, tab: str | None, hours: float) -> dict[str, Any]:
         return await dash_compute(name, hours, tab)
@@ -287,6 +296,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         report = counted["report"]
         # optional sources: hide their overview cards when their pull is off and they have no data in the period
         has = {r["source"] for r in report.get("totals_by_source") or []}
+        has |= {k for k, n in (("crowdsec", kpi.get("crowdsec_fw")), ("qfeeds", kpi.get("qfeeds"))) if n}  # their firewall blocks
         enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
                    "nginx": settings.nginx_pull, "unbound": settings.unbound_query_pull}
         enabled = {k: (v and settings.opnsense_enabled) or k in has for k, v in enabled.items()}
