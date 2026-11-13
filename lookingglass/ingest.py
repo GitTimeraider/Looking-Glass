@@ -25,7 +25,6 @@ class Stats:
         self.received = 0
         self.parsed = 0
         self.dropped = 0
-        self.ignored = 0  # lines not worth storing (parsers.security.is_noise: configd's routine "action allowed")
         self.written = 0
         self.errors = 0
         self.by_source: dict[str, int] = {}
@@ -37,7 +36,7 @@ class Stats:
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "received": self.received, "parsed": self.parsed, "dropped": self.dropped, "ignored": self.ignored,
+            "received": self.received, "parsed": self.parsed, "dropped": self.dropped,
             "written": self.written, "errors": self.errors, "by_source": self.by_source,
             "last_by_source": self.last_by_source, "senders": self.senders, "clock_offsets": self.clock_offsets,
             "future_clamped": self.future_clamped, "future_by_source": self.future_by_source,
@@ -192,7 +191,6 @@ class SyslogServer:
             log.debug("unparseable line from %s: %r", sender, line[:500], exc_info=True)
             return
         if ev is None:
-            STATS.ignored += 1
             return
         STATS.parsed += 1
         if isinstance(ev.get("ts"), datetime):

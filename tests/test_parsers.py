@@ -119,21 +119,16 @@ def test_nginx_main_ext_and_ban_and_stream():
     assert ev["action"] == "stream_200" and ev["src_ip"] == "203.0.113.1"
 
 
-def test_configd_routine_lines_not_stored():
-    # one per backend action (every API call / GUI page): not stored at all
-    for msg in ("[4f3a9c1e-1b2c-4d5e-8f90-123456789abc] action allowed system.status for user root",
-                "action allowed nginx.autoblock for user nobody",
-                "[abc] Action allowed qfeeds.index for user root ",
-                "message 6f1c2d3e action allowed system.status for user root",  # more in front of it
-                '[meta sequenceId="5"] [u] action allowed system.list.shells for user root'):
-        assert parse_line(f"<38>Oct 18 11:59:01 fw configd.py[7]: {msg}", now=NOW) is None, msg
-    # another program writing the same words is kept
-    assert parse_line("<38>Oct 18 11:59:01 fw php[7]: action allowed x for user root", now=NOW) is not None
-    # configd is no login program: its other lines are system events; a save it reports is still a config change
+def test_configd_lines_are_stored_as_system():
+    # every configd line arrives (OPNsense decides what it sends, e.g. only warnings): as a system event, not a login
+    for sev, msg in ((4, "[abc] action allowed system.status for user root"),
+                     (3, "[abc] error in script /usr/local/opnsense/scripts/x.php"),
+                     (5, "[abc] action not allowed foo.bar for user www")):
+        ev = parse_line(f"<{8 + sev}>Oct 18 11:59:01 fw configd.py[7]: {msg}", now=NOW)
+        assert ev is not None and ev["source"] == "system" and ev["severity"] == sev and ev["message"] == msg
+    # a save it reports is still a config change
     ev = parse_line("<38>Oct 18 11:59:01 fw configd.py[7]: [abc] trigger config changed event", now=NOW)
     assert ev["source"] == "system" and ev["action"] == "config_change"
-    ev = parse_line("<30>Oct 18 11:59:01 fw configd.py[1]: [abc] action not allowed foo.bar for user www", now=NOW)
-    assert ev["source"] == "system"
-    # real logins still are
+    # real logins still are logins
     ev = parse_line("<38>Oct 18 11:59:01 fw sshd[5]: Accepted publickey for root from 192.168.1.10 port 5000 ssh2", now=NOW)
     assert ev["source"] == "auth" and ev["action"] == "login_success"

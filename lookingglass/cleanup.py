@@ -1,12 +1,11 @@
 """One-time cleanup of stored events, run once in the background after an upgrade (a kv key marks it done).
 
-configd (OPNsense's backend) logs a line for every backend action it runs: "[uuid] action allowed system.status for
-user root" - about a million a day, filed under "auth" by older versions. New ones are no longer stored
-(parsers.security.is_noise) and configd's other lines are "system" events now. This removes the stored ones (from
-"auth" and "system": the first version of this cleanup recognised them only at the start of the line and moved the
-others - which could be all of them - to "system") and moves configd's other lines, and corrects the hourly counts they
-are in (event_rollup for the dashboards, hourly_stats for the hour-of-week baselines), so 7 / 30 day views show the
-same as the raw events.
+configd (OPNsense's backend) logs a notice line for every backend action it runs: "[uuid] action allowed system.status
+for user root" - about a million a day, filed under "auth" by older versions (and partly moved to "system" by the first
+version of this cleanup). OPNsense now sends configd only from warning up; its lines are "system" events. This deletes
+every stored configd event below warning (notice, info, debug) from "auth" and "system", moves configd's remaining
+(warning and up) "auth" events to "system", and corrects the hourly counts they are in (event_rollup for the
+dashboards, hourly_stats for the hour-of-week baselines), so 7 / 30 day views show the same as the raw events.
 
 Temporary: remove this module (and its line in main.py) once it has run on the installation.
 """
@@ -20,11 +19,10 @@ from .rollup import _BUCKET
 
 log = logging.getLogger(__name__)
 
-DONE_KEY = "cleanup:configd_noise_v2"  # v1 matched too little: runs again
+DONE_KEY = "cleanup:configd_below_warning"  # a new key: runs even where the first version (cleanup:configd_noise) ran
 BATCH = 500_000  # event ids per step (range scan on the primary key, one short transaction each)
 START_DELAY = 300  # after the start: the hourly counts catch up first, the start itself is not slowed down
-# the same lines as parsers.security._CONFIGD_ROUTINE (PostgreSQL regex, case-insensitive with ~*)
-ROUTINE = r"(^|[^[:alnum:]_])action allowed [^[:space:]]+ for user [^[:space:]]+"
+WARNING = 4  # syslog severity: 0 emergency ... 4 warning, 5 notice, 6 info, 7 debug. Kept: <= WARNING ($3)
 _CONFIGD = "source = 'auth' AND program ILIKE 'configd%'"
 _STORED = "source IN ('auth', 'system') AND program ILIKE 'configd%'"
 _RET = "id, ts, received_at, source, action, proto, interface, direction, dst_port, src_country, severity"
@@ -39,7 +37,7 @@ _MATCH = ("r.bucket = c.bucket AND r.source = c.source AND r.action = c.action A
 _HOURS = "SELECT 'source:' || {src} metric, date_trunc('hour', ts) AS hour, count(*) n FROM {cte} GROUP BY 1, 2"
 
 DELETE_SQL = f"""
-WITH d AS (DELETE FROM events WHERE id > $1 AND id <= $2 AND {_STORED} AND message ~* $3 RETURNING {_RET}),
+WITH d AS (DELETE FROM events WHERE id > $1 AND id <= $2 AND {_STORED} AND severity > $3 RETURNING {_RET}),
 c AS ({_COUNTS.format(cte="d", src="source")}),
 r AS (UPDATE event_rollup r SET n = r.n - c.n FROM c WHERE {_MATCH} RETURNING 1),
 h AS ({_HOURS.format(cte="d", src="source")}),
@@ -49,7 +47,7 @@ SELECT count(*) FROM d
 """
 
 MOVE_SQL = f"""
-WITH m AS (UPDATE events SET source = 'system' WHERE id > $1 AND id <= $2 AND {_CONFIGD} AND NOT message ~* $3
+WITH m AS (UPDATE events SET source = 'system' WHERE id > $1 AND id <= $2 AND {_CONFIGD} AND severity <= $3
            RETURNING {_RET}),
 c AS ({_COUNTS.format(cte="m", src="'auth'::text")}),  -- RETURNING has the new source: counted under auth
 r AS (UPDATE event_rollup r SET n = r.n - c.n FROM c WHERE {_MATCH} RETURNING 1),
@@ -71,8 +69,8 @@ async def step(lo: int, hi: int) -> tuple[int, int]:
     the events it counted (id <= upto) and the counts are corrected together."""
     async with db.pool().acquire() as conn, conn.transaction():
         upto = await conn.fetchval("SELECT upto FROM event_rollup_state FOR UPDATE") or 0
-        deleted = await conn.fetchval(DELETE_SQL, lo, hi, ROUTINE, upto)
-        moved = await conn.fetchval(MOVE_SQL, lo, hi, ROUTINE, upto)
+        deleted = await conn.fetchval(DELETE_SQL, lo, hi, WARNING, upto)
+        moved = await conn.fetchval(MOVE_SQL, lo, hi, WARNING, upto)
         return deleted or 0, moved or 0
 
 
@@ -88,7 +86,7 @@ async def configd_noise(delay: float = START_DELAY, pause: float = 0.2) -> dict 
     end = int(state.get("end") or bounds["hi"] or 0)  # newer events are already stored the new way
     deleted, moved = int(state.get("deleted") or 0), int(state.get("moved") or 0)
     if lo < end:
-        log.info("one-time cleanup: removing OPNsense configd's routine 'action allowed' lines from the stored events "
+        log.info("one-time cleanup: removing OPNsense configd events below warning from the stored events "
                  "(event ids %s-%s, in the background)", lo + 1, end)
     steps = 0
     while lo < end:
@@ -104,6 +102,6 @@ async def configd_noise(delay: float = START_DELAY, pause: float = 0.2) -> dict 
     await pool.execute("UPDATE period_results SET computed_at = NULL")
     result = {"done": True, "deleted": deleted, "moved": moved}
     await db.kv_set(DONE_KEY, result)
-    log.info("one-time cleanup done: %s configd 'action allowed' lines removed, %s other configd lines moved from "
+    log.info("one-time cleanup done: %s configd events below warning removed, %s configd warnings / errors moved from "
              "auth to system", deleted, moved)
     return result
