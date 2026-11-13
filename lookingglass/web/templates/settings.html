@@ -5,10 +5,10 @@
   the container's data volume and are never shown again after saving (leave a secret field empty to keep the current value).
   Changes apply immediately - no restart needed.</p>
 <div class="tabs" id="tabs">
-  <button data-t="opnsense" class="on">OPNsense</button><button data-t="unifi">UniFi</button><button data-t="backrest">Backrest</button><button data-t="ai">AI analyst</button><button data-t="reports">Reports</button>
+  <button data-t="opnsense" class="on">OPNsense</button><button data-t="unifi">UniFi</button><button data-t="backrest">Backrest</button><button data-t="bichon">Bichon</button><button data-t="ai">AI analyst</button><button data-t="reports">Reports</button>
   <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button><button data-t="behavior">Behaviour &amp; ML</button><button data-t="intel">Threat intel &amp; traps</button><button data-t="filters">Alert filters</button><button data-t="email">Email &amp; notifications</button><button data-t="display">Display</button>
 </div>
-{% for g in ["opnsense", "unifi", "backrest", "ai", "reports", "ingest", "data", "behavior", "intel", "email", "display"] %}
+{% for g in ["opnsense", "unifi", "backrest", "bichon", "ai", "reports", "ingest", "data", "behavior", "intel", "email", "display"] %}
 <section data-s="{{ g }}" {% if g != "opnsense" %}hidden{% endif %}>
   <div class="card">
     {% if g == "behavior" %}<p class="small muted">Looking Glass learns what is normal for every device and alerts on what is new
@@ -21,6 +21,10 @@
       <a href="https://github.com/garethgeorge/backrest" target="_blank" rel="noopener">Backrest</a> (restic) over its
       API - read only, nothing is changed in Backrest. Shown under Infrastructure › Backups. Repository passwords and
       cloud keys from Backrest's configuration are never stored.</p>{% endif %}
+    {% if g == "bichon" %}<p class="small muted">Reads the mail accounts, every sync and the archive size from
+      <a href="https://github.com/rustmailer/bichon" target="_blank" rel="noopener">Bichon</a> (2.3 or newer) over its
+      API - read only, nothing is changed in Bichon and no mail is read. Shown under Infrastructure › Backups.
+      In Bichon: <i>API tokens</i> › new token with <b>Metrics only</b> ticked, then paste it here.</p>{% endif %}
     {% if g == "reports" %}<p class="small muted">A report of the last days written on a schedule: statistics, alerts
       and - when the AI analyst is set up - its analysis. Reports can also be written by hand on the Reports page.</p>{% endif %}
     {% if g == "email" %}<h3>Mail server (SMTP)</h3>
@@ -28,7 +32,7 @@
     <form class="settings-form" data-group="{{ g }}"></form>
     <div class="filters" style="margin-top:12px">
       <button type="button" data-save="{{ g }}">Save</button>
-      {% if g in ("opnsense", "unifi", "backrest", "ai") %}<button type="button" class="secondary" data-test="{{ g }}">Test connection</button>{% endif %}
+      {% if g in ("opnsense", "unifi", "backrest", "bichon", "ai") %}<button type="button" class="secondary" data-test="{{ g }}">Test connection</button>{% endif %}
       {% if g == "email" %}<input id="mail-test-to" placeholder="Test recipient (default: the sender address)" style="min-width:260px">
       <button type="button" class="secondary" data-test="email">Send test mail</button>{% endif %}
     </div>
@@ -325,6 +329,11 @@ document.querySelectorAll("[data-test]").forEach(b => b.onclick = async () => {
       : g === "backrest" ? `Connected to Backrest${r.instance ? ` “${LG.esc(r.instance)}”` : ""}: ${r.plans} plans, ${r.repos} repositories, ` +
                            `${r.runs} recent runs read.` + (r.auth ? "" : " ⚠ Backrest's authentication is disabled - anyone on the network can use it.") +
                            (r.note ? ` ⚠ ${LG.esc(r.note)}` : "") + " Click Save to keep these settings."
+      : g === "bichon" ? `Connected to Bichon ${LG.esc(r.version || "")}: ${r.accounts} account${r.accounts === 1 ? "" : "s"} ` +
+                         `(${r.syncing} syncing), ${LG.num(r.emails ?? null)} mails archived` + (r.data_backup ? ", Bichon's own backup found" : "") + ". " +
+                         (r.history === true ? "The token can read the sync history: every sync with its result is shown."
+                          : r.history === false ? "Metrics-only token: the sync history is built from what each poll sees." : "") +
+                         " Click Save to keep these settings."
       : `The model answered: “${LG.esc(r.reply)}”. Click Save to keep these settings.`, true);
   } catch (e) { gmsg(g, LG.esc(e.message)); }
 });

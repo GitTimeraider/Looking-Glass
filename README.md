@@ -49,6 +49,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 | **UniFi** | UniFi Network API (API key or local account) | access points, switches (ports, PoE, errors), consoles: state, firmware/updates, load; **Wi-Fi / wired clients** with AP or switch port, SSID, signal, experience, traffic; health; client connects / roams, device offline, **rogue / evil-twin APs, rogue DHCP**; and *where* every device is connected, shown in alerts and the device list |
 | **Unraid** | Unraid API (GraphQL) + optional Docker socket proxy | CPU/cores, memory, temperatures, network, array/parity, disks (temp, errors, SMART), shares, **Docker containers** (state, CPU/mem) and **their logs**, Unraid syslog, **notifications**, VMs, UPS (Unraid UPS service, or the **NUT plugin** via upsd port 3493), **packages inside every container image** (Syft, optional) |
 | **Backrest** (restic backups) | Backrest API (read only, user + password) | plans, repositories, schedules and retention; **every backup run** with result, duration, data scanned / added, files and **speed**; forget / prune / check runs; repository size, compression and snapshot count over time; alerts for failed, overdue and warning backups and failed repository checks |
+| **Bichon** (mail archive) | Bichon API (read only, an API token - "Metrics only" is enough) | mail accounts with sync interval, **every mail sync** with result (ok / partial / failed), duration, new mails and failed folders; mails archived, archive and search-index size over time; Bichon's own backup; alerts for failed, partial and overdue syncs and a failed Bichon backup |
 
 ## Built-in detections
 
@@ -924,7 +925,7 @@ and does not need to be attached to the Backrest container.
 
 What you get under **Infrastructure › Backups**:
 
-* **Main** - every backup job of every backup tool (Backrest now, more later): state (ok, warnings, failed,
+* **Main** - every backup job of every backup tool (Backrest and Bichon): state (ok, warnings, failed,
   overdue, running), last and last successful run, next run, runs in the period, backups per day and the latest runs.
 * **Backrest** - per plan and repository: schedule, retention, success rate, average and longest duration,
   **processing speed** (data scanned ÷ duration) and **upload speed** (new data added ÷ duration) per backup and on
@@ -938,6 +939,47 @@ plan's schedule allows - the longest normal gap plus 25 % and 2 hours; or a fixe
 **repository check / prune / forget failed** and **Backrest unreachable**. They close by themselves once the next run
 works. Repository passwords, cloud keys (restic environment variables) and Backrest's user hashes are dropped as soon
 as the configuration is read - they are never stored. Runs are kept for 400 days, also after Backrest forgets them.
+
+## Adding Bichon (mail archive)
+
+Optional. [Bichon](https://github.com/rustmailer/bichon) archives mail accounts (IMAP) into a searchable archive.
+Looking Glass reads the state of every account and sync over Bichon's own API (Bichon 2.3 or newer); it never changes
+anything in Bichon and does not need to be attached to the Bichon container.
+
+1. **Bichon web UI** (`http://<unraid-ip>:15630`) › *API tokens* › new token: tick **Metrics only**. That token can
+   read Bichon's status figures and nothing else - no mail. Its user needs the `system:metrics` permission (an admin
+   has it). Copy the token: Bichon shows it once.
+2. **Looking Glass web UI** › *Settings* › *Bichon*:
+   * **Bichon URL (with port)** - e.g. `http://192.168.1.10:15630` (the Unraid host's IP and the port mapped in
+     Docker), `http://bichon:15630` when both containers share a Docker network, or
+     `https://mail.example.com:443/bichon` behind a reverse proxy / with a base path.
+   * **API token** - the token from step 1.
+   * **Test connection**, then **Save**.
+3. If the test cannot connect: Looking Glass must reach that address. In **Unraid › Docker** check the port mapping of
+   the Bichon container, or put both containers on the same custom Docker network. *404* means the address is not
+   Bichon's or Bichon is older than 2.3; *401* a wrong or revoked token.
+
+**Metrics-only token or a normal token?** A metrics-only token is the safe choice. Bichon's metrics say only how the
+*latest* sync of each account went, so Looking Glass builds the sync history itself from what it sees on every poll
+(every 2 minutes by default): a sync that starts and ends between two polls is missed when another one follows before
+the next poll, and "new mails" per sync stays empty. A normal token of a user that may read the accounts' details
+(`account:read_details`, e.g. the *Account Viewer* role - which can also read the mail itself) gives Bichon's own sync
+history instead: every sync with its result, the new mails and the folders that failed. Looking Glass tries that on
+every poll and falls back to the metrics when the token may not.
+
+What you get under **Infrastructure › Backups**:
+
+* **Main** - every syncing mail account and Bichon's own backup are jobs next to the Backrest plans.
+* **Bichon** - accounts, mails, attachments, mail storage and search-index size (and their growth over time), syncs,
+  failures, partial syncs and success rate; a sync running now with its progress; duration and new mails per sync;
+  per account: type, interval, last and last successful sync, mails, errors by kind since Bichon started (auth,
+  network, throttled …) and gap-fill results; Bichon's own backup; every sync with its result and failed folders.
+
+Alerts (the same rules as Backrest, under *Backups* in Settings › Alert filters): **mail sync failed**, **mail sync
+finished with warnings** (Bichon: *Partial* - some folders could not be archived; can be switched off), **mail sync
+overdue** (no successful sync for the account's interval plus 25 % and 2 hours, or a fixed number of hours), **Bichon
+backup failed / overdue** (overdue only when you set its hours: the backup schedule cannot be read with the token) and
+**Bichon unreachable**. They close by themselves once the next sync works.
 
 ## Using it
 
@@ -1095,6 +1137,8 @@ python tools/mock_unifi.py --port 18600               # fake UniFi console (Sett
                                                       #   --selfhosted: admin / admin-pass, --version 11.0.89, --no-legacy-key)
 python tools/mock_backrest.py --port 19898            # fake Backrest     (Settings › Backrest: http://127.0.0.1:19898, admin / admin-pass;
                                                       #   --no-auth, --no-summary = Backrest before 1.6)
+python tools/mock_bichon.py --port 15630              # fake Bichon       (Settings › Bichon: http://127.0.0.1:15630, token test-token;
+                                                      #   --metrics-only = a "Metrics only" token)
 TEST_DATABASE_URL=postgresql://... python -m pytest   # also runs every dashboard query against PostgreSQL
 ```
 

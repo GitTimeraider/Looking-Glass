@@ -38,6 +38,7 @@ GROUPS = {
     "opnsense": "OPNsense",
     "unifi": "UniFi",
     "backrest": "Backrest",
+    "bichon": "Bichon",
     "email": "Email",
     "ai": "AI analyst",
     "reports": "Reports",
@@ -128,6 +129,34 @@ FIELDS: list[Field] = [
           "failed backups do."),
     Field("backrest_offline_grace", "backrest", "Unreachable alert waits (minutes)", "int",
           "A 'Backrest unreachable' alert only once it has not answered for this long (container restarts / updates "
+          "stay quiet). 0 = alert right away.", min=0, max=240),
+    # Bichon (mail archive)
+    Field("bichon_url", "bichon", "Bichon URL (with port)", "str",
+          "Address of the Bichon web UI including its port - Bichon's default is 15630, use the port you mapped in "
+          "Docker if it is different. From another container on the same Docker network: http://<container name>:15630. "
+          "With a base path (BICHON_BASE_URL) or behind a reverse proxy: add it, e.g. https://mail.example.com:443/bichon.",
+          placeholder="http://192.168.1.10:15630"),
+    Field("bichon_token", "bichon", "API token", "secret",
+          "Bichon › API tokens › new token. Tick 'Metrics only': that token can read the status figures and nothing "
+          "else - no mail. Its user needs the system:metrics permission (an admin has it). A normal token of a user "
+          "that may read the accounts' details also gives Bichon's own sync history (results per run, failed folders)."),
+    Field("bichon_verify_ssl", "bichon", "Verify TLS certificate", "bool",
+          "Only for an https URL. Off accepts a self-signed certificate."),
+    Field("bichon_poll_interval", "bichon", "Poll interval (seconds)", "int",
+          "How often Bichon is read. With a metrics-only token every sync that is the latest at a poll is kept, so "
+          "keep this shorter than the accounts' sync interval.", min=60, max=3600),
+    Field("bichon_overdue_hours", "bichon", "Mail sync overdue after (hours)", "int",
+          "A 'mail sync overdue' alert when an account has had no successful sync for this long. 0 = automatic: from "
+          "each account's sync interval (plus a quarter and 2 hours).", min=0, max=2160),
+    Field("bichon_backup_overdue_hours", "bichon", "Bichon backup overdue after (hours)", "int",
+          "Bichon's own backup (Bichon › Backup): an 'overdue' alert when it has not succeeded for this long, e.g. 26 "
+          "for a daily backup. 0 = no overdue alert (its schedule cannot be read with the token); failed runs still "
+          "raise an alert.", min=0, max=2160),
+    Field("bichon_alert_warnings", "bichon", "Alert on partial syncs", "bool",
+          "A sync that finished but could not archive every folder (Bichon: 'Partial') raises a low alert. Off: only "
+          "failed syncs do."),
+    Field("bichon_offline_grace", "bichon", "Unreachable alert waits (minutes)", "int",
+          "A 'Bichon unreachable' alert only once it has not answered for this long (container restarts / updates "
           "stay quiet). 0 = alert right away.", min=0, max=240),
     # email
     Field("smtp_host", "email", "SMTP server", "str", "Mail server that sends the notifications, e.g. smtp.gmail.com, "
@@ -375,6 +404,7 @@ SECRET_KEYS = {f.key for f in FIELDS if f.kind == "secret"}
 # which groups restart which component
 RESTART_GROUPS = {"backrest": ("backrest_url", "backrest_username", "backrest_password", "backrest_verify_ssl",
                                "backrest_poll_interval"),
+                  "bichon": ("bichon_url", "bichon_token", "bichon_verify_ssl", "bichon_poll_interval"),
                   "unifi": ("unifi_url", "unifi_api_key", "unifi_username", "unifi_password", "unifi_site",
                             "unifi_verify_ssl", "unifi_poll_interval", "unifi_events"),
                   "opnsense": ("opnsense_url", "opnsense_api_key", "opnsense_api_secret", "opnsense_verify_ssl",
@@ -423,9 +453,11 @@ def _coerce(f: Field, value: Any) -> Any:
     v = "" if value is None else str(value).strip()
     if f.kind == "choice" and v not in f.choices:
         raise SettingsError(f"{f.label}: must be one of {', '.join(f.choices)}")
-    if f.key in ("opnsense_url", "ai_base_url", "backrest_url") and v and not v.startswith(("http://", "https://")):
+    if f.key in ("opnsense_url", "ai_base_url", "backrest_url", "bichon_url") and v and \
+            not v.startswith(("http://", "https://")):
         raise SettingsError(f"{f.label}: must start with http:// or https://")
-    if f.key == "backrest_url" and v:
+    if f.key in ("backrest_url", "bichon_url") and v:
+        tool, default_port = ("Backrest", 9898) if f.key == "backrest_url" else ("Bichon", 15630)
         from urllib.parse import urlsplit
         try:
             port, host = urlsplit(v).port, urlsplit(v).hostname
@@ -434,8 +466,8 @@ def _coerce(f: Field, value: Any) -> Any:
         if not host:
             raise SettingsError(f"{f.label}: no host name or IP address")
         if port is None:
-            raise SettingsError(f"{f.label}: add the port, e.g. {v.rstrip('/')}:9898 (Backrest's default) or the "
-                                "port you mapped in Docker")
+            raise SettingsError(f"{f.label}: add the port, e.g. {v.rstrip('/')}:{default_port} ({tool}'s default) or "
+                                "the port you mapped in Docker")
     if f.key in ("syslog_allowed_senders", "internal_networks") and v:
         for part in v.split(","):
             try:  # an invalid line is named, nothing is saved
