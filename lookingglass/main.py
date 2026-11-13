@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import uvicorn
 
-from . import __version__, app_config, auth, cleanup, crypto, db, db_config, notify, rollup
+from . import __version__, app_config, auth, crypto, db, db_config, notify, rollup
 from .ai import Analyst, request_log
 from .backrest import BackrestPoller
 from .config import get_settings
@@ -296,8 +296,6 @@ async def amain() -> None:
     background("housekeeping", lambda: housekeeping(settings))
     background("event_rollup", rollup.loop)
     background("dashboard_indexes", db.background_indexes_loop, once=True)
-    # one-time: OPNsense configd's routine lines out of the stored events (temporary, see cleanup.py)
-    background("cleanup_configd", cleanup.configd_noise, once=True)
     background("device_upkeep", lambda: device_upkeep_loop(settings))
     if settings.syslog_enabled:
         await SyslogServer(settings, writer).start()
