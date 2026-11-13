@@ -504,13 +504,25 @@ These steps were checked against the current OPNsense documentation and source (
    * Applications: leave **empty** (= everything, recommended). Only then are the general system logs (kernel,
      opnsense …), sshd logins and API-key failures sent, because none of them has an entry in the list.
    * Levels: select everything from *info* up
-   * **Recommended: configd only from *warning* up.** *configd* (OPNsense's backend) logs a *notice* line for every
-     backend action it runs - hundreds of thousands a day, partly from Looking Glass's own API polling - and those
-     lines say nothing useful. Send configd at *warning*, *error* and *critical* only: its real problems still arrive,
-     the flood of *notice* / *info* / *debug* lines does not. Looking Glass files configd's lines under *system*.
    * Hostname: IP of your Docker host, Port: `514`
    * **rfc5424** ✓
    * Save, then **Apply**.
+
+   **Recommended: configd only from *warning* up.** *configd* (OPNsense's backend) logs a *notice* line for every
+   backend action it runs - hundreds of thousands a day, partly from Looking Glass's own API polling - and those lines
+   say nothing useful. A destination's levels count for every application it sends, so use **two destinations**
+   instead of the one above (both: Transport, Hostname, Port and *rfc5424* as above):
+
+   | Destination | Applications | Levels |
+   |---|---|---|
+   | 1 - everything, only what matters | leave **empty** (= everything, configd too) | *warning*, *error*, *critical*, *alert*, *emergency* |
+   | 2 - the rest, without configd | select **every application except configd** | *notice*, *info* |
+
+   configd's real problems still arrive through destination 1, its flood of *notice* lines does not. Looking Glass
+   files configd's lines under *system*. Note: the general system logs (kernel, opnsense …), sshd logins and API-key
+   failures have no entry in the list, so destination 2 cannot send them - their *warning* and up lines still arrive
+   through destination 1, their *notice* / *info* lines (e.g. sshd logins) do not. If you need those, keep the single
+   destination above instead.
 2. **Firewall logging** – default block rules are logged already. Open your important pass rules / port forwards
    (**Firewall › Rules › WAN** etc.) and tick **Log packets that are handled by this rule** so allowed traffic is visible too.
 3. **Unbound DNS** – **Reporting › Settings**: enable the Unbound DNS statistics (off by default; Looking Glass then pulls

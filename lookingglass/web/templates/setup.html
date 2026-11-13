@@ -44,8 +44,17 @@
       (<code>514</code> in the example compose file, container port <code>{{ syslog_port }}</code>); <b>rfc5424</b> ✓. Save &amp; Apply.
       <br><b>Recommended: <code>configd</code> only from <i>warning</i> up.</b> configd (OPNsense's backend) logs a
       <i>notice</i> line for every backend action it runs - hundreds of thousands a day, partly from Looking Glass's own API
-      polling - and those lines say nothing useful. Send configd at <i>warning</i>, <i>error</i> and <i>critical</i> only:
-      its real problems still arrive, the flood of <i>notice</i> / <i>info</i> / <i>debug</i> lines does not.</li>
+      polling - and those lines say nothing useful. A destination's levels count for every application it sends, so make
+      <b>two destinations</b> instead of one (both with the transport, hostname, port and <i>rfc5424</i> above):
+      <ol>
+        <li><b>Destination 1</b> — Applications <b>empty</b> (everything, configd too), Levels <i>warning</i>, <i>error</i>,
+          <i>critical</i>, <i>alert</i>, <i>emergency</i>.</li>
+        <li><b>Destination 2</b> — Applications: <b>every application except configd</b>, Levels <i>notice</i> and <i>info</i>.</li>
+      </ol>
+      configd's real problems still arrive through destination 1, its flood of <i>notice</i> lines does not.
+      <span class="muted">Note: the general system logs (kernel, opnsense …), sshd logins and API-key failures have no entry in
+      the list, so destination 2 cannot send them: their <i>warning</i> and up lines still arrive (destination 1), their
+      <i>notice</i> / <i>info</i> lines (e.g. sshd logins) do not. If you need those, keep a single destination.</span></li>
     <li><b>Firewall logging</b> — default block rules are logged out of the box (<i>Firewall › Settings › Advanced › Logging</i>).
       Tick <i>Log</i> on the pass rules / port forwards you care about (WAN inbound!) so allowed traffic is visible too.
       Without syslog Looking Glass pulls the live firewall log via the API instead (<code>FIREWALL_LOG_PULL=auto</code>).</li>
