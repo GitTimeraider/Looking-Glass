@@ -318,7 +318,9 @@ def config_change(msg: str) -> dict[str, Any] | None:
             "area": area, "label": label, "detail": detail, "path": uri}
 
 VPN_PROGRAMS = ("openvpn", "charon", "ipsec", "wireguard", "wg", "strongswan")  # incl. openvpn_server1, openvpn_client2
-AUTH_PROGRAMS = ("sshd", "sshd-session", "audit", "login", "su", "sudo", "lighttpd", "php-cgi", "php", "webgui", "configd.py", "api")
+# configd (OPNsense's backend) is no login program: its lines go to "system" (a config save it reports still counts as
+# a configuration change, see parse_generic)
+AUTH_PROGRAMS = ("sshd", "sshd-session", "audit", "login", "su", "sudo", "lighttpd", "php-cgi", "php", "webgui", "api")
 DHCP_PROGRAMS = ("dhcpd", "dhcpd6", "kea-dhcp4", "kea-dhcp6", "dnsmasq", "dnsmasq-dhcp", "dhcp6c", "dhclient")
 
 

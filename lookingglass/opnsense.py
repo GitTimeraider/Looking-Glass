@@ -178,6 +178,9 @@ class Poller:
         self._dns_ip_names: dict[str, str] = {}  # IP -> host name Unbound reports for a client
         self._prev_if: dict[str, tuple[float, float, float]] = {}
         self._arp_prev: dict[str, str] = {}  # IP -> MAC of the last ARP table (ARP spoofing detection)
+        # nginx log pull (poll_nginx): every log read is a configd action on OPNsense, so quiet logs are read less often
+        self._nginx_servers: dict[str, tuple[float, list[Any] | None]] = {}  # kind -> (until, servers; None = no such log)
+        self._nginx_logs: dict[str, dict[str, Any]] = {}  # "kind/server id" -> {"digest", "every", "next"}
         p = max(15, settings.poll_interval)
         self.jobs: list[tuple[str, int, Callable[[], Awaitable[None]]]] = [
             ("system", p, self.poll_system),
@@ -636,34 +639,66 @@ class Poller:
             return parse_iso(value)
         return dt if dt.tzinfo else dt.replace(tzinfo=self.local_tz()).astimezone(timezone.utc)
 
+    # nginx log pull: a log with new lines is read again after NGINX_EVERY seconds, one without new lines waits twice
+    # as long each time up to NGINX_MAX_EVERY; the server lists are read every NGINX_LIST_EVERY seconds. Every read is a
+    # configd action on OPNsense - reading each log of each server every minute made ~50 of them a minute.
+    NGINX_EVERY = 60
+    NGINX_MAX_EVERY = 600
+    NGINX_LIST_EVERY = 600
+
+    async def _nginx_server_list(self, kind: str, now: float) -> list[Any]:
+        until, servers = self._nginx_servers.get(kind, (0.0, None))
+        if now < until:
+            return servers or []
+        try:
+            res = await self.api.get(f"nginx/logs/{kind}")
+        except ApiError as exc:
+            if exc.status in (400, 404) and kind != "accesses":  # this nginx version has no such log: ask again in an hour
+                self._nginx_servers[kind] = (now + 3600, None)
+                return []
+            raise
+        servers = res if isinstance(res, list) else []
+        self._nginx_servers[kind] = (now + self.NGINX_LIST_EVERY, servers)
+        return servers
+
+    def _nginx_due(self, key: str, now: float) -> bool:
+        return now >= self._nginx_logs.get(key, {}).get("next", 0.0)
+
+    def _nginx_read(self, key: str, lines: list[Any], now: float) -> None:
+        """Remember what a log looked like: unchanged since the last read = read it less often."""
+        digest = hashlib.sha1(json.dumps(lines, sort_keys=True, default=str).encode()).hexdigest()
+        st = self._nginx_logs.get(key)
+        every = (min(self.NGINX_MAX_EVERY, st["every"] * 2) if st and st["digest"] == digest else self.NGINX_EVERY)
+        # a little early, so the job (every NGINX_EVERY s) picks it up on the round that is due
+        self._nginx_logs[key] = {"digest": digest, "every": every, "next": now + every - 5}
+
     async def poll_nginx(self) -> None:
         """os-nginx access / error / stream logs via its log API: OPNsense remote syslog only forwards nginx's
         global error log, the per-server access logs exist as files only (/var/log/nginx/<server>.access.log)."""
         tz = self.local_tz()  # nginx error log times are OPNsense local time without zone
         now = datetime.now(timezone.utc)
+        mono = time.monotonic()
         kinds = (("accesses", nginx_parser.access_from_api), ("errors", nginx_parser.error_from_api),
                  ("streamaccesses", nginx_parser.stream_from_api))
         for kind, convert in kinds:
-            try:
-                servers = await self.api.get(f"nginx/logs/{kind}")
-            except ApiError as exc:
-                if exc.status in (400, 404) and kind != "accesses":
+            for srv in await self._nginx_server_list(kind, mono):
+                if not isinstance(srv, dict):
                     continue
-                raise
-            for srv in servers if isinstance(servers, list) else []:
                 sid = str(srv.get("id") or "")
-                if not sid or sid == "perm_ban":
+                if not sid or sid == "perm_ban" or not self._nginx_due(f"{kind}/{sid}", mono):
                     continue
                 name = srv.get("server_name") or (f"port {srv['port']}" if srv.get("port") else sid)
                 # newest file (-1); read the first and the last page so either sort order is covered
                 first = await self.api.get(f"nginx/logs/{kind}/{sid}/-1/1/1000")
                 if not isinstance(first, dict) or first.get("error"):
+                    self._nginx_read(f"{kind}/{sid}", [], mono)  # no such file (yet): backs off like a quiet log
                     continue
                 lines = list(first.get("lines") or [])
                 pages = int(first.get("pages") or 1)
                 if pages > 1:
                     last = await self.api.get(f"nginx/logs/{kind}/{sid}/-1/{pages}/1000")
                     lines += (last or {}).get("lines") or [] if isinstance(last, dict) else []
+                self._nginx_read(f"{kind}/{sid}", [pages, lines], mono)
                 for line in lines:
                     if not isinstance(line, dict):
                         continue

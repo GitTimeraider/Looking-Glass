@@ -117,3 +117,18 @@ def test_nginx_main_ext_and_ban_and_stream():
     assert ev["data"]["path"] == "/.env" and "sensitive_file" in ev["data"]["tags"]
     ev = parse_line("<190>Oct 18 11:59:01 fw nginx: 203.0.113.1 [18/Oct/2026:11:59:01 +0000] TCP 200 1234 567 3.002", now=NOW)
     assert ev["action"] == "stream_200" and ev["src_ip"] == "203.0.113.1"
+
+
+def test_configd_lines_are_stored_as_system():
+    # every configd line arrives (OPNsense decides what it sends, e.g. only warnings): as a system event, not a login
+    for sev, msg in ((4, "[abc] action allowed system.status for user root"),
+                     (3, "[abc] error in script /usr/local/opnsense/scripts/x.php"),
+                     (5, "[abc] action not allowed foo.bar for user www")):
+        ev = parse_line(f"<{8 + sev}>Oct 18 11:59:01 fw configd.py[7]: {msg}", now=NOW)
+        assert ev is not None and ev["source"] == "system" and ev["severity"] == sev and ev["message"] == msg
+    # a save it reports is still a config change
+    ev = parse_line("<38>Oct 18 11:59:01 fw configd.py[7]: [abc] trigger config changed event", now=NOW)
+    assert ev["source"] == "system" and ev["action"] == "config_change"
+    # real logins still are logins
+    ev = parse_line("<38>Oct 18 11:59:01 fw sshd[5]: Accepted publickey for root from 192.168.1.10 port 5000 ssh2", now=NOW)
+    assert ev["source"] == "auth" and ev["action"] == "login_success"
