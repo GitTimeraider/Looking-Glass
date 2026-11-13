@@ -1043,7 +1043,12 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             tab = dash_tab(name, tab)
             got = await long_periods.get("dash", name, tab, hours)
             if got["data"] is None:
-                return {"pending": True, "name": name, "title": DASHBOARDS[name]["title"], **long_info(got)}
+                # not counted yet: the tabs still go along, so another tab or period can be picked meanwhile
+                off = await dash_off(hours)
+                tabs = [{"id": t["id"], "title": t["title"]} for t in DASHBOARDS[name].get("tabs") or []
+                        if t.get("needs") not in off]
+                return {"pending": True, "name": name, "title": DASHBOARDS[name]["title"], "tabs": tabs, "tab": tab,
+                        **long_info(got)}
             return {**got["data"], **long_info(got)}
         out, as_of, stale = await until_disconnected(request, results.fetch(
             ("dash", name, hours, tab), ttl_for(hours), lambda: dash_compute(name, hours, tab), stale_for(hours)))
@@ -1052,15 +1057,17 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 results.warm(("dash", name, h, tab), lambda h=h: dash_compute(name, h, tab), stale_for(h))
         return {**out, "as_of": as_of, "stale": stale}  # see overview(): "stale" = ask again shortly
 
-    async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
-        # Threats sources: switched off in Settings › OPNsense -> its tab and tiles are hidden, even with older data in
-        # the period; with OPNsense not set up (yet) they show only when there is data
+    async def dash_off(hours: float) -> set[str]:
+        """Threats sources whose tab and tiles are hidden: switched off in Settings › OPNsense (even with older data in
+        the period), or - with OPNsense not set up (yet) - without data in the period. Cheap: one EXISTS per source."""
         pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull}
         has = {r["s"] for r in await db.pool().fetch(
             "SELECT s FROM unnest($1::text[]) s WHERE EXISTS (SELECT 1 FROM events WHERE source = s "
             "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
-        off = {k for k, on in pulls.items() if not on or (not settings.opnsense_enabled and k not in has)}
-        out = await run_dashboard(name, hours, off, tab)
+        return {k for k, on in pulls.items() if not on or (not settings.opnsense_enabled and k not in has)}
+
+    async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
+        out = await run_dashboard(name, hours, await dash_off(hours), tab)
         if out.get("tab") == "suricata":
             out["notice"] = await suricata_notice(hours)
         return out

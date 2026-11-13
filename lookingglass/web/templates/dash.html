@@ -141,10 +141,15 @@ async function load() {
     const d = await LG.api(`/api/dash/${NAME}?hours=${hours}${tab ? `&tab=${encodeURIComponent(tab)}` : ""}`,
                            { signal: LG.latest("dash") });
     const view = { kind: "dash", name: NAME, tab: tab || null, hours };
-    // 7 / 30 days never counted yet: counted in the background; what is shown belongs to another period
-    document.getElementById("panels").classList.toggle("pending-period", !!d.pending);
+    // 7 / 30 days never counted yet: counted in the background. The tabs and periods stay usable meanwhile; the
+    // panels of another period are not kept (their numbers would not belong to this one)
     if (d.pending) {
-      if (!built) document.getElementById("panels").innerHTML = `<div class="card span3 muted">Counting this period for the first time…</div>`;
+      drawTabs(d);
+      const what = hours >= 24 * 30 ? "30 days" : hours >= 24 * 7 ? "7 days" : `${Math.round(hours / 24)} days`;
+      document.getElementById("panels").innerHTML = `<div class="card span3"><span class="spinner"></span> Counting the last ${what}` +
+        `${d.tab && d.tabs && d.tabs.length ? ` of <b>${LG.esc((d.tabs.find(t => t.id === d.tab) || {}).title || d.tab)}</b>` : ""} for the first time – ` +
+        `this can take a few minutes and the page fills in by itself. <span class="muted">Meanwhile you can pick another tab or period.</span></div>`;
+      built = false;
       LG.updated(document.getElementById("updated"), d, load, view);
       return;
     }
