@@ -81,6 +81,9 @@ for (const [k, v] of Object.entries(qs)) {
 }
 if (qs.hours && !qs.start && !qs.end && !form.elements.hours.value) form.elements.hours.add(new Option(qs.hours + " hours", qs.hours, true, true));
 let offset = 0, rows = [];
+// the search shown: "Load more" continues it with ITS filters (not what the form says now, if changed without Search),
+// and an answer to an older search (e.g. the slow first one, still running when another was started) is dropped
+let shown = null, gen = 0;
 
 function chips() {
   const el = document.getElementById("chips");
@@ -141,16 +144,22 @@ async function search(append) {
       return say(`Enter a date and a time like ${window.LG_TIME_FORMAT === "12h" ? "2:05 PM" : "14:05"}.`);
     if (a && b && a >= b) return say(`"From" must be before "until".`);
   }
-  if (!append) { offset = 0; rows = []; }
-  const p = params(); p.set("limit", 200); p.set("offset", offset);
-  history.replaceState(null, "", "?" + params().toString());
+  const more = document.getElementById("more");
+  if (append && !shown) return;
+  if (!append) { shown = params(); offset = 0; rows = []; history.replaceState(null, "", "?" + shown.toString()); }
+  const mine = append ? gen : ++gen;
+  const p = new URLSearchParams(shown); p.set("limit", 200); p.set("offset", offset);
+  more.disabled = true;
   try {
     const d = await LG.api("/api/events?" + p.toString());
+    if (mine !== gen) return;  // a newer search was started meanwhile
     rows = rows.concat(d.rows); offset += d.rows.length;
-    document.getElementById("more").hidden = !d.has_more;
+    more.hidden = !d.has_more;
     document.getElementById("info").textContent = `${rows.length}${d.has_more ? "+" : ""} events`;
     render();
-  } catch (e) { document.getElementById("results").innerHTML = `<div class="empty">${LG.esc(e.message)}</div>`; }
+  } catch (e) {
+    if (mine === gen) document.getElementById("results").innerHTML = `<div class="empty">${LG.esc(e.message)}</div>`;
+  } finally { if (mine === gen) more.disabled = false; }
 }
 form.onsubmit = e => { e.preventDefault(); search(false); };
 chips();
