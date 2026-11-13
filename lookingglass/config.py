@@ -137,6 +137,14 @@ class Settings(BaseSettings):
     backrest_overdue_hours: int = 0  # 0 = from each plan's schedule
     backrest_alert_warnings: bool = True
     backrest_offline_grace: int = 15  # minutes
+    bichon_url: str = ""  # with the port, e.g. http://192.168.1.10:15630
+    bichon_token: str = ""  # a Bichon API token ("Metrics only" is enough)
+    bichon_verify_ssl: bool = False
+    bichon_poll_interval: int = 120
+    bichon_overdue_hours: int = 0  # 0 = from each account's sync interval
+    bichon_backup_overdue_hours: int = 0  # Bichon's own backup; 0 = no overdue alert (its schedule is not readable)
+    bichon_alert_warnings: bool = True
+    bichon_offline_grace: int = 15  # minutes
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_security: str = "starttls"
@@ -205,6 +213,15 @@ class Settings(BaseSettings):
     @property
     def backrest_enabled(self) -> bool:
         return bool(self.backrest_url)
+
+    @property
+    def bichon_enabled(self) -> bool:
+        return bool(self.bichon_url and self.bichon_token)
+
+    @property
+    def backups_enabled(self) -> bool:
+        """Any backup tool connected (Infrastructure › Backups, the reports' Backups part)."""
+        return self.backrest_enabled or self.bichon_enabled
 
     @property
     def smtp_enabled(self) -> bool:

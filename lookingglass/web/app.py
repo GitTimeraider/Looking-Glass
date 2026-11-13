@@ -737,7 +737,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
 
     # parts that are not plain tables
     PURGE_PARTS = {
-        "backups": "Backups (the run history of all backup tools; Backrest's own history is not touched)",
+        "backups": "Backups (the run history of all backup tools; Backrest's and Bichon's own history is not touched)",
     }
     BACKUP_TABLES = "backup_runs, backup_runs_removed"
 
@@ -802,7 +802,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         the scheduled report (Settings › Reports)."""
         unraid = bool(await db.pool().fetchval("SELECT count(*) FROM unraid_servers WHERE enabled"))
         configured = {"opnsense": True, "unifi": settings.unifi_enabled, "unraid": unraid,
-                      "backups": settings.backrest_enabled}
+                      "backups": settings.backups_enabled}
         return {"categories": [{"key": k, "name": n, "configured": configured[k]} for k, n in CATEGORIES.items()],
                 "scheduled": parse_categories(settings.report_categories)}
 
@@ -1117,6 +1117,25 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 "status": snaps.get("status"), "config": snaps.get("config"), "summary": snaps.get("summary"),
                 "jobs": jobs.get("jobs", []), **await backups.source_detail("backrest", days)}
 
+    @app.get("/api/backups/bichon")
+    async def backups_bichon(days: int = Query(30, ge=1, le=400)):
+        """Infrastructure › Backups › Bichon: mail accounts with their syncs, archive size over time, Bichon's own
+        backup."""
+        from .. import backups
+        rows = await db.pool().fetch("SELECT key, ts, data FROM snapshots WHERE key LIKE 'bichon:%'")
+        snaps = {r["key"].split(":", 1)[1]: r["data"] for r in rows}
+        ts = {r["key"].split(":", 1)[1]: r["ts"].isoformat() for r in rows}
+        jobs = await db.get_snapshot("backup_jobs:bichon") or {}
+        stats = await db.pool().fetch(
+            "SELECT started t, (data->'stats'->>'total_size')::bigint storage, (data->'stats'->>'index_size')::bigint idx, "
+            "(data->'stats'->>'emails')::bigint emails, (data->'stats'->>'attachments')::bigint attachments, "
+            "data->'accounts' accounts FROM backup_runs WHERE source = 'bichon' AND kind = 'stats' "
+            "AND started > now() - make_interval(days => $1) ORDER BY started", days)
+        detail = await backups.source_detail("bichon", days)
+        return {"configured": settings.bichon_enabled, "url": settings.bichon_url, "updated": ts.get("state"),
+                "status": snaps.get("status"), "state": snaps.get("state"), "jobs": jobs.get("jobs", []),
+                "archive": db.records(stats), "runs": detail["runs"], "per_job": detail["per_job"]}
+
     @app.post("/api/backups/runs/remove")
     async def backups_remove_runs(payload: dict = Body(...)):
         """Remove runs from the list (e.g. deleted in Backrest already); the tool's next poll does not add them again.
@@ -1127,7 +1146,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 or not all(isinstance(i, str) and 0 < len(i) <= 200 for i in ids):
             raise HTTPException(400, "source and a list of run ids are required")
         removed = await backups.remove_runs(source, ids)
-        await backups.recheck_alerts(source, removed, warnings=settings.backrest_alert_warnings)
+        await backups.recheck_alerts(source, removed, warnings=getattr(settings, f"{source}_alert_warnings", True))
         return {"ok": True, "removed": len(removed)}
 
     @app.get("/api/metrics/multi")
@@ -1559,6 +1578,17 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         cand = _candidate(payload.get("values"))
         if not cand.backrest_enabled:
             return {"ok": False, "error": "The Backrest URL (with port) is required"}
+        return await test_connection(cand)
+
+    @app.post("/api/settings/test/bichon")
+    async def test_bichon(payload: dict = Body(...)):
+        from ..bichon import test_connection
+
+        cand = _candidate(payload.get("values"))
+        if not cand.bichon_url:
+            return {"ok": False, "error": "The Bichon URL (with port) is required"}
+        if not cand.bichon_token:
+            return {"ok": False, "error": "An API token is required (Bichon › API tokens; 'Metrics only' is enough)"}
         return await test_connection(cand)
 
     @app.post("/api/settings/test/email")

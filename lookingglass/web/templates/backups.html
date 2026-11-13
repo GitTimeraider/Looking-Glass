@@ -5,7 +5,7 @@
   <span class="muted small" id="updated"></span>
   <div class="seg" id="range"><button data-v="7">7d</button><button data-v="30">30d</button><button data-v="90">90d</button><button data-v="365">1y</button></div>
 </header>
-<div class="tabs" id="tabs"><button data-t="main" class="on">Main</button><button data-t="backrest">Backrest</button></div>
+<div class="tabs" id="tabs"><button data-t="main" class="on">Main</button><button data-t="backrest">Backrest</button><button data-t="bichon">Bichon</button></div>
 
 <section data-s="main">
   <div class="grid kpis" id="m-kpis"></div>
@@ -39,16 +39,37 @@
   <div class="card" style="margin-top:14px"><h3>Backup runs <span class="muted small" id="b-runs-info"></span></h3><div id="b-runs"></div></div>
   <div class="card" style="margin-top:14px"><h3>Repository tasks <span class="muted small">forget, prune, check, restore</span></h3><div id="b-maint"></div></div>
 </section>
+
+<section data-s="bichon" hidden>
+  <div id="x-notconf" class="card" hidden>Bichon is not connected yet. In Bichon make an API token with <b>Metrics only</b>
+    ticked, then enter Bichon's URL <b>with the port</b> (e.g. <span class="mono">http://192.168.1.10:15630</span>) and the
+    token under <a href="/settings#bichon">Settings › Bichon</a>.</div>
+  <div id="x-err" class="card" hidden></div>
+  <div class="filters"><select id="x-acc"><option value="">all accounts</option></select><span class="muted small" id="x-info"></span></div>
+  <div class="grid kpis" id="x-kpis"></div>
+  <div id="x-running"></div>
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card"><h3>Archive size <span class="muted small">mail storage and search index on disk</span></h3><div class="chart-box sm"><canvas id="c-xsize"></canvas></div></div>
+    <div class="card"><h3>Mails archived <span class="muted small">in total, or of the chosen account</span></h3><div class="chart-box sm"><canvas id="c-xmails"></canvas></div></div>
+    <div class="card"><h3>Duration per sync</h3><div class="chart-box sm"><canvas id="c-xduration"></canvas></div></div>
+    <div class="card"><h3>New mails per sync <span class="muted small">from Bichon's sync history (not with a metrics-only token)</span></h3><div class="chart-box sm"><canvas id="c-xnew"></canvas></div></div>
+    <div class="card span2"><h3>Sync outcome per day</h3><div class="chart-box sm"><canvas id="c-xdaily"></canvas></div></div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Mail accounts</h3><div id="x-accounts"></div></div>
+  <div class="card" style="margin-top:14px"><h3>Bichon's own backup <span class="muted small">Bichon › Backup: its database and archive</span></h3><div id="x-backup"></div></div>
+  <div class="card" style="margin-top:14px"><h3>Sync runs <span class="muted small" id="x-runs-info"></span></h3><div id="x-runs"></div></div>
+</section>
 {% endblock %}
 {% block scripts %}
 <script>
 const DAYS = [7, 30, 90, 365];
-let days = Number(localStorage.getItem("lg-backup-days") || 30), tab = location.hash === "#backrest" ? "backrest" : "main";
-let M = null, B = null;
+const TABS = ["main", "backrest", "bichon"];
+let days = Number(localStorage.getItem("lg-backup-days") || 30), tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "main";
+let M = null, B = null, X = null;
 if (!DAYS.includes(days)) days = 30;
 LG.seg(document.getElementById("range"), days, v => { days = Number(v); localStorage.setItem("lg-backup-days", v); load(); });
 function showTab(t) {
-  tab = t === "backrest" ? "backrest" : "main";
+  tab = TABS.includes(t) ? t : "main";
   document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x.dataset.t === tab));
   document.querySelectorAll("section[data-s]").forEach(s => s.hidden = s.dataset.s !== tab);
   history.replaceState(null, "", tab === "main" ? location.pathname : "#" + tab);
@@ -80,18 +101,22 @@ function progress(p, started) {
   if (!p) return "";
   const pct = Math.max(0, Math.min(100, (p.percent || 0) * 100)), secs = started ? (Date.now() - ms(started)) / 1000 : 0;
   const speed = secs > 0 ? p.bytes_done / secs : null, eta = speed && p.total_bytes > p.bytes_done ? (p.total_bytes - p.bytes_done) / speed : null;
-  return `<div class="bar"><i style="width:${pct}%"></i></div><div class="small muted">${Math.round(pct)}% · ${LG.bytes(p.bytes_done)} of ${LG.bytes(p.total_bytes)}` +
-    ` · ${LG.num(p.files_done)} / ${LG.num(p.total_files)} files${speed ? ` · ${rate(speed)}` : ""}${eta ? ` · about ${dur(eta)} left` : ""}</div>`;
+  const mails = !p.total_bytes;  // Bichon: progress in mails, no byte counts
+  return `<div class="bar"><i style="width:${pct}%"></i></div><div class="small muted">${Math.round(pct)}%` +
+    (mails ? ` · ${LG.num(p.files_done)} / ${LG.num(p.total_files)} mails</div>` :
+    ` · ${LG.bytes(p.bytes_done)} of ${LG.bytes(p.total_bytes)} · ${LG.num(p.files_done)} / ${LG.num(p.total_files)} files` +
+    `${speed ? ` · ${rate(speed)}` : ""}${eta ? ` · about ${dur(eta)} left` : ""}</div>`);
 }
-/* remove a run from the list (e.g. already deleted in Backrest): a "remove" link in every run table */
-const rmCol = {k: "ext_id", l: "", f: (v, r) => r.status === "running" ? "" :
-  `<a href="#" class="small muted" data-rm="${LG.esc(v)}" data-src="${LG.esc(r.source || "backrest")}" title="Remove this run from the list (Looking Glass only - Backrest is not changed)">remove</a>`};
+/* remove a run from the list (e.g. already deleted in the tool): a "remove" link in every run table */
+const rmColFor = src => ({k: "ext_id", l: "", f: (v, r) => r.status === "running" ? "" :
+  `<a href="#" class="small muted" data-rm="${LG.esc(v)}" data-src="${LG.esc(r.source || src)}" title="Remove this run from the list (Looking Glass only - the backup tool is not changed)">remove</a>`});
+const rmCol = rmColFor("backrest");
 document.addEventListener("click", async e => {
   const a = e.target.closest("[data-rm]");
   if (!a) return;
   e.preventDefault();
-  if (!confirm("Remove this run from the list?\n\nOnly Looking Glass forgets it (Backrest is not changed) and it is not " +
-               "added again, also not while Backrest still lists it. Its alerts follow the runs that are left.")) return;
+  if (!confirm("Remove this run from the list?\n\nOnly Looking Glass forgets it (the backup tool is not changed) and it is " +
+               "not added again, also not while the tool still lists it. Its alerts follow the runs that are left.")) return;
   try { await LG.api("/api/backups/runs/remove", { method: "POST", body: { source: a.dataset.src, ids: [a.dataset.rm] } }); }
   catch (err) { return alert("Could not remove the run: " + (err.message || err)); }
   load();
@@ -140,7 +165,7 @@ async function loadMain() {
       : `<span class="state-EXITED">not reachable: ${LG.esc(st.error || "?")}</span>`;
     return `<div class="kv"><div><span class="dot ${!st ? "" : ok ? "ok" : "bad"}"></span><a href="#${s.source}" data-tab="${s.source}">${LG.esc(s.label)}</a></div>` +
       `<div>${line}<div class="small muted">${s.jobs} job${s.jobs === 1 ? "" : "s"}</div></div></div>`;
-  }).join("") + `<p class="small muted">More backup tools can be added here later; this tab shows all of them together.</p>`;
+  }).join("") + `<p class="small muted">This tab shows all connected backup tools together.</p>`;
   document.querySelectorAll("[data-tab]").forEach(a => a.onclick = e => { e.preventDefault(); showTab(a.dataset.tab); });
   dailyChart("c-daily", M.daily);
   LG.table("#m-jobs", [
@@ -154,7 +179,7 @@ async function loadMain() {
     {k: "ok", l: `Runs (${days}d)`, s: r => (r.ok || 0) + (r.warned || 0) + (r.failed || 0), f: (v, r) => `<span class="state-RUNNING">${r.ok || 0}</span>` +
       (r.warned ? ` · <span class="state-PAUSED">${r.warned} warn</span>` : "") + (r.failed ? ` · <span class="state-EXITED">${r.failed} failed</span>` : "")},
     {k: "avg_duration", l: "Avg duration", num: true, f: dur}, {k: "last_size", l: "Size", num: true, f: v => v ? LG.bytes(v) : ""},
-  ], M.jobs, "No backup jobs yet - connect a backup tool under Settings › Backrest", undefined, { sortAll: true, order: null });
+  ], M.jobs, "No backup jobs yet - connect a backup tool under Settings › Backrest or Settings › Bichon", undefined, { sortAll: true, order: null });
   LG.table("#m-recent", [
     {k: "started", l: "Started", desc: true, f: LG.time}, {k: "source", l: "Tool", f: LG.src},
     {k: "kind", l: "Task"}, {k: "job", l: "Job / repository", f: (v, r) => LG.esc(v || r.repo)},
@@ -288,7 +313,121 @@ function drawBackrest() {
   ], B.maintenance.filter(r => !plan || !r.job || r.job === plan), `No repository tasks in the last ${days} days`, undefined, { sortAll: true, order: { k: "started", dir: -1 } });
 }
 
-function load() { return tab === "backrest" ? loadBackrest() : loadMain(); }
+/* ---- Bichon tab ---- */
+const accSel = document.getElementById("x-acc");
+accSel.onchange = () => X && drawBichon();
+const SYNC_RESULT = { success: ["ok", "ok"], warning: ["warn", "partial"], error: ["bad", "failed"], running: ["info", "running"],
+                      cancelled: ["", "cancelled"], unknown: ["", "unknown"] };
+const syncStatus = s => { const [c, l] = SYNC_RESULT[s] || ["", s]; return `<span class="badge ${c}">${LG.esc(l)}</span>`; };
+async function loadBichon() {
+  try { X = await LG.api(`/api/backups/bichon?days=${days}`); } catch (e) { return; }
+  document.getElementById("x-notconf").hidden = X.configured;
+  const st = X.status || {}, err = document.getElementById("x-err");
+  err.hidden = !(X.configured && st.ok === false);
+  if (!err.hidden) err.innerHTML = `<span class="dot bad"></span>Bichon not reachable: ${LG.esc(st.error || "")} – check <a href="/settings#bichon">Settings › Bichon</a> (URL, port and API token).`;
+  const accs = ((X.state || {}).accounts || []), cur = accSel.value;
+  accSel.innerHTML = `<option value="">all accounts</option>` + accs.map(a => `<option value="${LG.esc(a.job)}">${LG.esc(a.job)}</option>`).join("");
+  accSel.value = accs.some(a => a.job === cur) ? cur : "";
+  const v = (X.state || {}).version;
+  document.getElementById("updated").textContent = X.updated ? `Bichon${v ? " " + v : ""} · updated ${LG.ago(X.updated)}` : "";
+  drawBichon();
+}
+function drawBichon() {
+  const S = X.state || { accounts: [], totals: {}, data_backup: {} }, acc = accSel.value, T = S.totals || {};
+  const all = X.runs.filter(r => r.job !== "Bichon data backup");
+  const runs = all.filter(r => !acc || r.job === acc), done = runs.filter(r => ["success", "warning", "error"].includes(r.status));
+  const n = s => done.filter(r => r.status === s).length, good = n("success") + n("warning");
+  const sum = (rows, k) => rows.reduce((a, r) => a + (Number(r[k]) || 0), 0), timed = done.filter(r => r.duration_s > 0);
+  const accounts = S.accounts.filter(a => !acc || a.job === acc), A = accounts[0] || {};
+  const history = S.history === "bichon";
+  document.getElementById("x-info").innerHTML = `${done.length} syncs in the last ${days} days` + (S.history ? ` · ${history
+    ? "sync history read from Bichon" : `history from the metrics: a sync is seen when it is the latest at a poll – a token that may read the accounts' details gives Bichon's full history (<a href="/settings#bichon">Settings › Bichon</a>)`}` : "");
+  document.getElementById("x-kpis").innerHTML =
+    (acc ? kpi("Mails", LG.num(A.emails ?? null)) + kpi("Sync interval", A.interval_min ? A.interval_min + " min" : "none")
+         : kpi("Accounts", S.accounts.length, "", Object.entries(T.accounts || {}).map(([k, v]) => `${v} ${k}`).join(", ")) +
+           kpi("Mails archived", LG.num(T.emails ?? null)) + kpi("Attachments", LG.num(T.attachments ?? null)) +
+           kpi("Mail storage", T.storage_bytes != null ? LG.bytes(T.storage_bytes) : "–") +
+           kpi("Search index", T.index_bytes != null ? LG.bytes(T.index_bytes) : "–")) +
+    kpi(`Syncs (${days}d)`, LG.num(done.length)) + kpi("Failed", n("error"), n("error") ? "bad" : "") +
+    kpi("Partial", n("warning"), n("warning") ? "warn" : "", "finished, but not every folder could be archived") +
+    kpi("Success rate", pctOf(good, done.length), done.length && good < done.length ? "warn" : done.length ? "ok" : "") +
+    kpi("Avg sync duration", dur(timed.length ? sum(timed, "duration_s") / timed.length : null)) +
+    (history ? kpi(`New mails (${days}d)`, LG.num(sum(done, "files_new"))) : "");
+  const running = runs.filter(r => r.status === "running");
+  document.getElementById("x-running").innerHTML = running.length ? `<div class="card" style="margin-top:14px"><h3>Syncing now</h3>` +
+    running.map(r => `<div style="margin:6px 0"><b>${LG.esc(r.job)}</b> <span class="muted small">started ${LG.ago(r.started)}` +
+      `${(r.data || {}).current_folder ? " · " + LG.esc(r.data.current_folder) : ""}</span>` + progress((r.data || {}).progress, r.started) + `</div>`).join("") + `</div>` : "";
+  // charts
+  const size = { "mail storage": [], "search index": [] }, mails = {};
+  for (const s of X.archive) {
+    if (s.storage !== null) size["mail storage"].push({ x: ms(s.t), y: s.storage });
+    if (s.idx !== null) size["search index"].push({ x: ms(s.t), y: s.idx });
+    const y = acc ? (s.accounts || {})[acc] : s.emails;
+    if (y !== null && y !== undefined) (mails[acc || "all accounts"] = mails[acc || "all accounts"] || []).push({ x: ms(s.t), y: Number(y) });
+  }
+  runChart("c-xsize", size, v => LG.bytes(v));
+  runChart("c-xmails", mails, v => LG.num(Math.round(v)));
+  const per = (k, rows) => { const o = {}; for (const r of rows) if (r[k] !== null && r[k] !== undefined && r.started)
+    (o[r.job || "?"] = o[r.job || "?"] || []).push({ x: ms(r.started), y: Number(r[k]) }); return o; };
+  runChart("c-xduration", per("duration_s", timed), dur);
+  runChart("c-xnew", per("files_new", done), v => LG.num(Math.round(v)));
+  const byDay = {};
+  for (const r of done) { const d = new Date(r.started), k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}|${r.status}`; byDay[k] = (byDay[k] || 0) + 1; }
+  dailyChart("c-xdaily", Object.entries(byDay).map(([k, c]) => { const [d, status] = k.split("|"); return { d, status, n: c }; }));
+  // accounts
+  const perJob = Object.fromEntries(X.per_job.map(j => [j.job, j])), jobs = Object.fromEntries(X.jobs.map(j => [j.job, j]));
+  const lastRun = {}, lastGood = {};
+  for (const r of X.runs) { if (!lastRun[r.job]) lastRun[r.job] = r; if (!lastGood[r.job] && ["success", "warning"].includes(r.status)) lastGood[r.job] = r; }
+  LG.table("#x-accounts", [
+    {k: "job", l: "Account", f: (v, r) => `<b>${LG.esc(v)}</b>${r.enabled ? "" : ` <span class="pill">disabled</span>`}` +
+      (r.name && r.name !== r.email ? `<div class="small muted">${LG.esc(r.name)}</div>` : "")},
+    {k: "type", l: "Type", f: v => ({ imap: "IMAP sync", nosync: "no sync (import / SMTP)", view: "view" })[v] || LG.esc(v)},
+    {k: "interval_min", l: "Sync interval", num: true, f: (v, r) => r.type !== "imap" ? "" : (v ? `every ${v} min` : `<span class="muted">manual</span>`) +
+      ((jobs[r.job] || {}).threshold_s && !(jobs[r.job] || {}).disabled ? `<div class="small muted">overdue after ${dur(jobs[r.job].threshold_s)}</div>` : "")},
+    {k: "last", l: "Last sync", s: r => (lastRun[r.job] || {}).started || (r.last_start ? r.last_start * 1000 : null), desc: true, f: (v, r) => {
+      const l = lastRun[r.job]; if (r.running) return syncStatus("running") + (l ? " " + when(l.started) : "");
+      return l ? `${syncStatus(l.status)} ${when(l.started)}` + (l.status !== "success" && l.message ? `<div class="small muted">${LG.esc(l.message.slice(0, 160))}</div>` : "")
+        : r.last_start ? when(new Date(r.last_start * 1000).toISOString()) : `<span class="muted">${r.type === "imap" ? "never" : ""}</span>`; }},
+    {k: "last_success", l: "Last successful", desc: true, f: (v, r) => r.type !== "imap" ? "" : v ? when(new Date(v * 1000).toISOString()) : when((lastGood[r.job] || {}).ended)},
+    {k: "last_duration", l: "Duration", num: true, f: (v, r) => r.type === "imap" ? dur(v) : ""},
+    {k: "emails", l: "Mails", num: true, f: v => LG.num(v ?? null)},
+    {k: "runs", l: `Syncs (${days}d)`, num: true, s: r => (perJob[r.job] || {}).runs, f: (v, r) => { const j = perJob[r.job]; if (!j) return r.type === "imap" ? "0" : "";
+      return `<span class="state-RUNNING">${j.ok}</span>` + (j.warned ? ` · <span class="state-PAUSED">${j.warned} partial</span>` : "") + (j.failed ? ` · <span class="state-EXITED">${j.failed} failed</span>` : ""); }},
+    {k: "rate", l: "Success", num: true, s: r => { const j = perJob[r.job]; return j && j.runs ? (j.ok + j.warned) / j.runs : null; }, f: (v, r) => { const j = perJob[r.job]; return j ? pctOf(j.ok + j.warned, j.runs) : ""; }},
+    {k: "sync_errors", l: "Errors since Bichon started", f: v => Object.entries(v || {}).map(([k, c]) => `<span class="pill" title="classified by Bichon">${LG.esc(k)}: ${c}</span>`).join(" ")},
+    {k: "gapfill_failed", l: "Gap-fill", f: (v, r) => r.gapfill_running ? syncStatus("running") : r.gapfill_downloaded == null && v == null ? "" :
+      `${LG.num(r.gapfill_downloaded ?? 0)} repaired` + (v ? ` · <span class="state-EXITED">${v} failed</span>` : "")},
+  ], accounts, X.configured ? "No accounts in Bichon" : "Bichon not configured", undefined, { sortAll: true, order: null });
+  // Bichon's own backup
+  const b = S.data_backup || {}, bj = jobs["Bichon data backup"], bl = X.runs.filter(r => r.job === "Bichon data backup");
+  document.getElementById("x-backup").innerHTML = !X.configured ? `<span class="muted">Bichon not configured</span>` : !b.seen
+    ? `<span class="muted">No backup found – Bichon's own backup (Bichon › Backup) has not run yet, or is not set up.</span>`
+    : `<div class="kv"><div>Last successful backup</div><div>${b.last_success ? when(new Date(b.last_success * 1000).toISOString()) : `<span class="muted">never</span>`}</div></div>` +
+      `<div class="kv"><div>Runs since Bichon started</div><div><span class="state-RUNNING">${LG.num(b.success || 0)} ok</span>` +
+      (b.failed ? ` · <span class="state-EXITED">${LG.num(b.failed)} failed</span>` : "") +
+      (b.duration_count ? ` · avg ${dur(b.duration_sum / b.duration_count)}` : "") + `</div></div>` +
+      `<div class="kv"><div>Overdue alert</div><div>${bj && bj.threshold_s && !bj.disabled ? `after ${dur(bj.threshold_s)} without a successful backup`
+        : `<span class="muted">off – set <a href="/settings#bichon">Settings › Bichon › Bichon backup overdue after</a></span>`}</div></div>` +
+      (bl.length ? `<div class="small muted" style="margin-top:6px">Latest: ${bl.slice(0, 5).map(r => `${syncStatus(r.status)} ${when(r.ended || r.started)}`).join(" · ")}</div>` : "");
+  // runs
+  const shown = runs.slice(0, 500);
+  document.getElementById("x-runs-info").textContent = runs.length > shown.length ? `latest ${shown.length} of ${runs.length}` : "";
+  LG.table("#x-runs", [
+    {k: "started", l: "Started", desc: true, f: LG.time}, {k: "job", l: "Account"},
+    {k: "status", l: "Result", f: (v, r) => syncStatus(v) + (v === "running" ? progress((r.data || {}).progress, r.started) : "")},
+    {k: "trigger", l: "Trigger", s: r => (r.data || {}).trigger, f: (v, r) => LG.esc(((r.data || {}).trigger || "").replace("_", " "))},
+    {k: "duration_s", l: "Duration", num: true, f: dur},
+    {k: "files_new", l: "New mails", num: true, f: v => v === null ? "" : LG.num(v)},
+    {k: "folders", l: "Folders", num: true, s: r => (r.data || {}).folders, f: (v, r) => { const d = r.data || {}; return d.folders == null ? "" :
+      `${d.folders}` + (d.failed_folders ? ` <span class="state-EXITED">(${d.failed_folders} failed)</span>` : ""); }},
+    {k: "message", l: "Message", f: (v, r) => { const d = r.data || {}, e = (d.errors || [])[0];
+      return (v ? `<span class="small">${LG.esc(v.slice(0, 300))}</span>` : "") + (d.error_count && !v ? `<span class="small">${d.error_count} errors</span>` : "") +
+        (d.error_count > 1 && e ? `<div class="small muted">${d.error_count} errors: ${LG.esc((e.item ? e.item + ": " : "") + (e.message || "").slice(0, 120))} …</div>` : ""); }},
+    rmColFor("bichon"),
+  ], shown, `No syncs in the last ${days} days`, undefined, { sortAll: true, order: { k: "started", dir: -1 } });
+}
+
+function load() { return tab === "backrest" ? loadBackrest() : tab === "bichon" ? loadBichon() : loadMain(); }
 showTab(tab);
 LG.autoRefresh(load, 60000);
 </script>
