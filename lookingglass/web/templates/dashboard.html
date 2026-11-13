@@ -54,7 +54,24 @@ const WIDGETS = [
   { id: "qf", title: "Q-Feeds threat-intel hits", w: 1, body: "table", el: "qf", src: "qfeeds" },
   { id: "talkers", title: "Internal top talkers", w: 1, body: "table", el: "talkers" },
   { id: "devices", title: "New devices", w: 1, body: "table", el: "devices" },
+  // optional: not in the default layout, picked under Customize › Add widget (grouped there by "group")
+  { id: "threat-blocks", title: "Threat blocks by source", w: 1, body: "chart", el: "threat-blocks", optional: true, group: "Threats" },
+  { id: "cs-ips", title: "CrowdSec firewall: top blocked IPs", w: 1, body: "table", el: "cs-ips", src: "crowdsec", optional: true, group: "Threats" },
+  { id: "ids-drop", title: "Suricata: dropped signatures", w: 1, body: "table", el: "ids-drop", src: "suricata", optional: true, group: "Threats" },
+  { id: "sec-clients", title: "Devices with security events", w: 2, body: "table", el: "sec-clients", optional: true, group: "Threats" },
+  { id: "unifi-now", title: "UniFi devices now", w: 1, body: "table", el: "unifi-now", src: "unifi", optional: true, group: "UniFi", link: ["/unifi", "UniFi →"] },
+  { id: "unifi-dev", title: "UniFi: devices offline / restarted", w: 1, body: "table", el: "unifi-dev", src: "unifi", optional: true, group: "UniFi" },
+  { id: "unifi-clients", title: "UniFi: Wi-Fi clients dropping / roaming", w: 1, body: "table", el: "unifi-clients", src: "unifi", optional: true, group: "UniFi" },
+  { id: "unraid-storage", title: "Unraid storage", w: 2, body: "table", el: "unraid-storage", src: "unraid", optional: true, group: "Unraid", link: ["/unraid", "Unraid →"] },
+  { id: "unraid-res", title: "Unraid CPU / memory", w: 1, body: "table", el: "unraid-res", src: "unraid", optional: true, group: "Unraid" },
+  { id: "unraid-ctr", title: "Unraid containers: stopped / unhealthy", w: 1, body: "html", el: "unraid-ctr", src: "unraid", optional: true, group: "Unraid" },
+  { id: "unraid-notif", title: "Unraid notifications", w: 2, body: "table", el: "unraid-notif", src: "unraid", optional: true, group: "Unraid" },
+  { id: "unraid-logs", title: "Unraid container log errors", w: 1, body: "table", el: "unraid-logs", src: "unraid", optional: true, group: "Unraid" },
+  { id: "backup-jobs", title: "Backup jobs", w: 2, body: "table", el: "backup-jobs", src: "backups", optional: true, group: "Backups", link: ["/backups", "Backups →"] },
 ];
+// the group of the older widgets, for the Add widget list
+const GROUP_OF_SRC = { suricata: "Threats", crowdsec: "Threats", qfeeds: "Threats", unbound: "DNS", nginx: "Web server" };
+const groupOf = w => w.group || GROUP_OF_SRC[w.src] || "Firewall & general";
 const BY_ID = Object.fromEntries(WIDGETS.map(w => [w.id, w]));
 const DEFAULT_LAYOUT = WIDGETS.filter(w => !w.optional).map(w => ({ id: w.id, w: w.w, h: 1 }));
 let layout = DEFAULT_LAYOUT, saved = null, editing = false, srcOn = {};
@@ -89,9 +106,11 @@ function build() {
   grid.querySelectorAll("[data-sort-slot]").forEach(slot => slot.replaceWith({ sources: sortSources, web: sortWeb }[slot.dataset.sortSlot].el));
   applySources();
   if (editing) wireEditing(grid);
-  // the add-widget list: everything not on the page
-  document.getElementById("add-widget").innerHTML = `<option value="">+ Add widget…</option>` +
-    WIDGETS.filter(w => !layout.some(x => x.id === w.id)).map(w => `<option value="${w.id}">${LG.esc(w.title)}</option>`).join("");
+  // the add-widget list: everything not on the page, grouped
+  const free = WIDGETS.filter(w => !layout.some(x => x.id === w.id)), groups = [...new Set(free.map(groupOf))];
+  document.getElementById("add-widget").innerHTML = `<option value="">+ Add widget…</option>` + groups.map(g =>
+    `<optgroup label="${LG.esc(g)}">` + free.filter(w => groupOf(w) === g).map(w => `<option value="${w.id}">${LG.esc(w.title)}</option>`).join("") +
+    `</optgroup>`).join("");
   if (last) render(last);
 }
 function applySources() {
@@ -206,9 +225,9 @@ function render(d) {
     kpi("Blocked IPs", LG.num(k.blocked_ips)) +
     kpi("Open alerts", `${openTotal}${crit ? ` <span class="small" style="color:var(--bad)">(${crit} high+)</span>` : ""}`, crit ? "bad" : openTotal ? "warn" : "ok") +
     kpi("Login failures", LG.num(k.login_failed), k.login_failed ? "warn" : "") +
-    (on.suricata ? kpi("Suricata events", LG.num(k.ids), k.ids ? "warn" : "") : "") +
-    (on.unbound ? kpi("DNS queries", LG.num(k.dns)) : "") +
-    (on.crowdsec ? kpi("CrowdSec bans", `${k.crowdsec_decisions ?? "–"}${k.crowdsec_blocklist != null ? ` <span class="small">+ ${LG.num(k.crowdsec_blocklist)} on the blocklist</span>` : ""}`) : "") +
+    (on.suricata ? kpi("Suricata dropped", LG.num(k.ids_dropped), k.ids_dropped ? "warn" : "") : "") +
+    (on.qfeeds ? kpi("Q-Feeds hits", LG.num(k.qfeeds), k.qfeeds ? "warn" : "") : "") +
+    (on.crowdsec ? kpi("CrowdSec firewall blocks", LG.num(k.crowdsec_fw), k.crowdsec_fw ? "warn" : "") : "") +
     kpi("Devices (24h)", LG.num(k.devices));
   LG.updated(document.getElementById("updated"), d, load, VIEW());
 
@@ -251,6 +270,8 @@ function render(d) {
   T("#t-talkers", [{k: "ip", l: "Host", f: LG.ip}, {k: "peers", l: "Peers", num: true}, {k: "n", l: "Events", num: true}], r.top_talkers_internal);
   T("#t-devices", [{k: "mac", l: "MAC", f: LG.mac}, {k: "ip", l: "IP", f: LG.ip}, {k: "hostname", l: "Name"}, {k: "first_seen", l: "First seen", f: LG.ago}], r.new_devices, "No new devices", { k: "first_seen", dir: -1 });
 
+  renderMore(d);
+
   // system card
   const s = d.system || {}, gws = d.gateways || [];
   const info = s.information || {}, mem = (s.resources || {}).memory || {}, st = s.pf_states || {}, tm = s.time || {};
@@ -268,6 +289,71 @@ function render(d) {
       <div>States</div><div>${LG.num(st.current)} / ${LG.num(st.limit)}${bar(statePct)}</div>
       <div>Gateways</div><div>${gws.map(g => `<span class="dot ${/online|none/i.test(g.status_translated || g.status) ? "ok" : "bad"}"></span>${LG.esc(g.name)} ${LG.esc(g.delay || "")}`).join("<br>") || "–"}</div>
     </div>` : `<div class="empty">No OPNsense API data yet. Enter the OPNsense URL and API key under <a href="/settings#opnsense">Settings › OPNsense</a>.</div>`;
+}
+/* ---- the optional Threats / UniFi / Unraid / Backups widgets ---- */
+const badge = (cls, txt) => `<span class="badge ${cls}">${LG.esc(txt)}</span>`;
+const JOB_STATE = { failed: ["bad", "failed"], overdue: ["warn", "overdue"], warning: ["warn", "warnings"], running: ["info", "running"],
+                    never: ["", "never run"], ok: ["ok", "ok"] };
+const pct = v => v === null || v === undefined ? "–" : `${Math.round(v)}%`;
+function renderMore(d) {
+  const r = d.report, k = d.kpi, on = d.sources || {}, th = d.threats || {}, now = d.now || {};
+  if ($("c-threat-blocks")) {
+    const rows = [["Suricata dropped", k.ids_dropped, on.suricata, "#a855f7"], ["CrowdSec firewall blocks", k.crowdsec_fw, on.crowdsec, "#f97316"],
+                  ["Q-Feeds hits", k.qfeeds, on.qfeeds, "#ef4444"]].filter(x => x[2] !== false);
+    LG.chart("c-threat-blocks", { type: "bar", data: { labels: rows.map(x => x[0]),
+      datasets: [{ data: rows.map(x => x[1] || 0), backgroundColor: rows.map(x => x[3]) }] },
+      options: { indexAxis: "y", maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } },
+                 scales: { x: { beginAtZero: true, ticks: { precision: 0 } } } } });
+  }
+  T("#t-cs-ips", [{k: "ip", l: "Address", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "last", l: "Last", f: LG.ago}, {k: "n", l: "Blocks", num: true}],
+    th.crowdsec_ips || [], "No CrowdSec firewall blocks logged (Services › CrowdSec › Settings › Enable log for rules)");
+  T("#t-ids-drop", [{k: "signature", l: "Signature"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Dropped", num: true}],
+    th.ids_dropped || [], "Suricata dropped nothing (IPS mode off, or no drop rules)");
+  T("#t-sec-clients", [{k: "name", l: "Device"}, {k: "ip", l: "IP", f: LG.ip}, {k: "conn_where", l: "Connected to"},
+    {k: "fw", l: "FW blocks", num: true}, {k: "dns", l: "DNS blocked", num: true}, {k: "threats", l: "Threats", num: true}],
+    r.clients_with_security_events || [], "No known device had security events", { k: "threats", dir: -1 });
+  // UniFi
+  T("#t-unifi-now", [{k: "name", l: "Device", f: (v, x) => `${LG.esc(v)}<div class="small muted">${LG.esc(x.model || "")}</div>`},
+    {k: "state", l: "State", s: x => /^(connected|online)$/.test(x.state) ? 1 : 0,
+     f: v => badge(/^(connected|online)$/.test(v || "") ? "ok" : /pending|upgrad|provision|adopt/.test(v || "") ? "info" : "bad", v || "?")},
+    {k: "clients", l: "Clients", num: true}, {k: "version", l: "Firmware", f: (v, x) => `${LG.esc(v || "")}${x.upgradable ? ` ${badge("warn", "update")}` : ""}`}],
+    [...(now.unifi_devices || [])].sort((a, b) => (/^(connected|online)$/.test(a.state) - /^(connected|online)$/.test(b.state)) ||
+      String(a.name).localeCompare(String(b.name))), "No UniFi devices (Settings › UniFi)", { k: "state", dir: 1 });
+  T("#t-unifi-dev", [{k: "device", l: "Device"}, {k: "offline", l: "Offline", num: true}, {k: "restarts", l: "Restarts", num: true},
+    {k: "poe", l: "PoE drops", num: true}], r.unifi_devices || [], "No access point / switch went offline", { k: "offline", dir: -1 });
+  T("#t-unifi-clients", [{k: "client", l: "Client"}, {k: "disconnects", l: "Disconnects", num: true}, {k: "roams", l: "Roams", num: true}],
+    r.unifi_clients || [], "No client events", { k: "disconnects", dir: -1 });
+  // Unraid
+  T("#t-unraid-storage", [{k: "server", l: "Server"}, {k: "grp", l: "Array / pool"},
+    {k: "state", l: "State", f: v => v ? badge(/started/i.test(v) ? "ok" : "warn", v.toLowerCase()) : ""},
+    {k: "used_pct", l: "Used", num: true, f: v => v === null ? "–" : `${pct(v)}<div class="bar ${v > 90 ? "bad" : v > 80 ? "warn" : ""}"><i style="width:${Math.min(100, v)}%"></i></div>`},
+    {k: "free", l: "Free", num: true, f: v => v === null ? "–" : LG.bytes(v)}, {k: "disks", l: "Disks", num: true},
+    {k: "errors", l: "Errors", num: true, f: v => v ? `<span class="state-EXITED">${LG.num(v)}</span>` : "0"},
+    {k: "max_temp", l: "Max °C", num: true, f: v => v === null ? "–" : `${Math.round(v)}°`}], r.unraid_storage || [], "No storage data yet", null);
+  T("#t-unraid-res", [{k: "server", l: "Server"}, {k: "cpu_avg", l: "CPU avg", num: true, f: pct}, {k: "cpu_max", l: "max", num: true, f: pct},
+    {k: "mem_avg", l: "Mem avg", num: true, f: pct}, {k: "mem_max", l: "max", num: true, f: pct}], r.unraid_resources || [], "No CPU / memory data in this period");
+  if ($("unraid-ctr")) {
+    const srv = now.unraid || [];
+    $("unraid-ctr").innerHTML = !srv.length ? `<div class="empty">No Unraid server (Settings › Unraid servers)</div>` : srv.map(x =>
+      `<div class="kv"><div><b>${LG.esc(x.server)}</b></div><div>${!x.known ? `<span class="muted">no container data yet</span>` :
+        `${x.running} of ${x.total} running` + (x.problems.length ? "" : ` ${badge("ok", "all fine")}`)}</div></div>` +
+      x.problems.map(c => `<div class="small" style="margin:3px 0 3px 10px">${badge(c.health === "unhealthy" ? "bad" : c.autostart ? "bad" : "", c.health === "unhealthy" ? "unhealthy" : c.state)} ` +
+        `${LG.esc(c.name)}${c.autostart && c.state !== "running" ? ` <span class="muted">(autostart on)</span>` : ""}</div>`).join("")).join("");
+  }
+  T("#t-unraid-notif", [{k: "server", l: "Server"}, {k: "importance", l: "Level", s: x => ["ALERT", "WARNING", "NORMAL", "INFO"].indexOf(x.importance),
+    f: v => badge(v === "ALERT" ? "bad" : v === "WARNING" ? "warn" : "", (v || "").toLowerCase())}, {k: "subject", l: "Notification"},
+    {k: "n", l: "#", num: true}, {k: "last", l: "Last", f: LG.ago}], r.unraid_notifications || [], "No notifications in this period", { k: "importance", dir: 1 });
+  T("#t-unraid-logs", [{k: "server", l: "Server"}, {k: "container", l: "Container"}, {k: "errors", l: "Errors", num: true},
+    {k: "warnings", l: "Warnings", num: true}], r.unraid_container_logs || [], "No errors in container logs", { k: "errors", dir: -1 });
+  // Backups
+  T("#t-backup-jobs", [{k: "state", l: "State", s: x => ["failed", "overdue", "warning", "running", "never", "ok"].indexOf(x.state),
+      f: v => { const [c, t] = JOB_STATE[v] || ["", v]; return badge(c, t); }},
+    {k: "job", l: "Job", f: (v, x) => `<b>${LG.esc(v)}</b> ${LG.src(x.source_label)}` +
+      (["failed", "warning"].includes(x.state) && x.last_message ? `<div class="small muted">${LG.esc(x.last_message.slice(0, 140))}</div>` : "")},
+    {k: "last_good", l: "Last successful", f: v => v ? LG.ago(v) : `<span class="muted">never</span>`},
+    {k: "ok", l: "Runs", num: true, s: x => (x.ok || 0) + (x.warned || 0) + (x.failed || 0), f: (v, x) => `<span class="state-RUNNING">${x.ok || 0}</span>` +
+      (x.warned ? ` · <span class="state-PAUSED">${x.warned} warn</span>` : "") + (x.failed ? ` · <span class="state-EXITED">${x.failed} failed</span>` : "")}],
+    now.backup_jobs || [], "No backup jobs (Settings › Backrest / Bichon)", { k: "state", dir: 1 });
 }
 (async () => {
   try { layout = cleanLayout((await LG.api("/api/layout/overview")).layout) ; } catch (e) { layout = []; }
