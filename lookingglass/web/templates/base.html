@@ -16,13 +16,13 @@
   <button type="button" class="menu-btn" id="menu-btn" aria-label="Open menu" aria-controls="side" aria-expanded="false">
     <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
   </button>
-  <span class="brand">Looking<span>Glass</span></span>
+  <a href="/" class="brand" title="Overview">Looking<span>Glass</span></a>
   <span class="mbar-title">{{ title }}</span>
 </header>
 <div class="scrim" id="scrim"></div>
 <div class="layout">
   <nav class="side" id="side">
-    <div class="brand">Looking<span>Glass</span></div>
+    <a href="/" class="brand" title="Overview">Looking<span>Glass</span></a>
     {% macro dash_links(group) %}{% for key, label, grp in dashboards if grp == group %}<a href="/dash/{{ key }}" class="{{ 'active' if path == '/dash/' ~ key }}">{{ label }}</a>{% endfor %}{% endmacro %}
     <div class="ngrp"><div class="grp" tabindex="-1">General</div><div class="nlinks">
       <a href="/" class="{{ 'active' if path == '/' }}">Overview</a>
