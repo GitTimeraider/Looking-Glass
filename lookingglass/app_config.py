@@ -289,6 +289,18 @@ FIELDS: list[Field] = [
     Field("mining_domains", "intel", "Extra mining pool domains", "list", "Added to the built-in list."),
     Field("intel_allow", "intel", "Never flag these domains / IPs", "list", "Domains (incl. their subdomains) "
           "and IPs / CIDRs, for false positives in the feeds."),
+    Field("intel_shared_sites", "intel", "Shared sites (whole domain)", "list", "Sites where anyone can host files "
+          "(GitHub, Discord, Google Drive ...). A feed that lists one malware URL on them does not flag the site: DNS "
+          "only shows the host name, never which file. Covers the domain and all its subdomains - only add a domain "
+          "whose subdomains all belong to the platform itself (not e.g. github.io, where <name>.github.io is someone's "
+          "own site). Pre-filled with the built-in list; Restore built-in list shows the current one after an update.",
+          placeholder="github.com\ndiscordapp.com"),
+    Field("intel_shared_endpoints", "intel", "Shared storage endpoints (exact name only)", "list", "Cloud storage "
+          "addresses shared by all customers (endpoint/<bucket>/file), e.g. s3-eu-west-1.amazonaws.com. Only this exact "
+          "name is skipped: a name in front of it is one customer's own bucket (<bucket>.s3-eu-west-1.amazonaws.com) and "
+          "is still flagged when a feed lists it - also below a shared site (<account>.blob.core.windows.net). "
+          "* = one label: s3.*.amazonaws.com. Pre-filled with the built-in list.",
+          placeholder="s3-*.amazonaws.com\nstorage.googleapis.com"),
     Field("intel_sources", "intel", "Feed download addresses", "text", "Your own addresses for the feeds, e.g. when "
           "one moved. One per line: feed: URL - feeds: urlhaus, threatfox, feodo, sslbl_ja3, tor_relay, tor_exit. "
           "Tried before the built-in addresses (top to bottom); the first that answers with entries is used, so a "
@@ -505,6 +517,13 @@ def _coerce(f: Field, value: Any) -> Any:
             parse_blocklist_aliases(v)
         except ValueError as exc:
             raise SettingsError(f"{f.label}: {exc}") from exc
+    if f.key in ("intel_shared_sites", "intel_shared_endpoints") and v:
+        from .intel import check_shared_entry
+        for part in v.split(","):
+            try:  # an invalid line is named, nothing is saved
+                check_shared_entry(part.strip(), wildcards=f.key == "intel_shared_endpoints")
+            except ValueError as exc:
+                raise SettingsError(f"{f.label}: {exc}") from exc
     if f.key == "intel_sources" and v:
         from .intel import parse_sources
         try:
@@ -608,6 +627,8 @@ def public_view(settings: Settings) -> dict[str, Any]:
             item["is_set"] = bool(v)
         else:
             item["value"] = v
+        if f.kind == "list" and (d := Settings.model_fields[f.key].default):
+            item["default"] = d  # the UI offers to restore a built-in list
         out.append(item)
     return {"groups": GROUPS, "fields": out, "version": STATE.version}
 
