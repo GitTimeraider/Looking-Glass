@@ -50,10 +50,10 @@ QUERIES: dict[str, str] = {
     "dns_blocked": "SELECT domain, coalesce(data->>'blocklist', '') blocklist, count(*) n FROM events WHERE source = 'unbound' AND action IN ('block', 'drop') "
                    "AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
     "dns_clients": "SELECT host(src_ip) client, count(*) n, count(*) FILTER (WHERE action IN ('block', 'drop')) blocked FROM events "
-                   "WHERE source = 'unbound' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
+                   "WHERE source = 'unbound' AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
     "web_status": "SELECT action status, count(*)::bigint n FROM events WHERE source = 'nginx' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
     "web_top_clients": "SELECT host(src_ip) ip, src_country country, count(*) n, count(*) FILTER (WHERE action ~ '^http_[45]') errors FROM events "
-                       "WHERE source = 'nginx' AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
+                       "WHERE source = 'nginx' AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
     "web_attack_tags": "SELECT tag, count(*) n, count(DISTINCT src_ip) ips FROM (SELECT src_ip, jsonb_array_elements_text(data->'tags') tag FROM events "
                        "WHERE source = 'nginx' AND ts > now() - make_interval(secs => $1) AND jsonb_typeof(data->'tags') = 'array') t GROUP BY 1 ORDER BY 2 DESC",
     "auth_failures": "SELECT host(src_ip) ip, source, count(*) n, array_agg(DISTINCT username) FILTER (WHERE username IS NOT NULL) users FROM events "
