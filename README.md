@@ -16,7 +16,8 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 
 ## Screenshots
 
-*Demo data: simulated OPNsense traffic and the mock OPNsense / UniFi / Unraid / AI servers from `tools/`.*
+*Demo data: simulated OPNsense traffic and the mock OPNsense / UniFi / Unraid / AI servers from `tools/`. Shown with
+the purple accent, square corners and the menu bar on the right (Settings › Display).*
 
 ![Overview: events, blocks, alerts and logins of the last 24 hours](docs/screenshots/overview.png)
 
