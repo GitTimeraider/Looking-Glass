@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import ipaddress
 import json
 import math
@@ -125,12 +126,21 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         f' data-theme="{escape(settings.theme)}" data-mode="{"light" if settings.theme == "light" else "dark"}" '
         f'data-accent="{escape(settings.accent)}" data-nav="{escape(settings.nav_position)}" '
         f'data-corners="{escape(settings.corners)}"')
+
+    def brand() -> dict[str, Any]:
+        """Settings › Display: application name, logo and favicon (pictures served by /brand/<key>?v=<hash>)."""
+        def url(key: str) -> str:
+            value = getattr(settings, key)
+            return f"/brand/{key}?v={hashlib.sha1(value.encode()).hexdigest()[:12]}" if value else ""
+        return {"name": settings.app_name or "Looking Glass", "custom_name": bool(settings.app_name),
+                "logo": url("logo"), "favicon": url("favicon")}
+    templates.env.globals["brand"] = brand
     app = FastAPI(title="Looking Glass", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
 
     async def auth_guard(request: Request) -> Response | None:
         """None = let the request through, else the answer (login redirect, 401 / 403)."""
         path = request.url.path
-        if path.startswith("/static/") or path in PUBLIC_PATHS:
+        if path.startswith(("/static/", "/brand/")) or path in PUBLIC_PATHS:
             return None
         user, mfa = await current_user(request)
         if not user:
@@ -162,6 +172,17 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                        max_age=7 * 24 * 3600, same_site="lax", https_only=settings.cookie_secure)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
     register_auth(app, settings, templates)
+
+    @app.get("/brand/{key}")
+    async def brand_image(key: str):
+        """The uploaded logo / favicon (public: the login page shows them too)."""
+        img = app_config.image_bytes(getattr(settings, key, "")) if key in ("logo", "favicon") else None
+        if not img:
+            raise HTTPException(404)
+        # an SVG opened on its own must not run scripts; the ?v= hash changes with the picture, so it can be cached
+        return Response(img[1], media_type=img[0], headers={
+            "Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox"})
 
     @app.get("/healthz")
     async def healthz():

@@ -33,6 +33,7 @@
     <div class="filters" style="margin-top:12px">
       <button type="button" data-save="{{ g }}">Save</button>
       {% if g in ("opnsense", "unifi", "backrest", "bichon", "ai") %}<button type="button" class="secondary" data-test="{{ g }}">Test connection</button>{% endif %}
+      {% if g == "display" %}<button type="button" class="secondary" id="display-defaults" title="Theme, accent, menu bar, corners, time format, name, logo and favicon back to the built-in defaults">Restore defaults</button>{% endif %}
       {% if g == "email" %}<input id="mail-test-to" placeholder="Test recipient (default: the sender address)" style="min-width:260px">
       <button type="button" class="secondary" data-test="email">Send test mail</button>{% endif %}
     </div>
@@ -257,6 +258,9 @@ function fieldHtml(f) {
     input = `<textarea id="${id}" class="list-input" rows="${Math.min(14, Math.max(3, items.length + 1))}" spellcheck="false"
       placeholder="${LG.esc(splitList(f.placeholder).join("\n"))}">${LG.esc(items.join("\n"))}</textarea>`;
   }
+  else if (f.kind === "image") input = `<div class="image-field" id="${id}" data-value="${LG.esc(f.value || "")}">
+      <span class="image-preview"></span><input type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/x-icon,.ico">
+      <button type="button" class="secondary small" data-image-clear>${f.key === "favicon" ? "Built-in icon" : "No logo"}</button></div>`;
   else if (f.kind === "text") input = `<textarea id="${id}" rows="4" placeholder="${LG.esc(f.placeholder || "")}">${LG.esc(f.value || "")}</textarea>`;
   else if (f.kind === "secret") input = `<div class="secret-row"><input type="password" id="${id}" autocomplete="new-password"
       placeholder="${f.is_set ? "•••••••• stored - type to replace" : "not set"}">
@@ -293,6 +297,7 @@ function groupValues(g) {
     const el = document.getElementById("s-" + f.key);
     if (f.kind === "bool") out[f.key] = el.checked;
     else if (f.kind === "multi") out[f.key] = [...el.querySelectorAll("input:checked")].map(x => x.value);
+    else if (f.kind === "image") out[f.key] = el.dataset.value || "";
     else if (f.kind === "secret") { const clr = document.getElementById("s-" + f.key + "-clear"); out[f.key] = clr && clr.checked ? null : el.value; }
     else out[f.key] = el.value;
   }
@@ -302,7 +307,28 @@ async function loadSettings() {
   const d = await LG.api("/api/settings"); FIELDS = d.fields;
   document.querySelectorAll(".settings-form").forEach(form => form.innerHTML = FIELDS.filter(f => f.group === form.dataset.group).map(fieldHtml).join(""));
   wireLists();
+  wireImages();
   wireTheme();
+}
+/* Display › Logo / favicon: the picked file is kept as a data URL until Save */
+function wireImages() {
+  document.querySelectorAll(".image-field").forEach(box => {
+    const prev = box.querySelector(".image-preview"), file = box.querySelector("input[type=file]");
+    const show = () => { const v = box.dataset.value;
+      prev.innerHTML = v ? `<img src="${LG.esc(v)}" alt="">` : `<span>${box.id === "s-favicon" ? "built-in" : "none"}</span>`; };
+    file.onchange = () => {
+      const f = file.files[0]; if (!f) return;
+      if (f.size > 256 * 1024) { alert("The picture is too large (at most 256 KB)."); file.value = ""; return; }
+      const r = new FileReader();
+      r.onload = () => { let v = String(r.result);
+        if (/^data:(application\/octet-stream|image\/vnd\.microsoft\.icon|);base64,/.test(v) && /\.ico$/i.test(f.name))
+          v = v.replace(/^data:[^;]*;/, "data:image/x-icon;");  // some browsers give .ico files no picture type
+        box.dataset.value = v; show(); };
+      r.readAsDataURL(f);
+    };
+    box.querySelector("[data-image-clear]").onclick = () => { box.dataset.value = ""; file.value = ""; show(); };
+    show();
+  });
 }
 /* Display: preview the theme while picking; swatches set the accent select (their color comes from data-accent) */
 function wireTheme() {
@@ -326,9 +352,21 @@ document.querySelectorAll("[data-save]").forEach(b => b.onclick = async () => {
   const g = b.dataset.save;
   try {
     const r = await LG.api("/api/settings", { method: "PUT", body: { values: groupValues(g) } });
+    // name, logo and favicon are drawn by the server: reload to show them (back on the Display tab via the #hash)
+    if (r.changed.some(k => ["app_name", "logo", "favicon"].includes(k))) return location.reload();
     await loadSettings(); gmsg(g, r.changed.length ? `Saved (${r.changed.length} changed) - applied immediately.` : "Nothing changed.", true);
   } catch (e) { gmsg(g, LG.esc(e.message)); }
 });
+/* Display › Restore defaults: every display setting back to its built-in value (saved right away) */
+document.getElementById("display-defaults").onclick = async () => {
+  if (!confirm("Put all display settings (theme, accent, menu bar, corners, time format, name, logo and favicon) back to their defaults?")) return;
+  const values = Object.fromEntries(FIELDS.filter(f => f.group === "display").map(f => [f.key, f.default]));
+  try {
+    const r = await LG.api("/api/settings", { method: "PUT", body: { values } });
+    if (r.changed.length) return location.reload();  // name, logo and favicon are drawn by the server
+    gmsg("display", "Already the defaults.", true);
+  } catch (e) { gmsg("display", LG.esc(e.message)); }
+};
 document.querySelectorAll("[data-test]").forEach(b => b.onclick = async () => {
   const g = b.dataset.test; gmsg(g, `<span class="spinner"></span> testing…`, true);
   try {
