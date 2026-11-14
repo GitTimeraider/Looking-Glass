@@ -123,7 +123,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     templates.env.globals["time_format"] = lambda: settings.time_format  # live setting, read per page
     templates.env.globals["theme_attrs"] = lambda: Markup(  # <html> attributes for the theme (style.css), live as well
         f' data-theme="{escape(settings.theme)}" data-mode="{"light" if settings.theme == "light" else "dark"}" '
-        f'data-accent="{escape(settings.accent)}" data-nav="{escape(settings.nav_position)}"')
+        f'data-accent="{escape(settings.accent)}" data-nav="{escape(settings.nav_position)}" '
+        f'data-corners="{escape(settings.corners)}"')
     app = FastAPI(title="Looking Glass", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
 
     async def auth_guard(request: Request) -> Response | None:

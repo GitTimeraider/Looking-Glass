@@ -463,6 +463,7 @@ Next logins ask for password + TOTP code or passkey.
   e.g. light + purple, dark + purple. The page previews your pick right away; *Save* keeps it.
   *Menu bar position*: left (default), right, top or bottom - top / bottom turn the sidebar into a horizontal bar
   whose sections open as menus. Phones always use the menu button.
+  *Corners*: rounded (default) or square, for cards, widgets, buttons and fields.
 * **Unraid servers** / **Data & detection** tabs – optional (see the sections below).
 
 Everything applies immediately. API keys, secrets and passwords are encrypted (Fernet/AES) with a key that is
