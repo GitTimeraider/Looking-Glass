@@ -10,6 +10,13 @@ on:
     paths-ignore: ["**.md", "docs/**", "examples/**", "LICENSE"]
   workflow_dispatch:
 
+# one build per branch / tag / PR at a time: two quick merges used to build in parallel, and the older one could
+# finish last and push its image over the newer one (the "develop" tag then lacked the newest change). A run that
+# arrives while one is going waits; a newer arrival replaces a waiting one, so the newest commit is always built last.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   packages: write
