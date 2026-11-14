@@ -225,7 +225,7 @@ nav.side .foot { position: static; margin-top: 18px; padding: 0 12px; }
 .or { text-align: center; color: var(--muted); margin: 10px 0; font-size: 12px; }
 .warn-box { border-color: var(--warn); background: #3a2a0a; background: color-mix(in srgb, var(--warn) 14%, var(--panel)); }
 .span2 { grid-column: span 2; } .span3 { grid-column: 1 / -1; }
-@media (max-width: 1100px) { .span2 { grid-column: 1 / -1; } }
+@media (max-width: 1100px) { .span2, .fill-md { grid-column: 1 / -1; } }
 .gauge { text-align: center; } .gauge .gv { font-size: 24px; font-weight: 700; } .gauge .l { color: var(--muted); font-size: 12px; text-transform: uppercase; margin-top: 4px; }
 .gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 16px; }
 .pill { display: inline-block; padding: 1px 7px; border-radius: 4px; background: var(--panel2); font-size: 11px; margin: 1px; }
@@ -535,8 +535,48 @@ nav.side .foot { overflow-wrap: anywhere; }
 /* sidebar sections: a clear header and a divider between groups */
 nav.side .grp { color: var(--accent2); font-size: 12.5px; font-weight: 700; letter-spacing: .8px; margin-top: 12px;
   padding: 12px 12px 6px; border-top: 1px solid var(--border); }
-nav.side .brand + .grp { margin-top: 0; padding-top: 4px; border-top: 0; }
-nav.side .grp ~ a { margin-left: 4px; }
+nav.side .brand + .ngrp .grp { margin-top: 0; padding-top: 4px; border-top: 0; }
+nav.side .nlinks a { margin-left: 4px; }
+
+/* Settings › Display › Menu bar position: <html data-nav="left|right|top|bottom">. Phones keep the drawer. */
+@media (min-width: 761px) {
+  :root[data-nav=right] .layout { flex-direction: row-reverse; }
+  :root[data-nav=right] nav.side { border-right: 0; border-left: 1px solid var(--border); }
+  [data-mode=light][data-nav=right] nav.side { box-shadow: -1px 0 0 var(--border); }
+  /* top / bottom: one horizontal bar, each section opens as a menu (hover, tap or keyboard focus) */
+  :root[data-nav=top] .layout { flex-direction: column; }
+  :root[data-nav=bottom] .layout { flex-direction: column-reverse; justify-content: flex-end; }
+  :root[data-nav=top] nav.side, :root[data-nav=bottom] nav.side {
+    width: auto; height: auto; overflow: visible; z-index: 40; display: flex; flex-wrap: wrap; align-items: center; gap: 2px;
+    padding: 6px 14px; border-right: 0; }
+  :root[data-nav=top] nav.side { top: 0; border-bottom: 1px solid var(--border); }
+  :root[data-nav=bottom] nav.side { top: auto; bottom: 0; border-top: 1px solid var(--border); }
+  :root[data-nav=bottom] main { flex: 1 0 auto; }
+  [data-mode=light][data-nav=top] nav.side { box-shadow: 0 1px 0 var(--border); }
+  [data-mode=light][data-nav=bottom] nav.side { box-shadow: 0 -1px 0 var(--border); }
+  :root[data-nav=top] nav.side .brand, :root[data-nav=bottom] nav.side .brand { padding: 4px 18px 4px 4px; }
+  :root[data-nav=top] nav.side .ngrp, :root[data-nav=bottom] nav.side .ngrp { position: relative; }
+  :root[data-nav=top] nav.side .grp, :root[data-nav=bottom] nav.side .grp {
+    margin: 0; padding: 7px 12px; border: 0; border-radius: 6px; cursor: pointer; color: var(--text); font-size: 13px;
+    font-weight: 600; letter-spacing: .2px; text-transform: none; white-space: nowrap; outline: none; }
+  :root[data-nav=top] nav.side .grp::after, :root[data-nav=bottom] nav.side .grp::after {
+    content: ""; display: inline-block; margin-left: 7px; vertical-align: 2px; border: 4px solid transparent; border-top-color: currentColor; border-bottom: 0; opacity: .6; }
+  :root[data-nav=bottom] nav.side .grp::after { border-top: 0; border-bottom: 4px solid currentColor; }
+  :root[data-nav] nav.side .ngrp:has(a.active) > .grp { color: var(--accent2); }
+  :root[data-nav=top] nav.side .ngrp:hover > .grp, :root[data-nav=bottom] nav.side .ngrp:hover > .grp,
+  :root[data-nav=top] nav.side .ngrp:focus-within > .grp, :root[data-nav=bottom] nav.side .ngrp:focus-within > .grp { background: var(--panel2); }
+  :root[data-nav=top] nav.side .nlinks, :root[data-nav=bottom] nav.side .nlinks {
+    display: none; position: absolute; left: 0; z-index: 60; min-width: 210px; padding: 6px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, .35); }
+  :root[data-nav=top] nav.side .nlinks { top: 100%; }
+  :root[data-nav=bottom] nav.side .nlinks { bottom: 100%; }
+  :root[data-nav=top] nav.side .ngrp.end .nlinks, :root[data-nav=bottom] nav.side .ngrp.end .nlinks { left: auto; right: 0; }
+  :root[data-nav=top] nav.side .ngrp:hover .nlinks, :root[data-nav=bottom] nav.side .ngrp:hover .nlinks,
+  :root[data-nav=top] nav.side .ngrp:focus-within .nlinks, :root[data-nav=bottom] nav.side .ngrp:focus-within .nlinks { display: block; }
+  :root[data-nav=top] nav.side .nlinks a, :root[data-nav=bottom] nav.side .nlinks a { margin-left: 0; white-space: nowrap; }
+  :root[data-nav=top] nav.side .foot, :root[data-nav=bottom] nav.side .foot { margin: 0 0 0 auto; padding: 0 4px; white-space: nowrap; }
+  :root[data-nav=bottom] .bulk { bottom: 64px; }  /* stay above the bottom bar */
+}
 
 /* Settings › Display: accent swatches (each one's color comes from its own data-accent) */
 .swatches { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }

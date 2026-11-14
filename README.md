@@ -461,6 +461,8 @@ Next logins ask for password + TOTP code or passkey.
   *Theme*: dark (default), light, or auto (follows the browser / operating system), and an *Accent color* (blue,
   indigo, purple, pink, red, orange, green, teal, cyan or gray) for buttons, links and a light tint of the background -
   e.g. light + purple, dark + purple. The page previews your pick right away; *Save* keeps it.
+  *Menu bar position*: left (default), right, top or bottom - top / bottom turn the sidebar into a horizontal bar
+  whose sections open as menus. Phones always use the menu button.
 * **Unraid servers** / **Data & detection** tabs – optional (see the sections below).
 
 Everything applies immediately. API keys, secrets and passwords are encrypted (Fernet/AES) with a key that is

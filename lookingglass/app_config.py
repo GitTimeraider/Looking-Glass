@@ -297,6 +297,9 @@ FIELDS: list[Field] = [
     Field("accent", "display", "Accent color", "choice", "Color of buttons, links and highlights; the background gets a "
           "light tint of it too (light + purple = lavender). The preview changes as you pick; Save to keep it.",
           choices=("blue", "indigo", "purple", "pink", "red", "crimson", "darkred", "orange", "green", "teal", "cyan", "gray")),
+    Field("nav_position", "display", "Menu bar position", "choice", "Where the navigation bar sits: left, right, or "
+          "top / bottom as a horizontal bar whose sections open as menus. Phones always use the menu button. "
+          "The preview changes as you pick; Save to keep it.", choices=("left", "right", "top", "bottom")),
     # data
     Field("retention_days", "data", "Keep events (days)", "int", "", min=1, max=3650),
     Field("metrics_retention_days", "data", "Keep metrics (days)", "int", "", min=1, max=3650),
