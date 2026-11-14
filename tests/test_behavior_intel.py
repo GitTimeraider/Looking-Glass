@@ -396,6 +396,8 @@ def test_threat_intel_canary_and_arp():
     async def body(pool):
         await pool.executemany("INSERT INTO intel_indicators (kind, value, feed, info) VALUES ($1, $2, $3, $4)", [
             ("domain", "evil.example", "urlhaus", "malware download site"),
+            ("domain", "s3-eu-west-1.amazonaws.com", "urlhaus", "malware download site"),
+            ("domain", "evil.s3.us-east-2.amazonaws.com", "threatfox", None),
             ("ip", "203.0.113.66", "feodo", "botnet command & control server"),
             ("ip", "198.51.100.9", "tor_relay", "Tor relay"),
             ("ja3", "e7d705a3286e19ea42f587b344ee6865", "sslbl_ja3", "Tofsee")])
@@ -404,6 +406,9 @@ def test_threat_intel_canary_and_arp():
         await db.copy_events([
             event(t, "unbound", severity=6, src_ip="192.168.1.30", domain="cdn.evil.example", action="pass"),
             event(t, "unbound", severity=6, src_ip="192.168.1.31", domain="pool.supportxmr.com", action="pass"),
+            event(t, "unbound", severity=6, src_ip="192.168.1.36", domain="polarsteps.s3-eu-west-1.amazonaws.com",
+                  action="pass"),
+            event(t, "unbound", severity=6, src_ip="192.168.1.37", domain="evil.s3.us-east-2.amazonaws.com", action="pass"),
             event(t, "firewall", severity=6, action="pass", src_ip="192.168.1.32", dst_ip="203.0.113.66", dst_port=443),
             event(t, "firewall", severity=6, action="pass", src_ip="192.168.1.33", dst_ip="198.51.100.9", dst_port=9001),
             event(t, "firewall", severity=6, action="pass", src_ip="192.168.1.34", dst_ip="198.51.100.9", dst_port=9001),
@@ -423,6 +428,8 @@ def test_threat_intel_canary_and_arp():
         feed = {a["ip"]: a for a in await rules(pool, "threat_feed")}
         assert feed["192.168.1.30"]["severity"] == "high" and "evil.example" in feed["192.168.1.30"]["title"]
         assert feed["192.168.1.32"]["severity"] == "critical"   # allowed connection to a botnet C2
+        assert "192.168.1.36" not in feed  # a bucket in front of a listed shared S3 endpoint
+        assert "evil.s3.us-east-2.amazonaws.com" in feed["192.168.1.37"]["title"]  # a listed bucket of its own
         assert [a["ip"] for a in await rules(pool, "crypto_mining")] == ["192.168.1.31"]
         assert [a["ip"] for a in await rules(pool, "tor")] == ["192.168.1.33"]  # .34 is allowed to use Tor
         assert "Tofsee" in (await rules(pool, "malicious_tls"))[0]["title"]
@@ -433,11 +440,59 @@ def test_threat_intel_canary_and_arp():
         await pool.execute("DELETE FROM alerts")
         await pool.execute("DELETE FROM kv WHERE key = 'wm:intel'")
         await db.kv_set("wm:intel", 0)
-        allow = Settings(intel_allow="evil.example, 203.0.113.66", intel_mining=False, intel_tor="off")
+        allow = Settings(intel_allow="evil.example, evil.s3.us-east-2.amazonaws.com, 203.0.113.66", intel_mining=False,
+                         intel_tor="off")
         await DetectionEngine(allow).threat_intel()
         assert not await rules(pool, "threat_feed") and not await rules(pool, "crypto_mining") and not await rules(pool, "tor")
         assert await pool.fetchval("SELECT count(*) FROM seen_domains") >= 2  # newly seen domains are tracked
     run(body)
+
+
+def test_shared_storage_endpoints_and_sites():
+    from lookingglass.intel import SharedHosts, check_shared_entry, shared_host
+    # the bare regional S3 endpoint is shared (URLhaus lists path-style URLs on it) - a bucket in front of it is not
+    for d in ("s3-eu-west-1.amazonaws.com", "s3.eu-west-1.amazonaws.com", "s3.amazonaws.com",
+              "s3.dualstack.us-east-2.amazonaws.com", "storage.googleapis.com", "blob.core.windows.net",
+              "ams3.digitaloceanspaces.com", "f003.backblazeb2.com", "raw.githubusercontent.com", "github.com"):
+        assert shared_host(d), d
+    for d in ("polarsteps.s3-eu-west-1.amazonaws.com", "evil.s3.us-east-2.amazonaws.com", "evil.s3.amazonaws.com",
+              "evil.storage.googleapis.com", "evil.blob.core.windows.net", "evil.ams3.digitaloceanspaces.com",
+              "amazonaws.com", "ec2-1-2-3-4.compute.amazonaws.com", "evil.github.io", "bad.example"):
+        assert not shared_host(d), d
+    # a URLhaus URL on the shared endpoint is dropped; a bucket of its own stays
+    uh = ('{"query_status": "ok", "urls": [{"host": "s3-eu-west-1.amazonaws.com"}, '
+          '{"host": "evil.s3.us-east-2.amazonaws.com"}]}')
+    assert parse_feed("urlhaus", uh) == [("domain", "evil.s3.us-east-2.amazonaws.com", "malware download site")]
+    # your own lists (Settings): add / remove entries
+    mine = SharedHosts("github.com, *.files.example", "objects.*.example.net")
+    assert mine("x.files.example") and mine("objects.fra.example.net") and not mine("b.objects.fra.example.net")
+    assert not mine("s3-eu-west-1.amazonaws.com") and not mine("cdn.discordapp.com")
+    assert parse_feed("urlhaus", uh, mine) == [("domain", "s3-eu-west-1.amazonaws.com", "malware download site"),
+                                               ("domain", "evil.s3.us-east-2.amazonaws.com", "malware download site")]
+    assert SharedHosts("", "")("github.com") is False
+    check_shared_entry("s3.*.amazonaws.com", wildcards=True)
+    check_shared_entry("*.files.example", wildcards=False)  # = files.example incl. subdomains
+    for bad, wild in (("*.com", True), ("s3.amazonaws.*", True), ("a.*.example", False), ("localhost", False),
+                      ("a b.com", False)):
+        with pytest.raises(ValueError):
+            check_shared_entry(bad, wildcards=wild)
+
+
+def test_shared_settings_validated_and_restorable():
+    from lookingglass import app_config
+    from lookingglass.config import SHARED_ENDPOINTS, SHARED_SITES
+    s = Settings()
+    assert s.intel_shared_sites.split(", ") == list(SHARED_SITES)
+    assert s.intel_shared_endpoints.split(", ") == list(SHARED_ENDPOINTS)
+    ep = app_config.BY_KEY["intel_shared_endpoints"]
+    assert app_config._coerce(ep, "s3-*.amazonaws.com\nobjects.*.example.net") == "s3-*.amazonaws.com, objects.*.example.net"
+    with pytest.raises(app_config.SettingsError, match=r"\*\.com"):
+        app_config._coerce(ep, "s3-*.amazonaws.com\n*.com")
+    with pytest.raises(app_config.SettingsError, match="not a domain"):
+        app_config._coerce(app_config.BY_KEY["intel_shared_sites"], "github.com\nfiles.*.example")
+    view = {f["key"]: f for f in app_config.public_view(s)["fields"]}
+    assert view["intel_shared_sites"]["default"] == ", ".join(SHARED_SITES)
+    assert "default" not in view["intel_allow"]  # empty by default: nothing to restore
 
 
 @needs_db
