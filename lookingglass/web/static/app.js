@@ -282,6 +282,8 @@ const LG = {
     const css = getComputedStyle(document.documentElement);
     Chart.defaults.color = css.getPropertyValue("--muted").trim() || "#8b98a9";
     Chart.defaults.borderColor = css.getPropertyValue("--border").trim() || "#263241";
+    // Settings › Display › Corners: chart tooltips are drawn on the canvas, out of reach of the CSS rule
+    Chart.defaults.plugins.tooltip.cornerRadius = document.documentElement.dataset.corners === "square" ? 0 : 6;
   },
   chart(id, config) {
     if (LG.charts[id]) LG.charts[id].destroy();
