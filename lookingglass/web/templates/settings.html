@@ -318,6 +318,8 @@ function wireTheme() {
   sync();
   const nav = document.getElementById("s-nav_position");
   if (nav) nav.onchange = () => LG.nav(nav.value);
+  const corners = document.getElementById("s-corners");
+  if (corners) corners.onchange = () => { document.documentElement.dataset.corners = corners.value; };
 }
 const gmsg = (g, html, ok) => { const m = document.getElementById("msg-" + g); m.innerHTML = html; m.className = "small " + (ok ? "ok-msg" : "err"); };
 document.querySelectorAll("[data-save]").forEach(b => b.onclick = async () => {

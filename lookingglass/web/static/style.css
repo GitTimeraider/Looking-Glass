@@ -600,3 +600,7 @@ nav.side .nlinks a { margin-left: 4px; }
 .refresh-period { margin-left: 6px; padding: 1px 8px; }
 .pending-period { opacity: .35; pointer-events: none; }
 .refresh-period:disabled { opacity: .6; cursor: progress; }
+
+/* Settings › Display › Corners: square = no rounded corners anywhere, except true circles (dots, spinner, swatches) */
+:root[data-corners=square] *, :root[data-corners=square] *::before, :root[data-corners=square] *::after { border-radius: 0 !important; }
+:root[data-corners=square] :is(.ev-dot, .dot, .spinner, .swatch) { border-radius: 50% !important; }
