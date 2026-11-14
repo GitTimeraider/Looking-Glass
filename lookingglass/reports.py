@@ -211,6 +211,8 @@ async def build_report(hours: float = 24, categories: Any = None) -> dict[str, A
 
     from . import rollup
 
+    failed: list[str] = []
+
     async def run(name: str, sql: str) -> tuple[str, list[dict[str, Any]]]:
         args: list[Any] = [secs]
         if name in _CATEGORY_PARAM:
@@ -226,10 +228,12 @@ async def build_report(hours: float = 24, categories: Any = None) -> dict[str, A
                 return name, db.records(await conn.fetch(sql, *args))
         except Exception as exc:  # noqa: BLE001
             log.warning("report section %s (%s h) failed: %r", name, hours, exc)
+            failed.append(name)
             return name, []
 
     results = await asyncio.gather(*(run(n, QUERIES[n]) for n in sections_for(cats)))
-    report: dict[str, Any] = {"hours": hours, "categories": cats, **dict(results)}
+    # the sections whose query failed (e.g. timed out): shown as "could not be counted" instead of "no data"
+    report: dict[str, Any] = {"hours": hours, "categories": cats, **dict(results), "failed": sorted(failed)}
     report["totals_by_source"] = [r for r in report["totals_by_source"] if event_category(r.get("source")) in cats]
     report["totals"] = {r["source"]: r["n"] for r in report["totals_by_source"]}
     return report

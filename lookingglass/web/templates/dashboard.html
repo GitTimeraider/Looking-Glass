@@ -178,8 +178,15 @@ function kpi(label, value, cls = "") { return `<div class="card kpi ${cls}"><div
 const cnt = (v, r) => LG.num(v);
 const SEV_RANK = ["info", "low", "medium", "high", "critical"];
 // every table: click a header to sort; the rows arrive sorted by their count ("n"), which is marked
-function T(sel, cols, rows, empty, order) {
+let failed = new Set();  // report sections whose query failed this time (timed out ...): not "no data"
+const FAILED_MSG = "Could not be counted this time (the query failed or timed out - see the container log). Try a shorter period.";
+function T(sel, cols, rows, empty, order, section) {
   if (!document.querySelector(sel)) return;  // widget not on the page
+  if (section && failed.has(section) && !(rows || []).length) empty = FAILED_MSG;
+  try { table(sel, cols, rows, empty, order); }
+  catch (e) { console.error(sel, e); document.querySelector(sel).innerHTML = `<div class="empty bad">Could not be shown: ${LG.esc(e.message)}</div>`; }
+}
+function table(sel, cols, rows, empty, order) {
   cols = cols.map(c => ({ ...c, l: c.l || (c.f === LG.flag ? "Country" : ""), desc: c.f === LG.ago || c.f === LG.time,
                           ...(c.f === LG.sev ? { s: r => SEV_RANK.indexOf(r.severity), desc: true } : {}) }));
   LG.table(sel, cols, rows, empty, undefined, { sortAll: true, order: order === undefined ? (cols.some(c => c.k === "n") ? { k: "n", dir: -1 } : null) : order });
@@ -195,7 +202,10 @@ function drawSources(r) {
     options: { maintainAspectRatio: false, animation: false, plugins: { legend: { position: "right", labels: { boxWidth: 10 } } } } });
 }
 function drawWeb(r) {
-  const ws = LG.sortRows(r.web_status.map(x => ({ label: x.status.replace("http_", ""), v: x.n })), sortWeb.mode());
+  const box = $("c-web") && $("c-web").parentElement;
+  if (box) box.dataset.empty = failed.has("web_status") ? FAILED_MSG
+    : "No nginx requests in this period (the nginx plugin on OPNsense - see Setup & status)";
+  const ws = LG.sortRows((r.web_status || []).map(x => ({ label: String(x.status || "other").replace("http_", ""), v: x.n })), sortWeb.mode());
   LG.chart("c-web", { type: "bar", data: { labels: ws.map(x => x.label),
     datasets: [{ data: ws.map(x => x.v), backgroundColor: ws.map(x => /^5/.test(x.label) ? "#ef4444" : /^4/.test(x.label) ? "#f59e0b" : "#22c55e") }] },
     options: { maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } } } });
@@ -243,9 +253,10 @@ function render(d) {
   const labels = buckets.map(b => LG.timeLabel(b, hours));
   LG.chart("c-timeline", { type: "bar", data: { labels, datasets: ds },
     options: { maintainAspectRatio: false, animation: false, scales: { x: { stacked: true, ticks: { maxTicksLimit: 12 } }, y: { stacked: true } }, plugins: { legend: { position: "bottom", labels: { boxWidth: 10 } } } } });
-  drawSources(d.report);
+  try { drawSources(d.report); } catch (e) { console.error("sources chart", e); }
 
   const r = d.report;
+  failed = new Set(r.failed || []);
   T("#t-alerts", [{k: "severity", l: "Sev", f: LG.sev}, {k: "title", l: "Alert", f: (v, row) => `<a href="/alerts#${row.id}">${LG.esc(v)}</a>`},
     {k: "count", l: "#", num: true}, {k: "last_seen", l: "Last", f: LG.ago}], r.alerts.filter(a => a.status === "open").slice(0, 12), "No open alerts 🎉", { k: "severity", dir: -1 });
   T("#t-blocked-src", [{k: "ip", l: "Source", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "ports", l: "Ports", num: true}, {k: "n", l: "Hits", num: true}], r.top_blocked_sources);
@@ -257,17 +268,21 @@ function render(d) {
   T("#t-dns", [{k: "domain", l: "Domain"}, {k: "clients", l: "Clients", num: true}, {k: "n", l: "Queries", num: true}], r.dns_top_domains);
   T("#t-dns-blocked", [{k: "domain", l: "Domain"}, {k: "blocklist", l: "List"}, {k: "n", l: "Hits", num: true}], r.dns_blocked);
   T("#t-dns-clients", [{k: "client", l: "Client", f: LG.ip}, {k: "blocked", l: "Blocked", num: true}, {k: "n", l: "Queries", num: true}], r.dns_clients);
-  drawWeb(r);
-  T("#t-web-tags", [{k: "tag", l: "Pattern"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Requests", num: true}], r.web_attack_tags, "No attack patterns seen");
-  T("#t-web-clients", [{k: "ip", l: "Client", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "errors", l: "4xx/5xx", num: true}, {k: "n", l: "Req", num: true}], r.web_top_clients);
+  try { drawWeb(r); } catch (e) { console.error("web chart", e); }
+  T("#t-web-tags", [{k: "tag", l: "Pattern"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Requests", num: true}], r.web_attack_tags,
+    r.web_status && r.web_status.length ? "No attack patterns seen" : "No nginx requests in this period", undefined, "web_attack_tags");
+  T("#t-web-clients", [{k: "ip", l: "Client", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "errors", l: "4xx/5xx", num: true}, {k: "n", l: "Req", num: true}], r.web_top_clients,
+    "No nginx requests in this period (the nginx plugin on OPNsense - see Setup & status)", undefined, "web_top_clients");
   T("#t-ids", [{k: "signature", l: "Signature"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_signatures, "No Suricata alerts");
   T("#t-ids-src", [{k: "ip", l: "Source", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "sigs", l: "Sigs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_top_sources, "No Suricata alerts");
   T("#t-ids-dst", [{k: "ip", l: "Destination", f: LG.ip}, {k: "port", l: "Port"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_top_targets, "No Suricata alerts");
   T("#t-ids-cls", [{k: "classification", l: "Classification"}, {k: "dropped", l: "Dropped", num: true}, {k: "n", l: "Hits", num: true}], r.ids_classifications, "No Suricata alerts");
   T("#t-ids-int", [{k: "ip", l: "Host", f: LG.ip}, {k: "sigs", l: "Sigs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_internal_hosts, "No internal host triggered Suricata");
   T("#t-cs", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}], r.crowdsec_scenarios);
-  T("#t-qf", [{k: "src", l: "Source", f: LG.ip}, {k: "dst", l: "Destination", f: LG.ip}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}], r.qfeeds_hits);
-  T("#t-talkers", [{k: "ip", l: "Host", f: LG.ip}, {k: "peers", l: "Peers", num: true}, {k: "n", l: "Events", num: true}], r.top_talkers_internal);
+  T("#t-qf", [{k: "src", l: "Source", f: LG.ip}, {k: "dst", l: "Destination", f: LG.ip}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}], r.qfeeds_hits,
+    "No Q-Feeds hits in this period (only logged firewall rules that use the Q-Feeds aliases count)", undefined, "qfeeds_hits");
+  T("#t-talkers", [{k: "ip", l: "Host", f: LG.ip}, {k: "peers", l: "Peers", num: true}, {k: "n", l: "Events", num: true}], r.top_talkers_internal,
+    "No firewall log lines from internal hosts - tick 'Log' on your LAN pass rules in OPNsense to see them", undefined, "top_talkers_internal");
   T("#t-devices", [{k: "mac", l: "MAC", f: LG.mac}, {k: "ip", l: "IP", f: LG.ip}, {k: "hostname", l: "Name"}, {k: "first_seen", l: "First seen", f: LG.ago}], r.new_devices, "No new devices", { k: "first_seen", dir: -1 });
 
   renderMore(d);

@@ -348,7 +348,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         has |= {k for k, n in (("crowdsec", kpi.get("crowdsec_fw")), ("qfeeds", kpi.get("qfeeds"))) if n}  # their firewall blocks
         enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
                    "nginx": settings.nginx_pull, "unbound": settings.unbound_query_pull}
-        enabled = {k: (v and settings.opnsense_enabled) or k in has for k, v in enabled.items()}
+        # a plugin the OPNsense API says is not installed (the poll answers 400 / 404): its widgets are hidden too while
+        # it sent nothing - otherwise they stay on the page empty, and look broken
+        jobs = await db.get_snapshot("poller_status") or {}
+        jobs = jobs if isinstance(jobs, dict) else {}
+        missing = {k for k, job in (("nginx", "nginx_logs"), ("qfeeds", "qfeeds"))
+                   if isinstance(jobs.get(job), dict) and jobs[job].get("unsupported") and not jobs[job].get("forbidden")}
+        enabled = {k: (v and settings.opnsense_enabled and k not in missing) or k in has for k, v in enabled.items()}
         for k, on in (("suricata", settings.ids_pull), ("crowdsec", settings.crowdsec_pull), ("qfeeds", settings.qfeeds_pull)):
             if not on:  # switched off: hidden like its Threats tab, even with older data in the period
                 enabled[k] = False
