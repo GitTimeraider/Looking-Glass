@@ -604,3 +604,12 @@ nav.side .nlinks a { margin-left: 4px; }
 /* Settings › Display › Corners: square = no rounded corners anywhere, except true circles (dots, spinner, swatches) */
 :root[data-corners=square] *, :root[data-corners=square] *::before, :root[data-corners=square] *::after { border-radius: 0 !important; }
 :root[data-corners=square] :is(.ev-dot, .dot, .spinner, .swatch) { border-radius: 50% !important; }
+
+/* the logo links to the Overview: it keeps its own look, not that of a menu link */
+nav.side a.brand, .mbar a.brand { display: block; color: var(--text); background: none; margin: 0; border-radius: 0; text-decoration: none; }
+nav.side a.brand { padding: 4px 10px 18px; }
+nav.side a.brand:hover, .mbar a.brand:hover { background: none; text-decoration: none; }
+nav.side a.brand:hover span, .mbar a.brand:hover span { color: var(--accent); }
+@media (min-width: 761px) {
+  :root[data-nav=top] nav.side a.brand, :root[data-nav=bottom] nav.side a.brand { padding: 4px 18px 4px 4px; }
+}
