@@ -613,3 +613,14 @@ nav.side a.brand:hover span, .mbar a.brand:hover span { color: var(--accent); }
 @media (min-width: 761px) {
   :root[data-nav=top] nav.side a.brand, :root[data-nav=bottom] nav.side a.brand { padding: 4px 18px 4px 4px; }
 }
+
+/* Settings › Display › Logo: an uploaded picture in front of the name (menu bar, phone bar, login page) */
+.brand-logo { height: 28px; width: auto; max-width: 140px; object-fit: contain; vertical-align: middle; margin: -4px 8px 0 0; border-radius: 0 !important; }
+.mbar .brand-logo { height: 24px; }
+.login-brand .brand-logo { height: 34px; }
+/* Settings › Display: picture fields (logo, favicon) */
+.image-field { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.image-field .image-preview { height: 40px; min-width: 40px; max-width: 200px; display: flex; align-items: center; justify-content: center;
+  padding: 4px; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted); font-size: 12px; }
+.image-field .image-preview img { max-height: 32px; max-width: 190px; }
+.image-field input[type=file] { max-width: 260px; }

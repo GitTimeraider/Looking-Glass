@@ -6,6 +6,7 @@ Values are applied onto the shared ``Settings`` object, so the rest of the code 
 """
 from __future__ import annotations
 
+import base64
 import ipaddress
 import re
 import logging
@@ -26,6 +27,7 @@ class Field:
     group: str
     label: str
     kind: str  # str | secret | bool | int | choice | text | list (one entry per line in the UI, stored ', ' separated)
+    #            | image (an uploaded picture, stored as a data:image/...;base64 URL; empty = the built-in one)
     #            | multi (a checkbox per choice, at least one; stored ', ' separated in the order of the choices)
     help: str = ""
     choices: tuple[str, ...] = ()
@@ -343,6 +345,12 @@ FIELDS: list[Field] = [
           "The preview changes as you pick; Save to keep it.", choices=("left", "right", "top", "bottom")),
     Field("corners", "display", "Corners", "choice", "rounded or square corners on cards, widgets, buttons and fields. "
           "The preview changes as you pick; Save to keep it.", choices=("rounded", "square")),
+    Field("app_name", "display", "Application name", "str", "Name on the menu bar, the login page and the browser "
+          "tab. Empty = Looking Glass.", placeholder="Looking Glass"),
+    Field("logo", "display", "Logo on the menu bar", "image", "A picture shown in front of the name on the menu bar "
+          "and the login page (PNG, JPEG, GIF, WebP or SVG, at most 256 KB; shown 28 pixels high). None = only the name."),
+    Field("favicon", "display", "Browser tab icon (favicon)", "image", "The icon in the browser tab and bookmarks "
+          "(PNG, ICO, GIF, WebP or SVG, at most 256 KB; square, e.g. 64×64). None = the built-in magnifier."),
     # data
     Field("retention_days", "data", "Keep events (days)", "int", "", min=1, max=3650),
     Field("metrics_retention_days", "data", "Keep metrics (days)", "int", "", min=1, max=3650),
@@ -442,6 +450,25 @@ class SettingsError(ValueError):
     pass
 
 
+# Settings › Display › Logo / favicon: an uploaded picture, stored as a data URL (served by /brand/<key>)
+IMAGE_TYPES = {"png": "image/png", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
+               "svg+xml": "image/svg+xml", "x-icon": "image/x-icon", "vnd.microsoft.icon": "image/x-icon"}
+IMAGE_RE = re.compile(r"data:image/(png|jpeg|gif|webp|svg\+xml|x-icon|vnd\.microsoft\.icon);base64,([A-Za-z0-9+/]+={0,2})")
+IMAGE_MAX_BYTES = 256 * 1024
+IMAGE_MAX_CHARS = 64 + (IMAGE_MAX_BYTES + 2) // 3 * 4
+
+
+def image_bytes(value: str) -> tuple[str, bytes] | None:
+    """(content type, bytes) of a stored picture, None when empty or invalid."""
+    m = IMAGE_RE.fullmatch(value or "")
+    if not m:
+        return None
+    try:
+        return IMAGE_TYPES[m.group(1)], base64.b64decode(m.group(2), validate=True)
+    except ValueError:
+        return None
+
+
 def _coerce(f: Field, value: Any) -> Any:
     if f.kind == "bool":
         if isinstance(value, str):
@@ -468,6 +495,18 @@ def _coerce(f: Field, value: Any) -> Any:
             raise SettingsError(f"{f.label}: tick at least one")
         return ", ".join(c for c in f.choices if c.lower() in wanted)
     v = "" if value is None else str(value).strip()
+    if f.kind == "image" and v:
+        m = IMAGE_RE.fullmatch(v)
+        if not m:
+            raise SettingsError(f"{f.label}: must be a PNG, JPEG, GIF, WebP, ICO or SVG picture")
+        if len(v) > IMAGE_MAX_CHARS:
+            raise SettingsError(f"{f.label}: the picture is too large (at most {IMAGE_MAX_BYTES // 1024} KB)")
+        try:
+            base64.b64decode(m.group(2), validate=True)
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: the picture is damaged") from exc
+    if f.key == "app_name" and len(v) > 60:
+        raise SettingsError(f"{f.label}: at most 60 characters")
     if f.kind == "choice" and v not in f.choices:
         raise SettingsError(f"{f.label}: must be one of {', '.join(f.choices)}")
     if f.key in ("opnsense_url", "ai_base_url", "backrest_url", "bichon_url") and v and \
@@ -634,6 +673,8 @@ def public_view(settings: Settings) -> dict[str, Any]:
             item["value"] = v
         if f.kind == "list" and (d := Settings.model_fields[f.key].default):
             item["default"] = d  # the UI offers to restore a built-in list
+        if f.group == "display":
+            item["default"] = Settings.model_fields[f.key].default  # Settings › Display › Restore defaults
         out.append(item)
     return {"groups": GROUPS, "fields": out, "version": STATE.version}
 
