@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import fnmatch
 import io
 import ipaddress
 import json
 import logging
+import re
 import socket
 import time
 from collections import defaultdict
@@ -29,7 +31,7 @@ import httpx
 
 from . import db
 from .behavior import Matcher
-from .config import Settings
+from .config import SHARED_ENDPOINTS, SHARED_SITES, Settings
 from .detections import (ALLOWED_AGG, FW_BLOCKED_AGG, FW_RULE_AGG, Rating, corroborate, dga_like, evidence, ignore_list,
                          ignored_domain, raise_alert, registered_domain, verdict)
 from .parsers.common import is_internal_ip
@@ -46,25 +48,8 @@ MINING_POOLS = (
     "xmrpool.eu", "zergpool.com", "zpool.ca", "xmrig.com", "gulf.moneroocean.stream", "pool.hashvault.pro",
     "mine.c3pool.com", "pool.supportxmr.com", "xmr.2miners.com", "rx.unmineable.com",
 )
-# Sites where anyone can host files / pages under a path (github.com/<user>/..., steamcommunity.com/profiles/<id>,
-# cdn.discordapp.com/attachments/...). URLhaus and ThreatFox list malware URLs on them (payloads in GitHub releases,
-# Steam profiles as C2 "dead drops"), but only the URL is bad: DNS shows just the host name, so listing the host would
-# flag every visit to the site. Domains incl. subdomains - only ones whose subdomains all belong to the platform
-# (not e.g. github.io or amazonaws.com, where <name>.github.io is someone's own site).
-SHARED_HOSTS = (
-    "github.com", "githubusercontent.com", "gitlab.com", "bitbucket.org", "sourceforge.net",
-    "steamcommunity.com", "steampowered.com", "steamstatic.com",
-    "discord.com", "discordapp.com", "discordapp.net", "discord.gg",
-    "google.com", "googleusercontent.com", "googleapis.com", "gstatic.com", "youtube.com", "youtu.be",
-    "dropbox.com", "dropboxusercontent.com", "mediafire.com", "mega.nz", "box.com",
-    "microsoft.com", "live.com", "onedrive.com", "1drv.ms", "office.com", "windows.net",
-    "apple.com", "icloud.com", "amazon.com", "cloudflare.com", "archive.org",
-    "telegram.org", "t.me", "telegram.me", "telegra.ph", "pastebin.com",
-    "twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com", "reddit.com", "vk.com",
-    "bit.ly", "tinyurl.com",
-)
 # raise when what parse_feed keeps changes: the feeds are then downloaded again right away instead of after a day
-FEED_FORMAT = 2
+FEED_FORMAT = 3
 # ThreatFox: IOCs below this confidence (0-100) are skipped
 THREATFOX_MIN_CONFIDENCE = 50
 # "sources": where a feed can be downloaded, tried in order until one answers with entries - a list that moved or
@@ -129,9 +114,61 @@ def _ip(value: str) -> str | None:
         return None
 
 
-def shared_host(domain: str) -> bool:
-    d = domain.lower().rstrip(".")
-    return any(d == h or d.endswith("." + h) for h in SHARED_HOSTS)
+def _entries(value: Any, wildcard_ok: bool) -> list[str]:
+    """A setting (', ' separated) or a tuple -> lower-case names; a site's leading *. is dropped (subdomains count)."""
+    items = re.split(r"[,;\s]+", value) if isinstance(value, str) else list(value)
+    out = [str(x).strip().lower().strip(".") for x in items if str(x).strip()]
+    return out if wildcard_ok else [x.removeprefix("*.") for x in out]
+
+
+class SharedHosts:
+    """Hosts that many unrelated people use, where a feed's malware URL says nothing about a DNS lookup of the host
+    (Settings › Threat intel & traps › Shared sites / Shared storage endpoints).
+
+    * sites: the domain and all its subdomains (github.com, cdn.discordapp.com)
+    * endpoints: only the exact name, * = one label (s3-*.amazonaws.com); a name in front of an endpoint is one
+      customer's own bucket / account and stays matchable, even below a site (<account>.blob.core.windows.net)."""
+
+    def __init__(self, sites: Any = SHARED_SITES, endpoints: Any = SHARED_ENDPOINTS) -> None:
+        self.sites = tuple(_entries(sites, wildcard_ok=False))
+        self.endpoints = tuple(tuple(e.split(".")) for e in _entries(endpoints, wildcard_ok=True))
+
+    @classmethod
+    def of(cls, settings: Settings) -> SharedHosts:
+        return cls(settings.intel_shared_sites, settings.intel_shared_endpoints)
+
+    def _endpoint(self, labels: list[str]) -> bool:
+        return any(len(e) == len(labels) and all(fnmatch.fnmatchcase(lb, p) for lb, p in zip(labels, e))
+                   for e in self.endpoints)
+
+    def __call__(self, domain: str) -> bool:
+        d = domain.lower().rstrip(".")
+        labels = d.split(".")
+        if self._endpoint(labels):
+            return True
+        if any(self._endpoint(labels[i:]) for i in range(1, len(labels) - 1)):
+            return False  # <bucket>.<endpoint>: one customer's own
+        return any(d == h or d.endswith("." + h) for h in self.sites)
+
+    def signature(self) -> list:
+        return [list(self.sites), [".".join(e) for e in self.endpoints]]
+
+
+shared_host = SharedHosts()  # the built-in lists
+
+
+_LABEL = re.compile(r"^(?!-)[a-z0-9_-]{1,63}$")
+_WILD_LABEL = re.compile(r"^[a-z0-9_*-]{1,63}$")
+
+
+def check_shared_entry(value: str, wildcards: bool) -> None:
+    """A valid shared site (domain) / endpoint (domain, * per label) - or ValueError naming it."""
+    v = value.lower().strip().rstrip(".")
+    labels = (v if wildcards else v.removeprefix("*.")).split(".")
+    if len(labels) < 2 or not all((_WILD_LABEL if wildcards else _LABEL).match(lb) for lb in labels):
+        raise ValueError(f"'{value}' is not a domain name" + (" (* = one label, e.g. s3.*.amazonaws.com)" if wildcards else ""))
+    if "*" in labels[-1] or "*" in labels[-2]:
+        raise ValueError(f"'{value}': no * in the last two labels (it would match whole top-level domains)")
 
 
 def _threatfox_row(value: str, kind: str, threat: str, malware: str) -> tuple[str, str, str | None] | None:
@@ -158,8 +195,9 @@ def _api_data(name: str, text: str) -> list[dict[str, Any]]:
     return (r.get("urls") if name == "urlhaus" else r.get("data")) or []
 
 
-def parse_feed(name: str, text: str) -> list[tuple[str, str, str | None]]:
-    """(kind, value, info) rows of one downloaded feed (URLhaus / ThreatFox: the API's JSON or the old download)."""
+def parse_feed(name: str, text: str, shared: SharedHosts = shared_host) -> list[tuple[str, str, str | None]]:
+    """(kind, value, info) rows of one downloaded feed (URLhaus / ThreatFox: the API's JSON or the old download),
+    without the hosts of shared sites / storage endpoints."""
     out: list[tuple[str, str, str | None]] = []
     if name in ("urlhaus", "threatfox") and text.lstrip().startswith("{"):
         for e in _api_data(name, text):
@@ -173,7 +211,7 @@ def parse_feed(name: str, text: str) -> list[tuple[str, str, str | None]]:
             elif row := _threatfox_row(str(e.get("ioc") or "").strip(), str(e.get("ioc_type") or ""),
                                        str(e.get("threat_type") or ""), str(e.get("malware_printable") or "")):
                 out.append(row)
-        return _unique(out)
+        return _unique(out, shared)
     lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
     if name == "urlhaus":
         for ln in lines:
@@ -203,7 +241,7 @@ def parse_feed(name: str, text: str) -> list[tuple[str, str, str | None]]:
             ip = _ip(parts[1]) if parts[0] == "ExitAddress" and len(parts) > 1 else _ip(ln)
             if ip:
                 out.append(("ip", ip, "Tor exit node"))
-    return _unique(out)
+    return _unique(out, shared)
 
 
 def _confidence(value: Any) -> int:
@@ -213,9 +251,9 @@ def _confidence(value: Any) -> int:
         return 100  # not given: keep
 
 
-def _unique(rows: list[tuple[str, str, str | None]]) -> list[tuple[str, str, str | None]]:
-    """One row per (kind, value), without the hosts of shared sites (SHARED_HOSTS)."""
-    return list({(k, v): (k, v, i) for k, v, i in rows if not (k == "domain" and shared_host(v))}.values())
+def _unique(rows: list[tuple[str, str, str | None]], shared: SharedHosts = shared_host) -> list[tuple[str, str, str | None]]:
+    """One row per (kind, value), without the hosts of shared sites / storage endpoints."""
+    return list({(k, v): (k, v, i) for k, v, i in rows if not (k == "domain" and shared(v))}.values())
 
 
 class Intel:
@@ -253,7 +291,7 @@ class Intel:
                     raise RuntimeError(f"HTTP {r.status_code}: abuse.ch " + ("refused the Auth-Key - check it under Settings › "
                                        "Threat intel & traps" if key else "wants an Auth-Key (Settings › Threat intel & traps)"))
                 r.raise_for_status()
-                rows = parse_feed(name, r.text)
+                rows = parse_feed(name, r.text, SharedHosts.of(self.s))
                 if not rows:
                     raise RuntimeError("the download contained no entries")
                 return rows, url
@@ -266,6 +304,7 @@ class Intel:
         status: dict[str, Any] = await db.kv_get("intel:status", {}) or {}
         headers = {"User-Agent": "Looking-Glass (self-hosted security monitor)"}
         changed = False
+        shared_sig = SharedHosts.of(self.s).signature()
         async with httpx.AsyncClient(timeout=60, follow_redirects=True, headers=headers) as client:
             for name, feed in FEEDS.items():
                 st = status.get(name) or {}
@@ -281,6 +320,7 @@ class Intel:
                     own = None
                 # changed parsing or your own addresses for this feed: download again now
                 if not force and st.get("ok") and st.get("format") == FEED_FORMAT and st.get("own") == own and \
+                        st.get("shared") == shared_sig and \
                         time.time() - st.get("updated", 0) < feed["hours"] * 3600:
                     continue
                 try:
@@ -290,7 +330,7 @@ class Intel:
                         await con.copy_records_to_table("intel_indicators", columns=["kind", "value", "feed", "info"],
                                                         records=[(k, v, name, i) for k, v, i in rows])
                     status[name] = {"enabled": True, "ok": True, "count": len(rows), "updated": time.time(), "error": None,
-                                    "source": url, "format": FEED_FORMAT, "own": own}
+                                    "source": url, "format": FEED_FORMAT, "own": own, "shared": shared_sig}
                     changed = True
                     log.info("threat feed %s: %d entries from %s", name, len(rows), url)
                 except Exception as exc:  # noqa: BLE001
@@ -306,12 +346,14 @@ class Intel:
         """Open feed alerts for a shared site (raised before those were left out of the feeds): closed."""
         rows = await db.pool().fetch("SELECT id, data->>'indicator' AS ind FROM alerts WHERE rule = 'threat_feed' "
                                      "AND status <> 'closed' AND data ? 'indicator'")
-        if ids := [r["id"] for r in rows if r["ind"] and shared_host(r["ind"])]:
+        shared = SharedHosts.of(self.s)
+        if ids := [r["id"] for r in rows if r["ind"] and shared(r["ind"])]:
             await db.pool().execute(
                 "UPDATE alerts SET status = 'closed', close_reason = 'resolved', description = coalesce(description, '') || $2 "
                 "WHERE id = ANY($1::bigint[])", ids, "\n\nClosed automatically: the feed listed a single malicious URL "
-                "on this site, not the site itself - no longer flagged.")
-            log.info("closed %d threat feed alert(s) for shared sites (github.com, steamcommunity.com, ...)", len(ids))
+                "on this shared site / storage endpoint, not the host itself - no longer flagged (Settings › Threat "
+                "intel & traps › Shared sites / Shared storage endpoints).")
+            log.info("closed %d threat feed alert(s) for shared sites / storage endpoints", len(ids))
 
     async def updater(self) -> None:
         await asyncio.sleep(60)
@@ -353,11 +395,15 @@ class Intel:
         def first(feeds: dict[str, str | None]) -> tuple[str, str | None]:
             return next(iter(feeds.items()))
 
+        shared = SharedHosts.of(self.s)
+
         def feed_hit(domain: str) -> tuple[str, str, str | None] | None:
+            """The listed name: the domain itself or a parent - never a shared site / storage endpoint (a listed
+            s3-eu-west-1.amazonaws.com is one bad URL there, not every bucket in front of it)."""
             parts = domain.lower().rstrip(".").split(".")
             for i in range(len(parts) - 1):
                 cand = ".".join(parts[i:])
-                if cand in domains:
+                if cand in domains and not shared(cand):
                     return (cand, *first(domains[cand]))
             return None
 

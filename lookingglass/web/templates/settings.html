@@ -264,7 +264,7 @@ function fieldHtml(f) {
   else input = `<input id="${id}" type="${f.kind === "int" ? "number" : "text"}" value="${LG.esc(f.value ?? "")}" placeholder="${LG.esc(f.placeholder || "")}"
       ${f.min != null ? `min="${f.min}"` : ""} ${f.max != null ? `max="${f.max}"` : ""}>`;
   return f.kind === "bool" ? `<div class="setting">${input}${help}</div>`
-    : `<div class="setting"><label for="${id}"><b>${LG.esc(f.label)}</b>${f.kind === "secret" ? ` <span class="badge ${f.is_set ? "ok" : ""}">${f.is_set ? "set" : "empty"}</span>` : ""}${f.kind === "list" ? ` <span class="small muted" data-count-for="${id}"></span>` : ""}</label>${input}${f.kind === "list" ? `<div class="small muted">One per line.</div>` : ""}${help}</div>`;
+    : `<div class="setting"><label for="${id}"><b>${LG.esc(f.label)}</b>${f.kind === "secret" ? ` <span class="badge ${f.is_set ? "ok" : ""}">${f.is_set ? "set" : "empty"}</span>` : ""}${f.kind === "list" ? ` <span class="small muted" data-count-for="${id}"></span>` : ""}</label>${input}${f.kind === "list" ? `<div class="small muted">One per line.${f.default ? ` <button type="button" class="secondary small" data-restore="${f.key}">Restore built-in list</button>` : ""}</div>` : ""}${help}</div>`;
 }
 const splitList = v => String(v || "").split(/[,;\n]+/).map(x => x.trim()).filter(Boolean);
 function wireLists() {
@@ -276,6 +276,15 @@ function wireLists() {
       t.rows = Math.min(14, Math.max(3, t.value.split("\n").length + 1));  // longer lists scroll inside the box
     };
     t.oninput = fit; fit();
+  });
+  // a list with a built-in default: put the current built-in entries back (Save to keep them); your own entries that are
+  // not in it are kept below them
+  document.querySelectorAll("[data-restore]").forEach(b => b.onclick = () => {
+    const f = FIELDS.find(x => x.key === b.dataset.restore), t = document.getElementById("s-" + f.key);
+    const builtin = splitList(f.default), lower = new Set(builtin.map(x => x.toLowerCase()));
+    const own = splitList(t.value).filter(x => !lower.has(x.toLowerCase()));
+    if (own.length && !confirm(`Also keep your own ${own.length} ${own.length === 1 ? "entry" : "entries"} below the built-in list?\n\n${own.join("\n")}\n\nOK = keep them, Cancel = built-in list only`)) own.length = 0;
+    t.value = builtin.concat(own).join("\n"); t.oninput();
   });
 }
 function groupValues(g) {
