@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     time_format: str = "24h"
     theme: str = "dark"
     accent: str = "blue"
+    nav_position: str = "left"
     dns_ignore_domains: str = ""
     # behaviour & anomaly detection (Settings › Behaviour & ML)
     behavior_enabled: bool = True
