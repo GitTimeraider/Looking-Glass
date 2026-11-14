@@ -11,9 +11,8 @@
 </div>
 <details class="charts-fold" id="dev-charts" open>
   <summary>Charts <span class="muted small">(click to hide - the device list gets the room)</span></summary>
-  <div class="grid g3">
+  <div class="grid g2">
     <div class="card"><h3>Devices by interface</h3><div class="chart-box sm"><canvas id="c-if"></canvas></div></div>
-    <div class="card"><h3>Top vendors</h3><div class="chart-box sm"><canvas id="c-vendor"></canvas></div></div>
     <div class="card"><h3>Most active devices (24h events)</h3><div class="chart-box sm"><canvas id="c-active"></canvas></div></div>
   </div>
 </details>
@@ -71,7 +70,6 @@ async function load() {
     k("New in 7 days", devs.filter(d => new Date(d.first_seen) > week).length, "warn") + k("Untrusted", devs.filter(d => !d.trusted).length) +
     k("With open alerts", devs.filter(d => d.alerts > 0).length, devs.some(d => d.alerts > 0) ? "bad" : "");
   LG.pieChart("c-if", count(devs, d => d.interface).slice(0, 8).map(([label, v]) => ({ label, v })));
-  LG.barChart("c-vendor", count(devs, d => (d.vendor || "").split(/[ ,]/)[0]).slice(0, 10).map(([label, v]) => ({ label, v })), true);
   LG.barChart("c-active", [...devs].sort((a, b) => b.events - a.events).slice(0, 10).map(d => ({ label: d.hostname || d.ip || d.mac, v: d.events })), true);
   render();
 }

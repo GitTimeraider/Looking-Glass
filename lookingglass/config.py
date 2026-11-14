@@ -81,9 +81,12 @@ class Settings(BaseSettings):
     timezone: str = "UTC"
     time_format: str = "24h"
     theme: str = "dark"
-    accent: str = "blue"
-    nav_position: str = "left"
-    corners: str = "rounded"
+    accent: str = "purple"
+    nav_position: str = "top"
+    corners: str = "square"
+    app_name: str = ""  # empty = Looking Glass
+    logo: str = ""  # data:image/...;base64 URL shown in front of the name on the menu bar, empty = none
+    favicon: str = ""  # data:image/...;base64 URL, empty = the built-in magnifier icon
     dns_ignore_domains: str = ""
     # behaviour & anomaly detection (Settings › Behaviour & ML)
     behavior_enabled: bool = True

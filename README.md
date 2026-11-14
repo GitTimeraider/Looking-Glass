@@ -17,7 +17,7 @@ Image: `ghcr.io/gittimeraider/looking-glass:latest` (linux/amd64 + linux/arm64),
 ## Screenshots
 
 *Demo data: simulated OPNsense traffic and the mock OPNsense / UniFi / Unraid / AI servers from `tools/`. Shown with
-the purple accent, square corners and the menu bar on the right (Settings › Display).*
+the default look: dark theme, purple accent, menu bar at the top and square corners (Settings › Display).*
 
 ![Overview: events, blocks, alerts and logins of the last 24 hours](docs/screenshots/overview.png)
 
@@ -460,12 +460,17 @@ Next logins ask for password + TOTP code or passkey.
 * **Ingestion & network** tab – set *Syslog allowed senders* to your OPNsense IP and your *Time zone*.
 * **Display** tab – *Time format*: 24-hour (default, 14:05), 12-hour (2:05 PM) or your browser's default - for the
   web UI, notification mails and the AI analyst (mails and AI write times in your *Time zone*).
-  *Theme*: dark (default), light, or auto (follows the browser / operating system), and an *Accent color* (blue,
-  indigo, purple, pink, red, orange, green, teal, cyan or gray) for buttons, links and a light tint of the background -
-  e.g. light + purple, dark + purple. The page previews your pick right away; *Save* keeps it.
-  *Menu bar position*: left (default), right, top or bottom - top / bottom turn the sidebar into a horizontal bar
-  whose sections open as menus. Phones always use the menu button.
-  *Corners*: rounded (default) or square, for cards, widgets, buttons and fields.
+  *Theme*: dark (default), light, or auto (follows the browser / operating system), and an *Accent color* (purple is
+  the default; blue, indigo, pink, red, crimson, dark red, orange, green, teal, cyan or gray) for buttons, links and a
+  light tint of the background - e.g. light + purple, dark + purple. The page previews your pick right away; *Save*
+  keeps it.
+  *Menu bar position*: top (default), bottom, left or right - top / bottom are a horizontal bar whose sections open as
+  menus, left / right a sidebar. Phones always use the menu button.
+  *Corners*: square (default) or rounded, for cards, widgets, buttons and fields.
+  *Application name*: the name on the menu bar, the login page and the browser tab (empty = Looking Glass).
+  *Logo on the menu bar*: upload a picture (PNG, JPEG, GIF, WebP or SVG, at most 256 KB) shown in front of the name.
+  *Browser tab icon (favicon)*: upload your own icon instead of the built-in magnifier.
+  **Restore defaults** puts every display setting (including name, logo and favicon) back to the built-in values.
 * **Unraid servers** / **Data & detection** tabs – optional (see the sections below).
 
 Everything applies immediately. API keys, secrets and passwords are encrypted (Fernet/AES) with a key that is

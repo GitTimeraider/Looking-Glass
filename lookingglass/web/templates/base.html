@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title }} · Looking Glass</title>
+  <title>{{ title }} · {{ brand().name if brand is defined else 'Looking Glass' }}</title>
   <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='13' cy='13' r='9' fill='none' stroke='%233b82f6' stroke-width='4'/><path d='M20 20l9 9' stroke='%233b82f6' stroke-width='5' stroke-linecap='round'/></svg>">
+  {% if brand is defined and brand().favicon %}<link rel="icon" href="{{ brand().favicon }}">{% else %}<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='13' cy='13' r='9' fill='none' stroke='%233b82f6' stroke-width='4'/><path d='M20 20l9 9' stroke='%233b82f6' stroke-width='5' stroke-linecap='round'/></svg>">{% endif %}
   <script src="/static/vendor/chart.umd.min.js"></script>
   <script>window.LG_TIME_FORMAT = "{{ time_format() if time_format is defined else 'browser' }}";</script>
   <script src="/static/app.js?v={{ asset_v }}"></script>
@@ -16,13 +16,13 @@
   <button type="button" class="menu-btn" id="menu-btn" aria-label="Open menu" aria-controls="side" aria-expanded="false">
     <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
   </button>
-  <a href="/" class="brand" title="Overview">Looking<span>Glass</span></a>
+  <a href="/" class="brand" title="Overview">{% set b = brand() if brand is defined else none %}{% if b and b.logo %}<img class="brand-logo" src="{{ b.logo }}" alt="">{% endif %}{% if b and b.custom_name %}{{ b.name }}{% else %}Looking<span>Glass</span>{% endif %}</a>
   <span class="mbar-title">{{ title }}</span>
 </header>
 <div class="scrim" id="scrim"></div>
 <div class="layout">
   <nav class="side" id="side">
-    <a href="/" class="brand" title="Overview">Looking<span>Glass</span></a>
+    <a href="/" class="brand" title="Overview">{% set b = brand() if brand is defined else none %}{% if b and b.logo %}<img class="brand-logo" src="{{ b.logo }}" alt="">{% endif %}{% if b and b.custom_name %}{{ b.name }}{% else %}Looking<span>Glass</span>{% endif %}</a>
     {% macro dash_links(group) %}{% for key, label, grp in dashboards if grp == group %}<a href="/dash/{{ key }}" class="{{ 'active' if path == '/dash/' ~ key }}">{{ label }}</a>{% endfor %}{% endmacro %}
     <div class="ngrp"><div class="grp" tabindex="-1">General</div><div class="nlinks">
       <a href="/" class="{{ 'active' if path == '/' }}">Overview</a>
