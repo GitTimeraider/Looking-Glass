@@ -1,0 +1,94 @@
+# Using Looking Glass
+
+[← Back to the README](../README.md)
+
+A tour of the pages: overview, alerts, dashboards, infrastructure, devices, event search, reports and the AI analyst.
+
+## Pages
+
+* **Overview** – KPIs and the most important tables of every source in one page.
+* **Alerts** – detections ranked by severity, naming the device behind an IP (from the device list) and the evidence
+  (e.g. the non-existent domains looked up); **Events** opens exactly the events behind an alert; acknowledge / close;
+  **Ask AI** investigates one alert.
+* **Overview** – key figures, events over time and per source, open alerts and the top-N tables of every source.
+  **Customize** (top right) lets you drag widgets around (or use ◀ ▶), make them ⅓ / ⅔ / full width and normal or
+  tall, remove them and add others (e.g. *Firewall system*); *Done* saves the layout for your account, *Reset to
+  default* brings back the standard one. Widgets of sources you switched off (e.g. Suricata) hide themselves.
+  More widgets are under *+ Add widget…*, grouped:
+  * *Threats* - Suricata (top sources, targeted hosts, classifications, internal hosts alerting, **dropped
+    signatures**), **threat blocks by source**, **CrowdSec firewall: top blocked IPs**, **devices with security
+    events** (with where they are connected in UniFi);
+  * *UniFi* - **devices now** (state, clients, firmware updates), **devices offline / restarted**, **Wi-Fi clients
+    dropping / roaming**;
+  * *Unraid* - **storage** (used, free, errors, temperature per array / pool), **CPU / memory**, **containers stopped /
+    unhealthy** now, **notifications**, **container log errors**;
+  * *Backups* - **backup jobs** of every tool (Backrest, Bichon) with their state.
+  The UniFi, Unraid and Backups widgets hide themselves while that part is not set up.
+* **Menu**: *General* (overview, alerts, event search over all sources), *OPNsense security* (the OPNsense security
+  dashboards; other security products get their own group), *Infrastructure* (OPNsense and Unraid hardware & status,
+  devices), *Tools* (system logs, reports, AI analyst) and *Admin*.
+* **Dashboards** (one per function, each with KPIs, charts over time, breakdowns, top-N tables and a live log).
+  **Everything is clickable**: a tile, a bar, a pie slice, a moment in a time chart or a table row opens *Event search*
+  with exactly those events (same filters and time span):
+  *Firewall* (actions, interfaces, protocols, ports, countries, rules, allowed inbound, internal hosts being blocked),
+  *DNS* (queries vs. blocked, types, rcodes, blocklists, clients, NXDOMAIN, tunneling candidates),
+  *Web server* (status classes, attack patterns over time, vhosts, paths, 4xx probing, user agents, clients),
+  *Threats* with four tabs: *Main* (all three sources together: key figures, threat events and blocks per source,
+  alerts by rule/severity, top attackers, blocklists, live log), *CrowdSec* (alerts, decisions, blocklist blocks over
+  time, direction, countries, ports, blocked IPs), *Q-Feeds* (hits in / out over time, interfaces, matches, internal
+  hosts contacting listed addresses, ports) and *Suricata* (alerts by priority, alerted vs dropped, classifications,
+  app protocols, countries, signatures with SID, interfaces, sources, targeted hosts, internal hosts alerting, TLS
+  JA3/JA4 fingerprints and SNI). Switching a source off (Settings › OPNsense › Pull …) hides its tab, its tiles
+  and its Overview widgets right away;
+  */dash/threats#suricata* opens a tab directly,
+  *Authentication* (failed/successful logins, IPs with failed logins, usernames tried, config changes),
+  *VPN* (live WireGuard peers, OpenVPN sessions and IPsec tunnels, connects/disconnects, VPN logins) and
+  *System logs* (OPNsense and Unraid, per host and program).
+* **Infrastructure › OPNsense** – tab *Overview* (hardware & performance): CPU, load, memory/swap/ARC, temperatures, disk usage, states,
+  interface throughput/errors, gateway latency/loss, services, ARP/DHCP devices, top processes; tab *System & network*:
+  system, firmware, disks & temperature, gateways, interfaces.
+* **Infrastructure › UniFi** – tabs *Overview* (APs / switches online, clients over time per SSID and AP, Wi-Fi
+  experience, device load and uplink throughput, health), *Devices* (firmware/updates, uptime, clients, radios, uplink;
+  click a switch for its ports with PoE, traffic and errors), *Clients* (filter and sort by name, AP / switch port,
+  SSID, signal, traffic) and *Neighbouring Wi-Fi* (foreign APs, evil-twin warnings).
+* **UniFi network › Wi-Fi & clients** – connects, roams, device offline and rogue events over time, clients per SSID /
+  AP, weakest signal, most roaming, top traffic, device events and clients with security events (see above).
+* **Devices** – everything connected to OPNsense (ARP + DHCP leases from dnsmasq / Kea / ISC + UniFi clients):
+  online state, name,
+  IP, MAC, vendor, interface, lease, first/last seen, events/blocks/DNS queries/alerts per device; mark devices as
+  trusted, rename them, add notes.
+  Names come from, best first: a name you typed (never replaced; clear it to go back to automatic) → OPNsense's own interfaces (the ARP table marks their addresses *permanent*): one device per interface, "OPNsense (LAN)", "OPNsense (VLAN_IoT)" - also when VLANs share the port's MAC; alerts, counts and learned behaviour follow each interface's own addresses → a dnsmasq
+  *Hosts* entry for the MAC or IP (*Services > Dnsmasq DNS & DHCP > Hosts*) → the host name the device sent with its
+  DHCP request → the name Unbound shows for the IP → the ARP table. The placeholders dnsmasq (`*`) and the
+  ARP table (`-`, `?`) use for "no name" are ignored. A device that still has no name sends none and has no Hosts
+  entry: add one in OPNsense (host name + its MAC) or name it on the Devices page.
+  Offline: once it leaves the ARP table.
+  Devices stay on the list until you **delete** them (Devices page, next to *edit*; what was learned about them goes
+  too) or *Settings › Data & detection › Remove devices not seen for (days)* removes them (default 0 = never; trusted
+  devices, devices you named, devices with notes and devices with a type or their own settings are kept).
+* **Unraid** – see [Unraid](unraid.md).
+* **Settings › Data & detection › Delete collected data** – wipe logs/events, alerts, graphs, reports, AI conversations
+  and optionally the device list to start over; or only the
+  backup run history (what Backrest still lists comes back on its next poll). Settings, credentials, accounts/MFA, Unraid servers and the encryption
+  key are kept; needs your password and typing DELETE.
+* **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range; filters that come
+  from a dashboard click (program, host, domain, user, port, protocol, interface, country, time span, any data field)
+  show as removable chips. Click an event for all its fields; **Ask AI** there (with the AI analyst enabled) explains
+  that one event - what it means, whether it is normal and what to do - looking at what the same address did around
+  it, how often it happens and alerts about its addresses.
+* **Reports** – 24h / 7d / 30d reports, optionally with an AI-written analysis; print to PDF, download JSON or
+  **Email** it. Tick what a report covers: **OPNsense** (firewall, DNS, web server, Suricata, CrowdSec, Q-Feeds,
+  logins), **UniFi** (APs / switches going offline, clients dropping off or roaming, UniFi events, clients with
+  security events), **Unraid** (array / pool state and free space, notifications, container log errors, CPU / memory)
+  and **Backups** (jobs, failures). All ticked (the default) is the full *security report*; otherwise only those parts
+  are collected (faster), the alerts are limited to their rules (the groups of *Settings › Alert filters*), the title
+  says what it covers (*Weekly Unraid + Backups report*) and the AI analysis reviews only those. *Settings › Reports*:
+  a *Scheduled report* every N days (1 = daily, 7 = weekly; it covers those days) at the hour you choose, covering what
+  is ticked under *What the report covers*, optionally mailed to the addresses under *Email the report to* (with the
+  mail server from *Settings › Email & notifications*).
+* **AI Analyst** – chat with the model (any OpenAI-compatible endpoint; with Claude it uses Anthropic's
+  [OpenAI SDK compatibility layer](https://platform.claude.com/docs/en/api/openai-sdk)). It can run read-only SQL against the log database, search events, profile an
+  IP, read alerts, OPNsense + Unraid status and traffic statistics, and answers with evidence and remediation steps.
+  Credentials (users, MFA secrets, API keys) are never accessible to it. Data sent to the AI provider consists of the
+  query results the model asks for (IPs, domains, log lines) - with **privacy mode** on, local addresses and names
+  in them are pseudonyms (see [AI privacy mode](ai-analyst.md#ai-privacy-mode-pseudonyms)). It also reads your comments on alerts.
