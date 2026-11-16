@@ -30,7 +30,7 @@
 <section data-s="clients" hidden>
   <div class="filters"><input id="cfilter" placeholder="Filter: name, IP, MAC, vendor, AP, SSID…" style="min-width:280px">
     <select id="ctype"><option value="">all clients</option><option value="wifi">Wi-Fi</option><option value="wired">wired</option>
-      <option value="weak">weak signal (&lt; -75 dBm)</option><option value="guest">guests</option></select>
+      <option value="weak">weak signal (&lt; -75 dBm)</option><option value="guest">guests</option><option value="sec">with security findings (24 h)</option></select>
     <span class="muted small" id="cinfo"></span></div>
   <div class="card"><div id="clients"></div></div>
 </section>
@@ -125,18 +125,28 @@ function ports(mac) {
     {k: "errors", l: "Errors", num: true, f: v => v ? `<b class="state-EXITED">${v}</b>` : "0"}, {k: "dropped", l: "Dropped", num: true}],
     d.ports || [], "No port data", undefined, { sortAll: true, order: { k: "idx", dir: 1 } });
 }
+// OPNsense findings for a client over the last 24 hours (open alerts and threat hits weigh most)
+const secScore = x => x ? x.alerts * 1e9 + x.threats * 1e6 + x.fw + x.dns : 0;
+function secBadge(r) {
+  const x = r.security;
+  if (!x) return "";
+  const b = [[x.alerts, "alert", "high"], [x.threats, "threat", "high"], [x.fw, "fw", "warn"], [x.dns, "dns", "warn"]]
+    .filter(([n]) => n).map(([n, l, c]) => `<span class="badge ${c}">${n.toLocaleString()} ${l}${n === 1 || c === "warn" ? "" : "s"}</span>`);
+  return `<a href="/events?ip=${encodeURIComponent(r.ip)}&hours=24" style="display:inline-flex;flex-wrap:wrap;gap:3px;text-decoration:none" onclick="event.stopPropagation()" title="Last 24 hours: ${x.alerts} open alerts, ${x.threats} Suricata / CrowdSec / Q-Feeds events, ${x.fw} firewall blocks, ${x.dns} blocked DNS lookups - click for this client's events">${b.join("")}</a>`;
+}
 function clients() {
   const f = document.getElementById("cfilter").value.toLowerCase(), t = document.getElementById("ctype").value;
   const rows = (D.clients || []).map(c => ({ ...c, name: c.known_as || c.alias || c.hostname || "",
-    where: c.wired ? `${c.switch || "?"}${c.port ? " port " + c.port : ""}` : `${c.ap || "?"}`, traffic: (c.tx_bytes || 0) + (c.rx_bytes || 0) }))
+    where: c.wired ? `${c.switch || "?"}${c.port ? " port " + c.port : ""}` : `${c.ap || "?"}`, traffic: (c.tx_bytes || 0) + (c.rx_bytes || 0),
+    sec: secScore(c.security) }))
     .filter(c => (!f || [c.name, c.ip, c.mac, c.vendor, c.where, c.ssid, c.network].join(" ").toLowerCase().includes(f)) &&
-      (!t || (t === "wifi" && !c.wired) || (t === "wired" && c.wired) || (t === "guest" && c.guest) || (t === "weak" && !c.wired && c.signal !== null && c.signal < -75)));
+      (!t || (t === "wifi" && !c.wired) || (t === "wired" && c.wired) || (t === "guest" && c.guest) || (t === "sec" && c.sec > 0) || (t === "weak" && !c.wired && c.signal !== null && c.signal < -75)));
   document.getElementById("cinfo").textContent = `${rows.length} shown`;
   LG.table("#clients", [
     {k: "name", l: "Name", f: (v, r) => `<b>${LG.esc(v || "–")}</b>${r.guest ? ` <span class="pill">guest</span>` : ""}${r.blocked ? ` <span class="badge high">blocked</span>` : ""}`},
     {k: "ip", l: "IP", f: LG.ip}, {k: "mac", l: "MAC", f: LG.mac}, {k: "vendor", l: "Vendor"},
     {k: "wired", l: "Type", s: r => r.wired ? "wired" : "wifi", f: v => v ? "wired" : "Wi-Fi"},
-    {k: "where", l: "Connected to"}, {k: "ssid", l: "SSID", f: (v, r) => v ? `${LG.esc(v)}${r.radio ? `<div class="small muted">${LG.esc(r.radio)}${r.channel ? " ch " + r.channel : ""}</div>` : ""}` : ""},
+    {k: "where", l: "Connected to"}, {k: "sec", l: "Security (24 h)", s: r => r.sec, desc: true, f: (v, r) => secBadge(r)}, {k: "ssid", l: "SSID", f: (v, r) => v ? `${LG.esc(v)}${r.radio ? `<div class="small muted">${LG.esc(r.radio)}${r.channel ? " ch " + r.channel : ""}</div>` : ""}` : ""},
     {k: "network", l: "Network", f: (v, r) => `${LG.esc(v || "")}${r.vlan ? `<span class="small muted"> vlan ${r.vlan}</span>` : ""}`},
     {k: "signal", l: "Signal", num: true, f: sig}, {k: "satisfaction", l: "Experience", num: true, f: pct},
     {k: "traffic", l: "Traffic", num: true, f: (v, r) => v ? `${LG.bytes(r.rx_bytes || 0)} ↓ ${LG.bytes(r.tx_bytes || 0)} ↑` : ""},

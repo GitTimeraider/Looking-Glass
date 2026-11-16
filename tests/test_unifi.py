@@ -163,3 +163,37 @@ def test_express_used_as_access_point():
     assert unifi.device_from_legacy(ux("aa:00:00:00:00:04"))["kind"] == "access point"
     # a console without Wi-Fi (Cloud Gateway / UDM Pro) is never an access point
     assert unifi.device_from_legacy({"mac": "aa:00:00:00:00:05", "type": "ucg"}, set())["kind"] == "console / gateway"
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_client_security_counts_opnsense_findings_per_client():
+    """The Clients tab's Security column: firewall / DNS blocks, threat events and open alerts per client IP."""
+    import asyncio
+
+    from lookingglass import db
+    from lookingglass.unifi import client_security
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events, alerts")
+            ev = "INSERT INTO events (ts, source, action, src_ip) VALUES (now() - make_interval(hours => $4), $1, $2, $3::inet)"
+            for args in (("firewall", "block", "192.168.1.5", 1), ("firewall", "block", "192.168.1.5", 2),
+                         ("firewall", "pass", "192.168.1.5", 1),  # passed traffic is no finding
+                         ("unbound", "block", "192.168.1.5", 1), ("suricata", "alert", "192.168.1.5", 1),
+                         ("firewall", "block", "192.168.1.5", 30),  # older than 24 hours
+                         ("firewall", "block", "192.168.1.99", 1)):  # not a UniFi client
+                await pool.execute(ev, *args)
+            await pool.execute("INSERT INTO alerts (rule, severity, title, fingerprint, src_ip, status) VALUES "
+                               "('dns', 'medium', 'x', 'a', '192.168.1.7', 'open'), "
+                               "('dns', 'medium', 'y', 'b', '192.168.1.7', 'closed')")
+            got = await client_security(["192.168.1.5", "192.168.1.6", "192.168.1.7", None, "not an ip"])
+            assert got == {"192.168.1.5": {"fw": 2, "dns": 1, "threats": 1, "alerts": 0},
+                           "192.168.1.7": {"fw": 0, "dns": 0, "threats": 0, "alerts": 1}}
+            assert await client_security([]) == {}
+            await pool.execute("TRUNCATE events, alerts")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
