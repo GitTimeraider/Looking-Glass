@@ -47,7 +47,7 @@
     <a href="/setup" class="{{ 'active' if path == '/setup' }}">Setup &amp; status</a>
     <a href="/account" class="{{ 'active' if path == '/account' }}">Account &amp; MFA</a>
     <a href="/logout">Log out</a>
-    <div class="foot">v{{ version }}{% if user %} · {{ user }}{% endif %}</div>
+    {% if user %}<div class="foot">{{ user }}</div>{% endif %}
   </nav>
   <main>
     {% block body %}{% endblock %}
