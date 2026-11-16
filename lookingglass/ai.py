@@ -44,7 +44,7 @@ events(id bigint, ts timestamptz, received_at timestamptz, source text, host tex
              crowdsec {scenario, decisions};
              unifi {key (EVT_...), mac (client), ap, ap_from, ap_to, ssid, sw, port, subsystem}
 alerts(id, created_at, last_seen, rule, severity /*info|low|medium|high|critical*/, title, description, src_ip inet,
-       dst_ip inet, count int, status /*open|acknowledged|closed*/, close_reason /*false_positive|resolved*/, fingerprint, data jsonb)
+       dst_ip inet, count int, status /*open|acknowledged|closed*/, close_reason /*false_positive|resolved|muted|known_false_positive = a repeat of an alert closed as false positive, see data.repeat_of*/, fingerprint, data jsonb)
 alert_comments(id, alert_id /*alerts.id*/, created_at, updated_at, author, body)  -- the user's own notes on alerts
 metrics(ts, name, labels, value)  names: memory_used_pct, load1, pf_states, pf_states_pct, disk_used_pct, temperature,
        gateway_delay_ms, gateway_loss_pct, if_rx_bps, if_tx_bps (labels = interface), if_received_errors, ...
