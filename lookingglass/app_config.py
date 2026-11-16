@@ -63,6 +63,10 @@ FIELDS: list[Field] = [
     Field("opnsense_ca_pem", "opnsense", "Custom CA certificate (PEM)", "text",
           "Optional: paste the CA that signed the OPNsense GUI certificate (System › Trust › Authorities › download)."),
     Field("poll_interval", "opnsense", "Poll interval (seconds)", "int", "How often system state and metrics are pulled from OPNsense and Unraid (logs, leases, firmware etc. have their own fixed intervals).", min=15, max=3600),
+    Field("service_down_grace", "opnsense", "Service alerts wait (minutes)", "int", "A 'service is not running' "
+          "alert only once the service has been stopped this long - a restart (config change, update) or a quick "
+          "stop / start stays quiet. Such an alert closes by itself when the service runs again. 0 = alert right away.",
+          min=0, max=240),
     Field("firewall_log_pull", "opnsense", "Pull firewall log via API", "choice",
           "auto = only when no filterlog arrives via syslog.", choices=("auto", "always", "never")),
     Field("unbound_query_pull", "opnsense", "Pull Unbound DNS queries", "bool", "Needs Reporting › Settings › Unbound DNS statistics."),

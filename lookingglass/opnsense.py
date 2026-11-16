@@ -186,7 +186,7 @@ class Poller:
             ("system", p, self.poll_system),
             ("gateways", p, self.poll_gateways),
             ("interfaces", p, self.poll_interfaces),
-            ("services", 300, self.poll_services),
+            ("services", p, self.poll_services),
             ("firmware", 6 * 3600, self.poll_firmware),
             ("rule_labels", 600, self.poll_rule_labels),
             ("blocklists", 300, self.poll_blocklists),
