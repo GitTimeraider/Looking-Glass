@@ -269,11 +269,21 @@ const LG = {
     LG.chartColors();
     Object.values(LG.charts).forEach(c => c.update("none"));
   },
+  /* menu bar position (Settings › Display): <html data-nav>; in a top / bottom bar the section names open menus, so
+     they take keyboard focus there */
+  nav(pos) {
+    const r = document.documentElement;
+    if (pos) r.dataset.nav = pos;
+    const bar = r.dataset.nav === "top" || r.dataset.nav === "bottom";
+    document.querySelectorAll("#side .grp").forEach(g => g.tabIndex = bar ? 0 : -1);
+  },
   chartColors() {  // axis text and grid lines follow the theme
     if (!window.Chart) return;
     const css = getComputedStyle(document.documentElement);
     Chart.defaults.color = css.getPropertyValue("--muted").trim() || "#8b98a9";
     Chart.defaults.borderColor = css.getPropertyValue("--border").trim() || "#263241";
+    // Settings › Display › Corners: chart tooltips are drawn on the canvas, out of reach of the CSS rule
+    Chart.defaults.plugins.tooltip.cornerRadius = document.documentElement.dataset.corners === "square" ? 0 : 6;
   },
   chart(id, config) {
     if (LG.charts[id]) LG.charts[id].destroy();

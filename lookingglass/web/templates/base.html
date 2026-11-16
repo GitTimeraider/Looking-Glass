@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title }} · Looking Glass</title>
+  <title>{{ title }} · {{ brand().name if brand is defined else 'Looking Glass' }}</title>
   <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='13' cy='13' r='9' fill='none' stroke='%233b82f6' stroke-width='4'/><path d='M20 20l9 9' stroke='%233b82f6' stroke-width='5' stroke-linecap='round'/></svg>">
+  {% if brand is defined and brand().favicon %}<link rel="icon" href="{{ brand().favicon }}">{% else %}<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='13' cy='13' r='9' fill='none' stroke='%233b82f6' stroke-width='4'/><path d='M20 20l9 9' stroke='%233b82f6' stroke-width='5' stroke-linecap='round'/></svg>">{% endif %}
   <script src="/static/vendor/chart.umd.min.js"></script>
   <script>window.LG_TIME_FORMAT = "{{ time_format() if time_format is defined else 'browser' }}";</script>
   <script src="/static/app.js?v={{ asset_v }}"></script>
@@ -16,37 +16,43 @@
   <button type="button" class="menu-btn" id="menu-btn" aria-label="Open menu" aria-controls="side" aria-expanded="false">
     <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
   </button>
-  <span class="brand">Looking<span>Glass</span></span>
+  <a href="/" class="brand" title="Overview">{% set b = brand() if brand is defined else none %}{% if b and b.logo %}<img class="brand-logo" src="{{ b.logo }}" alt="">{% endif %}{% if b and b.custom_name %}{{ b.name }}{% else %}Looking<span>Glass</span>{% endif %}</a>
   <span class="mbar-title">{{ title }}</span>
 </header>
 <div class="scrim" id="scrim"></div>
 <div class="layout">
   <nav class="side" id="side">
-    <div class="brand">Looking<span>Glass</span></div>
+    <a href="/" class="brand" title="Overview">{% set b = brand() if brand is defined else none %}{% if b and b.logo %}<img class="brand-logo" src="{{ b.logo }}" alt="">{% endif %}{% if b and b.custom_name %}{{ b.name }}{% else %}Looking<span>Glass</span>{% endif %}</a>
     {% macro dash_links(group) %}{% for key, label, grp in dashboards if grp == group %}<a href="/dash/{{ key }}" class="{{ 'active' if path == '/dash/' ~ key }}">{{ label }}</a>{% endfor %}{% endmacro %}
-    <div class="grp">General</div>
-    <a href="/" class="{{ 'active' if path == '/' }}">Overview</a>
-    <a href="/alerts" class="{{ 'active' if path == '/alerts' }}">Alerts</a>
-    <a href="/events" class="{{ 'active' if path == '/events' }}">Event search</a>
-    <div class="grp">OPNsense security</div>
-    {{ dash_links("opnsense") }}
-    <div class="grp">UniFi network</div>
-    {{ dash_links("unifi") }}
-    <div class="grp">Infrastructure</div>
-    <a href="/system" class="{{ 'active' if path == '/system' }}">OPNsense</a>
-    <a href="/unifi" class="{{ 'active' if path == '/unifi' }}">UniFi</a>
-    <a href="/unraid" class="{{ 'active' if path == '/unraid' }}">Unraid</a>
-    <a href="/backups" class="{{ 'active' if path == '/backups' }}">Backups</a>
-    <a href="/devices" class="{{ 'active' if path == '/devices' }}">Devices</a>
-    <div class="grp">Tools</div>
-    {{ dash_links("tools") }}
-    <a href="/reports" class="{{ 'active' if path == '/reports' }}">Reports</a>
-    <a href="/ai" class="{{ 'active' if path == '/ai' }}">AI Analyst</a>
-    <div class="grp">Admin</div>
-    <a href="/settings" class="{{ 'active' if path == '/settings' }}">Settings</a>
-    <a href="/setup" class="{{ 'active' if path == '/setup' }}">Setup &amp; status</a>
-    <a href="/account" class="{{ 'active' if path == '/account' }}">Account &amp; MFA</a>
-    <a href="/logout">Log out</a>
+    <div class="ngrp"><div class="grp" tabindex="-1">General</div><div class="nlinks">
+      <a href="/" class="{{ 'active' if path == '/' }}">Overview</a>
+      <a href="/alerts" class="{{ 'active' if path == '/alerts' }}">Alerts</a>
+      <a href="/events" class="{{ 'active' if path == '/events' }}">Event search</a>
+    </div></div>
+    <div class="ngrp"><div class="grp" tabindex="-1">OPNsense security</div><div class="nlinks">
+      {{ dash_links("opnsense") }}
+    </div></div>
+    <div class="ngrp"><div class="grp" tabindex="-1">UniFi network</div><div class="nlinks">
+      {{ dash_links("unifi") }}
+    </div></div>
+    <div class="ngrp"><div class="grp" tabindex="-1">Infrastructure</div><div class="nlinks">
+      <a href="/system" class="{{ 'active' if path == '/system' }}">OPNsense</a>
+      <a href="/unifi" class="{{ 'active' if path == '/unifi' }}">UniFi</a>
+      <a href="/unraid" class="{{ 'active' if path == '/unraid' }}">Unraid</a>
+      <a href="/backups" class="{{ 'active' if path == '/backups' }}">Backups</a>
+      <a href="/devices" class="{{ 'active' if path == '/devices' }}">Devices</a>
+    </div></div>
+    <div class="ngrp"><div class="grp" tabindex="-1">Tools</div><div class="nlinks">
+      {{ dash_links("tools") }}
+      <a href="/reports" class="{{ 'active' if path == '/reports' }}">Reports</a>
+      <a href="/ai" class="{{ 'active' if path == '/ai' }}">AI Analyst</a>
+    </div></div>
+    <div class="ngrp end"><div class="grp" tabindex="-1">Admin</div><div class="nlinks">
+      <a href="/settings" class="{{ 'active' if path == '/settings' }}">Settings</a>
+      <a href="/setup" class="{{ 'active' if path == '/setup' }}">Setup &amp; status</a>
+      <a href="/account" class="{{ 'active' if path == '/account' }}">Account &amp; MFA</a>
+      <a href="/logout">Log out</a>
+    </div></div>
     {% if user %}<div class="foot">{{ user }}</div>{% endif %}
   </nav>
   <main>
@@ -63,6 +69,9 @@
   document.querySelectorAll("#side a").forEach(a => a.addEventListener("click", () => set(false)));
   document.addEventListener("keydown", e => { if (e.key === "Escape") set(false); });
   matchMedia("(min-width: 761px)").addEventListener("change", e => { if (e.matches) set(false); });
+  LG.nav();
+  /* top / bottom bar: Escape or a click elsewhere closes an open section menu */
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && document.activeElement && document.activeElement.closest("#side")) document.activeElement.blur(); });
 })();
 </script>
 {% block scripts %}{% endblock %}

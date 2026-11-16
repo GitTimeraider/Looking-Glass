@@ -6,6 +6,7 @@ Values are applied onto the shared ``Settings`` object, so the rest of the code 
 """
 from __future__ import annotations
 
+import base64
 import ipaddress
 import re
 import logging
@@ -26,6 +27,7 @@ class Field:
     group: str
     label: str
     kind: str  # str | secret | bool | int | choice | text | list (one entry per line in the UI, stored ', ' separated)
+    #            | image (an uploaded picture, stored as a data:image/...;base64 URL; empty = the built-in one)
     #            | multi (a checkbox per choice, at least one; stored ', ' separated in the order of the choices)
     help: str = ""
     choices: tuple[str, ...] = ()
@@ -38,6 +40,7 @@ GROUPS = {
     "opnsense": "OPNsense",
     "unifi": "UniFi",
     "backrest": "Backrest",
+    "bichon": "Bichon",
     "email": "Email",
     "ai": "AI analyst",
     "reports": "Reports",
@@ -132,6 +135,34 @@ FIELDS: list[Field] = [
           "failed backups do."),
     Field("backrest_offline_grace", "backrest", "Unreachable alert waits (minutes)", "int",
           "A 'Backrest unreachable' alert only once it has not answered for this long (container restarts / updates "
+          "stay quiet). 0 = alert right away.", min=0, max=240),
+    # Bichon (mail archive)
+    Field("bichon_url", "bichon", "Bichon URL (with port)", "str",
+          "Address of the Bichon web UI including its port - Bichon's default is 15630, use the port you mapped in "
+          "Docker if it is different. From another container on the same Docker network: http://<container name>:15630. "
+          "With a base path (BICHON_BASE_URL) or behind a reverse proxy: add it, e.g. https://mail.example.com:443/bichon.",
+          placeholder="http://192.168.1.10:15630"),
+    Field("bichon_token", "bichon", "API token", "secret",
+          "Bichon › API tokens › new token. Tick 'Metrics only': that token can read the status figures and nothing "
+          "else - no mail. Its user needs the system:metrics permission (an admin has it). A normal token of a user "
+          "that may read the accounts' details also gives Bichon's own sync history (results per run, failed folders)."),
+    Field("bichon_verify_ssl", "bichon", "Verify TLS certificate", "bool",
+          "Only for an https URL. Off accepts a self-signed certificate."),
+    Field("bichon_poll_interval", "bichon", "Poll interval (seconds)", "int",
+          "How often Bichon is read. With a metrics-only token every sync that is the latest at a poll is kept, so "
+          "keep this shorter than the accounts' sync interval.", min=60, max=3600),
+    Field("bichon_overdue_hours", "bichon", "Mail sync overdue after (hours)", "int",
+          "A 'mail sync overdue' alert when an account has had no successful sync for this long. 0 = automatic: from "
+          "each account's sync interval (plus a quarter and 2 hours).", min=0, max=2160),
+    Field("bichon_backup_overdue_hours", "bichon", "Bichon backup overdue after (hours)", "int",
+          "Bichon's own backup (Bichon › Backup): an 'overdue' alert when it has not succeeded for this long, e.g. 26 "
+          "for a daily backup. 0 = no overdue alert (its schedule cannot be read with the token); failed runs still "
+          "raise an alert.", min=0, max=2160),
+    Field("bichon_alert_warnings", "bichon", "Alert on partial syncs", "bool",
+          "A sync that finished but could not archive every folder (Bichon: 'Partial') raises a low alert. Off: only "
+          "failed syncs do."),
+    Field("bichon_offline_grace", "bichon", "Unreachable alert waits (minutes)", "int",
+          "A 'Bichon unreachable' alert only once it has not answered for this long (container restarts / updates "
           "stay quiet). 0 = alert right away.", min=0, max=240),
     # email
     Field("smtp_host", "email", "SMTP server", "str", "Mail server that sends the notifications, e.g. smtp.gmail.com, "
@@ -264,6 +295,18 @@ FIELDS: list[Field] = [
     Field("mining_domains", "intel", "Extra mining pool domains", "list", "Added to the built-in list."),
     Field("intel_allow", "intel", "Never flag these domains / IPs", "list", "Domains (incl. their subdomains) "
           "and IPs / CIDRs, for false positives in the feeds."),
+    Field("intel_shared_sites", "intel", "Shared sites (whole domain)", "list", "Sites where anyone can host files "
+          "(GitHub, Discord, Google Drive ...). A feed that lists one malware URL on them does not flag the site: DNS "
+          "only shows the host name, never which file. Covers the domain and all its subdomains - only add a domain "
+          "whose subdomains all belong to the platform itself (not e.g. github.io, where <name>.github.io is someone's "
+          "own site). Pre-filled with the built-in list; Restore built-in list shows the current one after an update.",
+          placeholder="github.com\ndiscordapp.com"),
+    Field("intel_shared_endpoints", "intel", "Shared storage endpoints (exact name only)", "list", "Cloud storage "
+          "addresses shared by all customers (endpoint/<bucket>/file), e.g. s3-eu-west-1.amazonaws.com. Only this exact "
+          "name is skipped: a name in front of it is one customer's own bucket (<bucket>.s3-eu-west-1.amazonaws.com) and "
+          "is still flagged when a feed lists it - also below a shared site (<account>.blob.core.windows.net). "
+          "* = one label: s3.*.amazonaws.com. Pre-filled with the built-in list.",
+          placeholder="s3-*.amazonaws.com\nstorage.googleapis.com"),
     Field("intel_sources", "intel", "Feed download addresses", "text", "Your own addresses for the feeds, e.g. when "
           "one moved. One per line: feed: URL - feeds: urlhaus, threatfox, feodo, sslbl_ja3, tor_relay, tor_exit. "
           "Tried before the built-in addresses (top to bottom); the first that answers with entries is used, so a "
@@ -301,6 +344,17 @@ FIELDS: list[Field] = [
     Field("accent", "display", "Accent color", "choice", "Color of buttons, links and highlights; the background gets a "
           "light tint of it too (light + purple = lavender). The preview changes as you pick; Save to keep it.",
           choices=("blue", "indigo", "purple", "pink", "red", "crimson", "darkred", "orange", "green", "teal", "cyan", "gray")),
+    Field("nav_position", "display", "Menu bar position", "choice", "Where the navigation bar sits: left, right, or "
+          "top / bottom as a horizontal bar whose sections open as menus. Phones always use the menu button. "
+          "The preview changes as you pick; Save to keep it.", choices=("left", "right", "top", "bottom")),
+    Field("corners", "display", "Corners", "choice", "rounded or square corners on cards, widgets, buttons and fields. "
+          "The preview changes as you pick; Save to keep it.", choices=("rounded", "square")),
+    Field("app_name", "display", "Application name", "str", "Name on the menu bar, the login page and the browser "
+          "tab. Empty = Looking Glass.", placeholder="Looking Glass"),
+    Field("logo", "display", "Logo on the menu bar", "image", "A picture shown in front of the name on the menu bar "
+          "and the login page (PNG, JPEG, GIF, WebP or SVG, at most 256 KB; shown 28 pixels high). None = only the name."),
+    Field("favicon", "display", "Browser tab icon (favicon)", "image", "The icon in the browser tab and bookmarks "
+          "(PNG, ICO, GIF, WebP or SVG, at most 256 KB; square, e.g. 64×64). None = the built-in magnifier."),
     # data
     Field("retention_days", "data", "Keep events (days)", "int", "", min=1, max=3650),
     Field("metrics_retention_days", "data", "Keep metrics (days)", "int", "", min=1, max=3650),
@@ -379,6 +433,7 @@ SECRET_KEYS = {f.key for f in FIELDS if f.kind == "secret"}
 # which groups restart which component
 RESTART_GROUPS = {"backrest": ("backrest_url", "backrest_username", "backrest_password", "backrest_verify_ssl",
                                "backrest_poll_interval"),
+                  "bichon": ("bichon_url", "bichon_token", "bichon_verify_ssl", "bichon_poll_interval"),
                   "unifi": ("unifi_url", "unifi_api_key", "unifi_username", "unifi_password", "unifi_site",
                             "unifi_verify_ssl", "unifi_poll_interval", "unifi_events"),
                   "opnsense": ("opnsense_url", "opnsense_api_key", "opnsense_api_secret", "opnsense_verify_ssl",
@@ -397,6 +452,25 @@ STATE = _State()
 
 class SettingsError(ValueError):
     pass
+
+
+# Settings › Display › Logo / favicon: an uploaded picture, stored as a data URL (served by /brand/<key>)
+IMAGE_TYPES = {"png": "image/png", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
+               "svg+xml": "image/svg+xml", "x-icon": "image/x-icon", "vnd.microsoft.icon": "image/x-icon"}
+IMAGE_RE = re.compile(r"data:image/(png|jpeg|gif|webp|svg\+xml|x-icon|vnd\.microsoft\.icon);base64,([A-Za-z0-9+/]+={0,2})")
+IMAGE_MAX_BYTES = 256 * 1024
+IMAGE_MAX_CHARS = 64 + (IMAGE_MAX_BYTES + 2) // 3 * 4
+
+
+def image_bytes(value: str) -> tuple[str, bytes] | None:
+    """(content type, bytes) of a stored picture, None when empty or invalid."""
+    m = IMAGE_RE.fullmatch(value or "")
+    if not m:
+        return None
+    try:
+        return IMAGE_TYPES[m.group(1)], base64.b64decode(m.group(2), validate=True)
+    except ValueError:
+        return None
 
 
 def _coerce(f: Field, value: Any) -> Any:
@@ -425,11 +499,25 @@ def _coerce(f: Field, value: Any) -> Any:
             raise SettingsError(f"{f.label}: tick at least one")
         return ", ".join(c for c in f.choices if c.lower() in wanted)
     v = "" if value is None else str(value).strip()
+    if f.kind == "image" and v:
+        m = IMAGE_RE.fullmatch(v)
+        if not m:
+            raise SettingsError(f"{f.label}: must be a PNG, JPEG, GIF, WebP, ICO or SVG picture")
+        if len(v) > IMAGE_MAX_CHARS:
+            raise SettingsError(f"{f.label}: the picture is too large (at most {IMAGE_MAX_BYTES // 1024} KB)")
+        try:
+            base64.b64decode(m.group(2), validate=True)
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: the picture is damaged") from exc
+    if f.key == "app_name" and len(v) > 60:
+        raise SettingsError(f"{f.label}: at most 60 characters")
     if f.kind == "choice" and v not in f.choices:
         raise SettingsError(f"{f.label}: must be one of {', '.join(f.choices)}")
-    if f.key in ("opnsense_url", "ai_base_url", "backrest_url") and v and not v.startswith(("http://", "https://")):
+    if f.key in ("opnsense_url", "ai_base_url", "backrest_url", "bichon_url") and v and \
+            not v.startswith(("http://", "https://")):
         raise SettingsError(f"{f.label}: must start with http:// or https://")
-    if f.key == "backrest_url" and v:
+    if f.key in ("backrest_url", "bichon_url") and v:
+        tool, default_port = ("Backrest", 9898) if f.key == "backrest_url" else ("Bichon", 15630)
         from urllib.parse import urlsplit
         try:
             port, host = urlsplit(v).port, urlsplit(v).hostname
@@ -438,8 +526,8 @@ def _coerce(f: Field, value: Any) -> Any:
         if not host:
             raise SettingsError(f"{f.label}: no host name or IP address")
         if port is None:
-            raise SettingsError(f"{f.label}: add the port, e.g. {v.rstrip('/')}:9898 (Backrest's default) or the "
-                                "port you mapped in Docker")
+            raise SettingsError(f"{f.label}: add the port, e.g. {v.rstrip('/')}:{default_port} ({tool}'s default) or "
+                                "the port you mapped in Docker")
     if f.key in ("syslog_allowed_senders", "internal_networks") and v:
         for part in v.split(","):
             try:  # an invalid line is named, nothing is saved
@@ -477,6 +565,13 @@ def _coerce(f: Field, value: Any) -> Any:
             parse_blocklist_aliases(v)
         except ValueError as exc:
             raise SettingsError(f"{f.label}: {exc}") from exc
+    if f.key in ("intel_shared_sites", "intel_shared_endpoints") and v:
+        from .intel import check_shared_entry
+        for part in v.split(","):
+            try:  # an invalid line is named, nothing is saved
+                check_shared_entry(part.strip(), wildcards=f.key == "intel_shared_endpoints")
+            except ValueError as exc:
+                raise SettingsError(f"{f.label}: {exc}") from exc
     if f.key == "intel_sources" and v:
         from .intel import parse_sources
         try:
@@ -580,6 +675,10 @@ def public_view(settings: Settings) -> dict[str, Any]:
             item["is_set"] = bool(v)
         else:
             item["value"] = v
+        if f.kind == "list" and (d := Settings.model_fields[f.key].default):
+            item["default"] = d  # the UI offers to restore a built-in list
+        if f.group == "display":
+            item["default"] = Settings.model_fields[f.key].default  # Settings › Display › Restore defaults
         out.append(item)
     return {"groups": GROUPS, "fields": out, "version": STATE.version}
 

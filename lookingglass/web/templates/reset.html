@@ -2,7 +2,8 @@
 <html lang="en"{{ theme_attrs() if theme_attrs is defined }}>
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Reset · Looking Glass</title>
+  <title>Reset · {{ brand().name if brand is defined else 'Looking Glass' }}</title>
+  {% if brand is defined and brand().favicon %}<link rel="icon" href="{{ brand().favicon }}">{% endif %}
   <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
 </head>
 <body>

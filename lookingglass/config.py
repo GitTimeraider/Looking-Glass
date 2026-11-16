@@ -24,6 +24,34 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 log = logging.getLogger(__name__)
 
 
+# Shared hosting in the threat feeds (intel.SharedHosts). URLhaus / ThreatFox list malware URLs; a DNS lookup only shows
+# the host name, so a URL on a host that many unrelated people use cannot be told apart from all the harmless visits.
+# These are the defaults of two settings under Settings › Threat intel & traps (editable there).
+# Sites: the domain and ALL its subdomains belong to the platform (raw.githubusercontent.com, cdn.discordapp.com ...).
+SHARED_SITES = (
+    "github.com", "githubusercontent.com", "gitlab.com", "bitbucket.org", "sourceforge.net", "codeberg.org", "gitee.com",
+    "steamcommunity.com", "steampowered.com", "steamstatic.com",
+    "discord.com", "discordapp.com", "discordapp.net", "discord.gg",
+    "google.com", "googleusercontent.com", "googleapis.com", "gstatic.com", "youtube.com", "youtu.be",
+    "dropbox.com", "dropboxusercontent.com", "mediafire.com", "mega.nz", "mega.io", "box.com", "wetransfer.com", "we.tl",
+    "microsoft.com", "live.com", "onedrive.com", "1drv.ms", "office.com", "windows.net",
+    "apple.com", "icloud.com", "amazon.com", "cloudflare.com", "archive.org", "jsdelivr.net", "unpkg.com",
+    "telegram.org", "t.me", "telegram.me", "telegra.ph", "pastebin.com",
+    "twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com", "reddit.com", "vk.com",
+    "bit.ly", "tinyurl.com",
+)
+# Endpoints: only this exact name is shared (cloud storage reached as endpoint/<bucket>/file); a name IN FRONT of it
+# is one customer's own bucket / account (polarsteps.s3-eu-west-1.amazonaws.com) and is still matched - also below a
+# shared site (<account>.blob.core.windows.net, <bucket>.storage.googleapis.com). * = one label (no dots).
+SHARED_ENDPOINTS = (
+    "s3.amazonaws.com", "s3-*.amazonaws.com", "s3.*.amazonaws.com", "s3.dualstack.*.amazonaws.com",
+    "s3-website-*.amazonaws.com", "s3-website.*.amazonaws.com",
+    "storage.googleapis.com", "*.core.windows.net",
+    "*.digitaloceanspaces.com", "*.linodeobjects.com", "*.your-objectstorage.com",
+    "s3.wasabisys.com", "s3.*.wasabisys.com", "s3.*.backblazeb2.com", "f*.backblazeb2.com",
+)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", validate_assignment=False)
 
@@ -53,7 +81,12 @@ class Settings(BaseSettings):
     timezone: str = "UTC"
     time_format: str = "24h"
     theme: str = "dark"
-    accent: str = "blue"
+    accent: str = "purple"
+    nav_position: str = "top"
+    corners: str = "square"
+    app_name: str = ""  # empty = Looking Glass
+    logo: str = ""  # data:image/...;base64 URL shown in front of the name on the menu bar, empty = none
+    favicon: str = ""  # data:image/...;base64 URL, empty = the built-in magnifier icon
     dns_ignore_domains: str = ""
     # behaviour & anomaly detection (Settings › Behaviour & ML)
     behavior_enabled: bool = True
@@ -90,6 +123,8 @@ class Settings(BaseSettings):
     intel_mining: bool = True
     mining_domains: str = ""
     intel_allow: str = ""
+    intel_shared_sites: str = ", ".join(SHARED_SITES)
+    intel_shared_endpoints: str = ", ".join(SHARED_ENDPOINTS)
     intel_sources: str = ""
     nod_enabled: bool = True
     nod_rdap: bool = False
@@ -138,6 +173,14 @@ class Settings(BaseSettings):
     backrest_overdue_hours: int = 0  # 0 = from each plan's schedule
     backrest_alert_warnings: bool = True
     backrest_offline_grace: int = 15  # minutes
+    bichon_url: str = ""  # with the port, e.g. http://192.168.1.10:15630
+    bichon_token: str = ""  # a Bichon API token ("Metrics only" is enough)
+    bichon_verify_ssl: bool = False
+    bichon_poll_interval: int = 120
+    bichon_overdue_hours: int = 0  # 0 = from each account's sync interval
+    bichon_backup_overdue_hours: int = 0  # Bichon's own backup; 0 = no overdue alert (its schedule is not readable)
+    bichon_alert_warnings: bool = True
+    bichon_offline_grace: int = 15  # minutes
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_security: str = "starttls"
@@ -206,6 +249,15 @@ class Settings(BaseSettings):
     @property
     def backrest_enabled(self) -> bool:
         return bool(self.backrest_url)
+
+    @property
+    def bichon_enabled(self) -> bool:
+        return bool(self.bichon_url and self.bichon_token)
+
+    @property
+    def backups_enabled(self) -> bool:
+        """Any backup tool connected (Infrastructure › Backups, the reports' Backups part)."""
+        return self.backrest_enabled or self.bichon_enabled
 
     @property
     def smtp_enabled(self) -> bool:

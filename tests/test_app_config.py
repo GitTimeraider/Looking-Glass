@@ -95,3 +95,27 @@ def test_list_fields_one_per_line():
     import pytest
     with pytest.raises(app_config.SettingsError, match="not-an-ip"):
         app_config._coerce(nets, "192.168.1.1\nnot-an-ip")
+
+
+def test_display_defaults():
+    s = Settings()
+    assert (s.theme, s.accent, s.nav_position, s.corners) == ("dark", "purple", "top", "square")
+    assert (s.app_name, s.logo, s.favicon) == ("", "", "")
+    view = {f["key"]: f for f in app_config.public_view(s)["fields"]}
+    assert view["accent"]["default"] == "purple" and view["logo"]["default"] == ""
+
+
+def test_image_fields():
+    png = "data:image/png;base64,iVBORw0KGgo="
+    f = app_config.BY_KEY["logo"]
+    assert app_config._coerce(f, png) == png
+    assert app_config._coerce(f, "") == ""
+    assert app_config.image_bytes(png) == ("image/png", b"\x89PNG\r\n\x1a\n")
+    assert app_config.image_bytes("data:image/x-icon;base64,AAAB")[0] == "image/x-icon"
+    assert app_config.image_bytes("") is None
+    for bad in ("data:text/html;base64,PGI+", "javascript:alert(1)", 'data:image/png;base64,AA" onerror="x',
+                "data:image/png;base64,A", "data:image/png;base64," + "A" * (app_config.IMAGE_MAX_CHARS + 4)):
+        with pytest.raises(app_config.SettingsError):
+            app_config._coerce(f, bad)
+    with pytest.raises(app_config.SettingsError):
+        app_config._coerce(app_config.BY_KEY["app_name"], "x" * 61)

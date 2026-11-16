@@ -424,6 +424,26 @@ async def run(settings: Settings) -> dict[str, Any]:
               f"Connected{' to ' + br['instance'] if br.get('instance') else ''}." +
               (" No summary dashboard (Backrest 1.6+ needed for next run times and 30-day counts)." if failed else ""),
               last_seen=br.get("last"), link="/backups")
+    bi = await db.get_snapshot("bichon:status") or {}
+    if not settings.bichon_enabled:
+        check("bichon", "Bichon (mail archive)", "optional", [], "Not configured. Optional: sync state, history and "
+              "alerts of your Bichon mail archive under Infrastructure › Backups.",
+              ["Bichon › API tokens: a new token with 'Metrics only' ticked.",
+               "Looking Glass › Settings › Bichon: the Bichon URL with its port (default 15630) and that token."],
+              link="/settings#bichon")
+    elif bi.get("ok") is False:
+        check("bichon", "Bichon (mail archive)", "action", ["API"], f"Not reachable: {bi.get('error')}",
+              ["Looking Glass › Settings › Bichon: check URL, port and API token with Test connection.",
+               "The Bichon container must be reachable from Looking Glass (same Docker network, or the host's IP "
+               "address and the mapped port)."], last_seen=bi.get("last"), link="/settings#bichon")
+    elif not bi:
+        check("bichon", "Bichon (mail archive)", "info", ["API"], "Connecting…", link="/backups#bichon")
+    else:
+        check("bichon", "Bichon (mail archive)", "ok", ["API"],
+              f"Connected to {bi.get('instance') or 'Bichon'}." +
+              (" Sync history from Bichon." if bi.get("history") == "bichon" else
+               " Metrics-only token: the sync history is built from what each poll sees."),
+              last_seen=bi.get("last"), link="/backups#bichon")
     geo = settings.geoip_db and os.path.exists(settings.geoip_db)
     check("geoip", "GeoIP countries", "ok" if geo else "optional", [], "GeoLite2 database loaded." if geo else
           "No GeoLite2 database - countries stay empty. Optional: download GeoLite2-City.mmdb (free MaxMind account) "

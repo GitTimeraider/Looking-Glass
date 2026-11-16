@@ -1,6 +1,6 @@
 """Backups (Infrastructure › Backups): the part that is the same for every backup tool.
 
-A tool's poller (backrest.py) stores its runs in ``backup_runs`` (store_runs), writes its jobs to the snapshot
+A tool's poller (backrest.py, bichon.py) stores its runs in ``backup_runs`` (store_runs), writes its jobs to the snapshot
 ``backup_jobs:<source>`` ({label, jobs: [{job, repo, schedule, gap_s, threshold_s, disabled, next_run}]}) and its
 connection state to ``<source>:status``, and calls check_jobs / check_repos for the alerts. The Main tab (overview)
 reads only these, so another tool only needs a poller.
@@ -14,7 +14,7 @@ from . import db
 from .detections import Rating, close_alerts, raise_alert
 
 GOOD = ("success", "warning")
-SOURCES = {"backrest": "Backrest"}  # source -> label, for the Main tab (also when the tool is not set up yet)
+SOURCES = {"backrest": "Backrest", "bichon": "Bichon"}  # source -> label, for the Main tab (also when the tool is not set up yet)
 COLUMNS = ("ext_id", "kind", "job", "repo", "status", "started", "ended", "duration_s", "bytes_processed", "bytes_added",
            "files_new", "files_changed", "files_total", "snapshot_id", "message", "data")
 
@@ -107,6 +107,9 @@ async def check_jobs(source: str, label: str, jobs: list[dict[str, Any]], warnin
     for j in jobs:
         job, runs = j["job"], by_job.get(j["job"], [])
         fp = f"{source}:{job}"
+        # wording: a Backrest plan's "backup"; another tool can name its own (Bichon: a mail account's "mail sync")
+        noun, unit = j.get("noun") or "backup", j.get("unit") or "plan"
+        what = f"{noun[:1].upper()}{noun[1:]} of {unit} '{job}'" + (f" (repository {j['repo']})" if j.get("repo") else "")
         finished = [r for r in runs if r["status"] != "running"]
         running = runs[0] if runs and runs[0]["status"] == "running" else None
         last = finished[0] if finished else None
@@ -115,48 +118,49 @@ async def check_jobs(source: str, label: str, jobs: list[dict[str, Any]], warnin
         # failed
         if last and last["status"] == "error":
             fails = next((i for i, r in enumerate(finished) if r["status"] != "error"), len(finished))
-            rating = Rating("medium", "the latest backup failed - the data changed since the last good backup is not "
+            rating = Rating("medium", f"the latest {noun} failed - the data changed since the last good {noun} is not "
                                       "protected")
             if fails >= 2:
-                rating.up(f"{fails} backups in a row failed")
+                rating.up(f"{fails} {noun}s in a row failed")
             if not good:
-                rating.up("there is no successful backup at all")
-            await raise_alert("backup_failed", rating, f"{label} backup '{job}' failed", f"backup_fail:{fp}",
-                              description=f"Backup of plan '{job}' (repository {j.get('repo') or '?'}) started "
-                                          f"{_when(last['started'])} failed: {last['message'] or 'no message'}\n\n"
-                                          f"Last successful backup: {_when(good_at)}.",
+                rating.up(f"there is no successful {noun} at all")
+            await raise_alert("backup_failed", rating, f"{label} {noun} '{job}' failed", f"backup_fail:{fp}",
+                              description=f"{what} started {_when(last['started'])} failed: "
+                                          f"{last['message'] or 'no message'}\n\n"
+                                          f"Last successful {noun}: {_when(good_at)}.",
                               data={"source": source, "job": job, "repo": j.get("repo")}, count=fails, mode="max")
         elif last:
-            await close_alerts("backup_failed", [f"backup_fail:{fp}"], f"the backup of {_when(last['started'])} "
+            await close_alerts("backup_failed", [f"backup_fail:{fp}"], f"the {noun} of {_when(last['started'])} "
                                                                         f"finished ({last['status']})")
         # warnings
         if warnings and last and last["status"] == "warning":
             errs = (last["data"] or {}).get("errors") or []
             items = "\n".join(f"- {e.get('item')}: {e.get('message')}" for e in errs[:10])
-            await raise_alert("backup_warning", "low", f"{label} backup '{job}' finished with warnings",
-                              f"backup_warn:{fp}", description=f"Backup of plan '{job}' started {_when(last['started'])}: "
+            await raise_alert("backup_warning", "low", f"{label} {noun} '{job}' finished with warnings",
+                              f"backup_warn:{fp}", description=f"{what} started {_when(last['started'])}: "
                               f"{last['message'] or 'finished with warnings'}" + (f"\n\n{items}" if items else "") +
-                              "\n\nUsually files that could not be read (in use, permissions) - they are missing from "
-                              "this snapshot.", data={"source": source, "job": job, "repo": j.get("repo")}, mode="max")
+                              "\n\n" + (j.get("warning_hint") or "Usually files that could not be read (in use, "
+                                                     "permissions) - they are missing from this snapshot."),
+                              data={"source": source, "job": job, "repo": j.get("repo")}, mode="max")
         elif last:
-            await close_alerts("backup_warning", [f"backup_warn:{fp}"], "a newer backup finished without warnings"
-                               if last["status"] == "success" else "a newer backup replaced it")
+            await close_alerts("backup_warning", [f"backup_warn:{fp}"], f"a newer {noun} finished without warnings"
+                               if last["status"] == "success" else f"a newer {noun} replaced it")
         # overdue
         limit = j.get("threshold_s")
         if j.get("disabled") or not limit or not good_at:
             continue  # no schedule, or never succeeded (the failure alert covers that)
         late = (now - good_at).total_seconds()
         if late > limit and not (running and running["started"] and (now - running["started"]).total_seconds() < limit):
-            rating = Rating("medium", f"no successful backup for {span(late)} (expected at least every {span(limit)})")
+            rating = Rating("medium", f"no successful {noun} for {span(late)} (expected at least every {span(limit)})")
             if late > 2 * limit:
                 rating.up("more than twice as long as expected")
-            await raise_alert("backup_overdue", rating, f"{label} backup '{job}' is overdue", f"backup_overdue:{fp}",
-                              description=f"Plan '{job}' ({j.get('schedule') or 'no schedule'}) last backed up "
-                                          f"successfully {_when(good_at)}. Check that Backrest is running and the "
-                                          "plan's schedule is enabled.",
+            await raise_alert("backup_overdue", rating, f"{label} {noun} '{job}' is overdue", f"backup_overdue:{fp}",
+                              description=f"{unit[:1].upper()}{unit[1:]} '{job}' ({j.get('schedule') or 'no schedule'}) "
+                                          f"last {noun} succeeded {_when(good_at)}. Check that {label} is running and "
+                                          f"the {unit}'s schedule is enabled.",
                               data={"source": source, "job": job, "repo": j.get("repo")})
         else:
-            await close_alerts("backup_overdue", [f"backup_overdue:{fp}"], f"a backup succeeded ({_when(good_at)})")
+            await close_alerts("backup_overdue", [f"backup_overdue:{fp}"], f"a {noun} succeeded ({_when(good_at)})")
 
 
 REPO_TASKS = {"check": ("high", "Repository check failed", "the repository may be damaged - restores could fail"),

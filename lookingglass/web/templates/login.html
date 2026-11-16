@@ -2,13 +2,14 @@
 <html lang="en"{{ theme_attrs() if theme_attrs is defined }}>
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Login · Looking Glass</title>
+  <title>Login · {{ brand().name if brand is defined else 'Looking Glass' }}</title>
+  {% if brand is defined and brand().favicon %}<link rel="icon" href="{{ brand().favicon }}">{% endif %}
   <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
   <script src="/static/app.js?v={{ asset_v }}"></script>
 </head>
 <body>
 <div class="login card">
-  <h2>Looking<span style="color:var(--accent2)">Glass</span></h2>
+  <h2 class="login-brand">{% set b = brand() if brand is defined else none %}{% if b and b.logo %}<img class="brand-logo" src="{{ b.logo }}" alt="">{% endif %}{% if b and b.custom_name %}{{ b.name }}{% else %}Looking<span style="color:var(--accent2)">Glass</span>{% endif %}</h2>
   {% if info %}<p class="ok-msg">{{ info }}</p>{% endif %}
   {% if step == "password" %}
   <p class="muted small">Sign in</p>

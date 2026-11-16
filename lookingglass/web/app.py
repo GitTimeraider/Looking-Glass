@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import ipaddress
 import json
 import math
@@ -29,7 +30,7 @@ from ..ingest import STATS
 from .. import rollup
 from ..cache import ResultCache, stale_for, ttl_for
 from ..periods import Periods, is_long, key_of
-from ..dashboards import DASHBOARDS, run_dashboard
+from ..dashboards import CS_FW, DASHBOARDS, IDS_DROP, QF, run_dashboard
 from ..reports import CATEGORIES, build_report, parse_categories, report_mail, report_title, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
 from ..parsers.common import real_name
@@ -123,13 +124,23 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     templates.env.globals["time_format"] = lambda: settings.time_format  # live setting, read per page
     templates.env.globals["theme_attrs"] = lambda: Markup(  # <html> attributes for the theme (style.css), live as well
         f' data-theme="{escape(settings.theme)}" data-mode="{"light" if settings.theme == "light" else "dark"}" '
-        f'data-accent="{escape(settings.accent)}"')
+        f'data-accent="{escape(settings.accent)}" data-nav="{escape(settings.nav_position)}" '
+        f'data-corners="{escape(settings.corners)}"')
+
+    def brand() -> dict[str, Any]:
+        """Settings › Display: application name, logo and favicon (pictures served by /brand/<key>?v=<hash>)."""
+        def url(key: str) -> str:
+            value = getattr(settings, key)
+            return f"/brand/{key}?v={hashlib.sha1(value.encode()).hexdigest()[:12]}" if value else ""
+        return {"name": settings.app_name or "Looking Glass", "custom_name": bool(settings.app_name),
+                "logo": url("logo"), "favicon": url("favicon")}
+    templates.env.globals["brand"] = brand
     app = FastAPI(title="Looking Glass", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
 
     async def auth_guard(request: Request) -> Response | None:
         """None = let the request through, else the answer (login redirect, 401 / 403)."""
         path = request.url.path
-        if path.startswith("/static/") or path in PUBLIC_PATHS:
+        if path.startswith(("/static/", "/brand/")) or path in PUBLIC_PATHS:
             return None
         user, mfa = await current_user(request)
         if not user:
@@ -161,6 +172,17 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                        max_age=7 * 24 * 3600, same_site="lax", https_only=settings.cookie_secure)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
     register_auth(app, settings, templates)
+
+    @app.get("/brand/{key}")
+    async def brand_image(key: str):
+        """The uploaded logo / favicon (public: the login page shows them too)."""
+        img = app_config.image_bytes(getattr(settings, key, "")) if key in ("logo", "favicon") else None
+        if not img:
+            raise HTTPException(404)
+        # an SVG opened on its own must not run scripts; the ?v= hash changes with the picture, so it can be cached
+        return Response(img[1], media_type=img[0], headers={
+            "Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox"})
 
     @app.get("/healthz")
     async def healthz():
@@ -203,13 +225,38 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         # count(DISTINCT) FILTER sorts every event of the period (30 days: seconds instead of a fraction)
         counts = ("SELECT coalesce(count(*), 0) total, coalesce(count(*) FILTER (WHERE action IN ('block', 'drop', 'ban')), 0) blocked, "
                   "coalesce(count(*) FILTER (WHERE action = 'login_failed'), 0) login_failed, "
-                  "coalesce(count(*) FILTER (WHERE source = 'unbound'), 0) dns, coalesce(count(*) FILTER (WHERE source = 'suricata'), 0) ids "
+                  f"coalesce(count(*) FILTER (WHERE source = 'suricata' AND {IDS_DROP}), 0) ids_dropped "
                   "FROM events WHERE ts > now() - make_interval(secs => $1)")
+        # the blocks of the CrowdSec / Q-Feeds rules are firewall lines tagged in data (not in the hourly counts): raw,
+        # each on its own (partial) index - the same definitions as the Threats page
+        threats = (f"SELECT (SELECT count(*) FROM events WHERE {CS_FW} AND ts > now() - make_interval(secs => $1)) crowdsec_fw, "
+                   f"(SELECT count(*) FROM events WHERE {QF} AND ts > now() - make_interval(secs => $1)) qfeeds")
+        # lists for the optional threat widgets (not in the scheduled reports): the addresses CrowdSec's rules blocked
+        # (the outside end of the connection) and the Suricata signatures that dropped traffic
+        threat_lists = {
+            "crowdsec_ips": "SELECT host(CASE WHEN direction = 'out' THEN dst_ip ELSE src_ip END) ip, max(src_country) country, "
+                            f"count(*) n, max(ts) last FROM events WHERE {CS_FW} AND ts > now() - make_interval(secs => $1) "
+                            "GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
+            "ids_dropped": f"SELECT message signature, count(*) n, count(DISTINCT src_ip) sources FROM events WHERE source = 'suricata' "
+                           f"AND {IDS_DROP} AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
+        }
 
         async def kpi_counts() -> dict[str, Any]:
             async with db.heavy(hours), db.pool().acquire() as conn:
                 row = await (rollup.fetch(conn, counts, secs) if hours >= rollup.MIN_HOURS else conn.fetch(counts, secs))
             return dict(row[0])
+
+        async def threat_counts() -> dict[str, Any]:
+            async with db.heavy(hours), db.pool().acquire() as conn:
+                return dict(await conn.fetchrow(threats, secs))
+
+        async def threat_list(name: str) -> tuple[str, list[dict[str, Any]]]:
+            try:
+                async with db.heavy(hours), db.pool().acquire() as conn:
+                    return name, db.records(await conn.fetch(threat_lists[name], secs))
+            except Exception as exc:  # noqa: BLE001 - one list failing leaves that widget empty, not the overview
+                log.warning("overview list %s (%s h) failed: %r", name, hours, exc)
+                return name, []
 
         async def blocked_ips() -> int:
             async with db.heavy(hours), db.pool().acquire() as conn:
@@ -217,8 +264,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                     "SELECT count(*) FROM (SELECT DISTINCT src_ip FROM events WHERE action IN ('block', 'drop') "
                     "AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1)) x", secs)
 
-        kpi, ips, report, tl = await asyncio.gather(kpi_counts(), blocked_ips(), build_report(hours), timeline(hours))
-        return {"kpi": db.jsonable({**kpi, "blocked_ips": ips}), "report": report, "timeline": tl}
+        kpi, thr, ips, report, tl, *lists = await asyncio.gather(
+            kpi_counts(), threat_counts(), blocked_ips(), build_report(hours), timeline(hours),
+            *(threat_list(n) for n in threat_lists))
+        return {"kpi": db.jsonable({**kpi, **thr, "blocked_ips": ips}), "report": report, "timeline": tl,
+                "threats": dict(lists)}
 
     async def dash_compute_args(name: str, tab: str | None, hours: float) -> dict[str, Any]:
         return await dash_compute(name, hours, tab)
@@ -260,6 +310,36 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def periods_status():
         return long_periods.status()
 
+    async def overview_now(hours: float) -> dict[str, Any]:
+        """The current state for the UniFi / Unraid / Backups widgets: snapshots and the small backup_runs table, cheap
+        enough to read on every refresh (never counted in the background)."""
+        from .. import backups, container_watch
+
+        keep = ("name", "model", "kind", "state", "clients", "version", "upgradable", "satisfaction", "uptime")
+        unifi = [{k: d.get(k) for k in keep} for d in await db.get_snapshot("unifi:devices") or [] if isinstance(d, dict)]
+        servers = await db.pool().fetch("SELECT s.id, s.name, sn.data FROM unraid_servers s LEFT JOIN snapshots sn "
+                                         "ON sn.key = 'unraid:' || s.id || ':docker' WHERE s.enabled ORDER BY s.name")
+        unraid = []
+        for srv in servers:
+            ctrs = srv["data"] if isinstance(srv["data"], list) else []
+            problems = []
+            for c in ctrs:
+                state, status = str(c.get("state") or "").upper(), str(c.get("status") or "")
+                health = container_watch.health(status)
+                if state != "RUNNING" or health == "unhealthy":
+                    problems.append({"name": (c.get("names") or ["?"])[0].lstrip("/"), "state": state.lower() or "?",
+                                     "status": status, "health": health, "autostart": c.get("autoStart")})
+            unraid.append({"server": srv["name"], "total": len(ctrs), "known": srv["data"] is not None,
+                           "running": sum(1 for c in ctrs if str(c.get("state") or "").upper() == "RUNNING"),
+                           "problems": problems})
+        jobs = []
+        if settings.backups_enabled:
+            ov = await backups.overview(max(1, math.ceil(hours / 24)), settings.timezone or "UTC")
+            jobs = [{k: j.get(k) for k in ("source_label", "job", "state", "schedule", "last_started", "last_good",
+                                           "last_finished_status", "last_message", "ok", "warned", "failed")}
+                    for j in ov["jobs"]]
+        return {"unifi_devices": unifi, "unraid": unraid, "backup_jobs": jobs}
+
     @app.get("/api/overview")
     async def overview(request: Request, hours: float = Query(24, gt=0, le=24 * 90)):
         pool = db.pool()
@@ -287,12 +367,23 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         report = counted["report"]
         # optional sources: hide their overview cards when their pull is off and they have no data in the period
         has = {r["source"] for r in report.get("totals_by_source") or []}
+        has |= {k for k, n in (("crowdsec", kpi.get("crowdsec_fw")), ("qfeeds", kpi.get("qfeeds"))) if n}  # their firewall blocks
         enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
                    "nginx": settings.nginx_pull, "unbound": settings.unbound_query_pull}
-        enabled = {k: (v and settings.opnsense_enabled) or k in has for k, v in enabled.items()}
+        # a plugin the OPNsense API says is not installed (the poll answers 400 / 404): its widgets are hidden too while
+        # it sent nothing - otherwise they stay on the page empty, and look broken
+        jobs = await db.get_snapshot("poller_status") or {}
+        jobs = jobs if isinstance(jobs, dict) else {}
+        missing = {k for k, job in (("nginx", "nginx_logs"), ("qfeeds", "qfeeds"))
+                   if isinstance(jobs.get(job), dict) and jobs[job].get("unsupported") and not jobs[job].get("forbidden")}
+        enabled = {k: (v and settings.opnsense_enabled and k not in missing) or k in has for k, v in enabled.items()}
         for k, on in (("suricata", settings.ids_pull), ("crowdsec", settings.crowdsec_pull), ("qfeeds", settings.qfeeds_pull)):
             if not on:  # switched off: hidden like its Threats tab, even with older data in the period
                 enabled[k] = False
+        now_state = await overview_now(hours)
+        # the UniFi / Unraid / Backups widgets: hidden while that part is not set up (and sent nothing)
+        enabled.update(unifi=settings.unifi_enabled or "unifi" in has, unraid=bool(now_state["unraid"]),
+                       backups=settings.backups_enabled)
         return {
             "sources": enabled,
             "kpi": {**kpi, "open_alerts": {r["severity"]: r["n"] for r in alerts},
@@ -300,6 +391,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                     "crowdsec_blocklist": blocklist_n, "devices": devices},
             "timeline": counted["timeline"],
             "report": report,
+            "threats": counted.get("threats") or {},  # missing in a 7 / 30 day result counted before it existed
+            "now": db.jsonable(now_state),
             "system": await db.get_snapshot("system"),
             "gateways": await db.get_snapshot("gateways"),
             "ingest": STATS.as_dict(),
@@ -737,7 +830,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
 
     # parts that are not plain tables
     PURGE_PARTS = {
-        "backups": "Backups (the run history of all backup tools; Backrest's own history is not touched)",
+        "backups": "Backups (the run history of all backup tools; Backrest's and Bichon's own history is not touched)",
     }
     BACKUP_TABLES = "backup_runs, backup_runs_removed"
 
@@ -802,7 +895,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         the scheduled report (Settings › Reports)."""
         unraid = bool(await db.pool().fetchval("SELECT count(*) FROM unraid_servers WHERE enabled"))
         configured = {"opnsense": True, "unifi": settings.unifi_enabled, "unraid": unraid,
-                      "backups": settings.backrest_enabled}
+                      "backups": settings.backups_enabled}
         return {"categories": [{"key": k, "name": n, "configured": configured[k]} for k, n in CATEGORIES.items()],
                 "scheduled": parse_categories(settings.report_categories)}
 
@@ -1033,7 +1126,12 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             tab = dash_tab(name, tab)
             got = await long_periods.get("dash", name, tab, hours)
             if got["data"] is None:
-                return {"pending": True, "name": name, "title": DASHBOARDS[name]["title"], **long_info(got)}
+                # not counted yet: the tabs still go along, so another tab or period can be picked meanwhile
+                off = await dash_off(hours)
+                tabs = [{"id": t["id"], "title": t["title"]} for t in DASHBOARDS[name].get("tabs") or []
+                        if t.get("needs") not in off]
+                return {"pending": True, "name": name, "title": DASHBOARDS[name]["title"], "tabs": tabs, "tab": tab,
+                        **long_info(got)}
             return {**got["data"], **long_info(got)}
         out, as_of, stale = await until_disconnected(request, results.fetch(
             ("dash", name, hours, tab), ttl_for(hours), lambda: dash_compute(name, hours, tab), stale_for(hours)))
@@ -1042,15 +1140,17 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 results.warm(("dash", name, h, tab), lambda h=h: dash_compute(name, h, tab), stale_for(h))
         return {**out, "as_of": as_of, "stale": stale}  # see overview(): "stale" = ask again shortly
 
-    async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
-        # Threats sources: switched off in Settings › OPNsense -> its tab and tiles are hidden, even with older data in
-        # the period; with OPNsense not set up (yet) they show only when there is data
+    async def dash_off(hours: float) -> set[str]:
+        """Threats sources whose tab and tiles are hidden: switched off in Settings › OPNsense (even with older data in
+        the period), or - with OPNsense not set up (yet) - without data in the period. Cheap: one EXISTS per source."""
         pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull}
         has = {r["s"] for r in await db.pool().fetch(
             "SELECT s FROM unnest($1::text[]) s WHERE EXISTS (SELECT 1 FROM events WHERE source = s "
             "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
-        off = {k for k, on in pulls.items() if not on or (not settings.opnsense_enabled and k not in has)}
-        out = await run_dashboard(name, hours, off, tab)
+        return {k for k, on in pulls.items() if not on or (not settings.opnsense_enabled and k not in has)}
+
+    async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
+        out = await run_dashboard(name, hours, await dash_off(hours), tab)
         if out.get("tab") == "suricata":
             out["notice"] = await suricata_notice(hours)
         return out
@@ -1117,6 +1217,25 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 "status": snaps.get("status"), "config": snaps.get("config"), "summary": snaps.get("summary"),
                 "jobs": jobs.get("jobs", []), **await backups.source_detail("backrest", days)}
 
+    @app.get("/api/backups/bichon")
+    async def backups_bichon(days: int = Query(30, ge=1, le=400)):
+        """Infrastructure › Backups › Bichon: mail accounts with their syncs, archive size over time, Bichon's own
+        backup."""
+        from .. import backups
+        rows = await db.pool().fetch("SELECT key, ts, data FROM snapshots WHERE key LIKE 'bichon:%'")
+        snaps = {r["key"].split(":", 1)[1]: r["data"] for r in rows}
+        ts = {r["key"].split(":", 1)[1]: r["ts"].isoformat() for r in rows}
+        jobs = await db.get_snapshot("backup_jobs:bichon") or {}
+        stats = await db.pool().fetch(
+            "SELECT started t, (data->'stats'->>'total_size')::bigint storage, (data->'stats'->>'index_size')::bigint idx, "
+            "(data->'stats'->>'emails')::bigint emails, (data->'stats'->>'attachments')::bigint attachments, "
+            "data->'accounts' accounts FROM backup_runs WHERE source = 'bichon' AND kind = 'stats' "
+            "AND started > now() - make_interval(days => $1) ORDER BY started", days)
+        detail = await backups.source_detail("bichon", days)
+        return {"configured": settings.bichon_enabled, "url": settings.bichon_url, "updated": ts.get("state"),
+                "status": snaps.get("status"), "state": snaps.get("state"), "jobs": jobs.get("jobs", []),
+                "archive": db.records(stats), "runs": detail["runs"], "per_job": detail["per_job"]}
+
     @app.post("/api/backups/runs/remove")
     async def backups_remove_runs(payload: dict = Body(...)):
         """Remove runs from the list (e.g. deleted in Backrest already); the tool's next poll does not add them again.
@@ -1127,7 +1246,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 or not all(isinstance(i, str) and 0 < len(i) <= 200 for i in ids):
             raise HTTPException(400, "source and a list of run ids are required")
         removed = await backups.remove_runs(source, ids)
-        await backups.recheck_alerts(source, removed, warnings=settings.backrest_alert_warnings)
+        await backups.recheck_alerts(source, removed, warnings=getattr(settings, f"{source}_alert_warnings", True))
         return {"ok": True, "removed": len(removed)}
 
     @app.get("/api/metrics/multi")
@@ -1559,6 +1678,17 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         cand = _candidate(payload.get("values"))
         if not cand.backrest_enabled:
             return {"ok": False, "error": "The Backrest URL (with port) is required"}
+        return await test_connection(cand)
+
+    @app.post("/api/settings/test/bichon")
+    async def test_bichon(payload: dict = Body(...)):
+        from ..bichon import test_connection
+
+        cand = _candidate(payload.get("values"))
+        if not cand.bichon_url:
+            return {"ok": False, "error": "The Bichon URL (with port) is required"}
+        if not cand.bichon_token:
+            return {"ok": False, "error": "An API token is required (Bichon › API tokens; 'Metrics only' is enough)"}
         return await test_connection(cand)
 
     @app.post("/api/settings/test/email")

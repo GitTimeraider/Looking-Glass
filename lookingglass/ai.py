@@ -69,12 +69,17 @@ metrics also: cpu_used_pct, swap_used_pct, unraid_cpu_pct / unraid_mem_pct / unr
        unifi_clients (labels wifi|wired), unifi_ssid_clients / unifi_ap_clients (labels = SSID / AP name), unifi_wifi_satisfaction,
        unifi_device_cpu / unifi_device_mem / unifi_device_tx_bps / unifi_device_rx_bps (labels = device name)
 
-backup_runs(source /*backrest*/, ext_id, kind /*backup|forget|prune|check|stats|restore|dry-run*/, job /*Backrest plan*/,
+backup_runs(source /*backrest|bichon*/, ext_id, kind /*backup|forget|prune|check|stats|restore|dry-run*/,
+       job /*Backrest plan; Bichon: mail account (address) or 'Bichon data backup'*/,
        repo, status /*success|warning|error|running|pending|cancelled*/, started, ended, duration_s, bytes_processed
        /*data scanned*/, bytes_added /*new data in the repository*/, files_new, files_changed, files_total, snapshot_id,
        message /*error text*/, data jsonb /*errors[], progress, stats {total_size, total_uncompressed_size,
        compression_ratio, snapshot_count}*/)  -- every run of the backup tools; speed = bytes_processed / duration_s
+       -- Bichon (mail archive): kind 'backup' = a mail sync (files_new = mails archived, data.error_count /
+       data.errors = failed folders), kind 'stats' = hourly archive size (data.stats {total_size, index_size, emails,
+       attachments}, data.accounts {address: mails})
 snapshots also: backrest:config (plans with schedule / retention, repositories), backrest:summary, backrest:status,
+       bichon:state (accounts with sync state, archive totals), bichon:status,
        backup_jobs:<source> (jobs with schedule and overdue threshold_s)
 
 Tips: use host(src_ip) to print addresses, `src_ip << '10.0.0.0/8'::inet` for subnet tests, ts > now() - interval '24 hours'
@@ -85,7 +90,8 @@ SYSTEM_PROMPT = """You are Looking Glass's security analyst, a senior SOC / netw
 OPNsense firewall, the network behind it (UniFi access points / switches when configured) and the user's Unraid
 server(s). You have tools that query the log database (firewall, nginx, Unbound DNS, CrowdSec, Suricata,
 Q-Feeds threat intel, authentication, VPN, DHCP, UniFi and system logs) plus OPNsense and UniFi state and
-the backups (Backrest / restic: failed, overdue or slow backups are a resilience risk - e.g. against ransomware).
+the backups (Backrest / restic, and the Bichon mail archive: failed, overdue or slow backups and mail syncs are a
+resilience risk - e.g. against ransomware).
 
 How to work:
 - Investigate with the tools before answering; base every claim on data you actually retrieved and cite the concrete
@@ -164,7 +170,7 @@ TOOLS: list[dict[str, Any]] = [
         "parameters": {"type": "object", "properties": {"client": {"type": "string", "description": "optional name / IP / MAC filter"}}}}},
     {"type": "function", "function": {
         "name": "backup_status",
-        "description": "Backups (Backrest / restic): every backup job with its state (ok, warning, failed, overdue, running, "
+        "description": "Backups (Backrest / restic, Bichon mail archive syncs): every backup job with its state (ok, warning, failed, overdue, running, "
                        "never), last and last successful run, schedule, runs and failures in the period, plus recent "
                        "failed or warning runs with their error text.",
         "parameters": {"type": "object", "properties": {"days": {"type": "integer", "description": "period, default 7"}}}}},
@@ -377,7 +383,7 @@ async def tool_backup_status(days: int = 7) -> Any:
 
     out = await backups.overview(max(1, min(int(days), 400)), "UTC")
     if not out["jobs"] and not any(s["status"] for s in out["sources"]):
-        return {"configured": False, "hint": "No backup tool is connected: Settings › Backrest in Looking Glass"}
+        return {"configured": False, "hint": "No backup tool is connected: Settings › Backrest / Bichon in Looking Glass"}
     out["problems"] = [r for r in out.pop("recent") if r["status"] in ("error", "warning")][:30]
     return out
 
