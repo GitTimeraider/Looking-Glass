@@ -119,6 +119,7 @@ class Settings(BaseSettings):
     ids_alert_priority: int = 3
     ids_ignore_sids: str = ""
     nginx_pull: bool = True
+    service_down_grace: int = 5  # minutes
     vpn_pull: bool = True
     unifi_url: str = ""
     unifi_api_key: str = ""

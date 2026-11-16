@@ -666,6 +666,7 @@ class DetectionEngine:
         self.settings = settings
         self._last_events_at = time.time()
         self._ran: dict[str, float] = {}
+        self._svc_down: dict[str, float] = {}  # service name -> first seen stopped (time.time()), see check_services
         from .behavior import Behavior  # local imports: those modules use the helpers of this one
         from .intel import Intel
         self.behavior = Behavior(settings, self.internal)
@@ -1544,21 +1545,46 @@ class DetectionEngine:
             if r["value"] >= limits[r["name"]]:
                 await raise_alert("resource", "medium", f"{r['name'].replace('_', ' ')} {r['labels']} at {r['value']:.0f}%",
                                   f"res:{r['name']}:{r['labels']}", description="Resource usage over threshold.")
-        services = await db.get_snapshot("services") or []
-        for svc in services if isinstance(services, list) else []:
-            if str(svc.get("running")) == "0" and not str(svc.get("locked", "0")) == "1":
-                name = str(svc.get("name") or "").lower()
-                security = any(w in name for w in SECURITY_SERVICES)
-                rating = Rating("medium", "a security service is down, so its protection and logging are missing") if security \
-                    else Rating("low", "a service is not running")
-                await raise_alert("service_stopped", rating, f"Service '{svc.get('name')}' is not running",
-                                  f"svc:{svc.get('name')}", description=str(svc.get("description", "")))
+        services = await db.get_snapshot("services")
+        if isinstance(services, list):
+            await self.check_services(services)
         fw = await db.get_snapshot("firmware") or {}
         if isinstance(fw, dict) and fw.get("status") in ("update", "upgrade"):
             await raise_alert("firmware", Rating("low", "updates often contain security fixes - install them in a quiet "
                                                         "moment (System › Firmware › Updates)"),
                               "OPNsense firmware updates available", "firmware",
                               description=str(fw.get("status_msg", "")))
+
+    async def check_services(self, services: list[Any], now: float | None = None) -> None:
+        """'Service is not running' only once a service has been stopped for ``service_down_grace`` minutes (Settings ›
+        OPNsense): a restart after a config change or a quick stop / start stays quiet. The alert closes by itself
+        when the service runs again."""
+        now = time.time() if now is None else now
+        grace = max(0, self.settings.service_down_grace) * 60
+        up: list[str] = []
+        down: set[str] = set()
+        for svc in services:
+            if not isinstance(svc, dict) or not svc.get("name"):
+                continue
+            name = str(svc["name"])
+            if str(svc.get("running")) != "0" or str(svc.get("locked", "0")) == "1":
+                up.append(f"svc:{name}")
+                continue
+            down.add(name)
+            since = self._svc_down.setdefault(name, now)
+            if now - since < grace:
+                continue
+            security = any(w in name.lower() for w in SECURITY_SERVICES)
+            rating = Rating("medium", "a security service is down, so its protection and logging are missing") if security \
+                else Rating("low", "a service is not running")
+            desc = str(svc.get("description", ""))
+            await raise_alert("service_stopped", rating, f"Service '{name}' is not running", f"svc:{name}",
+                              description=(f"{desc}\n\n" if desc else "") + f"Stopped for {offline_for(now - since)}.")
+        for name in list(self._svc_down):
+            if name not in down:
+                del self._svc_down[name]
+        if up:
+            await close_alerts("service_stopped", up, "the service is running again")
 
     async def log_silence(self) -> None:
         if STATS.received:

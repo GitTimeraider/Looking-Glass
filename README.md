@@ -57,7 +57,7 @@ web attacks & scanners, Suricata signatures, CrowdSec alerts, Q-Feeds hits (inbo
 DNS tunneling, DGA domains, NXDOMAIN storms, malicious-domain lookups, internal hosts blocked to many destinations,
 outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), new devices, UniFi access point / switch
 offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, gateway down, resources
-(disk/memory/states) high, stopped services, firmware updates available and "logs stopped arriving" (possible tampering).
+(disk/memory/states) high, services stopped for longer than a few minutes (Settings › OPNsense), firmware updates available and "logs stopped arriving" (possible tampering).
 
 **Logins on all systems**: OPNsense (web GUI, SSH, API, VPN), **Unraid** (web GUI and SSH, from its syslog) and the
 **UniFi controller** (admin logins with their address) all feed the same login rules: brute force, password spraying,
