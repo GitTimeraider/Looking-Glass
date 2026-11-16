@@ -281,6 +281,13 @@ FIELDS: list[Field] = [
           "under Alert filters, undo there); off.", choices=("suggest", "auto", "off")),
     Field("feedback_min", "behavior", "False positives before learning", "int", "Same rule + same address closed as "
           "false positive this many times in 30 days.", min=2, max=50),
+    Field("fp_repeat", "behavior", "Repeats of a false positive", "choice", "The exact same alert again (same rule, "
+          "device, port and remote address, no higher severity) after you closed it as false positive: close = store "
+          "it closed (not notified, listed under closed alerts with a link to your earlier verdict); info = keep it "
+          "open but lower it to info; off = raise it as usual. A repeat that is more severe is always raised.",
+          choices=("close", "info", "off")),
+    Field("fp_repeat_days", "behavior", "Remember a false positive for (days)", "int", "Counted from the last time "
+          "the alert was seen: as long as it keeps coming back unchanged, your verdict keeps applying.", min=1, max=365),
     # threat intel & traps
     Field("abusech_auth_key", "intel", "abuse.ch Auth-Key", "secret", "Free key for URLhaus, ThreatFox, Feodo Tracker "
           "and SSLBL: auth.abuse.ch › log in (e.g. with GitHub / Google) › Optional › Generate Auth-Key."),

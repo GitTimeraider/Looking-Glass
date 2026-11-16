@@ -37,7 +37,7 @@ SHARED_SITES = (
     "microsoft.com", "live.com", "onedrive.com", "1drv.ms", "office.com", "windows.net",
     "apple.com", "icloud.com", "amazon.com", "cloudflare.com", "archive.org", "jsdelivr.net", "unpkg.com",
     "telegram.org", "t.me", "telegram.me", "telegra.ph", "pastebin.com",
-    "twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com", "reddit.com", "vk.com",
+    "twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com", "reddit.com", "vk.com", "tiktok.com",
     "bit.ly", "tinyurl.com",
 )
 # Endpoints: only this exact name is shared (cloud storage reached as endpoint/<bucket>/file); a name IN FRONT of it
@@ -112,6 +112,8 @@ class Settings(BaseSettings):
     risk_exclude: str = ""
     feedback_mode: str = "suggest"
     feedback_min: int = 3
+    fp_repeat: str = "close"
+    fp_repeat_days: int = 30
     # threat intel & traps (Settings › Threat intel & traps)
     abusech_auth_key: str = ""
     intel_urlhaus: bool = True

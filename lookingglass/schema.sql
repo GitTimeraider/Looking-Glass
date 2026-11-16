@@ -310,7 +310,7 @@ CREATE TABLE IF NOT EXISTS risk_scores (
     updated TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-ALTER TABLE alerts ADD COLUMN IF NOT EXISTS close_reason TEXT;  -- 'false_positive' | 'resolved'
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS close_reason TEXT;  -- 'false_positive' | 'resolved' | 'muted' | 'known_false_positive'
 
 -- AI analysis of a report runs in the background: running | done | failed (+ the reason)
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS ai_state TEXT;

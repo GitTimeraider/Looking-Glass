@@ -85,7 +85,11 @@ those under *Settings › Data & detection › DNS: domains to ignore* (subdomai
 
 **Close** sticks: while the same thing keeps happening, the closed alert only counts the new sightings - it comes back
 as open only when it gets **worse** (higher severity) or after 24 quiet hours. **Close as false positive** does the same
-and also teaches Looking Glass (repeated ones become a mute / lower suggestion). To never see something again: **Mute
+and also teaches Looking Glass: the *exact same* alert coming back later (same rule, device, port and remote address,
+no higher severity) is stored closed as **known false positive #id**, linked to your verdict and not notified - for 30
+days after it was last seen (*Settings › Behaviour & ML › Repeats of a false positive*: close / info / off, and for how
+many days). A repeat that is worse, or about another remote address, is raised as usual. Repeated false positives of
+one rule and address also become a mute / lower suggestion. To never see something again: **Mute
 similar…**. **Trusted** on the Devices page marks a device as known: it is never counted as "new device" in attack
 chains (it does not silence real alerts about the device).
 
@@ -135,6 +139,16 @@ decide it for every rule:
 | DNS tunneling, DGA names, NXDOMAIN storm | high, medium, low - each up when confirmed |
 | Malicious domain looked up (blocked): 1-2 domains / 3+ | medium / high, up when confirmed |
 | Suspicious outbound port (Tor, IRC, RDP, SMB, mining…) blocked / allowed | low / medium, up when confirmed |
+
+"Blocked" in an alert means the firewall **logged a block** for it. An outbound NAT line (`nat out on pppoe0 …`, an
+outbound NAT rule with logging on) is a connection that left, so it counts as allowed; a connection seen without any
+pass or block line is described as "not blocked as far as the log shows", never as blocked.
+
+"Up when confirmed" (*also seen by other sources*) counts other alerts about the same device only when they are
+related or serious on their own: about the same remote address, rated high / critical, or not blocked. A blocked
+lookup or connection rated low / medium elsewhere (a listed site in a browser tab) is the blocklist doing its job and
+does not raise an unrelated alert, nor does a rule you closed as false positive for the device in the last 30 days.
+The reason names the alerts it counted (e.g. `open alerts: tor #1290`).
 | Gateway down / degraded, security service stopped / other service stopped, logs stopped | high / low, medium / low, medium |
 | UniFi: switch offline / AP offline (after *Offline alerts wait*), foreign AP with your Wi-Fi name (open or strong signal: up), rogue DHCP | high / medium, medium-high, high |
 | New device | low |

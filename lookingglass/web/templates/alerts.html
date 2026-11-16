@@ -137,6 +137,7 @@ const expanded = new Set();
 function statusPills(a) {
   return `<span class="pill st-${LG.esc(a.status)}">${LG.esc(a.status)}</span>` +
     (a.close_reason === "false_positive" ? `<span class="pill" title="Closed as false positive">false positive</span>` : "") +
+    (a.close_reason === "known_false_positive" ? `<span class="pill" title="The same alert as #${LG.esc(String(((a.data || {}).repeat_of || {}).id || "?"))}, which you closed as false positive: stored closed, not notified (Settings › Behaviour & ML › Repeats of a false positive)">known false positive #${LG.esc(String(((a.data || {}).repeat_of || {}).id || "?"))}</span>` : "") +
     (a.close_reason === "muted" ? `<span class="pill" title="This device has this alert type set to silent (Devices › settings): stored, never shown as open, but it counts for attack chains and the risk score">silent</span>` : "");
 }
 function details(a) {
