@@ -50,9 +50,8 @@ A tour of the pages: overview, alerts, dashboards, infrastructure, devices, even
 * **Infrastructure › UniFi** – tabs *Overview* (APs / switches online, clients over time per SSID and AP, Wi-Fi
   experience, device load and uplink throughput, health), *Devices* (firmware/updates, uptime, clients, radios, uplink;
   click a switch for its ports with PoE, traffic and errors), *Clients* (filter and sort by name, AP / switch port,
-  SSID, signal, traffic) and *Neighbouring Wi-Fi* (foreign APs, evil-twin warnings).
-* **UniFi network › Wi-Fi & clients** – connects, roams, device offline and rogue events over time, clients per SSID /
-  AP, weakest signal, most roaming, top traffic, device events and clients with security events (see above).
+  SSID, signal, traffic and OPNsense security findings of the last 24 hours) and *Neighbouring Wi-Fi* (foreign APs,
+  evil-twin warnings). UniFi events (connects, roams, device offline, rogue APs) are in Event search (source *unifi*).
 * **Devices** – everything connected to OPNsense (ARP + DHCP leases from dnsmasq / Kea / ISC + UniFi clients):
   online state, name,
   IP, MAC, vendor, interface, lease, first/last seen, events/blocks/DNS queries/alerts per device; mark devices as

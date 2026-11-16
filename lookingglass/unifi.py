@@ -403,6 +403,26 @@ class UnifiClient:
 OFFLINE_STATES = ("offline", "heartbeat missed", "isolated", "connection interrupted")
 
 
+async def client_security(ips: list[Any], hours: int = 24) -> dict[str, dict[str, int]]:
+    """OPNsense findings per UniFi client IP over the last ``hours``: firewall blocks, blocked DNS lookups, threat
+    events (Suricata / CrowdSec / Q-Feeds) and open alerts. Only clients with at least one finding are returned."""
+    ips = sorted({x for x in map(ip_or_none, ips) if x})
+    if not ips:
+        return {}
+    rows = await db.pool().fetch(
+        "WITH ev AS (SELECT src_ip, count(*) FILTER (WHERE source = 'firewall' AND action = 'block') fw, "
+        "count(*) FILTER (WHERE source = 'unbound' AND action IN ('block', 'drop')) dns, "
+        "count(*) FILTER (WHERE source IN ('suricata', 'crowdsec', 'qfeeds') OR lower(data->>'blocklist') = 'q-feeds') "
+        "threats FROM events WHERE ts > now() - make_interval(hours => $2) AND src_ip = ANY($1::inet[]) "
+        "AND source IN ('firewall', 'unbound', 'suricata', 'crowdsec', 'qfeeds') GROUP BY 1), "
+        "al AS (SELECT src_ip, count(*) alerts FROM alerts WHERE status = 'open' AND src_ip = ANY($1::inet[]) GROUP BY 1) "
+        "SELECT host(coalesce(ev.src_ip, al.src_ip)) ip, coalesce(ev.fw, 0) fw, coalesce(ev.dns, 0) dns, "
+        "coalesce(ev.threats, 0) threats, coalesce(al.alerts, 0) alerts FROM ev FULL JOIN al ON al.src_ip = ev.src_ip",
+        ips, hours)
+    return {r["ip"]: {k: r[k] for k in ("fw", "dns", "threats", "alerts")} for r in rows
+            if r["fw"] or r["dns"] or r["threats"] or r["alerts"]}
+
+
 class UnifiPoller:
     def __init__(self, settings: Settings, writer: EventWriter) -> None:
         self.settings = settings

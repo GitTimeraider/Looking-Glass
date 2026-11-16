@@ -108,7 +108,7 @@ FIELDS: list[Field] = [
     Field("unifi_poll_interval", "unifi", "Poll interval (seconds)", "int",
           "Devices, clients and health. Events and rogue APs follow every 2 minutes.", min=30, max=3600),
     Field("unifi_events", "unifi", "Collect UniFi events", "bool",
-          "Client connects / roams, AP / switch offline, rogue APs - shown in Event search and the UniFi dashboard."),
+          "Client connects / roams, AP / switch offline, rogue APs - shown in Event search and on the Overview."),
     Field("unifi_offline_grace", "unifi", "Offline alerts wait (minutes)", "int", "An 'access point / switch is "
           "offline' or 'controller unreachable' alert only once it has been down this long - a reboot of OPNsense, the "
           "controller or the device itself (updates) stays quiet. Such an alert closes by itself when the device / "

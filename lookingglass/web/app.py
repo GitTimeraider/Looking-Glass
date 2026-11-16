@@ -1111,6 +1111,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def dash_page(request: Request, name: str):
         if name == "suricata":  # Suricata is a tab of the Threats page
             return RedirectResponse("/dash/threats#suricata")
+        if name == "unifi":  # the former "Wi-Fi & clients" dashboard: its contents live on the UniFi page
+            return RedirectResponse("/unifi#clients")
         if name not in DASHBOARDS:
             raise HTTPException(404)
         return templates.TemplateResponse(request, "dash.html", {
@@ -1195,8 +1197,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if clients:  # UniFi often has no name for a client - the device list may (DHCP, dnsmasq Hosts, your own name)
             names = {r["mac"]: r["hostname"] for r in await db.pool().fetch(
                 "SELECT mac, hostname FROM devices WHERE mac = ANY($1::text[]) AND hostname IS NOT NULL", [c.get("mac") for c in clients])}
+            from ..unifi import client_security
+            sec = await client_security([c.get("ip") for c in clients])
             for c in clients:
                 c["known_as"] = names.get(c.get("mac"))
+                c["security"] = sec.get(c.get("ip"))
         return {"configured": settings.unifi_enabled, "url": settings.unifi_url, "updated": ts.get("devices"), **snaps}
 
     @app.get("/api/backups")
