@@ -32,8 +32,8 @@ import httpx
 from . import db
 from .behavior import Matcher
 from .config import SHARED_ENDPOINTS, SHARED_SITES, Settings
-from .detections import (ALLOWED_AGG, FW_BLOCKED_AGG, FW_RULE_AGG, Rating, corroborate, dga_like, evidence, ignore_list,
-                         ignored_domain, raise_alert, registered_domain, verdict)
+from .detections import (ALLOWED_AGG, FW_BLOCKED_AGG, FW_NAT_OUT, FW_RULE_AGG, Rating, corroborate, dga_like, evidence, ignore_list,
+                         ignored_domain, raise_alert, registered_domain, verdict, was_blocked)
 from .parsers.common import is_internal_ip
 
 log = logging.getLogger(__name__)
@@ -449,7 +449,7 @@ class Intel:
             conns = await pool.fetch(
                 f"SELECT host(src_ip) src, host(dst_ip) dst, max(dst_port) port, count(*) n, {ALLOWED_AGG} passed, "
                 f"{FW_BLOCKED_AGG} fw_blocked, {FW_RULE_AGG} fw_rule, array_agg(DISTINCT dst_port) ports, "
-                "bool_or(source = 'firewall' AND action = 'pass' AND direction = 'out') left_wan "
+                f"bool_or((source = 'firewall' AND action = 'pass' AND direction = 'out') OR {FW_NAT_OUT}) left_wan "
                 "FROM events WHERE id > $1 AND id <= $2 "
                 "AND source IN ('firewall', 'suricata') AND src_ip IS NOT NULL AND dst_ip IS NOT NULL "
                 "GROUP BY 1, 2", last, current)
@@ -457,6 +457,7 @@ class Intel:
             for r in conns:
                 src, dst = r["src"], r["dst"]
                 how = verdict(r["passed"], r["fw_blocked"], r["fw_rule"])
+                blocked = was_blocked(r["passed"], r["fw_blocked"])
                 if internal(src) and not internal(dst) and dst in ips and not allow_ip.match(dst, src):
                     if redirect(r):
                         continue  # only ports a NAT port forward sends to your own DNS / NTP server: never left
@@ -465,7 +466,7 @@ class Intel:
                     if not bad:
                         if self.s.intel_tor == "off" or tor_ok.match(src):
                             continue
-                        rating = Rating("medium" if r["passed"] else "low", "a device connects to the Tor network - "
+                        rating = Rating("low" if blocked else "medium", "a device connects to the Tor network - "
                                         "hides where traffic goes (privacy tools, but also malware and data theft)"
                                         + ("; the connection was ALLOWED" if r["passed"] else f"; the connection was {how}"),
                                         sticky=True)
@@ -474,23 +475,23 @@ class Intel:
                             hint = (" Only DNS / NTP ports: if a NAT port forward sends those to your own resolver / "
                                     "time server, give Looking Glass's API user the 'Firewall: NAT: Port Forward' "
                                     "privilege (or tick 'Log' on the NAT rule) so it knows - then this is not raised.")
-                        await raise_alert("tor", corroborate(rating, await evidence(src, "tor"), 1),
-                                          f"{src} {'connects' if r['passed'] else 'tries to connect'} to the Tor network ({dst})"
-                                          + ("" if r["passed"] else " - blocked"), f"tor:{src}", src_ip=src, dst_ip=dst,
-                                          events={"ip": src}, count=r["n"], blocked=not r["passed"] and f"the connection was {how}",
+                        await raise_alert("tor", corroborate(rating, await evidence(src, "tor", dst=dst), 1),
+                                          f"{src} {'tries to connect' if blocked else 'connects'} to the Tor network ({dst})"
+                                          + (" - blocked" if blocked else ""), f"tor:{src}", src_ip=src, dst_ip=dst,
+                                          events={"ip": src}, count=r["n"], blocked=blocked and f"the connection was {how}",
                                           description=f"{src} contacted Tor relay {dst}: {how}. "
                                                       "Allowed on purpose? Settings › Threat intel & traps › Devices allowed "
                                                       "to use Tor." + hint)
                         continue
-                    rating = Rating("critical" if r["passed"] else "medium",
+                    rating = Rating("medium" if blocked else "critical" if r["passed"] else "high",
                                     f"{FEEDS[feed]['label']}: {info or 'malicious'}"
                                     + (" - and the connection was ALLOWED" if r["passed"] else f" - {how}"), sticky=True)
                     await raise_alert(
-                        "threat_feed", corroborate(rating, await evidence(src, "threat_feed"), 1),
-                        f"{src} → known malicious address {dst}:{r['port'] or '?'}" + ("" if r["passed"] else " (blocked)"),
+                        "threat_feed", corroborate(rating, await evidence(src, "threat_feed", dst=dst), 1),
+                        f"{src} → known malicious address {dst}:{r['port'] or '?'}" + (" (blocked)" if blocked else ""),
                         f"feed:{src}:{dst}", src_ip=src,
                         dst_ip=dst, events={"ip": src}, count=r["n"], data={"feed": feed, "indicator": dst, "info": info},
-                        blocked=not r["passed"] and f"the connection was {how}",
+                        blocked=blocked and f"the connection was {how}",
                         description=f"{dst} is listed by {FEEDS[feed]['label']} ({info or 'malicious'}); the connection was "
                                     f"{how}. A device talking to a command & control server is very likely infected: "
                                     "isolate it and check it.")

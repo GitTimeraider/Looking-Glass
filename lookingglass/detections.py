@@ -14,7 +14,7 @@ from typing import Any
 from . import alert_filters, db, event_filter
 from .parsers.common import real_name
 from .parsers.filterlog import QFEEDS, QFEEDS_NAME
-from .config import Settings
+from .config import Settings, get_settings
 from .ingest import STATS
 from .parsers.common import is_internal_ip, parse_networks
 
@@ -35,9 +35,14 @@ SUSPICIOUS_OUT_PORTS = {
 
 # Was a connection ALLOWED? The firewall's own verdict, or another source's pass / allow.
 ALLOWED_ROW = "((source = 'firewall' AND action = 'pass') OR (source <> 'firewall' AND action IN ('pass', 'allow')))"
+# An outbound NAT log line ("nat out on pppoe0 ...", outbound NAT rule with logging on) is a connection that got its
+# public address and left - often the only line logged for it, because the LAN pass rule does not log. Counted as
+# allowed unless the firewall also logged a block for it.
+FW_NAT_OUT = "(source = 'firewall' AND action IN ('nat', 'binat') AND direction = 'out')"
+FW_BLOCK_ROW = "(source = 'firewall' AND action IN ('block', 'drop'))"
 # per group of events (src, dst, ...)
-ALLOWED_AGG = "bool_or((source = 'firewall' AND action = 'pass') OR (source <> 'firewall' AND action IN ('pass', 'allow')))"
-FW_BLOCKED_AGG = "count(*) FILTER (WHERE source = 'firewall' AND action IN ('block', 'drop'))"
+ALLOWED_AGG = (f"(bool_or({ALLOWED_ROW}) OR (bool_or({FW_NAT_OUT}) AND NOT bool_or({FW_BLOCK_ROW})))")
+FW_BLOCKED_AGG = f"count(*) FILTER (WHERE {FW_BLOCK_ROW})"
 # a blocked packet that tries to open a connection (or is not TCP); out-of-state packets (ACK / RST: a device closing
 # sessions the firewall already forgot, e.g. after waking from standby) are no scan
 FW_PROBE = "(data->>'tcpflags' IS NULL OR data->>'tcpflags' !~ '[AR]')"
@@ -45,12 +50,19 @@ FW_RULE_AGG = "max(data->>'label') FILTER (WHERE source = 'firewall' AND action 
 
 
 def verdict(passed: bool, fw_blocked: int = 0, rule: str | None = None) -> str:
-    """'ALLOWED' / 'blocked by the OPNsense firewall (rule "x", 12×)' / 'blocked' - for alert texts."""
+    """'ALLOWED' / 'blocked by the OPNsense firewall (rule "x", 12×)' / 'not blocked as far as the log shows' - for
+    alert texts. Only a logged block is "blocked": a connection seen without a pass or block line (a Suricata record,
+    a 'match' / 'rdr' line, a pass rule without logging) is not called blocked."""
     if passed:
         return "ALLOWED"
     if fw_blocked:
         return f"blocked by the OPNsense firewall ({f'rule “{rule}”, ' if rule else ''}{fw_blocked}×)"
-    return "blocked"
+    return "not blocked as far as the log shows (no pass or block line logged for it)"
+
+
+def was_blocked(passed: bool, fw_blocked: int = 0) -> bool:
+    """The firewall logged a block for it and no pass: only then is an alert marked (and titled) blocked."""
+    return bool(fw_blocked) and not passed
 
 
 # remote admin / file sharing: what ransomware and worms use to spread inside a network (MITRE T1021)
@@ -188,8 +200,13 @@ def _private(ip: str) -> bool:
     return a.is_private or a in ipaddress.ip_network("100.64.0.0/10")
 
 
-async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]:
-    """What else is known about one IP in the last ``hours``: traffic that got through and other threat signals."""
+async def evidence(ip: str | None, rule: str, hours: int = 24, dst: str | None = None) -> dict[str, Any]:
+    """What else is known about one IP in the last ``hours``: traffic that got through and other threat signals.
+
+    Other alerts about the IP count as a sign only when they are related or serious on their own: about the same
+    remote address ``dst``, or rated high / critical, or not blocked. A blocked lookup / connection rated low or
+    medium (a stray ad, a link to a listed site) is the blocklist doing its job and says nothing about an unrelated
+    connection of the same device. Nor does a rule you closed as false positive for this address in the last 30 days."""
     if not ip:
         return {}
     pool = db.pool()
@@ -210,13 +227,19 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
             "FROM events WHERE src_ip = $1::inet AND ts > now() - make_interval(hours => $2)", ip, hours)
         others = await pool.fetch(
             # acknowledged = you looked at it and know it: no longer a sign that something else is wrong
-            f"SELECT DISTINCT rule FROM alerts WHERE (src_ip = $1::inet OR dst_ip = $1::inet) AND {COUNTS_SQL} "
-            "AND NOT (rule = ANY($2::text[])) AND last_seen > now() - make_interval(hours => $3) "
-            "AND rule NOT IN ('new_device', 'admin_login', 'config_change', 'port_scan', 'host_sweep', 'attack_chain', 'risk_score') "
+            f"SELECT a.id, a.rule, a.title FROM alerts a WHERE (a.src_ip = $1::inet OR a.dst_ip = $1::inet) AND {COUNTS_SQL} "
+            "AND NOT (a.rule = ANY($2::text[])) AND a.last_seen > now() - make_interval(hours => $3) "
+            "AND a.rule NOT IN ('new_device', 'admin_login', 'config_change', 'port_scan', 'host_sweep', 'attack_chain', 'risk_score') "
             # a threat-intel / CrowdSec / Suricata alert rated low or info is "blocked / handled / policy noise": no sign
             # that anything else is wrong (rated higher, it is: repeated, not blocked, or a serious signature)
-            "AND NOT (rule IN ('threat_intel_outbound', 'threat_intel_inbound', 'crowdsec', 'ids') AND severity IN ('low', 'info'))",
-            ip, sorted(next((f for f in RULE_FAMILIES if rule in f), {rule})), hours)
+            "AND NOT (a.rule IN ('threat_intel_outbound', 'threat_intel_inbound', 'crowdsec', 'ids') AND a.severity IN ('low', 'info')) "
+            # blocked and not serious: only when it is about the same remote address
+            "AND (a.dst_ip IS NOT DISTINCT FROM $4::inet AND $4::inet IS NOT NULL "
+            "     OR a.severity IN ('high', 'critical') OR NOT coalesce((a.data->>'blocked')::boolean, false)) "
+            "AND NOT EXISTS (SELECT 1 FROM alerts f WHERE f.rule = a.rule AND f.close_reason = 'false_positive' "
+            "                AND f.src_ip = $1::inet AND f.last_seen > now() - interval '30 days') "
+            "ORDER BY a.id DESC",
+            ip, sorted(next((f for f in RULE_FAMILIES if rule in f), {rule})), hours, dst)
     except Exception:  # noqa: BLE001 - invalid IP text etc.
         return {}
     out = dict(row) if row else {}
@@ -229,8 +252,11 @@ async def evidence(ip: str | None, rule: str, hours: int = 24) -> dict[str, Any]
     if out.get("ids_periods", 0) >= REPEAT_PERIODS:
         out["ids"] = out.get("ids_all", 0)
     # the threat-intel alerts are made of the Q-Feeds hits counted above: one sign, not two
-    out["other_alerts"] = sorted(r["rule"] for r in others
-                                 if not (out.get("qfeeds") and r["rule"] in ("threat_intel_outbound", "threat_intel_inbound")))
+    others = [r for r in others
+              if not (out.get("qfeeds") and r["rule"] in ("threat_intel_outbound", "threat_intel_inbound"))]
+    out["other_alerts"] = sorted({r["rule"] for r in others})
+    # which alerts exactly (newest per rule), so the reason can be checked: "threat_feed #1291"
+    out["other_refs"] = sorted({r["rule"]: f"{r['rule']} #{r['id']}" for r in reversed(others)}.values())
     return out
 
 
@@ -238,7 +264,7 @@ def threat_signals(ev: dict[str, Any]) -> list[str]:
     """Independent signs that a host is compromised / malicious (for corroboration)."""
     sig = [f"{ev[k]} {label}" for k, label in (("ids", "Suricata alert(s)"), ("qfeeds", "threat-intel hit(s)")) if ev.get(k)]
     if ev.get("other_alerts"):
-        sig.append("open alerts: " + ", ".join(ev["other_alerts"][:5]))
+        sig.append("open alerts: " + ", ".join((ev.get("other_refs") or ev["other_alerts"])[:5]))
     return sig
 
 
@@ -427,11 +453,50 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
             f"status = CASE WHEN $6 = 'closed' THEN 'closed' ELSE status END, title = $7 WHERE id = $1",
             row["id"], count, sev, description, data, status, title)
         return
+    close_reason = "muted" if silent else None
+    if status == "open" and (fp := await known_false_positive(rule, fingerprint, dst_ip, severity)):
+        # the same alert (same rule, device, port and remote address) you closed as false positive before, and no
+        # worse than then: your verdict stands (Settings › Behaviour & ML › Repeats of a false positive)
+        when = fp["closed_at"].astimezone(timezone.utc).strftime("%Y-%m-%d")
+        data["repeat_of"] = {"id": fp["origin"], "last": fp["id"], "action": fp["action"]}
+        note = f"Same as alert #{fp['origin']}, which you closed as false positive ({when})"
+        if fp["action"] == "close":
+            status, close_reason = "closed", "known_false_positive"
+            description += f"\n\n{note}: stored as closed, not notified."
+        else:
+            data["severity_why"] = list(data.get("severity_why") or []) + [f"→ info: {note.lower()}"]
+            description += f"\n\n{note}: lowered from {severity} to info."
+            severity = "info"
     await pool.execute(
         "INSERT INTO alerts (rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data, status, close_reason) "
         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-        rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data, status, "muted" if silent else None)
-    log.info("ALERT%s [%s] %s", " (silent)" if silent else "", severity, title)
+        rule, severity, title, description, src_ip, dst_ip, count, fingerprint, data, status, close_reason)
+    log.info("ALERT%s [%s] %s", " (silent)" if silent else " (known false positive)" if close_reason == "known_false_positive"
+             else "", severity, title)
+
+
+async def known_false_positive(rule: str, fingerprint: str, dst_ip: str | None, severity: str) -> dict[str, Any] | None:
+    """The last alert with this fingerprint you closed as false positive (or that was closed as a repeat of one) in
+    the last ``fp_repeat_days`` days, when the new one is no worse and - if both have one - about the same remote
+    address. None when the setting is off."""
+    s = get_settings()
+    action = getattr(s, "fp_repeat", "close")
+    if action not in ("close", "info"):
+        return None
+    days = max(1, int(getattr(s, "fp_repeat_days", 30) or 30))
+    try:
+        row = await db.pool().fetchrow(
+            "SELECT id, severity, last_seen AS closed_at, coalesce((data->'repeat_of'->>'id')::bigint, id) AS origin "
+            "FROM alerts WHERE rule = $1 AND fingerprint = $2 AND status = 'closed' "
+            "AND close_reason IN ('false_positive', 'known_false_positive') "
+            "AND last_seen > now() - make_interval(days => $3) "
+            "AND ($4::inet IS NULL OR dst_ip IS NULL OR dst_ip = $4::inet) ORDER BY id DESC LIMIT 1",
+            rule, fingerprint, days, dst_ip)
+    except Exception:  # noqa: BLE001 - invalid IP text etc.: never lose an alert because of this
+        return None
+    if not row or SEVERITIES.index(severity) > SEVERITIES.index(row["severity"] if row["severity"] in SEVERITIES else "info"):
+        return None
+    return {**dict(row), "action": action}
 
 
 async def close_alerts(rule: str, fingerprints: list[str], why: str) -> None:
@@ -796,17 +861,18 @@ class DetectionEngine:
             src, dst = str(r["src_ip"]), str(r["dst_ip"])
             if not self.internal(src) or self.internal(dst):
                 continue
-            passed = r["passed"]
+            passed, blocked = r["passed"], was_blocked(r["passed"], r["fw_blocked"])
             how = verdict(passed, r["fw_blocked"], r["fw_rule"])
-            rating = Rating("medium", "the connection was ALLOWED out") if passed else \
-                Rating("low", f"the connection was {how}")
+            rating = Rating("low", f"the connection was {how}") if blocked else \
+                Rating("medium", "the connection was ALLOWED out" if passed else f"the connection was {how}")
             rating.sticky = True
-            corroborate(rating, await evidence(src, "suspicious_outbound_port"))
+            corroborate(rating, await evidence(src, "suspicious_outbound_port", dst=dst))
             await raise_alert(
                 "suspicious_outbound_port", rating,
-                f"{src} → {dst}:{r['dst_port']} ({SUSPICIOUS_OUT_PORTS[r['dst_port']]}) {'ALLOWED' if passed else 'blocked'}",
+                f"{src} → {dst}:{r['dst_port']} ({SUSPICIOUS_OUT_PORTS[r['dst_port']]}) "
+                + ("blocked" if blocked else "ALLOWED" if passed else "seen"),
                 f"susp_port:{src}:{r['dst_port']}", src_ip=src, events={"source": "firewall", "ip": src, "port": r["dst_port"]}, dst_ip=dst, count=r["hits"],
-                blocked=not passed and f"the connection was {how}",
+                blocked=blocked and f"the connection was {how}",
                 description=f"Internal host {src} connected to external {dst} on port {r['dst_port']} "
                             f"({SUSPICIOUS_OUT_PORTS[r['dst_port']]}): {how}.")
         await self._commit("susp_ports", current)
@@ -1428,7 +1494,7 @@ class DetectionEngine:
                         "WHERE src_ip = $1::inet AND dst_ip = $2::inet AND ts > now() - interval '6 hours' "
                         "AND source = 'firewall'", src, r["dst"])
                     how = verdict(v["passed"], v["fw_blocked"], v["fw_rule"])
-                    if not v["passed"]:
+                    if was_blocked(v["passed"], v["fw_blocked"]):
                         rating.note(f"{how} - the firewall stops it, but the device keeps trying (malware retries like this)")
                 await raise_alert(
                     "beaconing", rating, f"Possible beaconing: {src} → {what} every {every}", f"beacon:{src}:{r['dst']}",
@@ -1436,7 +1502,7 @@ class DetectionEngine:
                     # the rhythm spans 6 hours: without it the ports (and port filters) of an alert first raised after
                     # the flow ended - a voice call that just stopped - would only see the last 15 minutes, i.e. nothing
                     span=(r["first"], r["last"]),
-                    blocked=kind == "conn" and not v["passed"] and "every attempt was blocked",
+                    blocked=kind == "conn" and was_blocked(v["passed"], v["fw_blocked"]) and "every attempt was blocked",
                     # an address: only the traffic to it, so the alert's ports (and port filters) are those of this flow
                     events={"ip": src, "q": r["dst"]} if kind == "dns" else {"src": src, "dst": r["dst"]},
                     description=f"{src} contacted {what} {r['n']} times in 6 hours at very regular intervals (every {every})"
