@@ -156,6 +156,9 @@ class Settings(BaseSettings):
     ids_alert_priority: int = 3
     ids_ignore_sids: str = ""
     nginx_pull: bool = True
+    web_internet_alerts: str = "through"  # web attacks / scanners from the internet: through / attacks / all
+    web_through_min: int = 1
+    web_success_codes: str = "2xx"
     service_down_grace: int = 5  # minutes
     vpn_pull: bool = True
     unifi_url: str = ""

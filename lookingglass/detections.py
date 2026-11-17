@@ -992,16 +992,35 @@ class DetectionEngine:
         await self._commit("config", current)
 
     # --------------------------------------------------------- web rules ---
+    # Web attacks / scanners from the internet that got nowhere (every request answered 4xx / 5xx, or blocked by
+    # CrowdSec / a WAF) are background noise every public web server gets - like a blocked port scan. Settings ›
+    # Data & detection › "Web attacks / scanners from the internet": only when something got through (default), also
+    # every failed RCE / SQL injection attempt, or everything. From inside the network: always.
+    WEB_REAL_TAGS = ["path_traversal", "sqli", "xss", "rce", "sensitive_file", "scanner_probe"]  # not scanner_ua alone
+
+    def _web_ok_sql(self) -> str:
+        return "'^http_[23]'" if getattr(self.settings, "web_success_codes", "2xx") == "2xx+3xx" else "'^http_2'"
+
+    def _web_ok_label(self) -> str:
+        return "2xx/3xx" if getattr(self.settings, "web_success_codes", "2xx") == "2xx+3xx" else "2xx"
+
     async def web_attacks(self) -> None:
         last, current = await self._watermark("web_attacks")
         rows = await db.pool().fetch(
             "SELECT src_ip, tag, count(*) AS hits, array_agg(DISTINCT message) AS samples, "
-            "count(*) FILTER (WHERE action ~ '^http_[23]') AS ok_hits FROM ("
+            f"count(*) FILTER (WHERE action ~ {self._web_ok_sql()}) AS ok_hits FROM ("
             "  SELECT src_ip, message, action, jsonb_array_elements_text(data->'tags') AS tag FROM events "
             "  WHERE id > $1 AND id <= $2 AND source = 'nginx' AND jsonb_typeof(data->'tags') = 'array' "
             "  AND jsonb_array_length(data->'tags') > 0) t GROUP BY src_ip, tag", last, current)
+        mode = getattr(self.settings, "web_internet_alerts", "through")
+        need = max(1, int(getattr(self.settings, "web_through_min", 1) or 1))
         for r in rows:
             ip = str(r["src_ip"]) if r["src_ip"] else "unknown"
+            inside = bool(r["src_ip"]) and self.internal(ip)
+            # a scanner user agent on its own is a visit: a successful answer to it is the page, not a breach
+            through = r["ok_hits"] if r["tag"] != "scanner_ua" else 0
+            if not inside and mode != "all" and through < need and not (mode == "attacks" and r["tag"] in ("rce", "sqli")):
+                continue
             if r["tag"] in ("rce", "sqli"):
                 rating = Rating("medium", f"{r['tag']} attempt")
             elif r["tag"] in ("path_traversal", "sensitive_file", "xss"):
@@ -1010,29 +1029,52 @@ class DetectionEngine:
                 rating = Rating("info", f"{r['tag'].replace('_', ' ')} - typical internet scanner traffic")
             rating.sticky = True
             if r["ok_hits"]:
-                rating.up(f"{r['ok_hits']} of these requests got a SUCCESSFUL response (2xx/3xx) - check whether it worked")
+                rating.up(f"{r['ok_hits']} of these requests got a SUCCESSFUL response ({self._web_ok_label()}) - "
+                          "check whether it worked")
             elif rating.severity != "info":
                 rating.why.append("every request failed (4xx/5xx)")
-            if r["src_ip"] and self.internal(ip):
+            if inside:
                 rating.up("the attacker is INSIDE the network")
             await raise_alert(
                 "web_attack", rating, f"Web attack ({r['tag']}) from {ip} on nginx", f"web:{ip}:{r['tag']}", src_ip=r["src_ip"] and ip, events={"source": "nginx", "ip": r["src_ip"] and ip},
-                count=r["hits"], description=f"{r['hits']} request(s) matching '{r['tag']}'. Samples: {list(r['samples'])[:5]}")
+                count=r["hits"], description=f"{r['hits']} request(s) matching '{r['tag']}'. Samples: {list(r['samples'])[:5]}"
+                + ("" if inside else "\n\nFrom the internet this alerts only when requests got through - "
+                   "Settings › Data & detection › Web attacks / scanners from the internet."))
         await self._commit("web_attacks", current)
 
     async def web_scanner(self) -> None:
         rows = await db.pool().fetch(
-            "SELECT src_ip, count(*) AS hits, count(DISTINCT data->>'path') AS paths FROM events "
-            "WHERE source = 'nginx' AND ts > now() - interval '10 minutes' AND action ~ '^http_4' AND src_ip IS NOT NULL "
-            "GROUP BY src_ip HAVING count(*) >= 50")
+            "SELECT src_ip, count(*) FILTER (WHERE action ~ '^http_4') AS hits, "
+            "count(DISTINCT data->>'path') FILTER (WHERE action ~ '^http_4') AS paths, "
+            # probes (attack / scanner paths) that got a successful answer: the scan found something
+            f"count(DISTINCT data->>'path') FILTER (WHERE action ~ {self._web_ok_sql()} "
+            "  AND jsonb_typeof(data->'tags') = 'array' AND data->'tags' ?| $1::text[]) AS found "
+            "FROM events WHERE source = 'nginx' AND ts > now() - interval '10 minutes' AND src_ip IS NOT NULL "
+            "GROUP BY src_ip HAVING count(*) FILTER (WHERE action ~ '^http_4') >= 50", self.WEB_REAL_TAGS)
+        mode = getattr(self.settings, "web_internet_alerts", "through")
+        need = max(1, int(getattr(self.settings, "web_through_min", 1) or 1))
         for r in rows:
             ip = str(r["src_ip"])
-            rating = Rating("medium", "web scanning from INSIDE the network") if self.internal(ip) else \
-                Rating("low", "directory / vulnerability scanning from the internet that only got errors - background noise")
+            inside = self.internal(ip)
+            found = r["found"] or 0
+            if inside:
+                rating = Rating("medium", "web scanning from INSIDE the network")
+            else:
+                logged_in = (await evidence(ip, "web_scanner")).get("login_ok", 0) if mode != "all" else 0
+                if mode != "all" and found < need and not logged_in:
+                    continue  # it only got errors / blocks: background noise
+                rating = Rating("low", "directory / vulnerability scanning from the internet")
+                if found:
+                    rating.up(f"{found} probed path(s) got a successful answer ({self._web_ok_label()}) - check them")
+                elif mode == "all":
+                    rating.why.append("it only got errors - background noise")
+                if logged_in:
+                    rating.up("and this address logged in successfully")
             await raise_alert("web_scanner", rating, f"Web scanning from {ip} ({r['hits']} 4xx responses)",
-                              f"web_scan:{ip}", src_ip=ip, events={"source": "nginx", "ip": ip, "action": "http_4*"}, count=r["hits"], mode="max",
+                              f"web_scan:{ip}", src_ip=ip, events={"source": "nginx", "ip": ip}, count=r["hits"], mode="max",
                               description=f"{ip} produced {r['hits']} client errors over {r['paths']} distinct paths in 10 minutes "
-                                          "(directory brute forcing / vulnerability scanning).")
+                                          "(directory brute forcing / vulnerability scanning)"
+                                          + (f"; {found} probed path(s) answered successfully" if found else "") + ".")
 
     # -------------------------------------------------- 3rd party sources ---
     async def ids_alerts(self) -> None:

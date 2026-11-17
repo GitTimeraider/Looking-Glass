@@ -131,8 +131,20 @@ decide it for every rule:
 | Password guessing from the internet / from inside | medium / high |
 | Login succeeded after failures: from the internet / from inside (5+ failures) / from inside (few failures, typos) | critical / high / medium |
 | Admin (GUI / SSH / API) login from the internet / VPN login from the internet / any login from inside | high / low / info |
-| Web attack: RCE / SQLi, path traversal / sensitive file, scanner signatures | medium, low, info - one step up if a request got a successful response or comes from inside |
-| Web scanning (many 4xx) from the internet / from inside | low / medium |
+| Web attack: RCE / SQLi, path traversal / sensitive file, scanner signatures | medium, low, info - one step up if a request got a successful response or comes from inside. From the internet **only when something got through** (see below) |
+| Web scanning (many 4xx) from the internet / from inside | low (only when a probed path answered successfully, or the address logged in) / medium |
+
+**Web attacks and scanners from the internet** that only got errors or were blocked (CrowdSec, a WAF) are background
+noise, like a blocked port scan, and raise **no alert** by default. *Settings › Data & detection*:
+
+* *Web attacks / scanners from the internet: alert* - **through** (default): only when requests got through;
+  **attacks**: also every RCE / SQL injection attempt, even a failed one; **all**: every pattern and scanner, as before.
+* *… got through from (requests)* - how many attack / probe requests must get a successful answer (per address and
+  pattern; a scanner: distinct probed paths in 10 minutes). Default 1. A request whose only sign is a scanner user
+  agent (`curl/`, `python-requests`) is a visit, not a probe, and never counts.
+* *… a successful answer is* - **2xx** (default) or **2xx+3xx** (redirects count too - often just HTTPS / login).
+
+From inside your network web attacks and scanning always alert.
 | Suricata (IDS) from the internet / from inside | a signature hit is **no alert** on its own, like CrowdSec / Q-Feeds - an internet address only once it triggers 20+ hits in 24h (one alert per address: info when IPS mode dropped every hit, else low); a device inside: high for a priority-1 signature that was NOT dropped, otherwise low and only an alert when other sources confirm it or it repeats (same signature in 6+ separate 10-minute periods, or 5+ different signatures, in 24h). *Settings › OPNsense*: which priorities count and SIDs that never do |
 | CrowdSec decision for an internet IP / for an internal IP | low (it is handled) / high |
 | Internal device contacted a threat-intel address (blocked by Q-Feeds) / internet address of a threat list probes you | low - medium / high when other sources confirm it or the device keeps coming back (blocked threat traffic in 6+ separate 10-minute periods, or to 5+ different listed addresses, in 24h - the retries of one page visit count once) / info |
