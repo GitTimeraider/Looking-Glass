@@ -274,8 +274,10 @@ function dockerView(d) {
   document.getElementById("dk-kpis").innerHTML = k("Containers", ctrs.length) + k("Running", ctrs.filter(c => c.state === "RUNNING").length, "ok") +
     k("Stopped", ctrs.filter(c => c.state !== "RUNNING").length, ctrs.some(c => c.state === "EXITED" && c.autoStart) ? "bad" : "") +
     (stats.length ? k("CPU used by containers", stats.reduce((a, s) => a + s.cpu_pct, 0).toFixed(1) + "%") + k("Total memory", LG.bytes(stats.reduce((a, s) => a + s.mem_bytes, 0))) : "");
-  const dsec = (st.sections || {}).docker_stats, dapi = (st.sections || {}).docker_api;
+  const dsec = (st.sections || {}).docker_stats, dapi = (st.sections || {}).docker_api, dlog = (st.sections || {}).container_logs, dlogerr = (st.sections || {}).docker_logs;
   document.getElementById("dk-note").innerHTML = [dapi && !dapi.ok ? `${LG.esc(dapi.error)} – using the Unraid API instead.` : "",
+    dlogerr && !dlogerr.ok ? `${LG.esc(dlogerr.error)}.` : "",
+    dlog && dlog.warning ? `<b>Container logs incomplete:</b> ${LG.esc(dlog.warning)}` : "",
     dsec && !dsec.ok ? `CPU / memory per container unavailable: ${LG.esc(dsec.error || "")}. It needs Unraid API 4.29 or newer (Unraid 7.2+ or the Unraid Connect plugin), or a working Docker API endpoint under Settings › Unraid servers.` : ""].filter(Boolean).join("<br>");
   LG.table("#containers", [
     {k: "name", l: "Container", s: true, f: (v, r) => `${r.iconUrl ? `<img src="${LG.esc(r.iconUrl)}" width="16" height="16" style="vertical-align:middle;margin-right:6px" onerror="this.remove()">` : ""}<b>${LG.esc(v)}</b>`},

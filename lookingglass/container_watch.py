@@ -18,6 +18,39 @@ from typing import Any
 from . import db
 
 SEVERITIES = ("info", "low", "medium", "high", "critical")
+
+# A log line's level as a syslog severity (0 emergency ... 7 debug). An explicit level the program wrote wins over
+# words in the text ("level=info msg=\"0 errors\"" is info); without one, the words decide as before.
+LEVELS = {"emerg": 0, "emergency": 0, "panic": 0, "alert": 1, "crit": 2, "critical": 2, "fatal": 2, "fatl": 2,
+          "error": 3, "err": 3, "eror": 3, "warn": 4, "warning": 4, "notice": 5, "info": 6, "inf": 6, "information": 6,
+          "debug": 7, "dbg": 7, "trace": 7}
+_LEVEL_WORDS = "|".join(sorted(LEVELS, key=len, reverse=True))
+_EXPLICIT_LEVEL = re.compile(
+    # [emerg] (nginx), [ERROR] / [warn] / <error>, level=error / lvl=warn (logfmt), "level":"error" (JSON),
+    # ERROR: / WARNING: (php-fpm, Python logging), " ERROR " / " WRN " between spaces or pipes (most loggers)
+    rf"(?:[\[<]\s*(?P<a>{_LEVEL_WORDS})\s*[\]>]"
+    rf"|\b(?:level|lvl|severity|loglevel)\s*[=:]\s*\"?(?P<b>{_LEVEL_WORDS})\b"
+    rf"|\"(?:level|lvl|severity)\"\s*:\s*\"(?P<c>{_LEVEL_WORDS})\""
+    rf"|(?:^|[\s|])(?P<d>EMERG|ALERT|CRIT|CRITICAL|FATAL|PANIC|ERROR|ERR|WARN|WARNING|WRN|INFO|INF|NOTICE|DEBUG|DBG|TRACE)(?=[\s:|\]])"
+    rf"|^(?P<e>[EWFC])\d{{4}} )",  # glog: E1117 01:22:03.123 ...
+    re.IGNORECASE)
+_GLOG = {"E": 3, "W": 4, "F": 2, "C": 2}
+# the words that make a line without an explicit level an error line (Settings › Data & detection: default rule)
+ERROR_WORDS = ("error", "fatal", "panic", "exception", "traceback", "critical", "emerg")
+
+
+def line_severity(msg: str) -> int:
+    """Syslog severity of one container log line: 0-2 emergency / alert / critical, 3 error, 4 warning, 6 other."""
+    m = _EXPLICIT_LEVEL.search(msg[:300])
+    if m:
+        if m.group("e"):
+            return _GLOG[m.group("e").upper()]
+        word = next(g for g in m.groups() if g).lower()
+        # an upper-case word between spaces only counts when it is written in capitals (not "an error occurred")
+        if m.group("d") is None or m.group("d").isupper():
+            return LEVELS.get(word, 6)
+    low = msg.lower()
+    return 3 if any(w in low for w in ERROR_WORDS) else 4 if "warn" in low else 6
 UNITS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800, "month": 2592000, "year": 31536000}
 _STATUS = re.compile(r"^\s*(up|restarting|exited)\b(?:\s*\(-?\d+\))?\s+(.*?)\s*(?:ago)?\s*(?:\([^)]*\))?\s*$", re.I)
 _AGE = re.compile(r"^(\d+|about an?|an?)\s+(second|minute|hour|day|week|month|year)s?\b", re.I)
@@ -108,6 +141,8 @@ class LogRule:
     severity: str = "low"
     enabled: bool = True
     server_id: int | None = None                         # None = every Unraid server
+    max_level: int = 3                                   # without match terms: lines of this syslog level or worse
+    key: str = ""                                        # the built-in rules: "default" / "critical"
 
     def covers(self, container: str, server_id: int | None = None) -> bool:
         if self.server_id is not None and server_id is not None and self.server_id != server_id:
@@ -180,7 +215,7 @@ def rule_sql(rule: LogRule, args: list[Any]) -> str:
                 args.append(_like(t))
                 parts.append(f"message ILIKE ${len(args)}")
         return "(" + " OR ".join(parts) + ")"
-    cond = any_of(rule.match) if rule.match else "severity <= 3"
+    cond = any_of(rule.match) if rule.match else f"severity <= {int(rule.max_level)}"
     if rule.ignore:
         cond += f" AND NOT {any_of(rule.ignore)}"
     return cond
@@ -205,13 +240,27 @@ async def load_rules() -> list[LogRule]:
 
 def default_rule(settings: Any) -> LogRule:
     return LogRule(id=None, name="Default: error lines", threshold=settings.unraid_log_error_count,
-                   minutes=settings.unraid_log_error_minutes, severity="low")
+                   minutes=settings.unraid_log_error_minutes, severity="low", key="default")
 
 
-def rules_for(container: str, server_id: int, rules: list[LogRule], default: LogRule) -> list[LogRule]:
-    """Every own rule that covers the container; the default rule only for containers no own rule covers."""
+def critical_rule(settings: Any) -> LogRule:
+    """Emergency / alert / critical lines ([emerg] of nginx, FATAL, PANIC ...): a container that cannot work as it
+    should - an alert from the first few lines, not only from many."""
+    return LogRule(id=None, name="Default: emergency / critical lines",
+                   threshold=getattr(settings, "unraid_log_critical_count", 1),
+                   minutes=settings.unraid_log_error_minutes, severity=getattr(settings, "unraid_log_critical_severity", "high"),
+                   max_level=2, key="critical")
+
+
+def rules_for(container: str, server_id: int, rules: list[LogRule], default: LogRule,
+              critical: LogRule | None = None) -> list[LogRule]:
+    """Every own rule that covers the container; the default rule only for containers no own rule covers. The
+    critical rule for every container, except one an own rule switched off (limit 0 = no log alerts)."""
     own = [r for r in rules if r.covers(container, server_id)]
-    return own or [default]
+    out = own or [default]
+    if critical is not None and not any(r.threshold <= 0 for r in own):
+        out.append(critical)
+    return out
 
 
 async def count_matches(host: str, containers: list[str], rule: LogRule, minutes: int) -> list[dict[str, Any]]:

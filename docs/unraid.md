@@ -55,20 +55,29 @@ restarts within 15 minutes, 0 = off) sets when it alerts (medium; high at 3× th
 once the container has not restarted for twice that time. The Docker tab shows the restarts of the last hour per
 container. A crash loop that restarts much faster than the poll interval is counted lower than it is - it still alerts.
 
+> **Use a Docker API for complete container logs.** The Unraid API returns only what a container writes to
+> **stdout**; everything written to **stderr** - nginx `[emerg]` / `[error]`, most crash messages and tracebacks -
+> is missing there. With a *Docker API* (docker-socket-proxy with `CONTAINERS=1`, see the setup above) set for the
+> server, logs are read from it first, with both streams; the Unraid API is only the fallback. *Unraid › Docker* says
+> so when logs come from the Unraid API.
+
 **Errors in container logs** (needs *Collect logs* on the server) - every container is different, so what counts is up
 to you, under **Unraid › Docker › Log alert rules** (or *rule* under *logs* next to a container):
 
 | Field | Meaning |
 |---|---|
 | Containers | names, one per line, `*` / `?` wildcards; empty = every container. Optionally only one server |
-| Lines that count | one per line: text the line contains (case does not matter) or a `/regular expression/` (`\b` works as a word boundary). Empty = lines with error, fatal, panic, exception, traceback or critical |
+| Lines that count | one per line: text the line contains (case does not matter) or a `/regular expression/` (`\b` works as a word boundary). Empty = error lines: a level of error or worse (`[error]`, `[emerg]`, `level=error`, `ERROR`, `FATAL` …), or - for lines without a level - the words error, fatal, panic, exception, traceback or critical |
 | Except lines with | same format: known harmless lines that never count (`0 errors`, `deprecated`) |
 | Alert from … within … | that many lines in that many minutes; **0 = no log alerts for these containers** |
 | Severity | of the alert |
 
 A container with its own rule(s) uses only those (each rule its own alert); every other container uses the default
 rule from *Settings › Data & detection › Unraid: container log errors from* (default 50 error lines in 10 minutes,
-0 = off). **Test against the last 24 hours** shows, before you save, how many lines a rule finds per container, its
+0 = off). **Emergency / critical lines** (`[emerg]` / `[alert]` / `[crit]` of nginx, `FATAL`, `PANIC`, `level=fatal`)
+raise their own alert from the first line (*Unraid: emergency / critical log lines from*, default 1 in those minutes,
+severity high) - for every container, also one with its own rules, unless one of them has limit 0. A container it
+alerts for gets no second "error lines" alert. **Test against the last 24 hours** shows, before you save, how many lines a rule finds per container, its
 busiest window and how often it would have alerted. Alerts show the newest matching lines, link to them in Event
 search, and close by themselves once three windows of the rule together stay below the limit.
 
