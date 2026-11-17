@@ -403,10 +403,17 @@ FIELDS: list[Field] = [
           min=0, max=100),
     Field("unraid_restart_minutes", "data", "Unraid: … within (minutes)", "int", "", min=2, max=1440),
     Field("unraid_log_error_count", "data", "Unraid: container log errors from (lines)", "int", "Default rule for "
-          "container logs: this many lines with error / fatal / panic / exception / traceback / critical within the "
-          "minutes below raise an alert. Containers with their own rule (Unraid › Docker › Log alert rules) use that "
-          "instead. Needs 'Collect container logs' on the server. 0 = off.", min=0, max=100000),
+          "container logs: this many error lines within the minutes below raise an alert - lines whose level is error "
+          "or worse ([error], level=error, ERROR ...), or without a level that contain error / fatal / panic / "
+          "exception / traceback / critical. Containers with their own rule (Unraid › Docker › Log alert rules) use "
+          "that instead. Needs 'Collect container logs' on the server. 0 = off.", min=0, max=100000),
     Field("unraid_log_error_minutes", "data", "Unraid: … within (minutes)", "int", "", min=1, max=1440),
+    Field("unraid_log_critical_count", "data", "Unraid: emergency / critical log lines from (lines)", "int",
+          "Lines with level emergency, alert or critical (nginx [emerg] / [crit], FATAL, PANIC) within the minutes "
+          "above raise their own alert - for every container, also those with their own rule, unless that rule has "
+          "limit 0. 0 = off.", min=0, max=100000),
+    Field("unraid_log_critical_severity", "data", "Unraid: … alert severity", "choice", "",
+          choices=("medium", "high", "critical")),
     Field("geoip_db", "data", "GeoIP database path", "str", "MaxMind GeoLite2-City or -Country .mmdb inside the data volume.",
           placeholder="/data/GeoLite2-City.mmdb"),
     # container packages (packages.py; shown under Settings › Unraid servers)

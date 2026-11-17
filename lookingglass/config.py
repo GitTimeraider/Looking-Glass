@@ -232,6 +232,8 @@ class Settings(BaseSettings):
     unraid_restart_minutes: int = 15
     unraid_log_error_count: int = 50  # default log rule: error lines in unraid_log_error_minutes (0 = off)
     unraid_log_error_minutes: int = 10
+    unraid_log_critical_count: int = 1  # emergency / alert / critical lines ([emerg], FATAL, PANIC) in those minutes (0 = off)
+    unraid_log_critical_severity: str = "high"
 
     # legacy: only imported once into the Unraid server list (Settings -> Integrations)
     unraid_name: str = "Unraid"
