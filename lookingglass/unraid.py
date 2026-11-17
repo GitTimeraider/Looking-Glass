@@ -21,6 +21,7 @@ import re
 import ssl
 import struct
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
@@ -692,30 +693,40 @@ class UnraidServerPoller:
             return
         rules = await container_watch.load_rules()
         default = container_watch.default_rule(self.settings)
-        groups: dict[int | None, tuple[container_watch.LogRule, list[str]]] = {}
+        critical = container_watch.critical_rule(self.settings)
+        groups: dict[int | str, tuple[container_watch.LogRule, list[str]]] = {}
         for name in names:
-            for r in container_watch.rules_for(name, self.sid, rules, default):
+            for r in container_watch.rules_for(name, self.sid, rules, default, critical):
                 if r.threshold > 0:
-                    groups.setdefault(r.id, (r, []))[1].append(name)
+                    groups.setdefault(r.id if r.id is not None else r.key, (r, []))[1].append(name)
+        # the critical rule first: a container it alerts for gets no second "error lines" alert from the default rule
+        order = sorted(groups.items(), key=lambda kv: kv[0] != "critical")
+        critical_hit: set[str] = set()
         prefix = f"unraid_logerr:{self.sid}:"
         open_fps = {r["fingerprint"] for r in await db.pool().fetch(
             "SELECT fingerprint FROM alerts WHERE rule = 'unraid_container_errors' AND status <> 'closed' "
             "AND fingerprint LIKE $1", prefix.replace("%", r"\%").replace("_", r"\_") + "%")}
         hit: set[str] = set()
-        for rid, (rule, ctrs) in groups.items():
+        for rid, (rule, ctrs) in order:
             for row in await container_watch.count_matches(self.name, ctrs, rule, rule.minutes):
-                fp = f"{prefix}{row['program']}:{rid or 'default'}"
+                fp = f"{prefix}{row['program']}:{rid}"
                 if row["n"] < rule.threshold:
                     continue
+                if rid == "critical":
+                    critical_hit.add(row["program"])
+                elif rid == "default" and row["program"] in critical_hit:
+                    if fp in open_fps:
+                        hit.add(fp)  # keep an open one open; it closes by itself later
+                    continue
                 hit.add(fp)
-                what = "error lines" if not rule.match else "matching lines"
+                what = "emergency / critical lines" if rid == "critical" else "error lines" if not rule.match else "matching lines"
                 examples = "\n".join(f"  {e}" for e in row["examples"] or [])
                 await raise_alert(
                     "unraid_container_errors", rule.severity,
                     f"{self.name}: {row['n']} {what} in the log of {row['program']} ({rule.minutes} min)", fp,
                     count=row["n"], mode="max",
                     events={"source": "docker", "host": self.name, "program": row["program"],
-                            **({"min_severity": 3} if not rule.match else {})},
+                            **({"min_severity": rule.max_level} if not rule.match else {})},
                     data={"server_id": self.sid, "container": row["program"], "log_rule": rule.name, "lines": row["n"]},
                     description=f"{row['n']} {what} in {rule.minutes} minutes (alert from {rule.threshold}, rule "
                                 f"“{rule.name}”). Newest:\n{examples}\n\nAdjust what counts for this container - "
@@ -725,7 +736,7 @@ class UnraidServerPoller:
         done = []
         for fp in open_fps - hit:
             ctr, _, rid = fp[len(prefix):].rpartition(":")
-            rule = default if rid == "default" else next((r for r in rules if str(r.id) == rid), None)
+            rule = {"default": default, "critical": critical}.get(rid) or next((r for r in rules if str(r.id) == rid), None)
             rows = await container_watch.count_matches(self.name, [ctr], rule, 3 * rule.minutes) \
                 if rule and rule.threshold > 0 else []
             if not rows or rows[0]["n"] < rule.threshold:
@@ -772,71 +783,110 @@ class UnraidServerPoller:
                                       ("unraid_ups_load", f"{self.sid}:{u.get('name')}", (u.get("power") or {}).get("loadPercentage") or 0)])
 
     # ---------------------------------------------------------------- logs ---
+    # The Unraid API (docker { logs }) runs `docker logs` and returns only its stdout: every line a container writes
+    # to stderr is missing there - nginx's [emerg] / [error], most Python / Go / Node errors. A Docker API (socket
+    # proxy) returns both streams, so it is used first when one is set up; the Unraid API is the fallback.
+    API_LOG_TAIL = 2000  # the Unraid API's maximum
+
     async def poll_container_logs(self) -> None:
         containers = await db.get_snapshot(f"unraid:{self.sid}:docker") or []
         sem = asyncio.Semaphore(4)
+        used: set[str] = set()
+        gaps: list[str] = []
 
         async def one(c: dict[str, Any]) -> None:
             if c.get("state") != "RUNNING":
                 return
             name = (c.get("names") or ["?"])[0].lstrip("/")
             since = self.log_cursors.get(c["id"])
+            lines: list[tuple[Any, str, str | None]] | None = None
             async with sem:
-                try:
-                    q = ("query($id: PrefixedID!, $since: DateTime, $tail: Int) { docker { logs(id: $id, since: $since, tail: $tail) "
-                         "{ cursor lines { timestamp message } } } }")
-                    d = await self.client.query(q, {"id": c["id"], "since": since, "tail": 200 if since is None else 1000})
-                    logs = (d.get("docker") or {}).get("logs") or {}
-                    lines = [(ln.get("timestamp"), ln.get("message", "")) for ln in logs.get("lines") or []]
-                    if logs.get("cursor"):
-                        self.log_cursors[c["id"]] = logs["cursor"]
-                except GraphQLError:
-                    if not self.client.docker:
-                        return
+                if self.client.docker:
                     lines = await self.docker_logs(c, since)
-            for ts_s, msg in lines:
-                self.put_container_line(name, ts_s, msg)
+                    if lines is not None:
+                        used.add("docker")
+                if lines is None:
+                    try:
+                        q = ("query($id: PrefixedID!, $since: DateTime, $tail: Int) { docker { logs(id: $id, since: $since, tail: $tail) "
+                             "{ cursor lines { timestamp message } } } }")
+                        tail = 200 if since is None else self.API_LOG_TAIL
+                        d = await self.client.query(q, {"id": c["id"], "since": since, "tail": tail})
+                        logs = (d.get("docker") or {}).get("logs") or {}
+                        lines = [(ln.get("timestamp"), ln.get("message", ""), None) for ln in logs.get("lines") or []]
+                        if logs.get("cursor"):
+                            self.log_cursors[c["id"]] = logs["cursor"]
+                        used.add("api")
+                        if since is not None and len(lines) >= tail:
+                            gaps.append(name)  # more new lines than one answer holds: the older ones are lost
+                    except GraphQLError:
+                        return
+            self.put_container_lines(name, lines)
 
         await asyncio.gather(*(one(c) for c in containers if isinstance(c, dict)))
+        if gaps:
+            log.warning("unraid %s: more than %d new log lines since the last poll for %s - older lines skipped",
+                        self.name, self.API_LOG_TAIL, ", ".join(sorted(gaps)))
+        if "api" in used:
+            why = ("Docker API not reachable for logs - " if self.client.docker else "")
+            self.status["sections"]["container_logs"] = {
+                "ok": True, "variant": "Unraid API (stdout only)",
+                "warning": why + "container logs come from the Unraid API, which only returns what containers write to "
+                         "stdout: errors written to stderr (nginx [emerg] / [error], most crash messages) are missing. "
+                         "Add a Docker API (docker-socket-proxy with CONTAINERS=1) under Settings › Unraid servers to "
+                         "get both." + (f" Lines skipped (over {self.API_LOG_TAIL} per poll): {', '.join(sorted(gaps))}."
+                                        if gaps else "")}
+        elif "docker" in used:
+            self.status["sections"]["container_logs"] = {"ok": True, "variant": "Docker API (stdout + stderr)"}
 
-    def put_container_line(self, container: str, ts_s: Any, msg: str) -> None:
+    def put_container_lines(self, container: str, lines: list[tuple[Any, str, str | None]]) -> None:
+        """Store log lines. The same text at the same time can really happen more than once (a crash loop printing the
+        same error, a timestamp with only millisecond precision): the n-th copy within one answer gets its own key, so
+        it is stored once per occurrence - and a line fetched again by the next poll still counts once."""
+        seen: Counter[tuple[str, str]] = Counter()
+        for ts_s, msg, stream in lines:
+            key = (str(ts_s), msg or "")
+            n = seen[key]
+            seen[key] += 1
+            self.put_container_line(container, ts_s, msg, stream, n)
+
+    def put_container_line(self, container: str, ts_s: Any, msg: str, stream: str | None = None, n: int = 0) -> None:
         msg = (msg or "").rstrip()
         if not msg:
             return
-        low = msg.lower()
-        sev = 3 if any(w in low for w in ("error", "fatal", "panic", "exception", "traceback", "critical")) else \
-            4 if "warn" in low else 6
+        sev = container_watch.line_severity(msg)
         ts = _parse_ts(ts_s)
-        uid = hashlib.sha1(f"{self.sid}|{container}|{ts_s}|{msg}".encode()).hexdigest()
+        uid = hashlib.sha1(f"{self.sid}|{container}|{ts_s}|{msg}{f'|{n}' if n else ''}".encode()).hexdigest()
+        data: dict[str, Any] = {"server_id": self.sid, "container": container}
+        if stream:
+            data["stream"] = stream
         self.writer.put(event(ts, "docker", host=self.name, program=container, severity=sev,
-                              action="container_log", message=msg[:4000], data={"server_id": self.sid, "container": container},
-                              uid=f"ctr:{uid}"))
+                              action="container_log", message=msg[:4000], data=data, uid=f"ctr:{uid}"))
 
-    async def docker_logs(self, c: dict[str, Any], since: str | None) -> list[tuple[str, str]]:
-        """Fallback: logs through the Docker API (multiplexed stream unless the container has a TTY)."""
+    async def docker_logs(self, c: dict[str, Any], since: str | None) -> list[tuple[str, str, str]] | None:
+        """Logs through the Docker API: stdout and stderr (a multiplexed stream unless the container has a TTY).
+        None when the Docker API cannot give them (the Unraid API is tried then)."""
         name = (c.get("names") or ["?"])[0].lstrip("/")
         params: dict[str, Any] = {"stdout": 1, "stderr": 1, "timestamps": 1}
-        params["since" if since else "tail"] = int(parse_iso(since).timestamp()) if since and parse_iso(since) else 200
+        start = parse_iso(since) if since else None
+        if start:
+            params["since"] = int(start.timestamp())  # whole seconds: the overlap is stored once (same key)
+        else:
+            params["tail"] = 200
         try:
             r = await self.client.docker.get(f"/containers/{name}/logs", params=params)
-        except httpx.HTTPError:
-            return []
+        except httpx.HTTPError as exc:
+            self.status["sections"]["docker_logs"] = {"ok": False, "error": f"Docker API logs: {type(exc).__name__}: {exc}"[:300]}
+            return None
         if r.status_code != 200:
-            return []
-        raw, out, i = r.content, [], 0
-        text_chunks = []
-        while i + 8 <= len(raw) and raw[i] in (0, 1, 2) and raw[i + 1:i + 4] == b"\x00\x00\x00":
-            size = struct.unpack(">I", raw[i + 4:i + 8])[0]
-            text_chunks.append(raw[i + 8:i + 8 + size])
-            i += 8 + size
-        text = (b"".join(text_chunks) if text_chunks else raw).decode("utf-8", errors="replace")
-        last_ts = since
-        for line in text.splitlines():
-            ts_s, _, msg = line.partition(" ")
-            out.append((ts_s, msg))
-            last_ts = ts_s
-        if last_ts:
-            self.log_cursors[c["id"]] = last_ts
+            hint = " - set CONTAINERS=1 on the socket proxy" if r.status_code == 403 else ""
+            self.status["sections"]["docker_logs"] = {"ok": False, "error": f"Docker API logs: HTTP {r.status_code}{hint}"}
+            return None
+        self.status["sections"].pop("docker_logs", None)
+        out = parse_docker_log_stream(r.content)
+        if out:
+            newest = max(out, key=lambda x: parse_iso(x[0]) or datetime.min.replace(tzinfo=timezone.utc))[0]
+            if parse_iso(newest):
+                self.log_cursors[c["id"]] = newest
         return out
 
     async def poll_syslog(self) -> None:
@@ -1017,6 +1067,38 @@ def _size(text: Any) -> int | None:
 def _io_pair(text: Any) -> tuple[int | None, int | None]:
     a, _, b = str(text or "").partition("/")
     return _size(a), _size(b)
+
+
+def parse_docker_log_stream(raw: bytes) -> list[tuple[str, str, str]]:
+    """(timestamp, message, stream) per line of a Docker API log answer with timestamps=1: the multiplexed format
+    (an 8-byte header per frame: stream 1 = stdout, 2 = stderr, then the size) or plain text (a container with a TTY).
+    A line split over two frames is joined again."""
+    frames: list[tuple[str, bytes]] = []
+    i = 0
+    while i + 8 <= len(raw) and raw[i] in (0, 1, 2) and raw[i + 1:i + 4] == b"\x00\x00\x00":
+        size = struct.unpack(">I", raw[i + 4:i + 8])[0]
+        frames.append(("stderr" if raw[i] == 2 else "stdout", raw[i + 8:i + 8 + size]))
+        i += 8 + size
+    if not frames:
+        frames = [("stdout", raw)]
+    buf: dict[str, bytes] = {}
+    out: list[tuple[str, str, str]] = []
+    for stream, chunk in frames:
+        data = buf.pop(stream, b"") + chunk
+        *full, rest = data.split(b"\n")
+        if rest:
+            buf[stream] = rest
+        for line in full:
+            text = line.decode("utf-8", errors="replace").rstrip("\r")
+            if text:
+                ts_s, _, msg = text.partition(" ")
+                out.append((ts_s, msg, stream))
+    for stream, rest in buf.items():
+        text = rest.decode("utf-8", errors="replace").rstrip("\r")
+        if text:
+            ts_s, _, msg = text.partition(" ")
+            out.append((ts_s, msg, stream))
+    return out
 
 
 def _parse_ts(value: Any) -> datetime:
