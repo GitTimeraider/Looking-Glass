@@ -402,6 +402,16 @@ FIELDS: list[Field] = [
           "(an update, a manual restart) stay quiet. It closes by itself once the container stays up. 0 = off.",
           min=0, max=100),
     Field("unraid_restart_minutes", "data", "Unraid: … within (minutes)", "int", "", min=2, max=1440),
+    Field("web_internet_alerts", "data", "Web attacks / scanners from the internet: alert", "choice",
+          "through = only when requests got through (a successful answer to an attack or probe request, or the "
+          "scanner logged in) - scanners that only got errors or were blocked (CrowdSec, WAF) raise nothing; "
+          "attacks = also every RCE / SQL injection attempt, even when it failed; all = every scanner and attack "
+          "pattern, as before. From inside your network these always alert.", choices=("through", "attacks", "all")),
+    Field("web_through_min", "data", "… got through from (requests)", "int", "How many attack / probe requests "
+          "(per address and pattern; for a scanner: distinct probed paths in 10 minutes) must get a successful answer "
+          "before it alerts. 1 = the first one.", min=1, max=10000),
+    Field("web_success_codes", "data", "… a successful answer is", "choice", "2xx = only real answers; 2xx+3xx = "
+          "redirects count too (often just the redirect to HTTPS or a login page).", choices=("2xx", "2xx+3xx")),
     Field("unraid_log_error_count", "data", "Unraid: container log errors from (lines)", "int", "Default rule for "
           "container logs: this many error lines within the minutes below raise an alert - lines whose level is error "
           "or worse ([error], level=error, ERROR ...), or without a level that contain error / fatal / panic / "
