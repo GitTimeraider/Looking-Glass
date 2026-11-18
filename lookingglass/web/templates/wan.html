@@ -13,6 +13,9 @@
   (<a href="/settings#opnsense">Settings › OPNsense</a>); the gateway needs monitoring on (OPNsense web UI: <i>System ›
   Gateways › Configuration</i> › the gateway › <i>Disable Gateway Monitoring</i> unticked).</div>
 <div id="gws"></div>
+<div class="card" id="others" hidden><h3>Hidden and ignored gateways</h3>
+  <p class="small muted"><b>Hidden</b>: still collected and alerted, just not shown here. <b>Ignored</b>: not collected any
+    more and never alerted (also no "gateway down / degraded" alerts) - for gateways you do not use.</p><div id="others-list"></div></div>
 {% endblock %}
 {% block scripts %}
 <script>
@@ -24,6 +27,43 @@ const pct = (v, d = 2) => v === null || v === undefined ? "–" : Number(v).toFi
 const avail = v => v === null || v === undefined ? "–" : (v >= 99.995 ? "100" : v.toFixed(v >= 99.9 ? 3 : 2)) + " %";
 const STATUS = s => { const t = String(s.status_translated || s.status || "?"); const l = t.toLowerCase();
   return `<span class="badge ${/offline|down/.test(l) ? "bad" : /loss|delay|warn/.test(l) ? "warn" : /online|none/.test(l) ? "ok" : "src"}">${LG.esc(t)}</span>`; };
+let PREFS = { order: [], hidden: [], ignored: [] }, ALL = [];
+/* changes are saved one after another, each built from the result of the one before: quick clicks never undo each other */
+let saving = Promise.resolve();
+function savePrefs(change) {
+  saving = saving.then(async () => {
+    try { PREFS = await LG.api("/api/wan/prefs", { method: "PUT", body: change(PREFS) }); } catch (e) { alert(e.message); }
+  });
+  saving.then(load);
+}
+function setMode(name, mode) {
+  savePrefs(p => {
+    const hidden = p.hidden.filter(g => g !== name), ignored = p.ignored.filter(g => g !== name);
+    if (mode === "hidden") hidden.push(name);
+    if (mode === "ignored") ignored.push(name);
+    return { order: ALL, hidden, ignored };
+  });
+}
+function move(name, dir) {
+  savePrefs(p => {
+    const order = [...new Set([...p.order, ...ALL])].filter(g => ALL.includes(g));
+    const shown = order.filter(g => !p.hidden.includes(g) && !p.ignored.includes(g));
+    const i = shown.indexOf(name), j = i + dir;
+    if (i < 0 || j < 0 || j >= shown.length) return p;
+    const a = order.indexOf(name), b = order.indexOf(shown[j]);
+    [order[a], order[b]] = [order[b], order[a]];
+    return { ...p, order };
+  });
+}
+const modeSel = g => `<select class="small" data-mode="${LG.esc(g.name)}" title="Show, hide from this page, or stop collecting this gateway">
+  <option value="shown"${!g.hidden && !g.ignored ? " selected" : ""}>shown</option><option value="hidden"${g.hidden ? " selected" : ""}>hidden</option>
+  <option value="ignored"${g.ignored ? " selected" : ""}>ignored (not collected)</option></select>`;
+const UNMONITORED = `<div class="warn-box card small">OPNsense measures nothing for this gateway: its monitoring is off, or the
+  monitor IP does not answer pings (common for VPN gateways - the far end of the tunnel often drops ping). To measure it, in the
+  <b>OPNsense web UI</b>: <i>System › Gateways › Configuration</i> › edit this gateway › untick <i>Disable Gateway Monitoring</i> and
+  set <i>Monitor IP</i> to a public address that answers ping and that nothing else needs to reach through another gateway
+  (OPNsense routes the monitor IP through this gateway), e.g. <span class="mono">9.9.9.10</span> - Save, Apply. Not used? Set it to
+  <i>ignored</i> above.</div>`;
 LG.seg(document.getElementById("range"), String(days), v => { days = Number(v); try { localStorage.setItem("lg-wan-days", v); } catch (e) {} load(); });
 async function load() {
   let d;
@@ -31,15 +71,22 @@ async function load() {
   catch (e) { if (!LG.aborted(e)) document.getElementById("gws").innerHTML = `<div class="card empty bad">${LG.esc(e.message)}</div>`; return; }
   document.getElementById("updated").textContent = "updated " + LG.clock();
   document.getElementById("none").hidden = d.gateways.length > 0;
-  const lim = d.limits;
-  document.getElementById("gws").innerHTML = d.gateways.map((g, i) => {
+  PREFS = d.prefs; ALL = d.gateways.map(g => g.name);
+  const lim = d.limits, shown = d.gateways.filter(g => !g.hidden && !g.ignored), others = d.gateways.filter(g => g.hidden || g.ignored);
+  document.getElementById("others").hidden = !others.length;
+  document.getElementById("others-list").innerHTML = others.map(g => `<div class="filters" style="margin:6px 0;align-items:center">
+    <b>${LG.esc(g.name)}</b>${g.now.status || g.now.status_translated ? STATUS(g.now) : ""}<span class="small muted">${LG.esc([g.now.descr, g.now.address].filter(Boolean).join(" · "))}</span>
+    <span style="margin-left:auto"></span>${modeSel(g)}</div>`).join("");
+  document.getElementById("gws").innerHTML = shown.map((g, i) => {
     const l = g.last24 || {}, slow = l.p50 && g.baseline && l.p50 >= g.baseline * lim.factor / 100 && l.p50 - g.baseline >= lim.min_ms;
     const lossy = lim.loss > 0 && l.loss >= lim.loss;
     return `<div class="card" style="margin-bottom:14px">
       <div class="filters" style="margin:0 0 10px;align-items:center"><h3 style="margin:0">${LG.esc(g.name)}</h3>${g.now.status || g.now.status_translated ? STATUS(g.now) : ""}
         <span class="small muted">${[g.now.descr, g.now.address && "gateway " + g.now.address, g.now.monitor && "monitor " + g.now.monitor].filter(Boolean).map(LG.esc).join(" · ")}</span>
-        <span class="small muted" style="margin-left:auto">now: ${LG.esc(g.now.delay || "–")} · jitter ${LG.esc(g.now.stddev || "–")} · loss ${LG.esc(g.now.loss || "–")}</span></div>
-      <div class="grid kpis">
+        <span class="small muted" style="margin-left:auto">now: ${LG.esc(g.now.delay || "–")} · jitter ${LG.esc(g.now.stddev || "–")} · loss ${LG.esc(g.now.loss || "–")}</span>
+        <button type="button" class="secondary small" data-move="${LG.esc(g.name)}" data-dir="-1" title="Move up" ${i ? "" : "disabled"}>▲</button><button type="button" class="secondary small" data-move="${LG.esc(g.name)}" data-dir="1" title="Move down" ${i < shown.length - 1 ? "" : "disabled"}>▼</button>${modeSel(g)}</div>
+      ${g.unmonitored ? UNMONITORED : ""}
+      <div class="grid kpis"${g.unmonitored && !g.days.some(x => x.delay_p50 !== null) ? " hidden" : ""}>
         ${kpi("Latency 24h (median)", ms(l.p50), slow ? "bad" : "", `95 % of the samples below ${ms(l.p95)}`)}
         ${kpi("Normal (7 days before)", ms(g.baseline), "", g.baseline_days ? `median of ${g.baseline_days} daily medians` : "not enough history yet")}
         ${kpi("Jitter 24h", ms(l.jitter))}
@@ -49,14 +96,19 @@ async function load() {
         ${kpi("Latency 30d (median)", ms((g.p30 || {}).delay_p50))}
         ${kpi("Loss 30d", pct((g.p30 || {}).loss_avg))}
       </div>
-      <div class="grid g2" style="margin-top:14px">
+      <div class="grid g2" style="margin-top:14px"${g.unmonitored && !g.days.some(x => x.delay_p50 !== null) ? " hidden" : ""}>
         <div class="card"><h3>Latency per day <span class="muted small">median, 95th percentile and worst sample</span></h3><div class="chart-box sm"><canvas id="lat${i}"></canvas></div></div>
         <div class="card"><h3>Packet loss and downtime per day</h3><div class="chart-box sm"><canvas id="loss${i}"></canvas></div></div>
       </div>
-      <details style="margin-top:10px"><summary class="small">Every day (${g.days.length})</summary><div id="days${i}"></div></details>
+      <details style="margin-top:10px"${g.days.length ? "" : " hidden"}><summary class="small">Every day (${g.days.length})</summary><div id="days${i}"></div></details>
     </div>`;
   }).join("");
-  d.gateways.forEach((g, i) => draw(g, i));
+  shown.forEach((g, i) => draw(g, i));
+  document.querySelectorAll("[data-mode]").forEach(el => el.onchange = () => {
+    if (el.value === "ignored" && !confirm(`Ignore ${el.dataset.mode}? Its latency, loss and up/down are no longer collected and it never raises an alert (open ones are closed). The history already stored is kept.`)) { el.value = PREFS.hidden.includes(el.dataset.mode) ? "hidden" : "shown"; return; }
+    setMode(el.dataset.mode, el.value);
+  });
+  document.querySelectorAll("[data-move]").forEach(b => b.onclick = () => move(b.dataset.move, Number(b.dataset.dir)));
 }
 function draw(g, i) {
   const labels = g.days.map(x => new Date(x.day + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "2-digit" }));

@@ -130,6 +130,15 @@ def register(app: FastAPI, settings: Settings) -> None:
     async def wan_data(days: int = Query(90, ge=7, le=730)):
         return await wan.overview(settings, days)
 
+    @app.put("/api/wan/prefs")
+    async def wan_prefs(request: Request, payload: dict = Body(...)):
+        try:
+            p = await wan.save_prefs(payload)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        request.state.audit = {"hidden": p["hidden"], "ignored": p["ignored"]}
+        return p
+
     # -------------------------------------------------------------- audit log ---
     @app.get("/api/audit")
     async def audit_list(limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0),

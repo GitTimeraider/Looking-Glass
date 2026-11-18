@@ -41,7 +41,12 @@ def data() -> dict:
                         {"PID": "999", "USERNAME": "unbound", "THR": "4", "PRI": "20", "NICE": "0", "SIZE": "60M", "RES": "40M", "STATE": "kqread",
                          "C": "0", "TIME": "5:10", "WCPU": "1.10%", "COMMAND": "unbound"}]},
         "routes/gateway/status": {"items": [{"name": "WAN_DHCP", "address": "1.2.3.4", "status": "none", "status_translated": "Online",
-                                             "delay": f"{2 + random.random() * 3:.1f} ms", "loss": "0.0 %", "stddev": "0.2 ms"}]},
+                                             "delay": f"{2 + random.random() * 3:.1f} ms", "loss": "0.0 %", "stddev": "0.2 ms"},
+                                            # a VPN gateway without monitoring (dpinger reports "~"), and an unused one
+                                            {"name": "SURFSHARK_WG", "address": "10.14.0.1", "status": "none", "status_translated": "Online",
+                                             "delay": "~", "loss": "~", "stddev": "~", "monitor": "~"},
+                                            {"name": "WAN_DHCP6", "address": "fe80::1", "status": "down", "status_translated": "Offline",
+                                             "delay": "0.0 ms", "loss": "100.0 %", "stddev": "0.0 ms"}]},
         "diagnostics/interface/getInterfaceStatistics": {"statistics": {
             "[WAN] (igb0) / 00:11:22:33:44:55": {"name": "igb0", "received-bytes": str(int(up * 250_000)), "sent-bytes": str(int(up * 60_000)),
                                                  "received-errors": "0", "send-errors": "0", "dropped-packets": "0"},
