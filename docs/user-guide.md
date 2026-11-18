@@ -96,7 +96,8 @@ A tour of the pages: overview, alerts, dashboards, infrastructure, devices, even
   resets, backups downloaded and every change made in the web UI with its result (settings show which ones changed,
   never their values). Filter by kind and user or search; kept for a year.
 * **Settings › Data & detection › Delete collected data** – wipe logs/events, alerts, graphs, reports, AI conversations
-  and optionally the device list to start over; or only the
+  and optionally the device list to start over; or only the WAN quality history (every gateway's latency, loss, jitter
+  and up / down, e.g. after it was measured wrongly), or only the
   backup run history (what Backrest still lists comes back on its next poll). Settings, credentials, accounts/MFA, Unraid servers and the encryption
   key are kept; needs your password and typing DELETE.
 * **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range; filters that come
