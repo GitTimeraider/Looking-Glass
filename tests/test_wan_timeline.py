@@ -25,6 +25,16 @@ def test_wan_judge():
     assert not wan.judge(Settings(wan_loss_pct=0), {**cur, "loss": 50.0}, 12.0, 7)["loss"]
 
 
+def test_gateway_prefs_and_monitoring():
+    p = wan.clean_prefs({"order": ["B", "A", "B"], "hidden": ["A", "C"], "ignored": ["C"]})
+    assert p == {"order": ["B", "A"], "hidden": ["A"], "ignored": ["C"]}
+    with pytest.raises(ValueError):
+        wan.clean_prefs({"order": "A"})
+    assert wan.monitored({"delay": "12.1 ms", "loss": "0.0 %"})
+    assert not wan.monitored({"delay": "~", "loss": "~", "status": "none"})  # VPN gateway without monitoring
+    assert wan.monitored({"delay": "~", "loss": "~", "status": "down"})
+
+
 def test_timeline_steps_and_span():
     assert timeline.step_for(1) == 60 and timeline.step_for(24) == 600 and timeline.step_for(168) == 3600
     now = datetime(2026, 11, 1, tzinfo=timezone.utc)
@@ -115,6 +125,53 @@ def test_timeline_merges_alerts_events_and_blocks():
             by_ip = await timeline.build(ip="203.0.113.9", hours=6)
             assert any(i["kind"] == "block" for i in by_ip["items"])
             await pool.execute("TRUNCATE events, alerts, devices, blocks")
+        finally:
+            await db.close()
+
+    asyncio.run(main())
+
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_ignored_gateways_are_not_collected_or_alerted():
+    from lookingglass.detections import DetectionEngine
+    from lookingglass.opnsense import Poller
+
+    class Api:
+        async def get(self, path):
+            return {"items": [{"name": "WAN", "status": "none", "delay": "9 ms", "loss": "0 %", "stddev": "1 ms"},
+                              {"name": "OLD", "status": "down", "status_translated": "Offline", "delay": "0 ms", "loss": "100 %"},
+                              {"name": "VPN", "status": "none", "delay": "~", "loss": "~", "stddev": "~"}]}
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE metrics, alerts, wan_daily")
+            await pool.execute("DELETE FROM kv WHERE key = 'wan_gateways'")
+            poller = Poller.__new__(Poller)
+            poller.api = Api()
+            await poller.poll_gateways()
+            await DetectionEngine(Settings()).system_health()
+            got = {(r["name"], r["labels"]) for r in await pool.fetch("SELECT name, labels FROM metrics")}
+            assert ("gateway_up", "OLD") in got and ("gateway_up", "WAN") in got
+            assert not any(lbl == "VPN" for _, lbl in got)  # unmonitored: no made-up "up" samples
+            assert await pool.fetchval("SELECT status FROM alerts WHERE rule = 'gateway_down'") == "open"
+            await wan.save_prefs({"order": ["VPN", "WAN"], "ignored": ["OLD"], "hidden": ["VPN"]})
+            assert await pool.fetchval("SELECT status FROM alerts WHERE rule = 'gateway_down'") == "closed"
+            await pool.execute("TRUNCATE metrics, alerts")
+            await poller.poll_gateways()
+            await DetectionEngine(Settings()).system_health()
+            assert not await pool.fetchval("SELECT count(*) FROM metrics WHERE labels = 'OLD'")
+            assert not await pool.fetchval("SELECT count(*) FROM alerts")
+            await db.set_snapshot("gateways", (await Api().get(""))["items"])
+            ov = await wan.overview(Settings(), 30)
+            names = [g["name"] for g in ov["gateways"]]
+            assert names[:2] == ["VPN", "WAN"]
+            by = {g["name"]: g for g in ov["gateways"]}
+            assert by["OLD"]["ignored"] and by["VPN"]["hidden"] and by["VPN"]["unmonitored"] and not by["WAN"]["unmonitored"]
+            await pool.execute("TRUNCATE metrics, alerts")
+            await pool.execute("DELETE FROM kv WHERE key = 'wan_gateways'")
         finally:
             await db.close()
 

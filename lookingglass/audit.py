@@ -29,6 +29,7 @@ LABELS = [
     ("POST", "/api/blocks", "Address blocked"),
     ("DELETE", "/api/blocks/", "Block removed"),
     ("POST", "/api/blocks/sync", "Block alias synced"),
+    ("PUT", "/api/wan/prefs", "WAN gateways changed"),
     ("POST", "/api/snoozes", "Snooze created"),
     ("PUT", "/api/snoozes/", "Snooze changed"),
     ("DELETE", "/api/snoozes/", "Snooze removed"),

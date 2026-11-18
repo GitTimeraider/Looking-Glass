@@ -1643,7 +1643,11 @@ class DetectionEngine:
 
     async def system_health(self) -> None:
         gws = await db.get_snapshot("gateways") or []
+        from .wan import prefs
+        ignored = set((await prefs())["ignored"])  # WAN quality › Ignore
         for gw in gws:
+            if not isinstance(gw, dict) or gw.get("name") in ignored:
+                continue
             status = str(gw.get("status", "")).lower()
             if status in ("down", "force_down") or str(gw.get("status_translated", "")).lower() == "offline":
                 await raise_alert("gateway_down", Rating("high", "a gateway that is down usually means no internet (or a "
