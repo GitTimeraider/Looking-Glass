@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import uvicorn
 
-from . import __version__, app_config, auth, crypto, db, db_config, notify, rollup
+from . import __version__, app_config, audit, auth, backup, blocking, crypto, db, db_config, notify, rollup, wan
 from .ai import Analyst, request_log
 from .backrest import BackrestPoller
 from .bichon import BichonPoller
@@ -56,6 +56,11 @@ async def housekeeping(settings) -> None:
                                max(settings.retention_days, 90))
             # comments of alerts that are gone (deleted here, by hand or with an older version)
             await pool.execute("DELETE FROM alert_comments c WHERE NOT EXISTS (SELECT 1 FROM alerts a WHERE a.id = c.alert_id)")
+            # audit log a year, ended blocks and snoozes 90 days, backups nobody downloaded an hour
+            await audit.cleanup(365)
+            await pool.execute("DELETE FROM blocks WHERE status <> 'active' AND removed_at < now() - interval '90 days'")
+            await pool.execute("DELETE FROM snoozes WHERE ends_at < now() - interval '90 days'")
+            backup.cleanup()
         except Exception:  # noqa: BLE001
             log.exception("housekeeping failed")
         await asyncio.sleep(3600)
@@ -308,6 +313,8 @@ async def amain() -> None:
     background("bichon", lambda: backrest_supervisor(settings, "bichon"))
     background("daily_report", lambda: daily_ai_report(settings, analyst))
     background("notifier", lambda: notify.notifier(settings))
+    background("blocking", lambda: blocking.loop(settings))  # OPNsense block alias (blocking.py)
+    background("wan_quality", lambda: wan.loop(settings))  # daily WAN quality (wan.py)
     from .intel import Intel
     intel = Intel(settings)
     background("threat_feeds", intel.updater)

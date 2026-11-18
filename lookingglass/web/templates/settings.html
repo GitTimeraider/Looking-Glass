@@ -6,9 +6,9 @@
   Changes apply immediately - no restart needed.</p>
 <div class="tabs" id="tabs">
   <button data-t="opnsense" class="on">OPNsense</button><button data-t="unifi">UniFi</button><button data-t="backrest">Backrest</button><button data-t="bichon">Bichon</button><button data-t="ai">AI analyst</button><button data-t="reports">Reports</button>
-  <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button><button data-t="behavior">Behaviour &amp; ML</button><button data-t="intel">Threat intel &amp; traps</button><button data-t="filters">Alert filters</button><button data-t="email">Email &amp; notifications</button><button data-t="display">Display</button>
+  <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button><button data-t="behavior">Behaviour &amp; ML</button><button data-t="intel">Threat intel &amp; traps</button><button data-t="filters">Alert filters</button><button data-t="blocking">Blocking</button><button data-t="email">Email &amp; notifications</button><button data-t="display">Display</button>
 </div>
-{% for g in ["opnsense", "unifi", "backrest", "bichon", "ai", "reports", "ingest", "data", "behavior", "intel", "email", "display"] %}
+{% for g in ["opnsense", "unifi", "backrest", "bichon", "ai", "reports", "ingest", "data", "behavior", "intel", "blocking", "email", "display"] %}
 <section data-s="{{ g }}" {% if g != "opnsense" %}hidden{% endif %}>
   <div class="card">
     {% if g == "behavior" %}<p class="small muted">Looking Glass learns what is normal for every device and alerts on what is new
@@ -25,6 +25,13 @@
       <a href="https://github.com/rustmailer/bichon" target="_blank" rel="noopener">Bichon</a> (2.3 or newer) over its
       API - read only, nothing is changed in Bichon and no mail is read. Shown under Infrastructure › Backups.
       In Bichon: <i>API tokens</i> › new token with <b>Metrics only</b> ticked, then paste it here.</p>{% endif %}
+    {% if g == "blocking" %}<p class="small muted">Block an attacker in OPNsense straight from an alert (<i>Block…</i>), on
+      the <a href="/blocks">Blocked addresses</a> page, or automatically for the worst alerts. Looking Glass only fills one alias -
+      your rules decide what it blocks. Set it up once in the <b>OPNsense web UI</b>: (1) <i>Firewall › Aliases</i> › <b>+</b>:
+      type <b>External (advanced)</b>, name e.g. <span class="mono">LookingGlass_block</span>, Save, Apply; (2) <i>Firewall ›
+      Rules › WAN</i> › <b>+</b>: Action <b>Block</b>, Source <b>LookingGlass_block</b>, Save, move it to the top, Apply; (3)
+      <i>System › Access › Users</i> › the API user › add the privilege <b>Firewall: Alias: Edit</b>. Then enter the alias name
+      below. Blocks end by themselves after their time; the alias is filled again after an OPNsense reboot.</p>{% endif %}
     {% if g == "reports" %}<p class="small muted">A report of the last days written on a schedule: statistics, alerts
       and - when the AI analyst is set up - its analysis. Reports can also be written by hand on the Reports page.</p>{% endif %}
     {% if g == "email" %}<h3>Mail server (SMTP)</h3>
@@ -99,6 +106,20 @@
   </div>
   {% endif %}
   {% if g == "data" %}
+  <div class="card" style="margin-top:14px">
+    <h3>Backup</h3>
+    <p class="small muted">One file with the database <b>and</b> the encryption key (<span class="mono">lookingglass.key</span>):
+      everything needed to restore Looking Glass on this or a new machine. Because the key is in it, the file opens every
+      stored credential - keep it as safe as your passwords. <b>Settings only</b> leaves out the collected history (logs,
+      graphs, dashboard counts, threat feeds) and is small; settings, accounts, devices, alerts, rules, reports and learned
+      behaviour are in both. How to restore is in the README inside the file and in the documentation (Installation details › Backup and restore).</p>
+    <div class="purge-confirm">
+      <select id="bk-kind"><option value="full">Everything (database + key)</option><option value="config">Settings only (no history)</option></select>
+      <input type="password" id="bk-pw" placeholder="Your password" autocomplete="current-password">
+      <button type="button" id="bk-go">Make backup</button>
+    </div>
+    <div class="small" id="bk-msg"></div>
+  </div>
   <div class="card danger-zone" style="margin-top:14px">
     <h3>Delete collected data</h3>
     <p class="small muted">Start again with an empty history. Everything you configured is kept: these settings, all
@@ -236,6 +257,29 @@
 {% endblock %}
 {% block scripts %}
 <script>
+/* ---------- backup (Data & detection) ---------- */
+document.getElementById("bk-go").onclick = async () => {
+  const msg = document.getElementById("bk-msg"), btn = document.getElementById("bk-go"), pw = document.getElementById("bk-pw");
+  const say = (t, cls = "") => { msg.className = "small " + cls; msg.innerHTML = t; };
+  if (!pw.value) return say("Enter your password first.", "err");
+  btn.disabled = true;
+  try {
+    const { job } = await LG.api("/api/admin/backup", { method: "POST", body: { kind: document.getElementById("bk-kind").value, password: pw.value } });
+    pw.value = "";
+    for (;;) {
+      const st = await LG.api(`/api/admin/backup/${job}`);
+      if (st.state === "failed") { say(LG.esc(st.error || "failed"), "err"); break; }
+      if (st.state === "ready") {
+        say(`Ready: <b>${LG.esc(st.file)}</b> (${LG.bytes(st.size)}). The download starts now; the file is deleted from the server after it (make a new backup if the download did not finish).`, "ok-msg");
+        location.href = `/api/admin/backup/${job}/download`;
+        break;
+      }
+      say(`<span class="spinner"></span> Making the backup… ${LG.esc(st.step || "")}${st.total ? ` (${st.done}/${st.total})` : ""}`);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  } catch (e) { say(LG.esc(e.message), "err"); }
+  btn.disabled = false;
+};
 /* ---------- generic settings tabs ---------- */
 document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
   document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x === b));

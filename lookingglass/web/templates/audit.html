@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top"><h1>Audit log</h1><span class="muted small" id="updated"></span></header>
+<p class="small muted">Who did what in Looking Glass: logins (also failed ones), log-outs, password resets and every change made
+  in the web UI - settings (their names, never the values), alerts, filters, blocks, snoozes, devices, backups. Kept for
+  a year. Failed logins are also in the container log.</p>
+<div class="filters">
+  <select id="action">
+    <option value="">everything</option><option value="change">changes</option><option value="login">logins</option>
+    <option value="login_failed">failed logins</option><option value="logout">log-outs</option>
+    <option value="backup">backups downloaded</option><option value="reset">password resets</option>
+    <option value="reset_requested">reset codes requested</option>
+  </select>
+  <select id="user"><option value="">every user</option></select>
+  <input id="q" type="search" placeholder="Search path, details, IP…">
+</div>
+<div class="card"><div id="list"></div>
+  <div class="filters" style="margin-top:10px"><button type="button" class="secondary" id="more" hidden>Older…</button></div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const ACT = { change: ["change", "src"], login: ["login", "ok"], login_failed: ["failed login", "bad"], logout: ["log-out", "src"],
+              backup: ["backup", "warn"], reset: ["reset", "warn"], reset_requested: ["reset code", "warn"] };
+let rows = [], seq = 0;
+function detail(r) {
+  const d = r.detail || {};
+  const parts = Object.entries(d).map(([k, v]) => `<span class="muted">${LG.esc(k)}:</span> ${LG.esc(Array.isArray(v) ? v.join(", ") : typeof v === "object" && v ? JSON.stringify(v) : String(v))}`);
+  return parts.join(" · ");
+}
+async function load(append) {
+  const my = ++seq;
+  const p = new URLSearchParams({ limit: 200, offset: append ? rows.length : 0 });
+  for (const k of ["action", "user", "q"]) { const v = document.getElementById(k).value.trim(); if (v) p.set(k, v); }
+  let r;
+  try { r = await LG.api("/api/audit?" + p); } catch (e) { document.getElementById("list").innerHTML = `<div class="empty bad">${LG.esc(e.message)}</div>`; return; }
+  if (my !== seq) return;
+  rows = append ? rows.concat(r.rows) : r.rows;
+  document.getElementById("updated").textContent = "updated " + LG.clock();
+  const us = document.getElementById("user"), cur = us.value;
+  us.innerHTML = `<option value="">every user</option>` + r.users.map(u => `<option>${LG.esc(u)}</option>`).join("");
+  us.value = cur;
+  document.getElementById("more").hidden = !r.has_more;
+  LG.table("#list", [
+    { k: "ts", l: "Time", f: v => `<span title="${LG.esc(LG.time(v))}">${LG.esc(LG.time(v))}</span>` },
+    { k: "username", l: "User", f: v => v ? `<b>${LG.esc(v)}</b>` : `<span class="muted">–</span>` },
+    { k: "ip", l: "From", f: v => v ? `<span class="mono small">${LG.esc(v)}</span>` : "" },
+    { k: "action", l: "What", f: (v, x) => { const a = ACT[v] || [v, "src"]; return `<span class="badge ${a[1]}">${LG.esc(a[0])}</span>`; } },
+    { k: "target", l: "Details", f: (v, x) => `${x.label ? `<b>${LG.esc(x.label)}</b> <span class="mono small muted">${LG.esc(v)}</span>` : v ? `<span class="mono small">${LG.esc(v)}</span>` : ""}` +
+        (x.status && x.status >= 400 ? ` <span class="badge bad" title="refused / failed">HTTP ${x.status}</span>` : "") +
+        (x.detail ? `<div class="small">${detail(x)}</div>` : "") },
+  ], rows, "Nothing recorded yet.");
+}
+let t;
+for (const id of ["action", "user"]) document.getElementById(id).onchange = () => load();
+document.getElementById("q").oninput = () => { clearTimeout(t); t = setTimeout(() => load(), 300); };
+document.getElementById("more").onclick = () => load(true);
+load(); LG.autoRefresh(() => { if (rows.length <= 200) load(); }, 60000);
+</script>
+{% endblock %}

@@ -17,10 +17,13 @@
     <summary class="btn secondary" title="More options">⋯</summary>
     <div class="more-menu">
       <a href="/settings#filters" id="filters-link" title="Mute filters and severity rules: see, adjust, pause or remove them">Mute &amp; severity rules</a>
+      <a href="/snooze" id="snooze-link" title="Snooze alerts for a while (maintenance windows)">Snooze &amp; maintenance</a>
+      <a href="/blocks" title="Addresses blocked in OPNsense from Looking Glass">Blocked addresses</a>
       <button type="button" class="danger" id="del-closed" hidden title="Permanently delete every closed alert">Delete all closed…</button>
     </div>
   </details>
 </div>
+<div class="card warn-box small" id="snoozing" hidden></div>
 <div class="card suggest" id="suggest" hidden></div>
 <div class="card al-card"><div id="list"></div></div>
 <div class="bulk" id="bulk" hidden>
@@ -72,6 +75,12 @@ async function load() {
     b.innerHTML = `${LG.esc(b.dataset.label || (b.dataset.label = b.textContent))} <span class="n">${LG.num(n)}</span>`;
   });
   document.getElementById("count").textContent = LG.num(counts[status] ?? alerts.length);
+  LG.api("/api/snoozes").then(r => {
+    const act = r.snoozes.filter(x => x.state === "active"), box = document.getElementById("snoozing");
+    box.hidden = !act.length;
+    box.innerHTML = act.length ? `🔕 ${act.length === 1 ? `Snooze <b>${LG.esc(act[0].name || "#" + act[0].id)}</b> is` : `<b>${act.length}</b> snoozes are`} active - matching alerts are stored without showing or mailing them. <a href="/snooze">Manage</a>` : "";
+    document.getElementById("snooze-link").textContent = `Snooze & maintenance${act.length ? ` (${act.length} active)` : ""}`;
+  }).catch(() => {});
   LG.api("/api/alert-filters").then(r => {
     const on = r.filters.filter(f => f.enabled).length;
     document.getElementById("filters-link").textContent = `Mute & severity rules (${on} active)`;
@@ -138,7 +147,41 @@ function statusPills(a) {
   return `<span class="pill st-${LG.esc(a.status)}">${LG.esc(a.status)}</span>` +
     (a.close_reason === "false_positive" ? `<span class="pill" title="Closed as false positive">false positive</span>` : "") +
     (a.close_reason === "known_false_positive" ? `<span class="pill" title="The same alert as #${LG.esc(String(((a.data || {}).repeat_of || {}).id || "?"))}, which you closed as false positive: stored closed, not notified (Settings › Behaviour & ML › Repeats of a false positive)">known false positive #${LG.esc(String(((a.data || {}).repeat_of || {}).id || "?"))}</span>` : "") +
-    (a.close_reason === "muted" ? `<span class="pill" title="This device has this alert type set to silent (Devices › settings): stored, never shown as open, but it counts for attack chains and the risk score">silent</span>` : "");
+    (a.close_reason === "muted" && (a.data || {}).snoozed ? `<span class="pill" title="Stored silently during the snooze “${LG.esc(a.data.snoozed.name)}”: never shown as open or mailed, but it counts for attack chains and the risk score">snoozed</span>` : "") +
+    (a.close_reason === "muted" && !(a.data || {}).snoozed ? `<span class="pill" title="This device has this alert type set to silent (Devices › settings): stored, never shown as open, but it counts for attack chains and the risk score">silent</span>` : "") +
+    (a.snoozed_now && a.status !== "closed" ? `<span class="pill" title="The snooze “${LG.esc(a.snoozed_now.name)}” covers it: not mailed until ${LG.esc(LG.time(a.snoozed_now.until))}">🔕 snoozed</span>` : "") +
+    (a.blocked ? `<span class="pill" title="${LG.esc(a.src_ip)} is blocked in OPNsense ${a.blocked.expires_at ? "until " + LG.esc(LG.time(a.blocked.expires_at)) : "until removed"}${a.blocked.auto ? " (automatically)" : ""}">⛔ blocked</span>` : "");
+}
+/* timeline of the address around the alert: an hour before it started until an hour after it was last seen */
+function timelineUrl(a) {
+  const ip = a.src_ip || a.dst_ip;
+  if (!ip) return null;
+  const t0 = new Date(a.created_at).getTime() - 3600000, t1 = Math.min(Date.now(), new Date(a.last_seen || a.created_at).getTime() + 3600000);
+  return "/timeline?" + new URLSearchParams({ ip, start: new Date(t0).toISOString(), end: new Date(t1).toISOString() });
+}
+const snoozeUrl = a => "/snooze?" + new URLSearchParams({ rule: a.rule, ...(a.src_ip ? { ip: a.src_ip } : {}),
+  name: `${a.rule}${a.src_name || a.src_ip ? " " + (a.src_name || a.src_ip) : ""}`, minutes: 120 });
+function blockButton(a) {
+  if (!a.src_ip) return "";
+  if (a.blocked) return `<button type="button" class="secondary small" data-unblock="${a.blocked.id}" title="Blocked ${a.blocked.expires_at ? "until " + LG.esc(LG.time(a.blocked.expires_at)) : "until removed"} - click to unblock">Unblock</button>`;
+  return `<button type="button" class="secondary small" data-block="${a.id}" title="Put ${LG.esc(a.src_ip)} in the OPNsense block alias (Settings › Blocking)">Block…</button>`;
+}
+let blockCfg = null;
+async function block(a) {
+  try { blockCfg = blockCfg || await LG.api("/api/blocks"); } catch (e) { return alert(e.message); }
+  if (!blockCfg.configured) {
+    if (confirm("Blocking is not set up yet: it needs an OPNsense alias that Looking Glass fills. Open the instructions?")) location.href = "/blocks";
+    return;
+  }
+  const h = prompt(`Block ${a.src_ip} in OPNsense (alias ${blockCfg.alias}) for how many hours?\n0 = until you remove it.`, String(blockCfg.default_hours));
+  if (h === null) return;
+  const body = { ip: a.src_ip, hours: Number(h) || 0, alert_id: a.id };
+  try { await LG.api("/api/blocks", { method: "POST", body }); }
+  catch (e) {
+    if (!/internal address/.test(e.message) || !confirm(e.message + "\n\nBlock it anyway?")) return alert(e.message);
+    try { await LG.api("/api/blocks", { method: "POST", body: { ...body, allow_internal: true } }); } catch (x) { return alert(x.message); }
+  }
+  load();
 }
 function details(a) {
   const ev = eventsUrl(a), d = desc(a);
@@ -156,7 +199,7 @@ function details(a) {
       <div>Last seen</div><div>${LG.esc(LG.time(a.last_seen))} <span class="muted">(${LG.ago(a.last_seen)})</span></div>
       <div>Status</div><div>${statusPills(a)}</div>
     </div>
-    <div class="al-actions">${ev ? `<a class="btn secondary small" href="${ev}" title="Show the events behind this alert">Events</a>` : ""}${a.muted_by ? `<button type="button" class="secondary small" data-unmute="${a.muted_by.id}" title="Delete the filter “${LG.esc(a.muted_by.name)}” so alerts like this are created again">Unmute</button>`
+    <div class="al-actions">${ev ? `<a class="btn secondary small" href="${ev}" title="Show the events behind this alert">Events</a>` : ""}${timelineUrl(a) ? `<a class="btn secondary small" href="${timelineUrl(a)}" title="Everything this address did around the time of the alert">Timeline</a>` : ""}${blockButton(a)}<a class="btn secondary small" href="${snoozeUrl(a)}" title="Store alerts like this silently for a while (maintenance)">Snooze…</a>${a.muted_by ? `<button type="button" class="secondary small" data-unmute="${a.muted_by.id}" title="Delete the filter “${LG.esc(a.muted_by.name)}” so alerts like this are created again">Unmute</button>`
       : `<a class="btn secondary small" href="${muteUrl(a)}" title="Create a filter that stops alerts like this one">Mute similar…</a>`}<a class="btn secondary small" href="${muteUrl(a, "severity")}" title="Give alerts like this one your own severity from now on">Change severity…</a>{% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Investigate alert #${a.id}: "${a.title}". Determine whether it is a real threat, what happened, the impact and what I should do. Take my comments on it and on earlier similar alerts into account.`)}" title="Let the AI analyst investigate this alert (it also reads the comments)">Ask AI</a>{% endif %}</div>
     ${comments(a)}
   </div>`;
@@ -273,6 +316,12 @@ function renderList() {
   selButton();
   wireComments(el);
   el.querySelectorAll("[data-unmute]").forEach(b => b.onclick = () => unmute(Number(b.dataset.unmute)));
+  el.querySelectorAll("[data-block]").forEach(b => b.onclick = () => block(alerts.find(x => x.id === Number(b.dataset.block))));
+  el.querySelectorAll("[data-unblock]").forEach(b => b.onclick = async () => {
+    if (!confirm("Unblock this address? It is taken out of the OPNsense alias right away.")) return;
+    try { await LG.api(`/api/blocks/${b.dataset.unblock}`, { method: "DELETE" }); } catch (e) { alert(e.message); }
+    load();
+  });
   el.querySelectorAll("[data-restore]").forEach(b => b.onclick = async () => {
     await LG.api(`/api/alerts/${b.dataset.restore}/restore-severity`, { method: "POST" }); load();
   });

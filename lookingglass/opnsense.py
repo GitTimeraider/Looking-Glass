@@ -107,6 +107,18 @@ def _num(value: Any) -> float | None:
         return None
 
 
+def gateway_is_down(gw: dict[str, Any]) -> bool:
+    """routes/gateway/status: down / force_down / "Offline"."""
+    return str(gw.get("status", "")).lower() in ("down", "force_down") or \
+        str(gw.get("status_translated", "")).lower() == "offline"
+
+
+def gateway_disabled(gw: dict[str, Any]) -> bool:
+    """A gateway without monitoring (or switched off) says nothing about the line."""
+    return str(gw.get("monitor_disable", "0")) == "1" or str(gw.get("status", "")).lower() in ("disabled", "none_disabled") \
+        or "disabled" in str(gw.get("status_translated", "")).lower()
+
+
 def own_address(r: dict[str, Any]) -> bool:
     """An ARP entry of OPNsense's own interface address: the table marks those permanent."""
     return r.get("permanent") in (True, 1, "1", "true") or str(r.get("expires", "")).lower() == "permanent"
@@ -320,13 +332,21 @@ class Poller:
         res = await self.api.get("routes/gateway/status")
         items = (res or {}).get("items", [])
         await db.set_snapshot("gateways", items)
+        from .wan import monitored, prefs
+        ignored = set((await prefs())["ignored"])  # WAN quality › Ignore: unused gateways are not collected
         metrics = []
         for gw in items:
             name = gw.get("name", "")
+            if name in ignored:
+                continue
             if _num(gw.get("delay")) is not None:
                 metrics.append(("gateway_delay_ms", name, _num(gw["delay"])))
             if _num(gw.get("loss")) is not None:
                 metrics.append(("gateway_loss_pct", name, _num(gw["loss"])))
+            if _num(gw.get("stddev")) is not None:  # jitter (WAN quality)
+                metrics.append(("gateway_stddev_ms", name, _num(gw["stddev"])))
+            if name and not gateway_disabled(gw) and monitored(gw):  # up / down per sample: availability (WAN quality)
+                metrics.append(("gateway_up", name, 0.0 if gateway_is_down(gw) else 1.0))
         await db.add_metrics(metrics)
 
     async def poll_interfaces(self) -> None:

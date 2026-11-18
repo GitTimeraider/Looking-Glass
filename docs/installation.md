@@ -157,6 +157,42 @@ terminal run `chown -R 999:999 /mnt/user/appdata/<db folder>`. Start the contain
 
 You can also stay on `postgres:18-alpine`: keep that image name in your compose file and nothing changes.
 
+## Backup and restore
+
+**Make a backup** – Looking Glass web UI › *Settings › Data & detection › Backup*: choose **Everything** (database +
+key) or **Settings only** (no collected history: logs, graphs, dashboard counts, threat feeds - much smaller), enter
+your password, *Make backup*. The browser downloads `looking-glass-backup-….tar.gz`. It holds every table and the
+encryption key `lookingglass.key`, so it can be restored anywhere - and opens every stored credential: keep it safe.
+It does not need `pg_dump` and works with any PostgreSQL version Looking Glass supports.
+
+**Restore** (shell on your Docker host, in `~/looking-glass`, the folder with `docker-compose.yml`). On a new machine,
+install Looking Glass and finish the setup wizard first (it creates the database connection); then:
+
+```bash
+cp ~/Downloads/looking-glass-backup-*.tar.gz ./data/
+```
+
+```bash
+docker compose stop looking-glass
+```
+
+```bash
+docker compose run --rm looking-glass python -m lookingglass.cli restore /data/looking-glass-backup-<…>.tar.gz
+```
+
+Type `RESTORE` when asked. Then:
+
+```bash
+docker compose start looking-glass
+```
+
+The restore replaces the tables that are in the backup (a *Settings only* backup leaves the collected history that is
+there alone), puts the backup's encryption key in `./data/lookingglass.key` (the old key is kept next to it as
+`lookingglass.key.before-restore-…`) and re-encrypts the saved database connection with it. You log in with the
+accounts, passwords and MFA from the backup. Unraid / Portainer without compose: stop the Looking Glass container and
+run the same image once with the same `/data` volume and the command
+`python -m lookingglass.cli restore /data/<file>`.
+
 ## Updating (shell on your Docker host, in `~/looking-glass`)
 
 ```bash

@@ -69,6 +69,15 @@ metrics also: cpu_used_pct, swap_used_pct, unraid_cpu_pct / unraid_mem_pct / unr
        unifi_clients (labels wifi|wired), unifi_ssid_clients / unifi_ap_clients (labels = SSID / AP name), unifi_wifi_satisfaction,
        unifi_device_cpu / unifi_device_mem / unifi_device_tx_bps / unifi_device_rx_bps (labels = device name)
 
+blocks(id, ip inet, created_at, expires_at /*NULL = until removed*/, created_by /*user, or 'auto'*/, reason, alert_id,
+       auto bool, status /*active|removed|expired*/, removed_at, removed_by, in_alias bool, last_error)
+       -- addresses blocked in OPNsense from Looking Glass (one alias it fills)
+snoozes(id, name, starts_at, ends_at, networks /*IPs / CIDRs, NULL = all*/, rules text[] /*empty = all*/, hits, created_by)
+       -- maintenance windows: matching alerts were stored closed (close_reason muted, data.snoozed) and not mailed
+wan_daily(gateway, day date, samples, delay_avg, delay_p50, delay_p95, delay_max /*ms*/, stddev_avg /*jitter ms*/,
+       loss_avg, loss_max /*%*/, down_samples, up_samples)  -- per gateway and day, 2 years; metrics also gateway_stddev_ms, gateway_up (1/0)
+audit_log(id, ts, username, ip, action /*login|login_failed|logout|change|backup|reset|reset_requested*/,
+       target /*e.g. 'PUT /api/settings'*/, status /*HTTP*/, detail jsonb)  -- who did what in Looking Glass
 backup_runs(source /*backrest|bichon*/, ext_id, kind /*backup|forget|prune|check|stats|restore|dry-run*/,
        job /*Backrest plan; Bichon: mail account (address) or 'Bichon data backup'*/,
        repo, status /*success|warning|error|running|pending|cancelled*/, started, ended, duration_s, bytes_processed
