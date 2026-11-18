@@ -6,6 +6,12 @@
     docker exec looking-glass python -m lookingglass.cli setup-database
         -> forgets the database connection saved by the setup wizard; after a restart
            (docker restart looking-glass) the wizard asks for it again. Data in the database is kept.
+
+    docker compose stop looking-glass
+    docker compose run --rm looking-glass python -m lookingglass.cli restore /data/<backup>.tar.gz
+    docker compose start looking-glass
+        -> restores a backup made under Settings › Data & detection › Backup (copy the file into the data
+           folder first). Replaces the data in the database and puts the backup's encryption key in place.
 """
 from __future__ import annotations
 
@@ -31,9 +37,62 @@ def main() -> None:
                   "the web UI; the setup code is in the container log.")
         else:
             print("No saved database connection found.")
+    elif cmd == "restore":
+        if len(sys.argv) < 3:
+            print("usage: python -m lookingglass.cli restore /data/<backup>.tar.gz [--yes]")
+            sys.exit(1)
+        sys.exit(restore(sys.argv[2], "--yes" in sys.argv[3:]))
     else:
         print(__doc__)
         sys.exit(1)
+
+
+def restore(file: str, yes: bool) -> int:
+    import asyncio
+    import logging
+
+    from . import backup, crypto, db, db_config
+    from .config import get_settings
+
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    s = get_settings()
+    try:
+        crypto.init(s.data_dir)
+    except crypto.KeyFileError as exc:
+        print(f"ERROR: {exc}")
+        return 2
+    if s.database_url:
+        conn: dict = {"dsn": s.database_url}
+    elif cfg := db_config.load(s.data_dir):
+        conn = db_config.connect_kwargs(cfg)
+    else:
+        print("ERROR: no database connection yet. Start Looking Glass once and finish the setup wizard (it creates the "
+              "connection), stop it again, then restore.")
+        return 2
+    if not yes:
+        print(f"This REPLACES the data in the Looking Glass database with the backup {file}.")
+        print("Stop Looking Glass first (docker compose stop looking-glass) - this command runs in its own container.")
+        if input("Type RESTORE to continue: ").strip() != "RESTORE":
+            print("Cancelled.")
+            return 1
+
+    async def run() -> int:
+        dsn = conn.pop("dsn", None)
+        await db.connect(dsn, retry=False, **conn)
+        try:
+            res = await backup.restore(file, s.data_dir)
+        finally:
+            await db.close()
+        if res["skipped"]:
+            print(f"not restored (unknown in this version): {', '.join(res['skipped'])}")
+        print("Restore finished. Start Looking Glass again: docker compose start looking-glass")
+        return 0
+
+    try:
+        return asyncio.run(run())
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: {exc}")
+        return 1
 
 
 if __name__ == "__main__":

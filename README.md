@@ -57,9 +57,12 @@ the default look: dark theme, purple accent, menu bar at the top and square corn
 Port scans, host sweeps, brute force and password spraying, logins after failures or from new countries, web attacks,
 Suricata / CrowdSec / Q-Feeds hits, DNS tunneling and random (DGA) domains, beaconing, lateral movement, DNS bypass,
 attack chains, new and rogue devices, evil-twin access points, rogue DHCP, ARP spoofing, canary traps, resource and
-service problems on OPNsense and Unraid, failed backups and more. On top of that it learns what is normal for every
+service problems on OPNsense and Unraid, WAN lines that get slower or lose packets over days, failed backups and more. On top of that it learns what is normal for every
 device (behaviour & machine learning) and checks traffic against threat-intel feeds. Every alert explains its severity
-and can be muted, mailed or closed.
+and can be muted, mailed, closed or **snoozed** for a maintenance window. From an alert you can **block** the attacker
+in OPNsense (one alias Looking Glass fills and empties again; optionally automatic for the worst alerts) and open a
+**timeline** of everything that address or device did. An **audit log** records every login and change, and a
+**backup** of the database plus encryption key is one click (restore with one command).
 
 Details: [Detections and alerts](docs/detections.md) · [Behaviour, machine learning and threat intel](docs/behaviour-and-threat-intel.md)
 · [AI analyst](docs/ai-analyst.md)
@@ -68,12 +71,12 @@ Details: [Detections and alerts](docs/detections.md) · [Behaviour, machine lear
 
 | Page | What is in it |
 |---|---|
-| [Installation details](docs/installation.md) | setup wizard, MFA, the Settings tabs (incl. Display), password reset, GeoIP, PostgreSQL notes, updating, database load |
+| [Installation details](docs/installation.md) | setup wizard, MFA, the Settings tabs (incl. Display), password reset, GeoIP, PostgreSQL notes, backup and restore, updating, database load |
 | [OPNsense setup](docs/opnsense.md) | the API user and key, remote syslog, firewall logging, Unbound, nginx, VPN, Suricata, Q-Feeds, CrowdSec |
 | [UniFi](docs/unifi.md) | adding a UniFi controller (API key or local account) |
 | [Unraid](docs/unraid.md) | adding Unraid servers, alerts, spun-down disks, container packages |
 | [Backups: Backrest and Bichon](docs/backups.md) | backup jobs and mail-archive syncs |
-| [Using Looking Glass](docs/user-guide.md) | a tour of every page: overview, alerts, dashboards, devices, event search, reports |
+| [Using Looking Glass](docs/user-guide.md) | a tour of every page: overview, alerts, timeline, dashboards, WAN quality, devices, event search, reports; blocking in OPNsense; snooze / maintenance windows; audit log |
 | [Detections and alerts](docs/detections.md) | every detection, alert filters, email notifications, closing alerts, severity |
 | [Behaviour, machine learning and threat intel](docs/behaviour-and-threat-intel.md) | learned device behaviour, anomaly detection, threat feeds, traps |
 | [AI analyst](docs/ai-analyst.md) | what the AI can do, timeouts, privacy mode (pseudonyms) |

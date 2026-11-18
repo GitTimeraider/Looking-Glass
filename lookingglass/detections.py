@@ -11,7 +11,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import alert_filters, db, event_filter
+from . import alert_filters, db, event_filter, snooze
 from .parsers.common import real_name
 from .parsers.filterlog import QFEEDS, QFEEDS_NAME
 from .config import Settings, get_settings
@@ -409,6 +409,13 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
             severity = ov["set_severity"]
             keep_max = False  # your choice replaces the stored level, also downwards
     status = "open"
+    if not silent and (sn := await snooze.check(rule, src_ip, dst_ip)):
+        # a snooze / maintenance window covers it (Alerts › Snooze…): stored like a silent alert - not shown as open,
+        # not mailed, still counted for attack chains and the risk score
+        silent = True
+        data["snoozed"] = sn
+        if "Snoozed:" not in description:
+            description += f"\n\nSnoozed: “{sn['name']}” was active - stored without showing or mailing it."
     if silent:
         data["silent"] = True
         if row and row["status"] != "closed":
@@ -749,7 +756,7 @@ class DetectionEngine:
                          self.beaconing, self.lateral_movement,
                          self.threat_intel, self.canary, self.arp_spoofing, self.young_domains,
                          self.behavior_profiles, self.behavior_hourly, self.behavior_cleanup,
-                         self.system_health, self.log_silence, self.attack_chains, self.risk_scores):
+                         self.system_health, self.wan_quality, self.log_silence, self.attack_chains, self.risk_scores):
                 try:
                     await rule()
                 except Exception:  # noqa: BLE001
@@ -1662,6 +1669,12 @@ class DetectionEngine:
                                                         "moment (System › Firmware › Updates)"),
                               "OPNsense firmware updates available", "firmware",
                               description=str(fw.get("status_msg", "")))
+
+    async def wan_quality(self) -> None:
+        """Slow degradation of the internet line over a day (wan.py); every 15 minutes."""
+        if self._due("wan_quality", 900):
+            from . import wan
+            await wan.check(self.settings)
 
     async def check_services(self, services: list[Any], now: float | None = None) -> None:
         """'Service is not running' only once a service has been stopped for ``service_down_grace`` minutes (Settings ›

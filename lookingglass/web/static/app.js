@@ -131,6 +131,16 @@ const LG = {
     if (s < 86400) return Math.round(s / 3600) + "h ago";
     return Math.round(s / 86400) + "d ago";
   },
+  /** time until a moment in the future: "in 3h", "in 2d" ("ended" once it has passed) */
+  left(iso) {
+    if (!iso) return "";
+    const s = (new Date(iso).getTime() - Date.now()) / 1000;
+    if (isNaN(s)) return "–";
+    if (s <= 0) return "ended";
+    if (s < 3600) return "in " + Math.max(1, Math.round(s / 60)) + "m";
+    if (s < 86400) return "in " + (s < 36000 ? Math.round(s / 360) / 10 : Math.round(s / 3600)) + "h";
+    return "in " + Math.round(s / 8640) / 10 + "d";
+  },
   bytes(v) {
     if (v === null || v === undefined || isNaN(v)) return "–";
     const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; v = Number(v);

@@ -9,7 +9,8 @@ The API user Looking Glass reads with, and what to set in OPNsense so all logs a
 1. Open **System › Access › Users**, click **+** and create a user, e.g. `lookingglass` (any random password).
 2. Give it privileges. Simplest: tick **GUI - All pages**. Stricter: only the *Diagnostics*, *Reporting*, *Firmware*,
    *Gateways*, *Unbound*, *CrowdSec*, *Q-Feeds* and *Intrusion Detection* pages (Looking Glass's *Setup & Status* page
-   shows every API call that is refused, so you can add the missing privilege later).
+   shows every API call that is refused, so you can add the missing privilege later). For **blocking from Looking
+   Glass** add *Firewall: Alias: Edit* - see [Blocking addresses](user-guide.md#blocking-addresses-in-opnsense).
 3. Save, open the user again, scroll to **API keys** and click **+**. Your browser downloads a text file with
    `key=...` and `secret=...`. You enter both in Looking Glass under *Settings › OPNsense*.
 
