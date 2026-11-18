@@ -18,7 +18,7 @@ from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 from webauthn.helpers.structs import (AuthenticatorSelectionCriteria, PublicKeyCredentialDescriptor,
                                       ResidentKeyRequirement, UserVerificationRequirement)
 
-from .. import __version__, auth, db
+from .. import __version__, audit, auth, db
 from ..config import Settings
 
 log = logging.getLogger("lookingglass.auth")
@@ -94,6 +94,7 @@ def register(app: FastAPI, settings: Settings, templates: Jinja2Templates) -> No
         if not ok:
             auth.record_failure(ip)
             log.warning("failed login for %r from %s", username, ip)
+            await audit.record("login_failed", username[:100], ip, detail={"step": "password"})
             await asyncio.sleep(1)
             return render(request, "login.html", 401, error="Invalid username or password.", step="password")
         request.session.clear()
@@ -101,6 +102,7 @@ def register(app: FastAPI, settings: Settings, templates: Jinja2Templates) -> No
             # first login (or after a reset): log in and force MFA enrollment
             finish_login(request, user)
             await db.pool().execute("UPDATE users SET last_login = now() WHERE id = $1", user["id"])
+            await audit.record("login", user["username"], ip, detail={"method": "password (MFA not set up yet)"})
             return RedirectResponse("/account?setup=1", status_code=303)
         request.session.update(pending_uid=user["id"], pending_at=time.time())
         return RedirectResponse("/login/mfa", status_code=303)
@@ -129,6 +131,7 @@ def register(app: FastAPI, settings: Settings, templates: Jinja2Templates) -> No
         form = await request.form()
         if auth.too_many_failures(ip) or not auth.verify_totp(user["totp_secret"] or "", str(form.get("code", "")), user["id"]):
             auth.record_failure(ip)
+            await audit.record("login_failed", user["username"], ip, detail={"step": "authenticator code"})
             await asyncio.sleep(1)
             return render(request, "login.html", 401, step="mfa", error="Invalid code.", totp=user["totp_enabled"],
                           passkey=bool(await auth.passkeys(user["id"])), username=user["username"])
@@ -136,6 +139,7 @@ def register(app: FastAPI, settings: Settings, templates: Jinja2Templates) -> No
         finish_login(request, user)
         await db.pool().execute("UPDATE users SET last_login = now() WHERE id = $1", user["id"])
         log.info("login %s from %s (totp)", user["username"], ip)
+        await audit.record("login", user["username"], ip, detail={"method": "authenticator app"})
         return RedirectResponse("/", status_code=303)
 
     @app.post("/login/passkey/options")
@@ -173,16 +177,20 @@ def register(app: FastAPI, settings: Settings, templates: Jinja2Templates) -> No
         except Exception as exc:  # noqa: BLE001 - library raises various verification errors
             auth.record_failure(ip)
             log.warning("passkey verification failed for %s from %s: %s", user["username"], ip, exc)
+            await audit.record("login_failed", user["username"], ip, detail={"step": "passkey"})
             raise HTTPException(400, f"passkey verification failed: {exc}") from exc
         await db.pool().execute("UPDATE webauthn_credentials SET sign_count = $2, last_used = now() WHERE id = $1",
                                 row["id"], res.new_sign_count)
         finish_login(request, user)
         await db.pool().execute("UPDATE users SET last_login = now() WHERE id = $1", user["id"])
         log.info("login %s from %s (passkey)", user["username"], ip)
+        await audit.record("login", user["username"], ip, detail={"method": "passkey"})
         return {"ok": True, "redirect": "/"}
 
     @app.get("/logout")
     async def logout(request: Request):
+        if request.session.get("user"):
+            await audit.record("logout", request.session.get("user"), client_ip(request))
         request.session.clear()
         return RedirectResponse("/login")
 
@@ -199,6 +207,7 @@ def register(app: FastAPI, settings: Settings, templates: Jinja2Templates) -> No
             first = await db.pool().fetchval("SELECT username FROM users ORDER BY id LIMIT 1")
             username = first or settings.admin_user
         log.warning("reset code requested from %s", client_ip(request))
+        await audit.record("reset_requested", username, client_ip(request))
         auth.create_reset_code(username)
         if "text/html" in request.headers.get("accept", ""):
             return render(request, "reset.html", error=None,
@@ -224,6 +233,7 @@ def register(app: FastAPI, settings: Settings, templates: Jinja2Templates) -> No
             await asyncio.sleep(1)
             return render(request, "reset.html", 400, error="Invalid or expired code.", info=None)
         await auth.reset_user(username, pw1)
+        await audit.record("reset", username, ip, detail={"what": "password and MFA reset with a reset code"})
         _user_cache.clear()
         request.session.clear()
         return render(request, "login.html", error=None, step="password",

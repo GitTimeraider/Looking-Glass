@@ -138,6 +138,8 @@ async def wg(status: str):
 
 
 EXPOSURE = {"calls": 0}
+# the block alias of Settings › Blocking (alias_util): an External (advanced) alias named LookingGlass_block
+ALIAS = {"name": "LookingGlass_block", "table": {"192.0.2.250"}}  # .250: put there by hand, never touched
 
 
 @app.api_route("/api/{path:path}", methods=["GET", "POST"])
@@ -149,6 +151,20 @@ async def handler(path: str, request: Request):
         return d[path]
     if path in SEARCH:
         return {"rows": SEARCH[path], "total": len(SEARCH[path])}
+    if path.startswith("firewall/alias/getAliasUUID/"):
+        return {"uuid": "alias-1"} if path.rsplit("/", 1)[1] == ALIAS["name"] else []
+    if path == "firewall/alias/getItem/alias-1":
+        return {"alias": {"enabled": "1", "name": ALIAS["name"], "type": {"host": {"value": "Host(s)", "selected": 0},
+                                                                          "external": {"value": "External (advanced)", "selected": 1}}}}
+    if path.startswith("firewall/alias_util/"):
+        verb, name = path.split("/")[2], path.rsplit("/", 1)[1]
+        if name != ALIAS["name"]:
+            return {"status": "failed"}
+        if verb == "list":
+            return {"total": len(ALIAS["table"]), "rows": [{"ip": ip} for ip in sorted(ALIAS["table"])]}
+        address = (await request.json()).get("address", "")
+        (ALIAS["table"].add if verb == "add" else ALIAS["table"].discard)(address)
+        return {"status": "done"}
     if path == "firewall/filter/search_rule":
         rows = [{"uuid": "r1", "enabled": "1", "action": "pass", "interface": "lan", "source_net": "lan", "destination_net": "any",
                  "description": "Default allow LAN"}]

@@ -19,6 +19,13 @@ How logins, secrets and the AI analyst are protected, and how to run Looking Gla
   bundled PostgreSQL reads its password from `secrets/db_password` only when the database is first created.
 * Integration credentials are stored encrypted in the database with a key kept only in the data volume, are
   never returned by the UI/API, and are not readable by the AI analyst's SQL tool. The environment holds no API keys.
+* **Audit log** (*Admin › Audit log*): every login (also failed ones), log-out, reset and change made in the web UI,
+  with user, address and result; settings are logged by name only, never their values. Kept for a year.
+* A **backup** file (*Settings › Data & detection › Backup*) contains the encryption key, so it opens every stored
+  credential: making one needs your password, it is recorded in the audit log, the file is deleted from the server
+  after the download (or after an hour), and you should keep it as safe as your passwords.
+* **Blocking** never blocks the address you are using, OPNsense itself or the *Never block* list, blocks internal
+  addresses only by hand after a warning, and only fills an alias - your firewall rules decide what it does.
 * Set *Settings › Ingestion & network › Syslog allowed senders* to your OPNsense IP so nobody else can inject log lines.
 * The AI's SQL tool runs inside read-only transactions with a statement timeout and only accepts `SELECT`.
 * *Settings › AI analyst › Privacy mode* keeps your local addresses, MAC addresses and names away from the AI provider

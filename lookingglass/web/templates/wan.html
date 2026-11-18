@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top">
+  <h1>WAN quality</h1>
+  <span class="muted small" id="updated"></span>
+  <div class="seg" id="range"><button data-v="30">30d</button><button data-v="90">90d</button><button data-v="365">1y</button><button data-v="730">2y</button></div>
+</header>
+<p class="small muted">How every OPNsense gateway does over days and months, from its gateway monitor (dpinger): latency,
+  jitter, packet loss and how often it was down. Kept per day for two years. Alerts when a line is far slower than its own
+  normal or keeps losing packets: <a href="/settings#opnsense">Settings › OPNsense › WAN</a>. For the last hours see
+  <a href="/system">Infrastructure › OPNsense</a>.</p>
+<div id="none" class="card" hidden>No gateway data yet. Looking Glass reads it from OPNsense every poll
+  (<a href="/settings#opnsense">Settings › OPNsense</a>); the gateway needs monitoring on (OPNsense web UI: <i>System ›
+  Gateways › Configuration</i> › the gateway › <i>Disable Gateway Monitoring</i> unticked).</div>
+<div id="gws"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+let days = 90;
+try { days = Number(localStorage.getItem("lg-wan-days")) || 90; } catch (e) {}
+const kpi = (l, v, c = "", t = "") => `<div class="card kpi ${c}"${t ? ` title="${LG.esc(t)}"` : ""}><div class="v">${v}</div><div class="l">${LG.esc(l)}</div></div>`;
+const ms = v => v === null || v === undefined ? "–" : (v < 10 ? v.toFixed(1) : Math.round(v)) + " ms";
+const pct = (v, d = 2) => v === null || v === undefined ? "–" : Number(v).toFixed(d) + " %";
+const avail = v => v === null || v === undefined ? "–" : (v >= 99.995 ? "100" : v.toFixed(v >= 99.9 ? 3 : 2)) + " %";
+const STATUS = s => { const t = String(s.status_translated || s.status || "?"); const l = t.toLowerCase();
+  return `<span class="badge ${/offline|down/.test(l) ? "bad" : /loss|delay|warn/.test(l) ? "warn" : /online|none/.test(l) ? "ok" : "src"}">${LG.esc(t)}</span>`; };
+LG.seg(document.getElementById("range"), String(days), v => { days = Number(v); try { localStorage.setItem("lg-wan-days", v); } catch (e) {} load(); });
+async function load() {
+  let d;
+  try { d = await LG.api(`/api/wan?days=${days}`, { signal: LG.latest("wan") }); }
+  catch (e) { if (!LG.aborted(e)) document.getElementById("gws").innerHTML = `<div class="card empty bad">${LG.esc(e.message)}</div>`; return; }
+  document.getElementById("updated").textContent = "updated " + LG.clock();
+  document.getElementById("none").hidden = d.gateways.length > 0;
+  const lim = d.limits;
+  document.getElementById("gws").innerHTML = d.gateways.map((g, i) => {
+    const l = g.last24 || {}, slow = l.p50 && g.baseline && l.p50 >= g.baseline * lim.factor / 100 && l.p50 - g.baseline >= lim.min_ms;
+    const lossy = lim.loss > 0 && l.loss >= lim.loss;
+    return `<div class="card" style="margin-bottom:14px">
+      <div class="filters" style="margin:0 0 10px;align-items:center"><h3 style="margin:0">${LG.esc(g.name)}</h3>${g.now.status || g.now.status_translated ? STATUS(g.now) : ""}
+        <span class="small muted">${[g.now.descr, g.now.address && "gateway " + g.now.address, g.now.monitor && "monitor " + g.now.monitor].filter(Boolean).map(LG.esc).join(" · ")}</span>
+        <span class="small muted" style="margin-left:auto">now: ${LG.esc(g.now.delay || "–")} · jitter ${LG.esc(g.now.stddev || "–")} · loss ${LG.esc(g.now.loss || "–")}</span></div>
+      <div class="grid kpis">
+        ${kpi("Latency 24h (median)", ms(l.p50), slow ? "bad" : "", `95 % of the samples below ${ms(l.p95)}`)}
+        ${kpi("Normal (7 days before)", ms(g.baseline), "", g.baseline_days ? `median of ${g.baseline_days} daily medians` : "not enough history yet")}
+        ${kpi("Jitter 24h", ms(l.jitter))}
+        ${kpi("Loss 24h", pct(l.loss), lossy ? "bad" : l.loss > 0.5 ? "warn" : "")}
+        ${kpi("Available 7d", avail((g.p7 || {}).availability), (g.p7 || {}).availability < 99.9 ? "warn" : "", "share of the samples in which the gateway was not down")}
+        ${kpi("Available 30d", avail((g.p30 || {}).availability), (g.p30 || {}).availability < 99.9 ? "warn" : "")}
+        ${kpi("Latency 30d (median)", ms((g.p30 || {}).delay_p50))}
+        ${kpi("Loss 30d", pct((g.p30 || {}).loss_avg))}
+      </div>
+      <div class="grid g2" style="margin-top:14px">
+        <div class="card"><h3>Latency per day <span class="muted small">median, 95th percentile and worst sample</span></h3><div class="chart-box sm"><canvas id="lat${i}"></canvas></div></div>
+        <div class="card"><h3>Packet loss and downtime per day</h3><div class="chart-box sm"><canvas id="loss${i}"></canvas></div></div>
+      </div>
+      <details style="margin-top:10px"><summary class="small">Every day (${g.days.length})</summary><div id="days${i}"></div></details>
+    </div>`;
+  }).join("");
+  d.gateways.forEach((g, i) => draw(g, i));
+}
+function draw(g, i) {
+  const labels = g.days.map(x => new Date(x.day + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "2-digit" }));
+  const line = (label, key, c, dash) => ({ label, data: g.days.map(x => x[key]), borderColor: c, backgroundColor: c + "22", pointRadius: g.days.length > 60 ? 0 : 2, borderWidth: 1.5, tension: .2, borderDash: dash, spanGaps: true });
+  const opts = (fmt, y2) => ({ maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false },
+    scales: { x: { ticks: { maxTicksLimit: 10, maxRotation: 0 } }, y: { beginAtZero: true, ticks: { callback: fmt } },
+              ...(y2 ? { y2: { position: "right", beginAtZero: true, grid: { drawOnChartArea: false }, ticks: { callback: v => v + " min" } } } : {}) },
+    plugins: { legend: { position: "bottom", labels: { boxWidth: 10 } } } });
+  LG.chart("lat" + i, { type: "line", data: { labels, datasets: [line("median", "delay_p50", LG.color(0)), line("95 %", "delay_p95", LG.color(3)),
+    line("worst", "delay_max", LG.color(1), [4, 3]), line("jitter", "stddev_avg", LG.color(5))] }, options: opts(v => v + " ms") });
+  const downMin = g.days.map(x => { const t = (x.up_samples || 0) + (x.down_samples || 0); return t ? Math.round(x.down_samples / t * 1440) : null; });
+  LG.chart("loss" + i, { type: "bar", data: { labels, datasets: [
+    { type: "line", label: "loss (average %)", data: g.days.map(x => x.loss_avg), borderColor: LG.color(1), backgroundColor: LG.color(1) + "22", pointRadius: 0, borderWidth: 1.5, yAxisID: "y" },
+    { type: "bar", label: "down (≈ minutes)", data: downMin, backgroundColor: LG.color(8), yAxisID: "y2" }] }, options: opts(v => v + " %", true) });
+  LG.table(document.getElementById("days" + i), [
+    { k: "day", l: "Day", s: true }, { k: "delay_p50", l: "Median", num: true, f: ms, s: true }, { k: "delay_p95", l: "95 %", num: true, f: ms, s: true },
+    { k: "delay_max", l: "Worst", num: true, f: ms, s: true }, { k: "stddev_avg", l: "Jitter", num: true, f: ms, s: true },
+    { k: "loss_avg", l: "Loss", num: true, f: v => pct(v), s: true }, { k: "loss_max", l: "Max loss", num: true, f: v => pct(v, 0), s: true },
+    { k: "availability", l: "Available", num: true, f: avail, s: true }, { k: "samples", l: "Samples", num: true },
+  ], [...g.days].reverse(), "No days yet.");
+}
+load(); LG.autoRefresh(load, 300000);
+</script>
+{% endblock %}

@@ -28,12 +28,16 @@
       <a href="/" class="{{ 'active' if path == '/' }}">Overview</a>
       <a href="/alerts" class="{{ 'active' if path == '/alerts' }}">Alerts</a>
       <a href="/events" class="{{ 'active' if path == '/events' }}">Event search</a>
+      <a href="/timeline" class="{{ 'active' if path == '/timeline' }}">Timeline</a>
+      <a href="/blocks" class="{{ 'active' if path == '/blocks' }}">Blocked addresses</a>
+      <a href="/snooze" class="{{ 'active' if path == '/snooze' }}">Snooze &amp; maintenance</a>
     </div></div>
     <div class="ngrp"><div class="grp" tabindex="-1">OPNsense security</div><div class="nlinks">
       {{ dash_links("opnsense") }}
     </div></div>
     <div class="ngrp"><div class="grp" tabindex="-1">Infrastructure</div><div class="nlinks">
       <a href="/system" class="{{ 'active' if path == '/system' }}">OPNsense</a>
+      <a href="/wan" class="{{ 'active' if path == '/wan' }}">WAN quality</a>
       <a href="/unifi" class="{{ 'active' if path == '/unifi' }}">UniFi</a>
       <a href="/unraid" class="{{ 'active' if path == '/unraid' }}">Unraid</a>
       <a href="/backups" class="{{ 'active' if path == '/backups' }}">Backups</a>
@@ -47,6 +51,7 @@
     <div class="ngrp end"><div class="grp" tabindex="-1">Admin</div><div class="nlinks">
       <a href="/settings" class="{{ 'active' if path == '/settings' }}">Settings</a>
       <a href="/setup" class="{{ 'active' if path == '/setup' }}">Setup &amp; status</a>
+      <a href="/audit" class="{{ 'active' if path == '/audit' }}">Audit log</a>
       <a href="/account" class="{{ 'active' if path == '/account' }}">Account &amp; MFA</a>
       <a href="/logout">Log out</a>
     </div></div>

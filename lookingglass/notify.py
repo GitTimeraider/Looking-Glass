@@ -167,6 +167,10 @@ async def run_once(s: Settings) -> int:
         "data, created_at, last_seen FROM alerts WHERE status <> 'closed' AND last_seen > now() - interval '1 day' "
         "ORDER BY id")
     alerts = [dict(r) for r in rows]
+    # an alert that was already open when a snooze / maintenance window started is not mailed while it lasts
+    from . import snooze
+    snoozed = await snooze.covering(alerts)
+    alerts = [a for a in alerts if a["id"] not in snoozed]
     link = s.mail_link_url or s.public_url
     sent = 0
     now = datetime.now(timezone.utc)
