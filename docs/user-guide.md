@@ -62,6 +62,15 @@ A tour of the pages: overview, alerts, dashboards, infrastructure, devices, even
   "gateway down / degraded right now" misses - see [Detections](detections.md#built-in-detections). The day values
   are kept for two years, independent of *Keep metrics (days)*. Needs gateway monitoring on in OPNsense (*System ›
   Gateways › Configuration* › the gateway › *Disable Gateway Monitoring* unticked).
+  Per gateway: **▲ ▼** set the order, and the menu next to them sets **shown**, **hidden** (still collected and
+  alerted, just not on this page) or **ignored** (no longer collected, and never alerted - also no "gateway down /
+  degraded" - for gateways you do not use; their open alerts are closed). Hidden and ignored gateways are listed at the
+  bottom, where you can show them again.
+  A gateway OPNsense does not measure (monitoring off, or the monitor IP does not answer ping - common for VPN
+  gateways such as a WireGuard tunnel to a VPN provider: the far end often drops ping) shows a note instead of numbers.
+  To measure it, in the OPNsense web UI: *System › Gateways › Configuration* › edit the gateway › untick *Disable
+  Gateway Monitoring* and set *Monitor IP* to a public address that answers ping (e.g. `9.9.9.10`). OPNsense then
+  routes that address through this gateway, so pick one nothing else needs to reach another way.
 * **Infrastructure › UniFi** – tabs *Overview* (APs / switches online, clients over time per SSID and AP, Wi-Fi
   experience, device load and uplink throughput, health), *Devices* (firmware/updates, uptime, clients, radios, uplink;
   click a switch for its ports with PoE, traffic and errors), *Clients* (filter and sort by name, AP / switch port,

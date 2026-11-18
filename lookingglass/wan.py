@@ -96,6 +96,49 @@ async def loop(s: Settings) -> None:
         await asyncio.sleep(900)
 
 
+# ------------------------------------------------------- gateway choices ---
+# WAN quality › per gateway: the order on the page, "hidden" (collected and alerted, not shown) and "ignored" (not
+# collected any more and never alerted: unused gateways). Stored in kv, cached a minute (the poller reads it).
+PREFS_KEY = "wan_gateways"
+_prefs_cache: dict[str, Any] = {"at": 0.0, "value": None}
+
+
+def clean_prefs(payload: dict[str, Any]) -> dict[str, list[str]]:
+    def names(key: str) -> list[str]:
+        v = payload.get(key) or []
+        if not isinstance(v, list) or len(v) > 200:
+            raise ValueError(f"{key}: a list of gateway names")
+        return list(dict.fromkeys(str(x).strip()[:100] for x in v if str(x).strip()))
+    order, hidden, ignored = names("order"), names("hidden"), names("ignored")
+    return {"order": order, "hidden": [g for g in hidden if g not in ignored], "ignored": ignored}
+
+
+async def prefs(fresh: bool = False) -> dict[str, list[str]]:
+    import time
+    if fresh or _prefs_cache["value"] is None or time.monotonic() - _prefs_cache["at"] > 60:
+        v = await db.kv_get(PREFS_KEY) or {}
+        try:
+            _prefs_cache["value"] = clean_prefs(v if isinstance(v, dict) else {})
+        except ValueError:
+            _prefs_cache["value"] = {"order": [], "hidden": [], "ignored": []}
+        _prefs_cache["at"] = time.monotonic()
+    return _prefs_cache["value"]
+
+
+async def save_prefs(payload: dict[str, Any]) -> dict[str, list[str]]:
+    """Store the choices; alerts of gateways that are now ignored are closed."""
+    from .detections import close_alerts
+
+    p = clean_prefs(payload)
+    await db.kv_set(PREFS_KEY, p)
+    _prefs_cache.update(at=0.0, value=None)
+    for rule, prefix in (("gateway_down", "gw:"), ("gateway_degraded", "gwdeg:"), ("wan_latency", "wanlat:"),
+                         ("wan_loss", "wanloss:")):
+        if p["ignored"]:
+            await close_alerts(rule, [prefix + g for g in p["ignored"]], "the gateway is ignored (WAN quality)")
+    return p
+
+
 # ------------------------------------------------------------------ checks ---
 async def last_day(gateway: str | None = None) -> dict[str, dict[str, Any]]:
     """Per gateway: median / p95 latency, average loss and samples over the last 24 hours (from the metrics)."""
@@ -146,7 +189,10 @@ async def check(s: Settings) -> None:
         return
     tz = tz_name(s)
     fine_lat, fine_loss = [], []
+    ignored = set((await prefs())["ignored"])
     for gw, cur in (await last_day()).items():
+        if gw in ignored:
+            continue
         base, n = await baseline(gw, tz)
         v = judge(s, cur, base, n)
         if v["latency"]:
@@ -172,6 +218,12 @@ async def check(s: Settings) -> None:
 
 
 # --------------------------------------------------------------------- page ---
+def monitored(gw: dict[str, Any]) -> bool:
+    """dpinger measures this gateway: it reports a latency or loss (an unmonitored one shows "~")."""
+    from .opnsense import _num, gateway_is_down
+    return _num(gw.get("delay")) is not None or _num(gw.get("loss")) is not None or gateway_is_down(gw)
+
+
 async def overview(s: Settings, days: int = 90) -> dict[str, Any]:
     tz = tz_name(s)
     pool = db.pool()
@@ -186,8 +238,10 @@ async def overview(s: Settings, days: int = 90) -> dict[str, Any]:
         r["availability"] = round(100 * r["up_samples"] / total, 3) if total else None
         per.setdefault(r["gateway"], []).append(r)
     cur = await last_day()
+    pr = await prefs(fresh=True)
+    rank = {g: i for i, g in enumerate(pr["order"])}
     out = []
-    for name in sorted(set(per) | set(now_rows) | set(cur)):
+    for name in sorted(set(per) | set(now_rows) | set(cur), key=lambda g: (rank.get(g, len(rank)), g.lower())):
         base, n = await baseline(name, tz)
         days_ = per.get(name, [])
 
@@ -208,7 +262,9 @@ async def overview(s: Settings, days: int = 90) -> dict[str, Any]:
                                                                 "address", "monitor", "descr") if k in g},
                     "last24": {k: c.get(k) for k in ("p50", "p95", "jitter", "loss", "down", "up_n")} if c else {},
                     "baseline": base, "baseline_days": n, "p7": period(7), "p30": period(30), "p90": period(90),
-                    "days": days_})
-    return {"gateways": out, "timezone": tz,
+                    "days": days_, "hidden": name in pr["hidden"], "ignored": name in pr["ignored"],
+                    # OPNsense measures nothing for it: monitoring off, or the monitor IP does not answer pings
+                    "unmonitored": bool(g) and not monitored(g) and not c.get("n_delay")})
+    return {"gateways": out, "timezone": tz, "prefs": pr,
             "limits": {"factor": s.wan_latency_factor, "min_ms": s.wan_latency_min_ms, "loss": s.wan_loss_pct,
                        "alerts": s.wan_alerts}}
