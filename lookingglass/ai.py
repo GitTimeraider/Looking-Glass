@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from . import db, privacy
+from .app_config import FIELDS, GROUPS
 from .config import Settings, local_time, time_style
 from .reports import CATEGORIES, build_report, category_label, is_all, parse_categories
 
@@ -121,6 +122,12 @@ How to work:
   why an alert was closed or marked false positive, what a device is, what was already done. Take them into account,
   also for similar alerts (same rule and / or address) - e.g. don't report something the user explained as expected,
   unless the data shows it changed.
+- Looking Glass's own settings: before you tell the user to change anything in Looking Glass (a Settings path, a
+  switch, an exclusion), call looking_glass_settings and name only settings, pages and buttons it returns, with their
+  exact path and current value. Never invent a Looking Glass setting or menu path. If what is needed is not a
+  setting (e.g. which paths count as a web attack, which is built into the detection code), say so plainly and offer
+  what does exist: an alert filter (Settings › Alert filters, or Mute similar… on the Alerts page), a snooze, or
+  closing the alert as a false positive.
 - Be concise; use markdown headings, bullet lists and tables.
 
 Current time: {now} UTC = {local}. Timestamps in the data are UTC; when you write times for the user, convert them
@@ -183,6 +190,15 @@ TOOLS: list[dict[str, Any]] = [
                        "never), last and last successful run, schedule, runs and failures in the period, plus recent "
                        "failed or warning runs with their error text.",
         "parameters": {"type": "object", "properties": {"days": {"type": "integer", "description": "period, default 7"}}}}},
+    {"type": "function", "function": {
+        "name": "looking_glass_settings",
+        "description": "Looking Glass's own Settings as they really exist: every tab and setting with its exact menu path, "
+                       "choices and current value, plus the alert filters, snoozes and notification rules that are set up "
+                       "and what can and cannot be configured. Call it before advising any change in Looking Glass. "
+                       "Without search: an overview without descriptions; with search: the matching settings in full.",
+        "parameters": {"type": "object", "properties": {"search": {
+            "type": "string", "description": "optional words to find in a setting's tab, name, key or description, "
+                                             "e.g. 'web', 'scanner', 'block'"}}}}},
     {"type": "function", "function": {
         "name": "traffic_overview",
         "description": "Aggregated statistics (top blocked sources, ports, countries, DNS, web, auth failures, IDS signatures ...) for a period.",
@@ -397,10 +413,81 @@ async def tool_backup_status(days: int = 7) -> Any:
     return out
 
 
-async def run_tool(name: str, args: dict[str, Any]) -> str:
+# Settings tabs as the web UI names them (settings.html); test_ai_settings checks they stay the same
+SETTINGS_TABS = {**{g: label for g, label in GROUPS.items()}, "ingest": "Ingestion & network",
+                 "email": "Email & notifications", "packages": "Unraid servers › Container packages"}
+# settings pages that are not plain fields (managed in their own lists / pages)
+SETTINGS_PAGES = [
+    {"path": "Settings › Alert filters", "what": "Stop alerts you don't want or change their severity. Conditions: "
+     "severity (this and below), rules / sources, text in the alert's title or description, IP address / network, "
+     "source / destination ports; combined with all (AND) or any (OR). Actions: Don't create, Create as closed, or "
+     "Change severity. Only alerts are affected, not logs. The Alerts page's 'Mute similar…' fills one in."},
+    {"path": "Alerts page › Snooze & maintenance (/snooze)", "what": "For a time window, store alerts matching rules "
+     "and / or addresses silently (not shown or mailed)."},
+    {"path": "Alerts page › an alert › Close (with a reason, e.g. false positive), Comment, Mute similar…, Block…",
+     "what": "Per alert. Comments are first-hand knowledge you get with the alerts."},
+    {"path": "Settings › Email & notifications › Notification rules", "what": "Which alerts are mailed to whom."},
+    {"path": "Settings › Unraid servers", "what": "Add Unraid servers, choose arrays / pools and SMART checks."},
+    {"path": "Settings › Threat intel & traps › Threat feeds", "what": "Downloaded known-bad lists; update now."},
+    {"path": "Settings › Data & detection › Backup / Delete collected data", "what": "Backup of Looking Glass, "
+     "deleting collected data."},
+    {"path": "Blocked addresses page (/blocks)", "what": "Addresses blocked in OPNsense through the alias."},
+]
+NOT_CONFIGURABLE = [
+    "Which request paths / patterns count as a web attack or scanner probe (path_traversal, sqli, xss, rce, "
+    "sensitive_file, scanner_probe, scanner_ua) is built into the code; there is no per-path exclusion setting. Use "
+    "the 'Web attacks / scanners from the internet' settings for how much alerts, and an alert filter for specific alerts.",
+    "Detection rules' logic and fixed thresholds are code unless a setting below names them.",
+]
+# values the model gets only as set / not set: credentials, mail addresses, the words privacy mode hides
+_HIDDEN_VALUES = re.compile(r"username|password|smtp_from|mail_to|privacy_terms|privacy_keep|privacy_avoid|ca_pem|"
+                            r"tool_env|registry_user")
+
+
+def _setting_value(f: Any, value: Any) -> Any:
+    if f.kind in ("secret", "image") or _HIDDEN_VALUES.search(f.key):
+        return "(set)" if value else "(empty)"
+    return value
+
+
+async def tool_looking_glass_settings(settings: Settings, search: str | None = None) -> Any:
+    words = [w for w in re.split(r"\s+", (search or "").lower()) if w]
+    tabs: dict[str, list[dict[str, Any]]] = {}
+    for f in FIELDS:
+        tab = SETTINGS_TABS.get(f.group, f.group)
+        if words and not all(w in f"{tab} {f.label} {f.key} {f.help}".lower() for w in words):
+            continue
+        item: dict[str, Any] = {"setting": f.label, "key": f.key,
+                                "value": _setting_value(f, getattr(settings, f.key, None))}
+        if f.choices:
+            item["choices"] = list(f.choices)
+        if words:
+            item["description"] = f.help
+            if f.min is not None or f.max is not None:
+                item["range"] = [f.min, f.max]
+        tabs.setdefault(f"Settings › {tab}", []).append(item)
+    out: dict[str, Any] = {"settings": tabs or "no setting matches - it does not exist in Looking Glass",
+                           "other_pages": SETTINGS_PAGES, "not_configurable": NOT_CONFIGURABLE}
+    if not words:
+        out["tabs"] = [f"Settings › {t}" for t in (*SETTINGS_TABS.values(), "Alert filters")]
+    pool = db.pool()
+    out["alert_filters"] = db.records(await pool.fetch(
+        "SELECT id, name, enabled, action, set_severity, max_severity, rules, contains, text_mode, networks, src_ports, "
+        "dst_ports, match_mode, hits, last_hit FROM alert_filters ORDER BY id"))
+    out["active_snoozes"] = db.records(await pool.fetch(
+        "SELECT id, name, starts_at, ends_at, networks, rules FROM snoozes WHERE ends_at > now() ORDER BY starts_at"))
+    out["notification_rules"] = db.records(await pool.fetch(  # recipients left out: mail addresses
+        "SELECT id, name, enabled, min_severity, rules, contains, networks FROM notification_rules ORDER BY id"))
+    return out
+
+
+async def run_tool(name: str, args: dict[str, Any], settings: Settings | None = None) -> str:
+    if name == "looking_glass_settings":
+        from .config import get_settings
+        args = {**args, "settings": settings or get_settings()}
     fn = {"sql_query": tool_sql_query, "search_events": tool_search_events, "ip_profile": tool_ip_profile,
           "list_alerts": tool_list_alerts, "alert_detail": tool_alert_detail, "event_detail": tool_event_detail, "system_status": tool_system_status, "unifi_status": tool_unifi_status,
-          "backup_status": tool_backup_status,
+          "backup_status": tool_backup_status, "looking_glass_settings": tool_looking_glass_settings,
           "traffic_overview": lambda hours=24: build_report(float(hours))}.get(name)
     if fn is None:
         return json.dumps({"error": f"unknown tool {name}"})
@@ -702,7 +789,7 @@ class Analyst:
                         args = json.loads(c["function"].get("arguments") or "{}")
                     except ValueError:
                         args = {}
-                    result = await run_tool(c["function"]["name"], args if isinstance(args, dict) else {})
+                    result = await run_tool(c["function"]["name"], args if isinstance(args, dict) else {}, self.settings)
                     new.append({"role": "tool", "tool_call_id": c["id"], "content": result})
             # out of tool rounds: ask for a final answer without tools
             final = await self._complete(client, [system, *history, *new, {"role": "user", "content":
