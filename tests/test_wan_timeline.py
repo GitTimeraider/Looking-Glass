@@ -53,6 +53,8 @@ def test_wan_rollup_and_alerts():
         try:
             pool = db.pool()
             await pool.execute("TRUNCATE metrics, wan_daily, alerts")
+            await pool.execute("DELETE FROM snapshots WHERE key = 'gateways'")
+            await pool.execute("DELETE FROM kv WHERE key = 'wan_gateways'")
             now = datetime.now(timezone.utc)
             rows = []
             # 10 days of 10 ms, then the last 24 hours 40 ms with 5 % loss and a short outage
@@ -99,7 +101,9 @@ def test_timeline_merges_alerts_events_and_blocks():
                                "('aa:bb:cc:dd:ee:ff', '192.168.1.20', '{192.168.1.20,192.168.20.5}', 'laptop', "
                                "now() - interval '2 hours')")
             now = datetime.now(timezone.utc)
-            evs = [event(now - timedelta(minutes=30, seconds=i), "unbound", host="t", severity=6, action="query",
+            # the 50 lookups inside one 10-minute step (the timeline's step for 6 hours), whatever the clock says
+            step = now.replace(minute=now.minute - now.minute % 10, second=0, microsecond=0) - timedelta(minutes=30)
+            evs = [event(step + timedelta(minutes=1, seconds=i), "unbound", host="t", severity=6, action="query",
                          src_ip="192.168.1.20", domain="example.com") for i in range(50)]
             evs += [event(now - timedelta(minutes=20), "firewall", host="t", severity=6, action="block", direction="out",
                           src_ip="192.168.20.5", dst_ip="203.0.113.9", dst_port=4444, proto="tcp")]
@@ -172,6 +176,7 @@ def test_ignored_gateways_are_not_collected_or_alerted():
             assert by["OLD"]["ignored"] and by["VPN"]["hidden"] and by["VPN"]["unmonitored"] and not by["WAN"]["unmonitored"]
             await pool.execute("TRUNCATE metrics, alerts")
             await pool.execute("DELETE FROM kv WHERE key = 'wan_gateways'")
+            await pool.execute("DELETE FROM snapshots WHERE key = 'gateways'")
         finally:
             await db.close()
 

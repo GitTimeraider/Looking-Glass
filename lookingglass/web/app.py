@@ -872,6 +872,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     # parts that are not plain tables
     PURGE_PARTS = {
         "backups": "Backups (the run history of all backup tools; Backrest's and Bichon's own history is not touched)",
+        "wan": "WAN quality (latency, loss, jitter and up / down history of every gateway; the other graphs are kept)",
     }
     BACKUP_TABLES = "backup_runs, backup_runs_removed"
 
@@ -891,6 +892,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                                        "pg_total_relation_size('backup_runs_removed')) size, "
                                        "(SELECT count(*) FROM backup_runs) rows")
         out.append({"key": "backups", "label": PURGE_PARTS["backups"], "rows": row["rows"], "size": row["size"]})
+        from .. import wan
+        row = await db.pool().fetchrow(
+            "SELECT pg_size_pretty(pg_total_relation_size('wan_daily')) size, (SELECT count(*) FROM wan_daily) days, "
+            "(SELECT count(*) FROM metrics WHERE name = ANY($1::text[])) samples", list(wan.NAMES))
+        out.append({"key": "wan", "label": PURGE_PARTS["wan"], "rows": row["days"] + row["samples"], "size": row["size"]})
         return out
 
     @app.post("/api/admin/purge")
@@ -909,6 +915,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             await db.pool().execute(f"TRUNCATE {', '.join(tables)}")
         if "backups" in parts:
             await db.pool().execute("DELETE FROM snapshots WHERE key LIKE 'backup_jobs:%'")
+        if "wan" in parts:  # the gateway samples and the day values made from them; WAN alerts close by themselves
+            from .. import wan
+            await db.pool().execute("DELETE FROM metrics WHERE name = ANY($1::text[])", list(wan.NAMES))
+            await db.pool().execute("TRUNCATE wan_daily")
         results.clear()
         if "events" in parts:
             long_periods.forget()
