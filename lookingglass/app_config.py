@@ -91,7 +91,7 @@ FIELDS: list[Field] = [
           min=0, max=240),
     Field("wan_alerts", "opnsense", "WAN quality alerts", "bool",
           "Alert when a gateway's latency over the last 24 hours is far above its own 7-day normal, or it loses "
-          "packets for a day (Infrastructure › WAN quality). Down / degraded right now is alerted separately."),
+          "packets for a day (Infrastructure › OPNsense › WAN quality). Down / degraded right now is alerted separately."),
     Field("wan_latency_factor", "opnsense", "WAN: latency alert at (% of normal)", "int",
           "200 = the 24-hour median latency is twice the median of the 7 days before.", min=110, max=1000),
     Field("wan_latency_min_ms", "opnsense", "WAN: and at least (ms) above normal", "int",

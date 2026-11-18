@@ -1,4 +1,4 @@
-"""WAN quality (Infrastructure › WAN quality): how every OPNsense gateway does over days, weeks and months.
+"""WAN quality (Infrastructure › OPNsense › WAN quality): how every OPNsense gateway does over days, weeks and months.
 
 OPNsense's gateway monitor (dpinger) measures latency, jitter (stddev) and loss; the poller stores them as metrics
 every poll (gateway_delay_ms, gateway_stddev_ms, gateway_loss_pct, gateway_up). Here they are summed up per gateway
@@ -199,7 +199,7 @@ async def check(s: Settings) -> None:
             await raise_alert("wan_latency", Rating("low", "the internet line is much slower than it normally is - a "
                                                            "provider problem, a saturated line or a failing modem"),
                               f"WAN {gw}: latency far above normal", f"wanlat:{gw}", mode="max",
-                              description=f"Gateway {gw}: {v['latency']}. Details: Infrastructure › WAN quality.",
+                              description=f"Gateway {gw}: {v['latency']}. Details: Infrastructure › OPNsense › WAN quality.",
                               data={"gateway": gw, "p50": cur["p50"], "baseline": base})
         else:
             fine_lat.append(f"wanlat:{gw}")
@@ -207,7 +207,7 @@ async def check(s: Settings) -> None:
             await raise_alert("wan_loss", Rating(v["loss_severity"], "packet loss makes everything slow and calls "
                                                                      "break up; often the line or the modem"),
                               f"WAN {gw}: packet loss", f"wanloss:{gw}", mode="max",
-                              description=f"Gateway {gw}: {v['loss']}. Details: Infrastructure › WAN quality.",
+                              description=f"Gateway {gw}: {v['loss']}. Details: Infrastructure › OPNsense › WAN quality.",
                               data={"gateway": gw, "loss": cur["loss"]})
         else:
             fine_loss.append(f"wanloss:{gw}")

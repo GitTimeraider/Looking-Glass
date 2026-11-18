@@ -60,7 +60,6 @@ PAGES = {
     "/timeline": ("timeline.html", "Timeline"),
     "/blocks": ("blocks.html", "Blocked addresses"),
     "/snooze": ("snooze.html", "Snooze & maintenance"),
-    "/wan": ("wan.html", "WAN quality"),
     "/audit": ("audit.html", "Audit log"),
     "/system": ("system.html", "OPNsense"),
     "/devices": ("devices.html", "Devices"),
@@ -236,6 +235,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     @app.get("/hardware")
     async def hardware_moved():  # merged into the OPNsense page
         return RedirectResponse("/system")
+
+    @app.get("/wan")
+    async def wan_moved():  # now a tab of the OPNsense page
+        return RedirectResponse("/system#wan")
 
     @app.get("/reports/{report_id}", response_class=HTMLResponse)
     async def report_page(request: Request, report_id: int):

@@ -13,7 +13,7 @@ outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), 
 offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, gateway down, resources
 (disk/memory/states) high, services stopped for longer than a few minutes (Settings › OPNsense › Service alerts wait), firmware updates available and "logs stopped arriving" (possible tampering).
 
-**WAN quality** (*Settings › OPNsense › WAN …*, page *Infrastructure › WAN quality*): **WAN much slower than normal**
+**WAN quality** (*Settings › OPNsense › WAN …*, page *Infrastructure › OPNsense › WAN quality*): **WAN much slower than normal**
 when the median latency of a gateway over the last 24 hours is at least 200 % of the median of the 7 days before
 *and* at least 15 ms above it (needs 3 days of history), and **WAN packet loss** when its average loss over 24 hours
 is 2 % or more (medium from 10 %). Both close by themselves when the line is fine again.

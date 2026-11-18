@@ -55,8 +55,8 @@ A tour of the pages: overview, alerts, dashboards, infrastructure, devices, even
   *System logs* (OPNsense and Unraid, per host and program).
 * **Infrastructure › OPNsense** – tab *Overview* (hardware & performance): CPU, load, memory/swap/ARC, temperatures, disk usage, states,
   interface throughput/errors, gateway latency/loss, services, ARP/DHCP devices, top processes; tab *System & network*:
-  system, firmware, disks & temperature, gateways, interfaces.
-* **Infrastructure › WAN quality** – every OPNsense gateway over 30 days to 2 years: median / 95th percentile / worst
+  system, firmware, disks & temperature, gateways, interfaces; tab *WAN quality* (below).
+* **Infrastructure › OPNsense › WAN quality** (tab; the old `/wan` address opens it) – every OPNsense gateway over 30 days to 2 years: median / 95th percentile / worst
   latency, jitter, packet loss and availability per day (how often the gateway monitor said *down*), with key figures
   for the last 24 hours, the 7 days before (its "normal") and 30 days. Two alerts watch for slow degradation that
   "gateway down / degraded right now" misses - see [Detections](detections.md#built-in-detections). The day values
