@@ -756,7 +756,7 @@ class DetectionEngine:
                          self.beaconing, self.lateral_movement,
                          self.threat_intel, self.canary, self.arp_spoofing, self.young_domains,
                          self.behavior_profiles, self.behavior_hourly, self.behavior_cleanup,
-                         self.system_health, self.wan_quality, self.log_silence, self.attack_chains, self.risk_scores):
+                         self.system_health, self.wan_quality, self.log_silence, self.source_silence, self.attack_chains, self.risk_scores):
                 try:
                     await rule()
                 except Exception:  # noqa: BLE001
@@ -1710,6 +1710,45 @@ class DetectionEngine:
                 del self._svc_down[name]
         if up:
             await close_alerts("service_stopped", up, "the service is running again")
+
+    # sources whose collection can be switched off in Settings: no "gone quiet" alert while it is off
+    def _source_on(self, source: str) -> bool:
+        st = self.settings
+        return {"nginx": st.nginx_pull, "suricata": st.ids_pull, "crowdsec": st.crowdsec_pull, "qfeeds": st.qfeeds_pull,
+                "unifi": st.unifi_enabled and st.unifi_events}.get(source, True)
+
+    async def source_silence(self) -> None:
+        """A source that sends something nearly every hour (events in 44 of the 48 hours before) has had no event for
+        ``source_silence_hours``: its collection stalled (or runs that far behind - counted by event time). Closes when
+        events come back."""
+        hours = self.settings.source_silence_hours
+        if hours <= 0 or not self._due("source_silence", 300):
+            return
+        pool = db.pool()
+        steady = [r["source"] for r in await pool.fetch(
+            "SELECT source FROM event_rollup WHERE bucket >= date_trunc('hour', now()) - make_interval(hours => $1 + 48) "
+            "AND bucket < date_trunc('hour', now()) - make_interval(hours => $1) AND n > 0 "
+            "GROUP BY source HAVING count(DISTINCT bucket) >= 44", hours) if self._source_on(r["source"])]
+        quiet = {r["s"]: r["last"] for r in await pool.fetch(
+            "SELECT s, (SELECT max(ts) FROM events WHERE source = s) AS last FROM unnest($1::text[]) s "
+            "WHERE NOT EXISTS (SELECT 1 FROM events WHERE source = s AND ts > now() - make_interval(hours => $2))",
+            steady, hours)} if steady else {}
+        for source, last in quiet.items():
+            since = f"the newest is from {last.astimezone(timezone.utc).isoformat(timespec='minutes')}" if last else "none at all"
+            await raise_alert(
+                "source_silence", Rating("medium", "nothing from this source can be detected while it is quiet"),
+                f"No {source} events for {hours}+ hours", f"source_silence:{source}",
+                description=f"'{source}' normally sends events every hour, but Looking Glass has none from the last "
+                            f"{hours} hours ({since}). Its collection stopped or runs that far behind: a log pull that "
+                            "stalled, a plugin or service that stopped, a syslog target that was removed. Setup & status "
+                            "shows whether its pull reports errors or left data out. If you switched this source off on "
+                            "purpose, close this alert (or set Settings › Data › 'Alert when a source goes quiet' to 0).",
+                events={"source": source}, mode="max")
+        open_fps = [r["fingerprint"] for r in await pool.fetch(
+            "SELECT fingerprint FROM alerts WHERE rule = 'source_silence' AND status <> 'closed'")]
+        back = [fp for fp in open_fps if fp.split(":", 1)[1] not in quiet]
+        if back:
+            await close_alerts("source_silence", back, "events from this source arrive again")
 
     async def log_silence(self) -> None:
         if STATS.received:

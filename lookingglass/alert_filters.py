@@ -51,6 +51,7 @@ RULES: dict[str, list[tuple[str, str]]] = {
     "OPNsense system": [("gateway_down", "Gateway down"), ("gateway_degraded", "Gateway degraded"),
                         ("resource", "Resource usage high"), ("service_stopped", "Service stopped"),
                         ("firmware", "Firmware updates available"), ("log_silence", "Logs stopped arriving"),
+                        ("source_silence", "A source went quiet"),
                         ("wan_latency", "WAN much slower than normal"), ("wan_loss", "WAN packet loss")],
     "UniFi": [("unifi_device_offline", "AP / switch offline"), ("unifi_evil_twin", "Foreign AP with your Wi-Fi name"),
               ("unifi_rogue_dhcp", "Rogue DHCP server"), ("unifi_unreachable", "Controller unreachable")],

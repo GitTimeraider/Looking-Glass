@@ -12,6 +12,10 @@ DNS tunneling, DGA domains, NXDOMAIN storms, malicious-domain lookups, internal 
 outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), new devices, UniFi access point / switch
 offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, gateway down, resources
 (disk/memory/states) high, services stopped for longer than a few minutes (Settings › OPNsense › Service alerts wait), firmware updates available and "logs stopped arriving" (possible tampering).
+A **source that went quiet**: a source that normally sends something every hour (firewall, web server, DNS,
+Suricata …) with no new events for 3 hours (Settings › Data › *Alert when a source goes quiet*; 0 = off) - a stalled log
+pull, a stopped plugin, a removed syslog target. Counted by event time, so a pull that runs hours behind counts too.
+Closes by itself when events come back. Sources switched off in Settings never raise it.
 
 **WAN quality** (*Settings › OPNsense › WAN …*, page *Infrastructure › OPNsense › WAN quality*): **WAN much slower than normal**
 when the median latency of a gateway over the last 24 hours is at least 200 % of the median of the 7 days before
