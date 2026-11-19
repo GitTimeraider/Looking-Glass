@@ -4,7 +4,8 @@ Events button lists).
 ``params``: the search's query parameters - source, ip (either side) / src / dst (comma separated IPs or CIDRs),
 action ("a,b" any of, "http_4*" prefix), q (text), min_severity, hours or start / end (ISO), sport / dport (ports and
 ranges: "22, 8000-8100"; ``port`` = dport, from dashboard links), program, host, domain, user, proto, iface,
-direction, country, status (web server: "2xx", "4xx,5xx", "404", "other" = not an HTTP answer), tag (web server
+direction, country, src_scope (``local`` = the source address is a local one - private, CGNAT, loopback,
+link-local - ``public`` = it is any other address; events without a source address match neither), status (web server: "2xx", "4xx,5xx", "404", "other" = not an HTTP answer), tag (web server
 attack / scanner patterns: "any" = suspicious, "none", or "sqli,rce") and ``d_<key>`` for a key inside the event's
 JSON data (``none`` matches an empty value).
 A wrong value raises ValueError with a message for the user.
@@ -16,6 +17,21 @@ import re
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
+
+# "local" source addresses: private (RFC 1918 / ULA), CGNAT (also Tailscale), loopback and link-local
+LOCAL_NETS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+              "fc00::/7", "fe80::/10", "::1/128"]
+SRC_SCOPES = ("local", "public")
+
+
+def src_scope_sql(scope: str, arg: Any) -> str:
+    """The condition for ``src_scope`` (local / public); ``arg`` adds a query argument and returns its $n."""
+    if scope not in SRC_SCOPES:
+        raise ValueError("Source: use local or public")
+    nets_arg = arg(LOCAL_NETS)
+    return (f"src_ip <<= ANY({nets_arg}::inet[])" if scope == "local"
+            else f"(src_ip IS NOT NULL AND NOT src_ip <<= ANY({nets_arg}::inet[]))")
+
 
 SIMPLE = {"program": "program", "host": "host", "domain": "domain", "user": "username", "proto": "proto",
           "iface": "interface", "direction": "direction", "country": "src_country"}
@@ -85,6 +101,8 @@ def build(params: Mapping[str, Any], args: list[Any] | None = None) -> tuple[lis
         if (value := get(key)) and value.strip():
             a = arg(nets(value, label))
             where.append("(" + " OR ".join(f"{c} <<= ANY({a}::inet[])" for c in cols) + ")")
+    if scope := (get("src_scope") or "").strip():
+        where.append(src_scope_sql(scope, arg))
     for key, col, label in (("sport", "src_port", "Source port"), ("dport", "dst_port", "Destination port"),
                             ("port", "dst_port", "Destination port")):
         if (value := get(key)) and value.strip():

@@ -47,10 +47,16 @@ QF_DRILL = {"source": "firewall,qfeeds", "d_blocklist": "Q-Feeds"}
 QF_DIR = f"CASE WHEN {PRIV} THEN 'out' ELSE 'in' END"
 
 
+def log_sql(where: str, limit: int = 150, extra: str = "") -> str:
+    """A live log's query; ``extra``: one more condition (the live log's From filter)."""
+    return (f"SELECT ts, source, action, host(src_ip) src_ip, src_port, host(dst_ip) dst_ip, dst_port, domain, "
+            f"username, src_country, message FROM events WHERE {W} AND {where}{f' AND {extra}' if extra else ''} "
+            f"ORDER BY ts DESC LIMIT {limit}")
+
+
 def log_panel(where: str, title: str = "Live log", limit: int = 150) -> dict[str, Any]:
-    return {"id": "log", "title": title, "type": "log", "span": 3,
-            "sql": f"SELECT ts, source, action, host(src_ip) src_ip, src_port, host(dst_ip) dst_ip, dst_port, domain, "
-                   f"username, src_country, message FROM events WHERE {W} AND {where} ORDER BY ts DESC LIMIT {limit}"}
+    return {"id": "log", "title": title, "type": "log", "span": 3, "where": where, "limit": limit,
+            "sql": log_sql(where, limit)}
 
 
 DASHBOARDS: dict[str, dict[str, Any]] = {
@@ -449,6 +455,25 @@ def sql_order(sql: str, columns: list[str]) -> dict[str, Any] | None:
     return {"k": col, "dir": -1 if desc else 1} if col in columns else None
 
 
+async def run_log(name: str, panel_id: str, hours: float, scope: str) -> list[dict[str, Any]]:
+    """One live log of a dashboard with only local / only non-local (``public``) source addresses: the newest events
+    of that kind, not the unfiltered log with some rows hidden. KeyError: no such live log."""
+    from .event_filter import src_scope_sql
+
+    panel = next((p for p in DASHBOARDS[name]["panels"] if p["id"] == panel_id and p["type"] == "log"), None)
+    if panel is None:
+        raise KeyError(panel_id)
+    args: list[Any] = [hours * 3600]
+
+    def arg(v: Any) -> str:
+        args.append(v)
+        return f"${len(args)}"
+
+    sql = log_sql(panel["where"], panel["limit"], src_scope_sql(scope, arg))
+    async with db.heavy(hours), db.pool().acquire() as conn:
+        return db.records(await conn.fetch(sql, *args))
+
+
 def step_for(hours: float) -> int:
     """Chart bucket size: about 60 bars. From 2 days on whole hours (7 days: 3 h, 30 days: 12 h), so charts can be
     drawn from the hourly counts."""
@@ -482,7 +507,7 @@ async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] 
         sql = panel["sql"]
         fast = hours >= rollup.MIN_HOURS and (name, panel["id"]) in ROLLUP_PANELS
         args = [secs, step] if "$2" in sql else [secs]
-        out = {k: v for k, v in panel.items() if k != "sql"}
+        out = {k: v for k, v in panel.items() if k not in ("sql", "where", "limit")}
         try:
             async with db.heavy(hours), db.pool().acquire() as conn:
                 out["rows"] = db.records(await (rollup.fetch(conn, sql, *args) if fast else conn.fetch(sql, *args)))
