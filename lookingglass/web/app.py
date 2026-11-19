@@ -22,7 +22,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 from starlette.middleware.sessions import SessionMiddleware
 
-from .. import __version__, app_config, auth, crypto, db, event_filter
+from .. import __version__, app_config, audit, auth, crypto, db, event_filter
 from ..ai import Analyst, request_log
 from ..config import Settings
 from . import asset_version
@@ -57,6 +57,10 @@ PAGES = {
     "/": ("dashboard.html", "Overview"),
     "/events": ("events.html", "Events"),
     "/alerts": ("alerts.html", "Alerts"),
+    "/timeline": ("timeline.html", "Timeline"),
+    "/blocks": ("blocks.html", "Blocked addresses"),
+    "/snooze": ("snooze.html", "Snooze & maintenance"),
+    "/audit": ("audit.html", "Audit log"),
     "/system": ("system.html", "OPNsense"),
     "/devices": ("devices.html", "Devices"),
     "/unraid": ("unraid.html", "Unraid"),
@@ -95,7 +99,29 @@ class AuthGuard:
             if answer is not None:
                 await answer(scope, receive, send)
                 return
+            if audit.wanted(scope.get("method", ""), scope.get("path", "")):
+                await self._audited(scope, receive, send)
+                return
         await self.app(scope, receive, send)
+
+    async def _audited(self, scope, receive, send) -> None:
+        """Run a change and add it to the audit log with the status of its answer (also when it failed)."""
+        status: list[int] = []
+
+        async def capture(message) -> None:
+            if message["type"] == "http.response.start":
+                status.append(message["status"])
+            await send(message)
+
+        try:
+            await self.app(scope, receive, capture)
+        finally:
+            state = scope.get("state") or {}
+            user = state.get("user") if isinstance(state.get("user"), dict) else {}
+            client = scope.get("client")
+            detail = state.get("audit") if isinstance(state.get("audit"), dict) else None
+            await audit.record("change", user.get("username"), client[0] if client else None,
+                               f"{scope.get('method')} {scope.get('path')}", status[0] if status else 500, detail)
 
 
 class ClientGone(Exception):
@@ -172,6 +198,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                        max_age=7 * 24 * 3600, same_site="lax", https_only=settings.cookie_secure)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
     register_auth(app, settings, templates)
+    from .extra_routes import register as register_extra
+    register_extra(app, settings)
 
     @app.get("/brand/{key}")
     async def brand_image(key: str):
@@ -207,6 +235,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     @app.get("/hardware")
     async def hardware_moved():  # merged into the OPNsense page
         return RedirectResponse("/system")
+
+    @app.get("/wan")
+    async def wan_moved():  # now a tab of the OPNsense page
+        return RedirectResponse("/system#wan")
 
     @app.get("/reports/{report_id}", response_class=HTMLResponse)
     async def report_page(request: Request, report_id: int):
@@ -459,6 +491,17 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         all_filters = await alert_filters._filters()
         active_ids = {f["id"] for f in all_filters}
         filters = [f for f in all_filters if f["action"] != "severity"]
+        # blocked source addresses (Block…) and snoozes that cover an alert right now
+        from .. import blocking, snooze
+        try:
+            blocked = await blocking.active_for(list({a["src_ip"] for a in out if a.get("src_ip")}))
+        except Exception:  # noqa: BLE001
+            log.exception("alerts list: blocks")
+            blocked = {}
+        snoozed = await snooze.covering(out)
+        for a in out:
+            a["blocked"] = blocked.get(a.get("src_ip"))
+            a["snoozed_now"] = snoozed.get(a["id"])
         comments: dict[int, list[dict[str, Any]]] = {}
         if out:
             for r in await db.pool().fetch("SELECT id, alert_id, created_at, updated_at, author, body FROM alert_comments "
@@ -730,6 +773,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if reason not in (None, "false_positive", "resolved"):
             raise HTTPException(400, "invalid reason")
         comment = _comment_text(payload.get("comment"), required=False)
+        request.state.audit = {"alerts": ids[:50], "status": status, **({"reason": reason} if reason else {})}
         async with db.pool().acquire() as conn, conn.transaction():
             await conn.execute("UPDATE alerts SET status = $1, close_reason = $3 WHERE id = ANY($2::bigint[])",
                                status, ids, reason)
@@ -831,6 +875,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     # parts that are not plain tables
     PURGE_PARTS = {
         "backups": "Backups (the run history of all backup tools; Backrest's and Bichon's own history is not touched)",
+        "wan": "WAN quality (latency, loss, jitter and up / down history of every gateway; the other graphs are kept)",
     }
     BACKUP_TABLES = "backup_runs, backup_runs_removed"
 
@@ -850,6 +895,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                                        "pg_total_relation_size('backup_runs_removed')) size, "
                                        "(SELECT count(*) FROM backup_runs) rows")
         out.append({"key": "backups", "label": PURGE_PARTS["backups"], "rows": row["rows"], "size": row["size"]})
+        from .. import wan
+        row = await db.pool().fetchrow(
+            "SELECT pg_size_pretty(pg_total_relation_size('wan_daily')) size, (SELECT count(*) FROM wan_daily) days, "
+            "(SELECT count(*) FROM metrics WHERE name = ANY($1::text[])) samples", list(wan.NAMES))
+        out.append({"key": "wan", "label": PURGE_PARTS["wan"], "rows": row["days"] + row["samples"], "size": row["size"]})
         return out
 
     @app.post("/api/admin/purge")
@@ -868,12 +918,17 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             await db.pool().execute(f"TRUNCATE {', '.join(tables)}")
         if "backups" in parts:
             await db.pool().execute("DELETE FROM snapshots WHERE key LIKE 'backup_jobs:%'")
+        if "wan" in parts:  # the gateway samples and the day values made from them; WAN alerts close by themselves
+            from .. import wan
+            await db.pool().execute("DELETE FROM metrics WHERE name = ANY($1::text[])", list(wan.NAMES))
+            await db.pool().execute("TRUNCATE wan_daily")
         results.clear()
         if "events" in parts:
             long_periods.forget()
         if "ai_chats" in parts:
             from .. import privacy
             privacy.invalidate()
+        request.state.audit = {"parts": parts}
         log.warning("user %s deleted collected data: %s", user["username"], ", ".join(parts))
         return {"ok": True, "deleted": parts}
 
@@ -1626,11 +1681,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return app_config.public_view(settings)
 
     @app.put("/api/settings")
-    async def put_app_settings(payload: dict = Body(...)):
+    async def put_app_settings(request: Request, payload: dict = Body(...)):
         try:
             changed = await app_config.save(settings, payload.get("values") or {})
         except app_config.SettingsError as exc:
+            request.state.audit = {"error": str(exc)[:300]}
             raise HTTPException(400, str(exc)) from exc
+        request.state.audit = {"changed": changed}  # the names only: values can be secrets
         if changed:  # e.g. a source switched off: pages show it at once, not after the cached results expire
             results.clear()
         return {"ok": True, "changed": changed}

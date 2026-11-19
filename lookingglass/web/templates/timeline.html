@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top">
+  <h1>Timeline</h1>
+  <span class="muted small" id="updated"></span>
+  <div class="seg" id="range"><button data-v="1">1h</button><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button></div>
+</header>
+<div class="filters">
+  <input id="ip" type="search" placeholder="IP address, e.g. 192.168.1.20" style="min-width:220px">
+  <select id="dev"><option value="">…or pick a device</option></select>
+  <button type="button" id="go">Show</button>
+  <span class="muted small" id="span"></span>
+</div>
+<div id="intro" class="card"><p class="small muted" style="margin:0">Everything about one device or address in one list, newest
+  first: its alerts (with your comments), logins, DNS lookups, firewall blocks and passes, web requests, IDS / CrowdSec /
+  Q-Feeds hits, and blocks and snoozes. Repeats within one time step are one line (×count). Open it from an alert
+  (<i>Timeline</i>), from the Devices page, or type an address above.</p></div>
+<div id="out" hidden>
+  <div class="card" id="subject"></div>
+  <div class="card" style="margin-top:14px"><h3>Activity <span class="muted small">events per time step and source</span></h3><div class="chart-box sm"><canvas id="c-act"></canvas></div></div>
+  <div class="chips" id="cats" style="margin-top:14px"></div>
+  <div class="card"><div id="list"></div></div>
+</div>
+{% endblock %}
+{% block head %}
+<style>
+.tl-day { font-weight: 600; margin: 14px 0 4px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+.tl-day:first-child { margin-top: 0; }
+.tl { display: grid; grid-template-columns: 5.2em 7em minmax(0, 1fr); gap: 2px 10px; padding: 5px 0; border-top: 1px solid var(--border); align-items: baseline; }
+.tl .t { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.tl .c { white-space: nowrap; }
+.tl .x { min-width: 0; overflow-wrap: anywhere; }
+.tl .x .small { color: var(--muted); }
+.tl.alert { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.tl .n { font-weight: 600; margin-left: 4px; }
+.chip.off { opacity: .45; }
+.chip input { margin: 0 4px 0 0; }
+@media (max-width: 600px) { .tl { grid-template-columns: 4.6em minmax(0, 1fr); } .tl .c { grid-column: 2; } .tl .x { grid-column: 1 / -1; } }
+</style>
+{% endblock %}
+{% block scripts %}
+<script>
+const CATS = { alert: "Alerts", login: "Logins & VPN", threat: "IDS / CrowdSec / Q-Feeds", firewall: "Firewall", web: "Web server",
+               dns: "DNS", device: "Device", response: "Blocks & snoozes", other: "Other" };
+const CAT_COLOR = { alert: "high", login: "medium", threat: "critical", firewall: "src", web: "src", dns: "src", device: "info", response: "ok", other: "src" };
+let hours = 24, q = LG.qs(), data = null, off = new Set();
+try { off = new Set(JSON.parse(localStorage.getItem("lg-tl-off") || "[]")); } catch (e) {}
+if (q.hours) hours = Number(q.hours) || 24;
+const ipBox = document.getElementById("ip"), devSel = document.getElementById("dev");
+ipBox.value = q.ip || "";
+LG.seg(document.getElementById("range"), String(hours), v => { hours = Number(v); delete q.start; delete q.end; load(); });
+
+function url() {
+  const p = new URLSearchParams();
+  if (q.mac) p.set("mac", q.mac); else if (q.ip) p.set("ip", q.ip);
+  if (q.start) { p.set("start", q.start); if (q.end) p.set("end", q.end); } else p.set("hours", hours);
+  return p;
+}
+async function load() {
+  if (!q.ip && !q.mac) return;
+  history.replaceState(null, "", "/timeline?" + url());
+  const el = document.getElementById("list");
+  el.innerHTML = `<div class="empty"><span class="spinner"></span> Loading…</div>`;
+  document.getElementById("out").hidden = false;
+  document.getElementById("intro").hidden = true;
+  try { data = await LG.api("/api/timeline?" + url(), { signal: LG.latest("tl") }); }
+  catch (e) { if (!LG.aborted(e)) el.innerHTML = `<div class="empty bad">${LG.esc(e.message)}</div>`; return; }
+  document.getElementById("updated").textContent = "updated " + LG.clock();
+  const h = (new Date(data.end) - new Date(data.start)) / 3600000;
+  document.getElementById("span").textContent = `${LG.time(data.start)} – ${LG.time(data.end)} · step ${data.step >= 3600 ? data.step / 3600 + " h" : data.step / 60 + " min"}`;
+  subject();
+  LG.seriesChart("c-act", data.chart.map(r => ({ t: r.t, series: r.source, v: r.n })), { hours: h });
+  chips();
+  render();
+}
+function subject() {
+  const d = data.device, ips = data.ips;
+  const p = new URLSearchParams({ ip: ips.join(","), start: data.start, end: data.end });
+  document.getElementById("subject").innerHTML = `<div class="filters" style="margin:0;align-items:center">
+    <div><b style="font-size:16px">${LG.esc(d && d.hostname || data.ip || "?")}</b>
+      ${d ? `<div class="small muted">${[d.vendor, d.mac, d.interface, d.conn_where && "📍 " + d.conn_where].filter(Boolean).map(LG.esc).join(" · ")}</div>
+             <div class="small muted">first seen ${LG.esc(LG.time(d.first_seen))} · last seen ${LG.ago(d.last_seen)}${d.trusted ? " · trusted" : ""}${d.notes ? " · " + LG.esc(d.notes) : ""}</div>` : `<div class="small muted">no known device for this address</div>`}
+      <div class="small">${ips.map(LG.ip).join(" ")}</div></div>
+    <span style="margin-left:auto"></span>
+    <a class="btn secondary small" href="/events?${new URLSearchParams({ ip: ips[0], start: data.start, end: data.end })}">All events</a>
+    <a class="btn secondary small" href="/snooze?${new URLSearchParams({ ip: ips.join(", "), name: "Maintenance " + (d && d.hostname || data.ip) })}">Snooze its alerts…</a>
+    ${(!d || !d.mac) && !data.items.some(i => i.kind === "block" && i.status === "active") ? `<a class="btn secondary small" href="/blocks?ip=${encodeURIComponent(data.ip)}">Block…</a>` : ""}
+    {% if ai_enabled %}<a class="btn secondary small" href="/ai?q=${encodeURIComponent(`Look at everything ${d && d.hostname ? d.hostname + " (" + ips.join(", ") + ")" : data.ip} did between ${data.start} and ${data.end}: alerts, logins, DNS lookups, connections. Tell me what happened, in order, whether it looks like an attack or a compromise, and what I should do.`)}">Ask AI</a>{% endif %}
+  </div>`;
+}
+function chips() {
+  const el = document.getElementById("cats"), c = data.counts;
+  el.innerHTML = Object.entries(CATS).filter(([k]) => c[k]).map(([k, l]) =>
+    `<label class="chip${off.has(k) ? " off" : ""}"><input type="checkbox" data-cat="${k}" ${off.has(k) ? "" : "checked"}>${LG.esc(l)} <span class="muted">${LG.num(c[k])}</span></label>`).join("") +
+    (data.truncated ? `<span class="small" style="color:var(--warn)">Only the newest ${LG.num(3000)} groups are shown - pick a shorter period.</span>` : "");
+  el.querySelectorAll("[data-cat]").forEach(i => i.onchange = () => {
+    i.checked ? off.delete(i.dataset.cat) : off.add(i.dataset.cat);
+    try { localStorage.setItem("lg-tl-off", JSON.stringify([...off])); } catch (e) {}
+    i.closest(".chip").classList.toggle("off", !i.checked);
+    render();
+  });
+}
+const tl = t => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", ...LG.hc() });
+const day = t => new Date(t).toLocaleDateString(undefined, { weekday: "short", year: "numeric", month: "short", day: "2-digit" });
+const peer = (ip, cc, port) => ip ? `${LG.ip(ip)}${port ? `<span class="mono">:${port}</span>` : ""}${cc ? " " + LG.flag(cc) : ""} <a class="small" href="/timeline?ip=${encodeURIComponent(ip)}&hours=${hours}" title="Timeline of ${LG.esc(ip)}">⤷</a>` : (port ? `port <span class="mono">${port}</span>` : "");
+const ACTION = { block: "blocked", pass: "allowed", drop: "dropped", login_failed: "failed login", login_success: "login", login: "login",
+                 query: "lookup", blocked: "blocked lookup", nxdomain: "NXDOMAIN", alert: "alert", ban: "ban" };
+function text(i) {
+  const n = i.n > 1 ? `<span class="n">×${LG.num(i.n)}</span>` : "";
+  const act = LG.esc(ACTION[i.action] || i.action || "");
+  const dir = i.peer ? (i.outgoing ? "→" : "←") : "";
+  const evUrl = "/events?" + new URLSearchParams({ ip: data.ips[0], source: i.source, start: i.first, end: new Date(new Date(i.last).getTime() + 1000).toISOString() });
+  const sample = i.sample && !["dns"].includes(i.cat) ? `<div class="small">${LG.esc(i.sample)}</div>` : "";
+  const more = ` <a class="small" href="${evUrl}" title="Show these events">events</a>`;
+  switch (i.cat) {
+    case "dns": return `${act} <b>${LG.esc(i.domain || "?")}</b>${n}${more}`;
+    case "firewall": return `${act} ${dir} ${peer(i.peer, i.country, i.dst_port)}${n}${more}`;
+    case "login": return `${act}${i.username ? ` <b>${LG.esc(i.username)}</b>` : ""} ${i.outgoing ? "to" : "from"} ${peer(i.peer, i.country)}${n}${more}${sample}`;
+    default: return `${LG.src(i.source)} ${act} ${dir} ${peer(i.peer, i.country, i.dst_port)}${i.domain ? ` <b>${LG.esc(i.domain)}</b>` : ""}${n}${more}${sample}`;
+  }
+}
+function line(i) {
+  if (i.kind === "alert") {
+    const cm = (i.comments || []).map(c => `<div class="small">💬 <b>${LG.esc(c.author || "?")}</b>: ${LG.esc(c.body)}</div>`).join("");
+    return { cls: "alert", c: LG.sev(i.severity), x: `<a href="/alerts#${i.id}"><b>${LG.esc(i.title)}</b></a>${i.count > 1 ? `<span class="n">×${LG.num(i.count)}</span>` : ""}
+      <span class="pill st-${LG.esc(i.status)}">${LG.esc(i.status)}</span>${i.snoozed ? `<span class="pill">snoozed</span>` : ""}
+      <div class="small">#${i.id} · ${LG.esc(i.rule)} · until ${LG.esc(LG.time(i.last_seen))}${(i.stages || []).length ? " · " + i.stages.map(LG.esc).join(" → ") : ""}</div>${cm}` };
+  }
+  if (i.kind === "block") return { c: `<span class="badge ok">block</span>`, x: `${LG.esc(i.ip)} blocked by ${LG.esc(i.auto ? "automatic blocking" : i.created_by || "?")}${i.reason ? " - " + LG.esc(i.reason) : ""}
+      <div class="small">${i.expires_at ? "until " + LG.esc(LG.time(i.expires_at)) : "until removed"}${i.status !== "active" ? ` · ${LG.esc(i.status)} ${LG.esc(LG.time(i.removed_at))}` : ""} · <a href="/blocks">blocked addresses</a></div>` };
+  if (i.kind === "snooze") return { c: `<span class="badge ok">snooze</span>`, x: `<b>${LG.esc(i.name || "snooze #" + i.id)}</b> until ${LG.esc(LG.time(i.ends_at))} <span class="small">(${LG.num(i.hits)} alerts snoozed) · <a href="/snooze">snoozes</a></span>` };
+  if (i.kind === "first_seen") return { c: `<span class="badge info">device</span>`, x: `<b>first seen on the network</b>` };
+  return { c: `<span class="badge ${CAT_COLOR[i.cat] || "src"}">${LG.esc(i.cat === "threat" ? i.source : i.cat)}</span>`, x: text(i) };
+}
+function render() {
+  const el = document.getElementById("list");
+  const items = data.items.filter(i => !off.has(i.cat));
+  if (!items.length) { el.innerHTML = `<div class="empty">Nothing ${data.items.length ? "with these categories " : ""}in this period.</div>`; return; }
+  let last = "", html = "";
+  for (const i of items.slice(0, 2500)) {
+    const d = day(i.ts);
+    if (d !== last) { html += `<div class="tl-day">${LG.esc(d)}</div>`; last = d; }
+    const l = line(i);
+    const span = i.kind === "events" && i.n > 1 && i.last && tl(i.last) !== tl(i.ts) ? `–${tl(i.last)}` : "";
+    html += `<div class="tl ${l.cls || ""}"><span class="t" title="${LG.esc(LG.time(i.ts))}">${tl(i.ts)}${span}</span><span class="c">${l.c}</span><span class="x">${l.x}</span></div>`;
+  }
+  if (items.length > 2500) html += `<div class="empty">${LG.num(items.length - 2500)} older lines not shown - pick a shorter period.</div>`;
+  LG.keepScroll(el, () => { el.innerHTML = html; });
+}
+function show(ip, mac) {
+  q = { ip, mac };
+  if (ip) ipBox.value = ip;
+  load();
+}
+document.getElementById("go").onclick = () => { if (ipBox.value.trim()) show(ipBox.value.trim()); };
+ipBox.onkeydown = e => { if (e.key === "Enter") document.getElementById("go").click(); };
+devSel.onchange = () => { if (devSel.value) { ipBox.value = ""; show(null, devSel.value); } };
+LG.api("/api/devices?hours=1").then(devs => {
+  devs = devs.filter(d => d.ip).sort((a, b) => (a.hostname || a.ip).localeCompare(b.hostname || b.ip));
+  devSel.innerHTML = `<option value="">…or pick a device</option>` + devs.map(d => `<option value="${LG.esc(d.mac)}">${LG.esc(d.hostname || d.ip)} (${LG.esc(d.ip)})</option>`).join("");
+  if (q.mac) devSel.value = q.mac;
+}).catch(() => {});
+if (q.start) document.querySelectorAll("#range button").forEach(b => b.classList.remove("on"));
+load();
+LG.autoRefresh(() => { if (!q.end && (q.ip || q.mac)) load(); }, () => LG.refreshMs(hours));
+</script>
+{% endblock %}

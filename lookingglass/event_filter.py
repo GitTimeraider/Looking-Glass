@@ -4,7 +4,9 @@ Events button lists).
 ``params``: the search's query parameters - source, ip (either side) / src / dst (comma separated IPs or CIDRs),
 action ("a,b" any of, "http_4*" prefix), q (text), min_severity, hours or start / end (ISO), sport / dport (ports and
 ranges: "22, 8000-8100"; ``port`` = dport, from dashboard links), program, host, domain, user, proto, iface,
-direction, country and ``d_<key>`` for a key inside the event's JSON data (``none`` matches an empty value).
+direction, country, status (web server: "2xx", "4xx,5xx", "404", "other" = not an HTTP answer), tag (web server
+attack / scanner patterns: "any" = suspicious, "none", or "sqli,rce") and ``d_<key>`` for a key inside the event's
+JSON data (``none`` matches an empty value).
 A wrong value raises ValueError with a message for the user.
 """
 from __future__ import annotations
@@ -97,6 +99,33 @@ def build(params: Mapping[str, Any], args: list[Any] | None = None) -> tuple[lis
         conds = ([f"action = ANY({arg(exact)}::text[])"] if exact else []) + \
                 ([f"action LIKE ANY({arg(prefixes)}::text[])"] if prefixes else [])
         where.append("(" + " OR ".join(conds) + ")")
+    if (status := get("status")) and status.strip():  # web server answers: classes (4xx), codes (404), other
+        exact, prefixes, other = [], [], False
+        for part in re.split(r"[,\s]+", status.strip().lower()):
+            if re.fullmatch(r"[1-5]xx", part):
+                prefixes.append(f"http_{part[0]}%")
+            elif re.fullmatch(r"[1-5]\d\d", part):
+                exact.append(f"http_{part}")
+            elif part == "other":
+                other = True
+            elif part:
+                raise ValueError(f"Status: '{part}' is not a status class (2xx, 4xx …) or code (404)")
+        conds = ([f"action = ANY({arg(exact)}::text[])"] if exact else []) + \
+                ([f"action LIKE ANY({arg(prefixes)}::text[])"] if prefixes else []) + \
+                (["coalesce(left(action, 5), '') <> 'http_'"] if other else [])
+        if conds:
+            where.append("(" + " OR ".join(conds) + ")")
+    if (tag := get("tag")) and tag.strip():  # web server attack / scanner patterns (data.tags)
+        tags = "CASE WHEN jsonb_typeof(data->'tags') = 'array' THEN data->'tags' END"
+        if tag == "any":
+            where.append(f"coalesce(jsonb_array_length({tags}), 0) > 0")
+        elif tag == "none":
+            where.append(f"coalesce(jsonb_array_length({tags}), 0) = 0")
+        else:
+            names = [t for t in re.split(r"[,\s]+", tag.strip()) if t]
+            if not all(re.fullmatch(r"[a-z_]{1,40}", t) for t in names):
+                raise ValueError("Pattern: use names like sqli, rce, scanner_probe (or any / none)")
+            where.append(f"coalesce({tags}, '[]'::jsonb) ?| {arg(names)}::text[]")
     if q := get("q"):
         a = arg(f"%{q}%")
         where.append(f"(message ILIKE {a} OR domain ILIKE {a} OR username ILIKE {a} OR program ILIKE {a})")

@@ -88,3 +88,54 @@ def test_events_endpoint_port_filters():
             await db.pool().execute("TRUNCATE events")
             await db.close()
     asyncio.run(main())
+
+
+def test_web_status_and_pattern_filters_validate():
+    where, args = event_filter.build({"status": "4xx, 404, other"})
+    assert any("http_4%" in a for a in args if isinstance(a, list)) and ["http_404"] in args
+    assert any("<> 'http_'" in w for w in where)
+    where, _ = event_filter.build({"tag": "any"})
+    assert any("jsonb_array_length" in w and "> 0" in w for w in where)
+    for bad in ({"status": "6xx"}, {"status": "ok"}, {"tag": "x'); drop"}):
+        with pytest.raises(ValueError):
+            event_filter.build(bad)
+
+
+def test_events_page_lists_every_web_pattern():
+    import re
+    from pathlib import Path
+
+    from lookingglass.parsers.nginx import ATTACK_PATTERNS
+    html = Path("lookingglass/web/templates/events.html").read_text()
+    listed = set(re.findall(r'\("([a-z_]+)", "[^"]+"\)', html))
+    assert listed == {n for n, _ in ATTACK_PATTERNS} | {"scanner_ua"}
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_web_status_and_pattern_filters_on_the_database():
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE events")
+            now = datetime.now(timezone.utc)
+            rows = [("http_200", []), ("http_301", []), ("http_404", ["scanner_probe"]), ("http_403", ["sqli", "scanner_ua"]),
+                    ("http_502", []), ("waf_block", ["rce"])]
+            await db.copy_events([event(now, "nginx", severity=6, action=a, src_ip="203.0.113.5", data={"tags": t})
+                                  for a, t in rows] + [event(now, "nginx", severity=6, action="http_200", data={})])
+
+            async def actions(params):
+                where, args = event_filter.build(params)
+                return sorted(r["action"] for r in await pool.fetch(f"SELECT action FROM events WHERE {' AND '.join(where)}", *args))
+            assert await actions({"status": "4xx"}) == ["http_403", "http_404"]
+            assert await actions({"status": "4xx,5xx"}) == ["http_403", "http_404", "http_502"]
+            assert await actions({"status": "301"}) == ["http_301"]
+            assert await actions({"status": "other"}) == ["waf_block"]
+            assert await actions({"tag": "any"}) == ["http_403", "http_404", "waf_block"]
+            assert await actions({"tag": "none"}) == ["http_200", "http_200", "http_301", "http_502"]
+            assert await actions({"tag": "sqli,rce"}) == ["http_403", "waf_block"]
+            assert await actions({"tag": "any", "status": "2xx"}) == []
+        finally:
+            await db.pool().execute("TRUNCATE events")
+            await db.close()
+    asyncio.run(main())

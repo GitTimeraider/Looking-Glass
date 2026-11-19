@@ -41,7 +41,12 @@ def data() -> dict:
                         {"PID": "999", "USERNAME": "unbound", "THR": "4", "PRI": "20", "NICE": "0", "SIZE": "60M", "RES": "40M", "STATE": "kqread",
                          "C": "0", "TIME": "5:10", "WCPU": "1.10%", "COMMAND": "unbound"}]},
         "routes/gateway/status": {"items": [{"name": "WAN_DHCP", "address": "1.2.3.4", "status": "none", "status_translated": "Online",
-                                             "delay": f"{2 + random.random() * 3:.1f} ms", "loss": "0.0 %", "stddev": "0.2 ms"}]},
+                                             "delay": f"{2 + random.random() * 3:.1f} ms", "loss": "0.0 %", "stddev": "0.2 ms"},
+                                            # a VPN gateway without monitoring (dpinger reports "~"), and an unused one
+                                            {"name": "SURFSHARK_WG", "address": "10.14.0.1", "status": "none", "status_translated": "Online",
+                                             "delay": "~", "loss": "~", "stddev": "~", "monitor": "~"},
+                                            {"name": "WAN_DHCP6", "address": "fe80::1", "status": "down", "status_translated": "Offline",
+                                             "delay": "0.0 ms", "loss": "100.0 %", "stddev": "0.0 ms"}]},
         "diagnostics/interface/getInterfaceStatistics": {"statistics": {
             "[WAN] (igb0) / 00:11:22:33:44:55": {"name": "igb0", "received-bytes": str(int(up * 250_000)), "sent-bytes": str(int(up * 60_000)),
                                                  "received-errors": "0", "send-errors": "0", "dropped-packets": "0"},
@@ -138,6 +143,8 @@ async def wg(status: str):
 
 
 EXPOSURE = {"calls": 0}
+# the block alias of Settings › Blocking (alias_util): an External (advanced) alias named LookingGlass_block
+ALIAS = {"name": "LookingGlass_block", "table": {"192.0.2.250"}}  # .250: put there by hand, never touched
 
 
 @app.api_route("/api/{path:path}", methods=["GET", "POST"])
@@ -149,6 +156,20 @@ async def handler(path: str, request: Request):
         return d[path]
     if path in SEARCH:
         return {"rows": SEARCH[path], "total": len(SEARCH[path])}
+    if path.startswith("firewall/alias/getAliasUUID/"):
+        return {"uuid": "alias-1"} if path.rsplit("/", 1)[1] == ALIAS["name"] else []
+    if path == "firewall/alias/getItem/alias-1":
+        return {"alias": {"enabled": "1", "name": ALIAS["name"], "type": {"host": {"value": "Host(s)", "selected": 0},
+                                                                          "external": {"value": "External (advanced)", "selected": 1}}}}
+    if path.startswith("firewall/alias_util/"):
+        verb, name = path.split("/")[2], path.rsplit("/", 1)[1]
+        if name != ALIAS["name"]:
+            return {"status": "failed"}
+        if verb == "list":
+            return {"total": len(ALIAS["table"]), "rows": [{"ip": ip} for ip in sorted(ALIAS["table"])]}
+        address = (await request.json()).get("address", "")
+        (ALIAS["table"].add if verb == "add" else ALIAS["table"].discard)(address)
+        return {"status": "done"}
     if path == "firewall/filter/search_rule":
         rows = [{"uuid": "r1", "enabled": "1", "action": "pass", "interface": "lan", "source_net": "lan", "destination_net": "any",
                  "description": "Default allow LAN"}]

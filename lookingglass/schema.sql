@@ -441,3 +441,77 @@ CREATE TABLE IF NOT EXISTS period_results (
 
 -- the one-time configd cleanup (removed) marked itself done here; nothing reads these any more
 DELETE FROM kv WHERE key IN ('cleanup:configd_noise', 'cleanup:configd_noise_v2', 'cleanup:configd_below_warning');
+
+-- ------------------------------------------------------------ blocking ---
+-- addresses blocked from the Alerts page or automatically (blocking.py): Looking Glass puts them in one OPNsense
+-- alias (Settings › Blocking) and takes them out again when they expire. This table is the truth: the alias is
+-- re-filled from it (OPNsense empties an External alias on a reboot).
+CREATE TABLE IF NOT EXISTS blocks (
+    id         BIGSERIAL PRIMARY KEY,
+    ip         INET NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ,                       -- NULL = until you remove it
+    created_by TEXT,                              -- user name, or 'auto'
+    reason     TEXT,
+    alert_id   BIGINT,
+    auto       BOOLEAN NOT NULL DEFAULT false,
+    status     TEXT NOT NULL DEFAULT 'active',    -- active | removed | expired
+    removed_at TIMESTAMPTZ,
+    removed_by TEXT,
+    in_alias   BOOLEAN NOT NULL DEFAULT false,    -- confirmed in the OPNsense alias at the last sync
+    synced_at  TIMESTAMPTZ,
+    last_error TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS blocks_active_ip_idx ON blocks (ip) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS blocks_created_idx ON blocks (created_at DESC);
+
+-- -------------------------------------------------- snooze / maintenance ---
+-- time windows in which matching alerts are stored silently (closed, close_reason 'muted', data.snoozed): never
+-- shown as open or mailed, but they still count for attack chains and the risk score. Empty conditions = everything.
+CREATE TABLE IF NOT EXISTS snoozes (
+    id         BIGSERIAL PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_by TEXT,
+    name       TEXT,
+    starts_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ends_at    TIMESTAMPTZ NOT NULL,
+    networks   TEXT,                              -- comma separated IPs / CIDRs, source or destination
+    rules      TEXT[] NOT NULL DEFAULT '{}',
+    hits       BIGINT NOT NULL DEFAULT 0,
+    last_hit   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS snoozes_ends_idx ON snoozes (ends_at);
+
+-- ---------------------------------------------------------- WAN quality ---
+-- per gateway and (local) day: latency, jitter, loss and downtime from the gateway metrics (wan.py). Kept for two
+-- years, independent of the metrics retention, so slow degradation over weeks stays visible.
+CREATE TABLE IF NOT EXISTS wan_daily (
+    gateway      TEXT NOT NULL,
+    day          DATE NOT NULL,
+    samples      INTEGER NOT NULL,
+    delay_avg    DOUBLE PRECISION,
+    delay_p50    DOUBLE PRECISION,
+    delay_p95    DOUBLE PRECISION,
+    delay_max    DOUBLE PRECISION,
+    stddev_avg   DOUBLE PRECISION,
+    loss_avg     DOUBLE PRECISION,
+    loss_max     DOUBLE PRECISION,
+    down_samples INTEGER NOT NULL DEFAULT 0,
+    up_samples   INTEGER NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (gateway, day)
+);
+
+-- ------------------------------------------------------------ audit log ---
+-- who did what in the web UI: logins (also failed ones), every change made through the API, backups downloaded
+CREATE TABLE IF NOT EXISTS audit_log (
+    id       BIGSERIAL PRIMARY KEY,
+    ts       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    username TEXT,
+    ip       TEXT,
+    action   TEXT NOT NULL,                       -- login | login_failed | logout | change | backup ...
+    target   TEXT,                                -- e.g. "PUT /api/settings"
+    status   INTEGER,                             -- HTTP status of a change
+    detail   JSONB
+);
+CREATE INDEX IF NOT EXISTS audit_log_ts_idx ON audit_log (ts DESC);
