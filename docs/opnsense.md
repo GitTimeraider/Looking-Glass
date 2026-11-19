@@ -55,7 +55,9 @@ These steps were checked against the current OPNsense documentation and source (
 4. **nginx plugin** – nothing to do. OPNsense remote syslog never forwards nginx *access* logs; they exist only as files.
    Looking Glass therefore reads access, error and stream logs through the nginx log API (*Settings ›
    OPNsense › Pull nginx access / error logs*; the API user needs the nginx pages): a log with new lines every minute,
-   a quiet one less often (up to every 10 minutes; every read is a configd action on OPNsense). For real-time delivery instead:
+   a quiet one less often (up to every 10 minutes; every read is a configd action on OPNsense). Each read takes exactly
+   the lines added since the previous one; after a log rotation the rest of the old file is read from the rotated copy,
+   so nothing is lost at midnight. For real-time delivery instead:
    **Services › Nginx › Configuration**, tab **Other › SYSLOG Targets**, add a target (Host = Docker host,
    Port = 514, Severity *info*), then select it in each **HTTP(S) › HTTP Server** under *SYSLOG targets*.
    nginx then sends straight to Looking Glass over UDP.

@@ -74,16 +74,16 @@ def data() -> dict:
         "unbound/overview/Rolling/1/1": {str(now - 60): {"192.168.1.33": {"count": 200, "hostname": "laptop.home.lan"}}},
         # os-nginx log API
         "nginx/logs/accesses": [{"id": "srv-1", "server_name": "www.example.com"}, {"id": "perm_ban", "server_name": "Auto-ban"}],
-        "nginx/logs/accesses/srv-1/-1/1/1000": {"lines": [
+        "nginx/logs/accesses/srv-1/-1/0/1000": {"lines": [
             {"remote_ip": "203.0.113.5", "username": "-", "time": "19/Oct/2026:10:00:00 +0200", "status": "404", "size": "153",
              "user_agent": "zgrab/0.x", "request_line": "GET /.env HTTP/1.1", "forwarded_for": "-", "http_referer": "-"},
             {"remote_ip": "198.51.100.20", "username": "-", "time": "19/Oct/2026:10:00:05 +0200", "status": "200", "size": "5120",
-             "user_agent": "Mozilla/5.0", "request_line": "GET / HTTP/2.0", "forwarded_for": "-", "http_referer": "-"}],
+             "user_agent": "Mozilla/5.0", "request_line": "GET / HTTP/2.0", "forwarded_for": "-", "http_referer": "-"}][::-1],  # the API answers newest line first
             "pages": 1, "total": 2, "found": 2, "returned": 2, "query": ""},
         "nginx/logs/errors": [{"id": "global", "server_name": "global"}],
-        "nginx/logs/errors/global/-1/1/1000": {"lines": [{"date": "2026/10/19", "time": "10:00:01", "severity": "error", "number": "12#0",
+        "nginx/logs/errors/global/-1/0/1000": {"lines": [{"date": "2026/10/19", "time": "10:00:01", "severity": "error", "number": "12#0",
             "message": "*5 limiting requests, excess: 10.5 by zone \"one\", client: 198.51.100.7, server: www.example.com, request: \"GET / HTTP/1.1\""}],
-            "pages": 1},
+            "pages": 1, "total": 1},
         "nginx/logs/streamaccesses": [],
         # VPN status (core: Wireguard ServiceController::show, OpenVPN search_sessions, IPsec search_phase1)
         "wireguard/service/show": {"rows": [
