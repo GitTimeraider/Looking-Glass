@@ -69,15 +69,17 @@ class OPNsenseClient:
         r = await self.client.post(f"/api/{path.lstrip('/')}", json=payload or {})
         return self._result(r)
 
-    async def search(self, path: str, rows: int = 500, sort: dict[str, str] | None = None) -> list[dict[str, Any]]:
-        """Call a ``search*`` endpoint (bootgrid style) and return its rows; ``sort`` e.g. {"timestamp": "desc"}."""
+    async def search(self, path: str, rows: int = 500, sort: dict[str, str] | None = None,
+                     page: int = 1) -> list[dict[str, Any]]:
+        """Call a ``search*`` endpoint (bootgrid style) and return its rows; ``sort`` e.g. {"timestamp": "desc"};
+        ``page`` counts from 1."""
         try:
-            res = await self.post(path, {"current": 1, "rowCount": rows, "searchPhrase": "", "sort": sort or {}})
+            res = await self.post(path, {"current": page, "rowCount": rows, "searchPhrase": "", "sort": sort or {}})
         except ApiError as exc:
             if exc.status != 405:
                 raise
             params = {f"sort[{k}]": v for k, v in (sort or {}).items()}
-            res = await self.get(path, current=1, rowCount=rows, **params)
+            res = await self.get(path, current=page, rowCount=rows, **params)
         if isinstance(res, dict):
             return res.get("rows") or []
         return res if isinstance(res, list) else []
@@ -192,7 +194,11 @@ class Poller:
         self._arp_prev: dict[str, str] = {}  # IP -> MAC of the last ARP table (ARP spoofing detection)
         # nginx log pull (poll_nginx): every log read is a configd action on OPNsense, so quiet logs are read less often
         self._nginx_servers: dict[str, tuple[float, list[Any] | None]] = {}  # kind -> (until, servers; None = no such log)
-        self._nginx_logs: dict[str, dict[str, Any]] = {}  # "kind/server id" -> {"digest", "every", "next"}
+        self._nginx_logs: dict[str, dict[str, Any]] = {}  # "kind/server id" -> {"total", "top", "every", "next"}
+        # newest time read per pull that reads newest-first pages (_pull_newest): the next read pages back to it
+        self._newest: dict[str, datetime] = {}
+        self._unbound_newest: float | None = None  # newest query time read from Unbound
+        self._unbound_next = 0.0  # monotonic time of the next Unbound read (sooner while it is busy)
         p = max(15, settings.poll_interval)
         self.jobs: list[tuple[str, int, Callable[[], Awaitable[None]]]] = [
             ("system", p, self.poll_system),
@@ -209,7 +215,8 @@ class Poller:
             ("firewall_log", 15, self.poll_firewall_log),
         ]
         if settings.unbound_query_pull:
-            self.jobs += [("unbound_queries", 60, self.poll_unbound), ("unbound_totals", 300, self.poll_unbound_totals)]
+            # asked every 15 s, read every 60 s - every 15 s while more queries come than one read returns
+            self.jobs += [("unbound_queries", 15, self.poll_unbound), ("unbound_totals", 300, self.poll_unbound_totals)]
         if settings.crowdsec_pull:
             self.jobs.append(("crowdsec", 120, self.poll_crowdsec))
         if settings.qfeeds_pull:
@@ -269,6 +276,51 @@ class Poller:
                 await db.set_snapshot("poller_status", self.status)
             except Exception as exc:  # noqa: BLE001 - database busy, restarting or shutting down: the next run saves it
                 log.debug("saving the poller status failed: %s", exc)
+
+    def dropped(self, job: str, what: str) -> None:
+        """Note that a pull had to leave data out (more than it can read per poll): Setup & status shows it for a day."""
+        st = self.status.setdefault(job, {"ok": None, "last": None, "error": None, "unsupported": False})
+        prev = st.get("dropped") or {}
+        today = prev.get("since") and time.time() - prev["since"] < 86400
+        st["dropped"] = {"what": what, "at": time.time(), "since": prev["since"] if today else time.time(),
+                         "times": (prev.get("times") or 0) + 1 if today else 1}
+        log.warning("poll %s: %s", job, what)
+
+    async def _pull_newest(self, job: str, fetch: Callable[[int], Awaitable[list[Any]]], ts_of: Callable[[Any], datetime | None],
+                           per_page: int, max_pages: int = 10, key: str | None = None) -> tuple[list[Any], bool]:
+        """Rows of an API that answers newest first, page by page (``fetch(page)``, pages from 1), back to the newest
+        time the previous read got; the first read takes one page. Returns (rows, reached_the_end) - the end of the
+        data came before an older row (e.g. a log file that was just rotated). Rows at exactly that time come again
+        (the same uid: stored once)."""
+        key = key or job
+        newest = self._newest.get(key)
+        # a little before it: rows are not always written in time order (Suricata's threads); repeats are stored once
+        anchor = newest - timedelta(seconds=10) if newest else None
+        out: list[Any] = []
+        for page in range(1, (max_pages if anchor else 1) + 1):
+            rows = await fetch(page)
+            older = False
+            for row in rows:
+                ts = ts_of(row)
+                if anchor and ts and ts < anchor:
+                    older = True
+                    break
+                out.append(row)
+                if ts and (newest is None or ts > newest):
+                    newest = ts
+            if older:
+                break
+            if len(rows) < per_page:
+                if newest:
+                    self._newest[key] = newest
+                return out, bool(anchor)
+        else:
+            if anchor:
+                self.dropped(job, f"more than {max_pages * per_page} new entries since the last read - the oldest of "
+                                  "them were skipped")
+        if newest:
+            self._newest[key] = newest
+        return out, False
 
     # ------------------------------------------------------------ system ---
     async def _try(self, path: str, method: str = "get") -> Any:
@@ -587,7 +639,7 @@ class Poller:
             last = STATS.last_by_source.get("firewall", 0)
             if time.time() - last < 300:
                 return  # filterlog arrives through syslog, no need to pull
-        params: dict[str, Any] = {"limit": 1000}
+        params: dict[str, Any] = {"limit": 5000}
         if self._fw_digest:
             params["digest"] = self._fw_digest
         rows = await self.api.get("diagnostics/firewall/log", **params)
@@ -599,6 +651,9 @@ class Poller:
             except (ApiError, httpx.HTTPError, AttributeError):
                 pass
         # newest first
+        if self._fw_digest and len(rows) >= params["limit"]:
+            self.dropped("firewall_log", f"over {params['limit']} firewall log lines in 15 s - the oldest were skipped "
+                                         "(remote syslog delivers every line)")
         self._fw_digest = rows[0].get("__digest__", self._fw_digest)
         for row in rows:
             # OPNsense strips the zone from this time stamp (read_log.py: split('+')[0]) - it is local time
@@ -631,10 +686,28 @@ class Poller:
             names.setdefault(name.split(".")[0], ip)
         return names
 
+    UNBOUND_ROWS = 1000  # what unbound/overview/searchQueries returns: the newest 1000 queries, no paging
+
     async def poll_unbound(self) -> None:
+        """Unbound's newest 1000 queries (the API offers no more and no paging): read every minute, every 15 s while a
+        read brings mostly new queries; a gap (all 1000 newer than the last read) is noted."""
+        if time.monotonic() < self._unbound_next:
+            return
         rows = await self.api.get("unbound/overview/searchQueries")
         if isinstance(rows, dict):
             rows = rows.get("rows", [])
+        rows = rows if isinstance(rows, list) else []
+        times = [t for t in (_num(r.get("time")) for r in rows if isinstance(r, dict)) if t is not None]
+        busy = False
+        if times:
+            prev = self._unbound_newest
+            fresh = sum(1 for t in times if prev is None or t > prev)
+            busy = len(rows) >= self.UNBOUND_ROWS and fresh >= self.UNBOUND_ROWS * 0.7
+            if prev is not None and len(rows) >= self.UNBOUND_ROWS and min(times) > prev:
+                self.dropped("unbound_queries", f"over {self.UNBOUND_ROWS} DNS queries between two reads "
+                                                f"({int(min(times) - prev)} s not covered) - some were not stored")
+            self._unbound_newest = max(times) if prev is None else max(prev, max(times))
+        self._unbound_next = time.monotonic() + (10 if busy else 55)  # the job asks every 15 s
         names = await self._dns_names() if any(r.get("client") and not ip_or_none(str(r.get("client"))) for r in rows or []) else {}
         for row in rows or []:
             ev = unbound_from_api(row, names)
@@ -773,7 +846,7 @@ class Poller:
             if capped or prev_top is None or (anchor is not None and self._nginx_line_id(anchor) == prev_top):
                 new = lines[:min(added, self.NGINX_MAX_LINES)]
                 if capped:
-                    log.warning("nginx %s: %d new lines since the last read, only the newest %d taken", key, added, len(new))
+                    self.dropped("nginx_logs", f"{key}: {added} new lines since the last read, only the newest {len(new)} taken")
                 self._nginx_schedule(key, bool(new), mono, total=total,
                                      top=self._nginx_line_id(new[0]) if new else prev_top)
                 return new
@@ -793,7 +866,8 @@ class Poller:
             else:  # not the file read last time (rotated twice?): its newest lines, stored ones are dropped by uid
                 old = old_lines
         else:
-            log.warning("nginx %s: log rotated, the rotated file could not be read - lines written just before are missing", key)
+            self.dropped("nginx_logs", f"{key}: log rotated and the rotated file could not be read - lines written "
+                                       "just before the rotation are missing")
         log.info("nginx %s: log rotated, %d lines from the new file and %d from the rotated one", key, len(current), len(old))
         new = current + old
         self._nginx_schedule(key, bool(new), mono, total=total,
@@ -858,7 +932,9 @@ class Poller:
 
     async def poll_crowdsec(self) -> None:
         # cscli lists every alert ever: ask for the newest ones (the default order is not guaranteed)
-        alerts = await self.api.search("crowdsec/alerts/search", rows=500, sort={"created": "desc"})
+        alerts, _ = await self._pull_newest(
+            "crowdsec", lambda page: self.api.search("crowdsec/alerts/search", rows=500, sort={"created": "desc"}, page=page),
+            lambda row: parse_iso(str(row.get("created_at") or row.get("created") or "")), 500)
         for row in alerts:
             ev = crowdsec_alert_from_api(row)
             if ev:
@@ -922,7 +998,10 @@ class Poller:
     async def poll_qfeeds(self) -> None:
         # Q-Feeds has no event store: every call re-reads the firewall log files on OPNsense, oldest line of a file
         # first - so ask for the newest rows explicitly (unsorted, the first rows are the oldest of the day)
-        rows = await self.api.search("q_feeds/settings/search_events", rows=1000, sort={"timestamp": "desc"})
+        rows, _ = await self._pull_newest(
+            "qfeeds", lambda page: self.api.search("q_feeds/settings/search_events", rows=1000, sort={"timestamp": "desc"},
+                                                   page=page),
+            lambda row: self.local_ts(str(row.get("timestamp", ""))) if isinstance(row, dict) else None, 1000, max_pages=5)
         # the plugin reads its events from the firewall log: while the log lines of the Q-Feeds rules arrive themselves
         # (tagged data.blocklist, also rules on interface groups the plugin misses) its copies would count them twice
         if time.time() - filterlog.BLOCKLIST_SEEN.get(filterlog.QFEEDS_NAME.lower(), 0) < 3600:
@@ -944,8 +1023,30 @@ class Poller:
             pass
 
     async def poll_ids(self) -> None:
-        res = await self.api.post("ids/service/queryAlerts", {"rowCount": 500, "current": 1, "searchPhrase": ""})
-        for row in (res or {}).get("rows", []) if isinstance(res, dict) else []:
-            ev = ids_from_api(row)
+        """Suricata alerts (core: scripts/suricata/queryAlertLog.py reads eve.json newest line first). Pages back to
+        the newest alert read before; when the current file ends first it was rotated, and the rest is in file 0."""
+        def fetch(fileid: int | None) -> Callable[[int], Awaitable[list[Any]]]:
+            async def page(n: int) -> list[Any]:
+                body: dict[str, Any] = {"rowCount": 500, "current": n, "searchPhrase": ""}
+                if fileid is not None:
+                    body["fileid"] = str(fileid)
+                res = await self.api.post("ids/service/queryAlerts", body)
+                return (res or {}).get("rows", []) if isinstance(res, dict) else []
+            return page
+
+        def ts_of(row: Any) -> datetime | None:
+            return parse_iso(str(row.get("timestamp") or "")) if isinstance(row, dict) else None
+
+        prev = self._newest.get("ids")
+        rows, ended = await self._pull_newest("ids", fetch(None), ts_of, 500)
+        if ended and prev:  # eve.json was rotated since the last read: the rest of it is eve.json.0
+            self._newest["ids:0"] = prev
+            try:
+                older, _ = await self._pull_newest("ids", fetch(0), ts_of, 500, key="ids:0")
+                rows += older
+            except ApiError:
+                pass
+        for row in rows:
+            ev = ids_from_api(row) if isinstance(row, dict) else None
             if ev:
                 self.writer.put(ev)

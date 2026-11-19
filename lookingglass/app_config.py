@@ -400,6 +400,11 @@ FIELDS: list[Field] = [
           "alert limits are kept. A removed device that comes back is a new device again.",
           min=0, max=3650),
     Field("detection_interval", "data", "Detection interval (seconds)", "int", "", min=10, max=3600),
+    Field("source_silence_hours", "data", "Alert when a source goes quiet (hours)", "int", "A source that normally sends "
+          "something every hour (firewall, web server, DNS, Suricata …) but has sent nothing new for this long raises an "
+          "alert - a log pull that stalled, a plugin that stopped, a syslog target that was removed. Counted by the time "
+          "of the events, so a pull running hours behind counts as quiet too. Closes by itself when events come back. "
+          "0 = off.", min=0, max=168),
     Field("long_refresh_7d", "data", "7-day views: count again every (minutes)", "int", "Overview and dashboards over "
           "7 days are counted in the background on this schedule, one at a time, and shown from the stored result "
           "(switching to 7d does not count anything). The refresh button next to the period counts one again at once.",

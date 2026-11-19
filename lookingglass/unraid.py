@@ -207,7 +207,9 @@ class UnraidServerPoller:
         self.failures = 0
         self.seen_notifications: set[str] = set()
         self.log_cursors: dict[str, str] = {}
-        self.syslog_line = 0
+        self.syslog_line = 0  # number of the last /var/log/syslog line read (0 = none yet)
+        self.syslog_anchor: str | None = None  # that line's text: still there = same file, else it was rotated
+        self.syslog_started = False  # read once since the start (a later empty file is read from line 1)
         self.threads = 0  # CPU threads of the server: container CPU % is shown as a share of all of them
         self.last_run: dict[str, float] = {}
         self.awake_history: list[bool] = []  # "every sleep-capable disk spins" for the last array readings
@@ -889,39 +891,97 @@ class UnraidServerPoller:
                 self.log_cursors[c["id"]] = newest
         return out
 
+    SYSLOG_CHUNK = 2000  # lines per logFile query
+    SYSLOG_MAX = 20000  # lines read in one poll; the rest follows on the next one
+
+    async def _syslog_read(self, path: str, start: int, count: int) -> tuple[list[str], int]:
+        """``count`` lines of a file in /var/log from line ``start`` (1-based) and its line count."""
+        q = ("query($path: String!, $lines: Int, $start: Int) { logFile(path: $path, lines: $lines, startLine: $start) "
+             "{ totalLines startLine content } }")
+        d = (await self.client.query(q, {"path": path, "lines": count, "start": start})).get("logFile") or {}
+        lines = (d.get("content") or "").split("\n")
+        if lines and lines[-1] == "":  # a trailing newline is no line
+            lines.pop()
+        return lines[:count], int(d.get("totalLines") or 0)
+
     async def poll_syslog(self) -> None:
-        q = "query($path: String!, $lines: Int, $start: Int) { logFile(path: $path, lines: $lines, startLine: $start) { totalLines startLine content } }"
+        """/var/log/syslog, kept track of by line number. Unraid rotates it to syslog.1: the line read last must still
+        be at its number, otherwise the rest of the old file is read from syslog.1 and the new one from line 1."""
         try:
-            head = await self.client.query(q, {"path": "/var/log/syslog", "lines": 1, "start": None})
+            _, total = await self._syslog_read("/var/log/syslog", 1, 1)
         except GraphQLError as exc:
             self.status["sections"]["syslog"] = {"ok": False, "error": str(exc)}
             return
-        total = int(((head.get("logFile") or {}).get("totalLines")) or 0)
-        if total < self.syslog_line:  # rotated
-            self.syslog_line = 0
-        start = self.syslog_line + 1 if self.syslog_line else max(1, total - 300)
-        if start > total:
-            self.status["sections"]["syslog"] = {"ok": True}
-            return
-        d = await self.client.query(q, {"path": "/var/log/syslog", "lines": min(2000, total - start + 1), "start": start})
-        content = ((d.get("logFile") or {}).get("content")) or ""
+        warning = None
+        budget = [self.SYSLOG_MAX]
+        if not self.syslog_line:
+            # first read since the start: the newest lines (stored ones are dropped by uid); after a rotation to an
+            # empty file: all of it
+            await self._syslog_forward("/var/log/syslog", 1 if self.syslog_started else max(1, total - 300), total, budget)
+            self.syslog_started = True
+        else:
+            first: list[str] = []
+            if total >= self.syslog_line:
+                first, total = await self._syslog_read("/var/log/syslog", self.syslog_line, 1)
+            if first and first[0] == self.syslog_anchor:
+                await self._syslog_forward("/var/log/syslog", self.syslog_line + 1, total, budget)
+            else:  # rotated
+                old_line, old_anchor = self.syslog_line, self.syslog_anchor
+                try:
+                    head, old_total = await self._syslog_read("/var/log/syslog.1", old_line, 1)
+                except GraphQLError:
+                    head, old_total = [], 0
+                if head and head[0] == old_anchor:
+                    if not await self._syslog_forward("/var/log/syslog.1", old_line + 1, old_total, budget):
+                        warning = f"syslog rotated: over {self.SYSLOG_MAX} lines in the old file not read"
+                else:
+                    warning = "syslog rotated and the rotated file (syslog.1) did not hold the line read last - " \
+                              "lines written just before the rotation may be missing"
+                log.info("unraid %s: syslog rotated", self.name)
+                self.syslog_line, self.syslog_anchor = 0, None
+                await self._syslog_forward("/var/log/syslog", 1, total, budget)
+        if warning:
+            log.warning("unraid %s: %s", self.name, warning)
+            self.status["sections"]["syslog"] = {"ok": True, "warning": warning, "warned": time.time()}
+        else:  # a warning stays visible for a day
+            prev = self.status["sections"].get("syslog") or {}
+            keep = prev.get("warning") and time.time() - (prev.get("warned") or 0) < 86400
+            self.status["sections"]["syslog"] = {"ok": True, **({"warning": prev["warning"], "warned": prev["warned"]} if keep else {})}
+
+    async def _syslog_forward(self, path: str, start: int, total: int, budget: list[int]) -> bool:
+        """Read and store lines ``start``..``total`` of ``path`` in chunks, while ``budget`` (lines left this poll)
+        lasts; the position is kept, so the rest follows on the next poll. False = stopped by the budget."""
         tz = _local_tz(self.settings.timezone)
-        for offset, line in enumerate(content.splitlines()):
-            if not line.strip():
-                continue
-            ev = parse_line(f"<14>{line}", sender=self.name, local_tz=tz)
-            if not ev:
-                continue
-            if ev["source"] in ("system",):
-                ev["source"] = "unraid"
-            ev["host"] = self.name
-            ev["uid"] = "usys:" + hashlib.sha1(f"{self.sid}|{start + offset}|{line}".encode()).hexdigest()
-            self.writer.put(ev)
-            if problem := storage.zfs_problem(ev.get("program"), ev.get("message") or ""):
-                await raise_alert("unraid_zfs", "high", f"{self.name}: {problem}", f"unraid_zfs:{self.sid}:{problem}",
-                                  description=(ev.get("message") or "")[:1000])
-        self.syslog_line = start + len(content.splitlines()) - 1
-        self.status["sections"]["syslog"] = {"ok": True}
+        main = path == "/var/log/syslog"
+        while start <= total:
+            if budget[0] <= 0:
+                return False
+            lines, _ = await self._syslog_read(path, start, min(self.SYSLOG_CHUNK, total - start + 1, budget[0]))
+            if not lines:
+                break
+            budget[0] -= len(lines)
+            for offset, line in enumerate(lines):
+                await self._syslog_line(start + offset, line, tz)
+            start += len(lines)
+            if main:
+                self.syslog_line, self.syslog_anchor = start - 1, lines[-1]
+        return True
+
+    async def _syslog_line(self, number: int, line: str, tz: Any) -> None:
+        if not line.strip():
+            return
+        ev = parse_line(f"<14>{line}", sender=self.name, local_tz=tz)
+        if not ev:
+            return
+        if ev["source"] in ("system",):
+            ev["source"] = "unraid"
+        ev["host"] = self.name
+        # line number + text: the same line read again (also from syslog.1, where it keeps its number) is stored once
+        ev["uid"] = "usys:" + hashlib.sha1(f"{self.sid}|{number}|{line}".encode()).hexdigest()
+        self.writer.put(ev)
+        if problem := storage.zfs_problem(ev.get("program"), ev.get("message") or ""):
+            await raise_alert("unraid_zfs", "high", f"{self.name}: {problem}", f"unraid_zfs:{self.sid}:{problem}",
+                              description=(ev.get("message") or "")[:1000])
 
     # ----------------------------------------------------- docker statistics ---
     async def poll_docker_stats(self) -> None:

@@ -433,6 +433,7 @@ class UnifiPoller:
         # per device MAC: [down?, since (time.time()), alert raised?] - an offline alert waits for unifi_offline_grace
         self.dev_down: dict[str, list[Any]] = {}
         self.events_since = time.time() - 3600
+        self._events_seen: dict[str, float] = {}  # uid -> event time (events polled twice in the overlap)
         self.failures = 0
         self.unreachable_since: float | None = None  # first failed poll of the current outage
         self.unreachable_alerted = False
@@ -647,26 +648,55 @@ class UnifiPoller:
                                   data={"bssid": bssid, "essid": essid}, events={"source": "unifi", "q": essid})
         await db.set_snapshot("unifi:rogue", out)
 
+    EVENT_PAGES = 25  # system-log pages (200 events each) read in one poll at most
+    EVENT_OVERLAP = 120  # seconds each poll looks back over the previous one: events the console logs a little late
+    #                      (stored once: their id is the key)
+
     async def poll_events(self, devices: list[dict[str, Any]], clients: list[dict[str, Any]]) -> None:
         c = self.client
         since = self.events_since
+        until = time.time()
         evs: list[dict[str, Any]] = []
+        warning = None
         if c.major >= 11:
-            body = {"pageNumber": 0, "pageSize": 200, "timestampFrom": int(since * 1000), "timestampTo": int(time.time() * 1000)}
+            page, pages = 0, 1
             try:
-                res = await c._req("POST", f"{c.prefix}/v2/api/site/{c.site}/system-log/all", json=body)
-                evs = [event_from_system_log(e, c.site) for e in (res.get("data") or [])]
-                self.status["sections"]["events"] = {"ok": True}
+                while page < pages:
+                    if page >= self.EVENT_PAGES:
+                        warning = f"more than {self.EVENT_PAGES * 200} UniFi events in one poll - the oldest were skipped"
+                        break
+                    body = {"pageNumber": page, "pageSize": 200, "timestampFrom": int(since * 1000), "timestampTo": int(until * 1000)}
+                    res = await c._req("POST", f"{c.prefix}/v2/api/site/{c.site}/system-log/all", json=body)
+                    data = res.get("data") or []
+                    evs += [event_from_system_log(e, c.site) for e in data]
+                    pages = int(res.get("total_page_count") or (page + 2 if len(data) >= 200 else page + 1))
+                    if not data:
+                        break
+                    page += 1
             except UnifiError as exc:
                 self.status["sections"]["events"] = {"ok": False, "error": str(exc)[:200]}
                 return
         else:
-            hours = max(1, int((time.time() - since) / 3600) + 1)
-            raw = await self.section("events", c.legacy_get("stat/event", {"_sort": "-time", "within": hours, "_limit": 1000}))
+            hours = max(1, int((until - since) / 3600) + 1)
+            raw = await self.section("events", c.legacy_get("stat/event", {"_sort": "-time", "within": hours, "_limit": 3000}))
             if raw is None:
                 return
             evs = [event_from_legacy(e, c.site) for e in raw if _ts(e.get("time")).timestamp() >= since - 60]
-        self.events_since = time.time()
+            if len(raw) >= 3000 and len(evs) == len(raw):  # the oldest answer is still in the window: more were there
+                warning = "more than 3000 UniFi events in one poll - the oldest were skipped"
+        self.events_since = until - self.EVENT_OVERLAP
+        # the overlap brings some events again: handled once (stored once anyway; an alert must not count them twice)
+        evs = [e for e in evs if e.get("uid") not in self._events_seen]
+        self._events_seen.update((e["uid"], e["ts"].timestamp()) for e in evs if e.get("uid") and e.get("ts"))
+        cutoff = self.events_since - 600  # older than the next poll's window (with margin): never seen again
+        self._events_seen = {u: t for u, t in self._events_seen.items() if t >= cutoff}
+        if warning:
+            log.warning("UniFi: %s", warning)
+            self.status["sections"]["events"] = {"ok": True, "warning": warning, "warned": time.time()}
+        else:
+            prev = self.status["sections"].get("events") or {}
+            keep = prev.get("warning") and time.time() - (prev.get("warned") or 0) < 86400
+            self.status["sections"]["events"] = {"ok": True, **({"warning": prev["warning"], "warned": prev["warned"]} if keep else {})}
         if not evs:
             return
         macs = {e["data"]["mac"] for e in evs if (e.get("data") or {}).get("mac")}
