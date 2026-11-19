@@ -37,6 +37,9 @@ A tour of the pages: overview, alerts, dashboards, infrastructure, devices, even
   dashboards; other security products get their own group), *Infrastructure* (OPNsense and Unraid hardware & status,
   devices), *Tools* (system logs, reports, AI analyst) and *Admin*.
 * **Dashboards** (one per function, each with KPIs, charts over time, breakdowns, top-N tables and a live log).
+  Each live log has a **Local / Non-local** switch for its *From* address: turn one off and the log shows the newest
+  events from the other kind (not the same rows with some hidden). Local = private (10/8, 172.16/12, 192.168/16,
+  fc00::/7), CGNAT / Tailscale (100.64/10), loopback and link-local. Remembered per log in this browser.
   **Everything is clickable**: a tile, a bar, a pie slice, a moment in a time chart or a table row opens *Event search*
   with exactly those events (same filters and time span):
   *Firewall* (actions, interfaces, protocols, ports, countries, rules, allowed inbound, internal hosts being blocked),
@@ -100,7 +103,8 @@ A tour of the pages: overview, alerts, dashboards, infrastructure, devices, even
   and up / down, e.g. after it was measured wrongly), or only the
   backup run history (what Backrest still lists comes back on its next poll). Settings, credentials, accounts/MFA, Unraid servers and the encryption
   key are kept; needs your password and typing DELETE.
-* **Event search** – search all stored logs by source, IP/CIDR, action, text, severity, time range; filters that come
+* **Event search** – search all stored logs by source, IP/CIDR, local or non-local source address, action, text,
+  severity, time range; filters that come
   from a dashboard click (program, host, domain, user, port, protocol, interface, country, time span, any data field)
   show as removable chips. Click an event for all its fields; **Ask AI** there (with the AI analyst enabled) explains
   that one event - what it means, whether it is normal and what to do - looking at what the same address did around

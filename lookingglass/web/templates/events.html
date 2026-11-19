@@ -18,6 +18,9 @@
   </select>
   <input name="ip" placeholder="any IP (source or destination)" title="IP or CIDR, several: comma separated">
   <input name="src" placeholder="source IP" title="Source IP or CIDR, several: comma separated">
+  <select name="src_scope" title="Local = private (10/8, 172.16/12, 192.168/16, fc00::/7), CGNAT / Tailscale (100.64/10), loopback and link-local addresses">
+    <option value="">any source address</option><option value="local">local sources only</option><option value="public">non-local sources only</option>
+  </select>
   <input name="dst" placeholder="destination IP" title="Destination IP or CIDR, several: comma separated">
   <input name="sport" placeholder="source port" title="Port or range, several: comma separated - e.g. 53, 1024-2048" size="11">
   <input name="dport" placeholder="destination port" title="Port or range, several: comma separated - e.g. 22, 80, 8000-8100" size="13">

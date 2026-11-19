@@ -79,13 +79,65 @@ function build(d) {
     const body = p.type === "stat" ? `<div class="grid kpis" id="p-${p.id}"></div>`
       : ["timeseries", "bar", "hbar", "pie"].includes(p.type) ? `<div class="chart-box${p.type === "hbar" ? " tall" : ""}"><canvas id="c-${p.id}"></canvas></div>`
       : `<div id="p-${p.id}"></div>`;
-    return p.type === "stat" ? `<div class="${span}">${body}</div>` : `<div class="card ${span}"><h3>${LG.esc(p.title || "")}${SORTABLE_CHARTS.includes(p.type) ? `<span data-sort-slot="${p.id}"></span>` : ""}<span class="sp"></span>${p.type === "log" ? `<a class="small" href="/events?source=${encodeURIComponent(d.source || "")}&hours=${hours}">search all →</a>` : ""}</h3>${body}</div>`;
+    return p.type === "stat" ? `<div class="${span}">${body}</div>` : `<div class="card ${span}"><h3>${LG.esc(p.title || "")}${SORTABLE_CHARTS.includes(p.type) ? `<span data-sort-slot="${p.id}"></span>` : ""}<span class="sp"></span>${p.type === "log" ? `${fromToggle(p)}<a class="small" data-search-all="${p.id}" href="${logSearchUrl(d, p)}">search all →</a>` : ""}</h3>${body}</div>`;
   }).join("");
+  box.querySelectorAll("[data-from]").forEach(seg => seg.querySelectorAll("button").forEach(b => b.onclick = () => {
+    const id = seg.dataset.from, cur = logFrom(id);
+    const on = { local: cur !== "public", public: cur !== "local" };
+    if (on[b.dataset.k] && !on[b.dataset.k === "local" ? "public" : "local"]) return;  // the last one stays on
+    on[b.dataset.k] = !on[b.dataset.k];
+    setLogFrom(id, on.local && on.public ? "" : on.local ? "local" : "public");
+    paintFrom(seg);
+    if (lastData) render(lastData, id);
+  }));
   box.querySelectorAll("[data-sort-slot]").forEach(slot => {
     const id = slot.dataset.sortSlot, t = LG.sortToggle(`${NAME}:${id}`, () => { if (lastData) render(lastData, id); });
     chartSort[id] = t.mode; slot.replaceWith(t.el);
   });
+  box.querySelectorAll("[data-from]").forEach(paintFrom);
   built = true;
+}
+
+/* live logs: From filter - local and / or non-local source addresses (per log, remembered in this browser). With one
+   of them off the log shows the newest events of the other kind, asked from the server, not the same rows thinned out */
+const fromKey = id => `lg-logfrom-${NAME}:${id}`;
+function logFrom(id) { try { const v = localStorage.getItem(fromKey(id)); return v === "local" || v === "public" ? v : ""; } catch { return ""; } }
+function setLogFrom(id, v) { try { v ? localStorage.setItem(fromKey(id), v) : localStorage.removeItem(fromKey(id)); } catch { /* not kept */ } }
+function fromToggle(p) {
+  return `<span class="seg mini" data-from="${p.id}" title="Which source addresses (From) this log shows. Local = private, CGNAT / Tailscale, loopback and link-local addresses">` +
+    `<button type="button" data-k="local">Local</button><button type="button" data-k="public">Non-local</button></span>`;
+}
+function paintFrom(seg) {
+  const cur = logFrom(seg.dataset.from);
+  seg.querySelectorAll("button").forEach(b => {
+    const on = b.dataset.k === "local" ? cur !== "public" : cur !== "local";
+    b.classList.toggle("on", on);
+    b.title = on ? (cur ? "The only kind shown - turn the other one on first" : "Click to hide these sources") : "Click to show these sources too";
+  });
+  const a = document.querySelector(`[data-search-all="${seg.dataset.from}"]`);
+  if (a && lastData) a.href = logSearchUrl(lastData, { id: seg.dataset.from });
+}
+function logSearchUrl(d, p) {
+  const scope = logFrom(p.id);
+  return `/events?source=${encodeURIComponent(d.source || "")}&hours=${hours}${scope ? `&src_scope=${scope}` : ""}`;
+}
+function drawLog(p, rows, empty) {
+  LG.table("#p-" + p.id, [{k: "ts", l: "Time", f: LG.time}, {k: "source", l: "Src", f: LG.src}, {k: "action", l: "Action"},
+    {k: "src_ip", l: "From", f: (v, r) => `${LG.ip(v)}${r.src_port ? `<span class="muted">:${r.src_port}</span>` : ""} ${LG.flag(r.src_country)}`},
+    {k: "dst_ip", l: "To", f: (v, r) => `${LG.ip(v)}${r.dst_port ? `<span class="muted">:${r.dst_port}</span>` : ""}`},
+    {k: "message", l: "Message", f: (v, r) => `<span class="mono small msgtxt">${LG.esc(r.domain && !String(v).includes(r.domain) ? r.domain + " · " : "")}${LG.esc(v)}</span>`}], rows, empty || "No events in this period",
+    r => go(p, { hours, source: r.source, ...(r.src_ip ? { ip: r.src_ip } : r.domain ? { domain: r.domain } : { q: (r.message || "").slice(0, 60) }) }));
+}
+async function loadLog(p, scope) {
+  try {
+    const d = await LG.api(`/api/dash/${NAME}/log/${encodeURIComponent(p.id)}?hours=${hours}&src_scope=${scope}`,
+                           { signal: LG.latest("dashlog-" + p.id) });
+    drawLog(p, d.rows || [], `No events from ${scope === "local" ? "local" : "non-local"} addresses in this period`);
+  } catch (e) {
+    if (LG.aborted(e)) return;
+    const el = document.getElementById("p-" + p.id);
+    if (el) el.innerHTML = `<div class="empty">query failed: ${LG.esc(e.message)}</div>`;
+  }
 }
 
 const SORTABLE_CHARTS = ["hbar", "pie"], chartSort = {};
@@ -129,11 +181,9 @@ function render(d, only) {
       LG.table("#p-" + p.id, tableCols(p), rows, "No data", base && (r => go(p, { ...base, ...rowFilters(p, r) })),
                { sortAll: true, order: p.order });
     } else if (p.type === "log") {
-      LG.table("#p-" + p.id, [{k: "ts", l: "Time", f: LG.time}, {k: "source", l: "Src", f: LG.src}, {k: "action", l: "Action"},
-        {k: "src_ip", l: "From", f: (v, r) => `${LG.ip(v)}${r.src_port ? `<span class="muted">:${r.src_port}</span>` : ""} ${LG.flag(r.src_country)}`},
-        {k: "dst_ip", l: "To", f: (v, r) => `${LG.ip(v)}${r.dst_port ? `<span class="muted">:${r.dst_port}</span>` : ""}`},
-        {k: "message", l: "Message", f: (v, r) => `<span class="mono small msgtxt">${LG.esc(r.domain && !String(v).includes(r.domain) ? r.domain + " · " : "")}${LG.esc(v)}</span>`}], rows, "No events in this period",
-        r => go(p, { hours, source: r.source, ...(r.src_ip ? { ip: r.src_ip } : r.domain ? { domain: r.domain } : { q: (r.message || "").slice(0, 60) }) }));
+      const scope = logFrom(p.id);
+      if (scope) loadLog(p, scope);
+      else drawLog(p, rows);
     }
   }
 }

@@ -30,7 +30,7 @@ from ..ingest import STATS
 from .. import rollup
 from ..cache import ResultCache, stale_for, ttl_for
 from ..periods import Periods, is_long, key_of
-from ..dashboards import CS_FW, DASHBOARDS, IDS_DROP, QF, run_dashboard
+from ..dashboards import CS_FW, DASHBOARDS, IDS_DROP, QF, run_dashboard, run_log
 from ..reports import CATEGORIES, build_report, parse_categories, report_mail, report_title, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
 from ..parsers.common import real_name
@@ -1196,6 +1196,18 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             if h != hours and not is_long(h):
                 results.warm(("dash", name, h, tab), lambda h=h: dash_compute(name, h, tab), stale_for(h))
         return {**out, "as_of": as_of, "stale": stale}  # see overview(): "stale" = ask again shortly
+
+    @app.get("/api/dash/{name}/log/{panel}")
+    async def dash_log(name: str, panel: str, hours: float = Query(24, gt=0, le=24 * 90),
+                       src_scope: str = Query(..., pattern="^(local|public)$")):
+        """A live log with its From filter: only local or only non-local source addresses - the newest events of that
+        kind (the unfiltered log may hold only the other kind)."""
+        if name not in DASHBOARDS:
+            raise HTTPException(404)
+        try:
+            return {"rows": await run_log(name, panel, hours, src_scope)}
+        except KeyError:
+            raise HTTPException(404, "no such live log") from None
 
     async def dash_off(hours: float) -> set[str]:
         """Threats sources whose tab and tiles are hidden: switched off in Settings › OPNsense (even with older data in
