@@ -73,8 +73,9 @@ LATERAL_PORTS = {22: "SSH", 23: "telnet", 135: "RPC", 139: "NetBIOS", 445: "SMB"
 # keeps silent (Devices page › settings: stored closed with close_reason 'muted', never shown as open)
 COUNTS_SQL = "(status = 'open' OR close_reason = 'muted')"
 # attack stages for attack_chains (rule names per stage, in order)
-EXTERNAL_CHAIN = [("Recon", {"port_scan", "host_sweep", "web_scanner", "threat_intel_inbound"}),
-                  ("Attack", {"web_attack", "ids", "crowdsec", "brute_force", "password_spray", "distributed_brute_force"}),
+EXTERNAL_CHAIN = [("Recon", {"port_scan", "host_sweep", "web_scanner", "threat_intel_inbound", "honeypot"}),
+                  ("Attack", {"web_attack", "ids", "crowdsec", "fail2ban", "brute_force", "password_spray",
+                              "distributed_brute_force"}),
                   ("Access", {"success_after_failures", "admin_login", "login_new_location"})]
 INTERNAL_CHAIN = [("Threat sign", {"threat_intel_outbound", "dns_malicious_blocked", "dns_dga", "ids",
                                    "threat_feed", "malicious_tls", "young_domain", "crypto_mining", "new_behavior",
@@ -82,14 +83,14 @@ INTERNAL_CHAIN = [("Threat sign", {"threat_intel_outbound", "dns_malicious_block
                   ("Command & control", {"beaconing", "suspicious_outbound_port", "dns_tunnel", "dns_bypass",
                                          "internal_blocked_outbound", "tor"}),
                   ("Spreading / theft", {"port_scan", "host_sweep", "lateral_movement", "password_spray", "brute_force",
-                                         "canary", "arp_spoofing", "volume_spike"})]
+                                         "canary", "honeypot", "arp_spoofing", "volume_spike"})]
 # signs of a compromise on their own: one of these (at any severity) makes a chain worth an alert. The other chain rules
 # are behaviour heuristics (beaconing, traffic spike, new behaviour ...): a chain of only those needs one of them rated
 # high or critical. Not medium: two of them on one device lift each other to medium ("also seen: open alerts"), and a
 # time server checked every few minutes plus a game download is not "a compromised device".
 STRONG_CHAIN_RULES = {"threat_intel_outbound", "dns_malicious_blocked", "dns_dga", "ids", "threat_feed",
                       "malicious_tls", "crypto_mining", "dns_tunnel", "tor", "lateral_movement", "canary", "arp_spoofing",
-                      "port_scan", "host_sweep", "password_spray", "brute_force", "web_attack", "crowdsec",
+                      "port_scan", "host_sweep", "password_spray", "brute_force", "web_attack", "crowdsec", "honeypot",
                       "distributed_brute_force", "success_after_failures", "login_new_location", "threat_intel_inbound"}
 
 # a name from a better source replaces one from a worse source, never the other way round
@@ -743,7 +744,7 @@ class DetectionEngine:
             started = time.monotonic()
             for rule in (self.port_scan, self.host_sweep, self.brute_force, self.success_after_failures,
                          self.external_admin_login, self.web_attacks, self.web_scanner, self.ids_alerts,
-                         self.crowdsec_alerts, self.qfeeds_hits, self.dns_anomalies,
+                         self.crowdsec_alerts, self.fail2ban_bans, self.honeypot_hits, self.qfeeds_hits, self.dns_anomalies,
                          self.internal_blocked_outbound, self.suspicious_outbound_ports, self.config_changes,
                          self.password_spray, self.distributed_brute_force, self.login_location, self.dns_bypass,
                          self.beaconing, self.lateral_movement,
@@ -1008,10 +1009,12 @@ class DetectionEngine:
         last, current = await self._watermark("web_attacks")
         rows = await db.pool().fetch(
             "SELECT src_ip, tag, count(*) AS hits, array_agg(DISTINCT message) AS samples, "
+            "bool_or(program = 'swag') AS swag, bool_or(coalesce(program, '') <> 'swag') AS opnsense, "
             f"count(*) FILTER (WHERE action ~ {self._web_ok_sql()}) AS ok_hits FROM ("
-            "  SELECT src_ip, message, action, jsonb_array_elements_text(data->'tags') AS tag FROM events "
+            "  SELECT src_ip, message, action, program, jsonb_array_elements_text(data->'tags') AS tag FROM events "
             "  WHERE id > $1 AND id <= $2 AND source = 'nginx' AND jsonb_typeof(data->'tags') = 'array' "
-            "  AND jsonb_array_length(data->'tags') > 0) t GROUP BY src_ip, tag", last, current)
+            # honeypot hits have their own rule (honeypot_hits)
+            "  AND jsonb_array_length(data->'tags') > 0) t WHERE tag <> 'honeypot' GROUP BY src_ip, tag", last, current)
         mode = getattr(self.settings, "web_internet_alerts", "through")
         need = max(1, int(getattr(self.settings, "web_through_min", 1) or 1))
         for r in rows:
@@ -1036,7 +1039,8 @@ class DetectionEngine:
             if inside:
                 rating.up("the attacker is INSIDE the network")
             await raise_alert(
-                "web_attack", rating, f"Web attack ({r['tag']}) from {ip} on nginx", f"web:{ip}:{r['tag']}", src_ip=r["src_ip"] and ip, events={"source": "nginx", "ip": r["src_ip"] and ip},
+                "web_attack", rating, f"Web attack ({r['tag']}) from {ip} on "
+                f"{'SWAG' if r['swag'] and not r['opnsense'] else 'nginx'}", f"web:{ip}:{r['tag']}", src_ip=r["src_ip"] and ip, events={"source": "nginx", "ip": r["src_ip"] and ip},
                 count=r["hits"], description=f"{r['hits']} request(s) matching '{r['tag']}'. Samples: {list(r['samples'])[:5]}"
                 + ("" if inside else "\n\nFrom the internet this alerts only when requests got through - "
                    "Settings › Data & detection › Web attacks / scanners from the internet."))
@@ -1179,6 +1183,62 @@ class DetectionEngine:
                               span=(r["first"], r["last"]),
                               description=f"CrowdSec detected behaviour '{r['scenario']}' from {ip}.")
         await self._commit("crowdsec", current)
+
+    async def fail2ban_bans(self) -> None:
+        """fail2ban (SWAG) banned an address. From the internet that is fail2ban doing its job: one alert per address
+        and jail at the level of Settings › SWAG & CrowdSec (default low, or off). An address inside the network is
+        always high - something in your own network attacks a service. Honeypot jails go to honeypot_hits."""
+        last, current = await self._watermark("fail2ban")
+        rows = await db.pool().fetch(
+            "SELECT src_ip, coalesce(data->>'jail', '?') AS jail, count(*) FILTER (WHERE action = 'ban') AS bans, "
+            "count(*) AS hits, min(ts) AS first, max(ts) AS last FROM events WHERE id > $1 AND id <= $2 "
+            "AND source = 'fail2ban' AND action IN ('ban', 'found') AND src_ip IS NOT NULL "
+            "AND coalesce(data->>'honeypot', '') <> 'true' GROUP BY 1, 2 HAVING count(*) FILTER (WHERE action = 'ban') > 0",
+            last, current)
+        level = getattr(self.settings, "swag_fail2ban_alerts", "low")
+        for r in rows:
+            ip = str(r["src_ip"])
+            internal = self.internal(ip)
+            if internal:
+                rating = Rating("high", "an address INSIDE the network was banned - a device of yours attacks a service",
+                                sticky=True)
+            elif level == "off":
+                continue
+            else:
+                rating = Rating(level, "fail2ban banned it - working as intended", sticky=True)
+            await raise_alert("fail2ban", rating, f"fail2ban banned {ip} ({r['jail']}){' (INTERNAL)' if internal else ''}",
+                              f"fail2ban:{ip}:{r['jail']}", src_ip=ip, events={"source": "fail2ban", "ip": ip},
+                              count=r["bans"], span=(r["first"], r["last"]), blocked="fail2ban banned it",
+                              description=f"fail2ban's jail '{r['jail']}' banned {ip} ({r['bans']} ban(s), "
+                                          f"{r['hits'] - r['bans']} matching log line(s) in this batch).")
+        await self._commit("fail2ban", current)
+
+    async def honeypot_hits(self) -> None:
+        """A trap (Settings › SWAG & CrowdSec › Honeypot) was touched. Nobody legitimate goes there: from inside the
+        network that is high (a compromised device or someone looking around), from the internet the set level."""
+        last, current = await self._watermark("honeypot")
+        rows = await db.pool().fetch(
+            "SELECT src_ip, count(*) AS hits, array_agg(DISTINCT coalesce(data->>'path', 'jail ' || (data->>'jail'))) AS what, "
+            "max(data->>'user_agent') AS ua, min(ts) AS first, max(ts) AS last FROM events "
+            "WHERE id > $1 AND id <= $2 AND source IN ('nginx', 'fail2ban') AND data->>'honeypot' = 'true' "
+            "AND src_ip IS NOT NULL AND (source = 'nginx' OR action IN ('found', 'ban')) GROUP BY 1", last, current)
+        level = getattr(self.settings, "swag_honeypot_internet", "low")
+        for r in rows:
+            ip = str(r["src_ip"])
+            internal = self.internal(ip)
+            if internal:
+                rating = Rating("high", "a device INSIDE the network touched a honeypot", sticky=True)
+            elif level == "off":
+                continue
+            else:
+                rating = Rating(level, "an internet address touched a honeypot (scanners do)", sticky=True)
+            what = [w for w in r["what"] or [] if w][:10]
+            await raise_alert("honeypot", rating, f"Honeypot touched by {ip}{' (INTERNAL)' if internal else ''}",
+                              f"honeypot:{ip}", src_ip=ip, events={"source": "nginx,fail2ban", "ip": ip, "d_honeypot": "true"},
+                              count=r["hits"], span=(r["first"], r["last"]),
+                              description=f"{ip} hit the honeypot {r['hits']} time(s): {', '.join(what)}"
+                                          + (f". User agent: {r['ua']}" if r["ua"] else "") + ".")
+        await self._commit("honeypot", current)
 
     async def qfeeds_hits(self) -> None:
         last, current = await self._watermark("qfeeds")

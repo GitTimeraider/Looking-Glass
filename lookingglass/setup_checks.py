@@ -444,6 +444,7 @@ async def run(settings: Settings) -> dict[str, Any]:
               (" Sync history from Bichon." if bi.get("history") == "bichon" else
                " Metrics-only token: the sync history is built from what each poll sees."),
               last_seen=bi.get("last"), link="/backups#bichon")
+    await _swag_checks(settings, check, n, last)
     geo = settings.geoip_db and os.path.exists(settings.geoip_db)
     check("geoip", "GeoIP countries", "ok" if geo else "optional", [], "GeoLite2 database loaded." if geo else
           "No GeoLite2 database - countries stay empty. Optional: download GeoLite2-City.mmdb (free MaxMind account) "
@@ -520,3 +521,84 @@ async def _crowdsec_check(check: Any, own_events: int, own_last: Any) -> None:
                             f"the API every 10 minutes - if this stays, add 'Diagnostics: Firewall sessions' to the API user ({PRIV}).")
     check("crowdsec", "CrowdSec", "action" if todo else "ok", ["API"], " · ".join(lines), todo,
           count=own_events + fw["cs"], last_seen=own_last, link="/dash/threats#crowdsec")
+
+
+async def _swag_checks(settings: Settings, check: Any, n: Any, last: Any) -> None:
+    """SWAG's log folder (swag.py) and CrowdSec's Local API (crowdsec_lapi.py)."""
+    pool = db.pool()
+    st = await db.get_snapshot("swag:status") or {}
+    if not settings.swag_enabled:
+        check("swag", "SWAG (nginx + fail2ban)", "optional", [], "Not configured. Optional: the requests, errors, CrowdSec "
+              "bouncer / WAF blocks and fail2ban bans of a SWAG reverse proxy on your Docker host.",
+              ["Docker host (Unraid: Docker tab › Looking Glass › Edit › Add another Path): container path /swag/log, host "
+               "path SWAG's log folder (e.g. /mnt/user/appdata/swag/log), access mode Read Only. Apply.",
+               "Looking Glass › Settings › SWAG & CrowdSec › SWAG log folder: /swag/log, then Test connection and Save."],
+              link="/settings#swag")
+    elif not st:
+        check("swag", "SWAG (nginx + fail2ban)", "info", ["log files"], "Starting…", link="/dash/swag")
+    elif not st.get("dir_ok"):
+        check("swag", "SWAG (nginx + fail2ban)", "action", ["log files"], st.get("error") or "Log folder not found.",
+              ["Mount SWAG's log folder into the Looking Glass container (read only) at the path entered under Looking "
+               "Glass › Settings › SWAG & CrowdSec, then restart the container."], link="/settings#swag")
+    else:
+        files = st.get("files") or {}
+        bad = {rel: f["error"] for rel, f in files.items() if f.get("error") and f["error"] != "not found"}
+        missing = [rel for rel, f in files.items() if f.get("error") == "not found"]
+        reading = len(files) - len(bad) - len(missing)
+        counts = await pool.fetchrow(
+            "SELECT count(*) FILTER (WHERE source = 'nginx' AND program = 'swag') web, count(*) FILTER (WHERE source = 'fail2ban') f2b, "
+            "count(*) FILTER (WHERE data->>'honeypot' = 'true') hp, max(ts) last FROM events "
+            "WHERE source IN ('nginx', 'fail2ban') AND (program = 'swag' OR source = 'fail2ban') AND ts > now() - interval '24 hours'")
+        todo = [f"{rel}: {err}" for rel, err in bad.items()]
+        todo += [f"{p}: not found in {st.get('dir')} (yet) - check the file name under Looking Glass › Settings › SWAG & CrowdSec"
+                 for p in missing]
+        summary = (f"Reading {reading} log file(s) from {st.get('dir')}: {counts['web']:,} nginx and "
+                   f"{counts['f2b']:,} fail2ban events in 24 hours" + (f", {counts['hp']:,} honeypot hits" if counts["hp"] else "") + ".")
+        if not settings.swag_honeypot.strip():
+            summary += " No honeypot set (optional)."
+        check("swag", "SWAG (nginx + fail2ban)", "action" if bad or not reading else "info" if missing else "ok",
+              ["log files"], summary, todo, count=counts["web"] + counts["f2b"],
+              last_seen=counts["last"].isoformat() if counts["last"] else None, link="/dash/swag")
+
+    cs = await db.get_snapshot("crowdsec_lapi:status") or {}
+    if not settings.crowdsec_lapi_enabled:
+        check("crowdsec_lapi", "CrowdSec (Docker)", "optional", [], "Not configured. Optional: alerts, decisions, AppSec (WAF) "
+              "and metrics of a CrowdSec container, e.g. the one protecting SWAG.",
+              ["Shell on the Docker host: docker exec crowdsec cscli machines add lookingglass --password '<long password>' -f /dev/null",
+               "Optional, same shell: docker exec crowdsec cscli bouncers add lookingglass (copy the key it prints)",
+               "Looking Glass › Settings › SWAG & CrowdSec: Local API URL (http://crowdsec:8080 on the same Docker network), "
+               "machine name + password, optionally the bouncer key; Test connection, Save."], link="/settings#swag")
+        return
+    if not cs:
+        check("crowdsec_lapi", "CrowdSec (Docker)", "info", ["API"], "Connecting…", link="/dash/swag#crowdsec")
+        return
+    parts = cs.get("parts") or {}
+    if cs.get("ok") is False:
+        check("crowdsec_lapi", "CrowdSec (Docker)", "action", ["API"], f"Not working: {cs.get('error')}",
+              ["Looking Glass › Settings › SWAG & CrowdSec: check URL, machine login and bouncer key with Test connection.",
+               "The CrowdSec container must be reachable from Looking Glass: the same Docker network (http://crowdsec:8080) "
+               "or the host's IP address and the port mapped to 8080."], link="/settings#swag")
+        return
+    lines, todo = [], []
+    if "machine" in parts:
+        lines.append(f"alerts via machine login ({parts['machine'].get('alerts', 0)} in the last poll)")
+    else:
+        todo.append("For alerts with all details: a machine login (cscli machines add lookingglass …) under Looking Glass › "
+                    "Settings › SWAG & CrowdSec.")
+    if (b := parts.get("bouncer")) and b.get("ok"):
+        lines.append(f"{b.get('decisions', 0):,} active decisions incl. lists ({', '.join(f'{k} {v:,}' for k, v in (b.get('origins') or {}).items())})")
+    elif b:
+        todo.append(f"Bouncer key: {b.get('error')}")
+    met = await db.get_snapshot("crowdsec_lapi_metrics") or {}
+    if (m := parts.get("metrics")) and m.get("ok"):
+        acq = [a.get("source") for a in met.get("acquisition") or []]
+        lines.append(f"metrics: reads {len(acq)} source(s)")
+        if settings.swag_enabled and not any("access" in str(a) or "nginx" in str(a) for a in acq):
+            todo.append("CrowdSec does not seem to read SWAG's nginx logs: mount SWAG's log folder into the CrowdSec container "
+                        "and add it to its acquis.yaml (labels type: nginx).")
+        if settings.swag_enabled and not met.get("bouncers"):
+            todo.append("No bouncer asked CrowdSec for decisions yet - is SWAG's crowdsec mod set up (CROWDSEC_API_KEY, CROWDSEC_LAPI)?")
+    elif m:
+        todo.append(f"Metrics: {m.get('error')}")
+    check("crowdsec_lapi", "CrowdSec (Docker)", "info" if todo else "ok", ["API"], "Connected: " + "; ".join(lines) + ".",
+          todo, count=n("crowdsec"), last_seen=last("crowdsec"), link="/dash/swag#crowdsec")

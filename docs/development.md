@@ -19,6 +19,9 @@ python tools/mock_backrest.py --port 19898            # fake Backrest     (Setti
                                                       #   --no-auth, --no-summary = Backrest before 1.6)
 python tools/mock_bichon.py --port 15630              # fake Bichon       (Settings › Bichon: http://127.0.0.1:15630, token test-token;
                                                       #   --metrics-only = a "Metrics only" token)
+python tools/mock_crowdsec.py --port 18080            # fake CrowdSec LAPI (Settings › SWAG & CrowdSec: http://127.0.0.1:18080,
+                                                      #   machine lookingglass / test-pass, bouncer key test-bouncer-key,
+                                                      #   metrics http://127.0.0.1:18080/metrics)
 TEST_DATABASE_URL=postgresql://... python -m pytest   # also runs every dashboard query against PostgreSQL
 ```
 

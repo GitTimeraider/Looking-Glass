@@ -41,6 +41,7 @@ GROUPS = {
     "unifi": "UniFi",
     "backrest": "Backrest",
     "bichon": "Bichon",
+    "swag": "SWAG & CrowdSec",
     "email": "Email",
     "ai": "AI analyst",
     "reports": "Reports",
@@ -164,6 +165,51 @@ FIELDS: list[Field] = [
     Field("bichon_offline_grace", "bichon", "Unreachable alert waits (minutes)", "int",
           "A 'Bichon unreachable' alert only once it has not answered for this long (container restarts / updates "
           "stay quiet). 0 = alert right away.", min=0, max=240),
+    # SWAG + CrowdSec in Docker (swag.py, crowdsec_lapi.py)
+    Field("swag_log_dir", "swag", "SWAG log folder (inside this container)", "str",
+          "SWAG's /config/log folder, mounted read-only into the Looking Glass container - e.g. on Unraid add the path "
+          "/mnt/user/appdata/swag/log → /swag/log (read only) to the Looking Glass container, then enter /swag/log. "
+          "Looking Glass reads nginx's access and error logs and fail2ban's log from it (like tail -f; rotated logs are "
+          "followed). Empty = SWAG off.", placeholder="/swag/log"),
+    Field("swag_name", "swag", "Name", "str", "Shown as the host of SWAG's events.", placeholder="SWAG"),
+    Field("swag_access_logs", "swag", "nginx access logs", "list", "Inside the log folder; * as wildcard, e.g. "
+          "nginx/*access.log for per-site logs. Combined format (SWAG's default) or the same with $host in front.",
+          placeholder="nginx/access.log"),
+    Field("swag_error_logs", "swag", "nginx error logs", "list", "Inside the log folder. CrowdSec bouncer blocks "
+          "(SWAG's crowdsec mod) and AppSec / WAF blocks are read from here.", placeholder="nginx/error.log"),
+    Field("swag_fail2ban_log", "swag", "fail2ban log", "str", "Inside the log folder. Empty = no fail2ban.",
+          placeholder="fail2ban/fail2ban.log"),
+    Field("swag_backfill_mb", "swag", "First read: older lines (MB)", "int", "The first time a log is read, this much of "
+          "its end is read too (so the dashboards are not empty). After that only new lines. 0 = only new lines.",
+          min=0, max=500),
+    Field("swag_honeypot", "swag", "Honeypot", "list", "What is a trap - one per line: a request path (/wp-admin, "
+          "/secret* - * as wildcard, without one it is a prefix), a host name (honeypot.example.com), a fail2ban jail "
+          "(jail:nginx-honeypot) or a whole log file (file:nginx/honeypot.log). Jails and log files with 'honeypot' in "
+          "their name count automatically. Nobody legitimate touches a trap: every hit is shown under SWAG › Honeypot.",
+          placeholder="/wp-login.php\njail:nginx-honeypot\nfile:nginx/honeypot.log"),
+    Field("swag_honeypot_internet", "swag", "Honeypot hit from the internet: alert", "choice", "The alert level of a "
+          "honeypot hit from an internet address (one alert per address). From inside your network it is always high.",
+          choices=("off", "info", "low", "medium", "high")),
+    Field("swag_fail2ban_alerts", "swag", "fail2ban ban of an internet address: alert", "choice", "The alert level "
+          "when fail2ban bans an internet address (one alert per address and jail). A ban of an address inside your "
+          "network is always high.", choices=("off", "info", "low", "medium")),
+    Field("crowdsec_lapi_url", "swag", "CrowdSec Local API URL", "str", "The CrowdSec container's API (LAPI), port "
+          "8080 inside the container. On the same Docker network: http://crowdsec:8080 (the container name); else the "
+          "host's IP address and the port you mapped. Empty = off.", placeholder="http://crowdsec:8080"),
+    Field("crowdsec_lapi_machine", "swag", "Machine name (alerts)", "str", "Alerts with all their details need a "
+          "machine login. In a shell on the Docker host: docker exec crowdsec cscli machines add lookingglass "
+          "--password <a long password> -f /dev/null - then enter lookingglass here.", placeholder="lookingglass"),
+    Field("crowdsec_lapi_password", "swag", "Machine password", "secret", "The password of that machine."),
+    Field("crowdsec_lapi_bouncer_key", "swag", "Bouncer API key (decisions)", "secret", "Optional: the active decisions "
+          "including the community blocklist. In a shell on the Docker host: docker exec crowdsec cscli bouncers add "
+          "lookingglass - it prints the key once. Without it the decisions come from the alerts (your own only)."),
+    Field("crowdsec_lapi_metrics_url", "swag", "CrowdSec metrics URL", "str", "Optional: CrowdSec's Prometheus "
+          "endpoint (port 6060) - shows which logs CrowdSec reads and parses and what its AppSec (WAF) blocked. Needs "
+          "prometheus listen_addr: 0.0.0.0 in CrowdSec's config.yaml.", placeholder="http://crowdsec:6060/metrics"),
+    Field("crowdsec_lapi_verify_ssl", "swag", "Verify TLS certificate", "bool",
+          "Only for an https URL. Off accepts a self-signed certificate."),
+    Field("crowdsec_lapi_poll_interval", "swag", "CrowdSec poll interval (seconds)", "int",
+          "How often alerts and decisions are read from the Local API.", min=15, max=3600),
     # email
     Field("smtp_host", "email", "SMTP server", "str", "Mail server that sends the notifications, e.g. smtp.gmail.com, "
           "smtp.office365.com, your provider's server or a local relay.", placeholder="smtp.example.com"),
@@ -458,6 +504,11 @@ SECRET_KEYS = {f.key for f in FIELDS if f.kind == "secret"}
 RESTART_GROUPS = {"backrest": ("backrest_url", "backrest_username", "backrest_password", "backrest_verify_ssl",
                                "backrest_poll_interval"),
                   "bichon": ("bichon_url", "bichon_token", "bichon_verify_ssl", "bichon_poll_interval"),
+                  "swag": ("swag_log_dir", "swag_name", "swag_access_logs", "swag_error_logs", "swag_fail2ban_log",
+                           "swag_backfill_mb", "swag_honeypot"),
+                  "crowdsec_lapi": ("crowdsec_lapi_url", "crowdsec_lapi_machine", "crowdsec_lapi_password",
+                                    "crowdsec_lapi_bouncer_key", "crowdsec_lapi_metrics_url",
+                                    "crowdsec_lapi_verify_ssl", "crowdsec_lapi_poll_interval"),
                   "unifi": ("unifi_url", "unifi_api_key", "unifi_username", "unifi_password", "unifi_site",
                             "unifi_verify_ssl", "unifi_poll_interval", "unifi_events"),
                   "opnsense": ("opnsense_url", "opnsense_api_key", "opnsense_api_secret", "opnsense_verify_ssl",
@@ -537,7 +588,8 @@ def _coerce(f: Field, value: Any) -> Any:
         raise SettingsError(f"{f.label}: at most 60 characters")
     if f.kind == "choice" and v not in f.choices:
         raise SettingsError(f"{f.label}: must be one of {', '.join(f.choices)}")
-    if f.key in ("opnsense_url", "ai_base_url", "backrest_url", "bichon_url") and v and \
+    if f.key in ("opnsense_url", "ai_base_url", "backrest_url", "bichon_url", "crowdsec_lapi_url",
+                 "crowdsec_lapi_metrics_url") and v and \
             not v.startswith(("http://", "https://")):
         raise SettingsError(f"{f.label}: must start with http:// or https://")
     if f.key in ("backrest_url", "bichon_url") and v:

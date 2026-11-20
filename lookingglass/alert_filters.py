@@ -31,6 +31,8 @@ RULES: dict[str, list[tuple[str, str]]] = {
     "Logins & VPN": [("brute_force", "Brute force"), ("success_after_failures", "Login after failed attempts"),
                      ("admin_login", "Login (admin GUI / SSH / API / VPN)"), ("config_change", "Configuration change")],
     "Web server (nginx)": [("web_attack", "Web attack pattern"), ("web_scanner", "Web scanning (many 4xx)")],
+    "SWAG & CrowdSec (Docker)": [("fail2ban", "fail2ban banned an address"), ("honeypot", "Honeypot touched"),
+                                 ("crowdsec_unreachable", "CrowdSec Local API unreachable")],
     "Suricata / CrowdSec / Q-Feeds": [("ids", "Suricata"), ("crowdsec", "CrowdSec"),
                                       ("threat_intel_outbound", "Device contacted a threat-intel address"),
                                       ("threat_intel_inbound", "Threat-intel address probing you")],

@@ -7,7 +7,8 @@ What Looking Glass detects, how alerts are muted, mailed and closed, and how sev
 ## Built-in detections
 
 Port scans, host sweeps, brute force (SSH / web GUI / VPN), **successful login after failures**, logins from public IPs,
-web attacks & scanners, Suricata signatures, CrowdSec alerts, Q-Feeds hits (inbound probing / outbound C2),
+web attacks & scanners (OPNsense nginx and [SWAG](swag.md)), Suricata signatures, CrowdSec alerts (OPNsense plugin and
+CrowdSec in Docker), fail2ban bans, honeypot hits, Q-Feeds hits (inbound probing / outbound C2),
 DNS tunneling, DGA domains, NXDOMAIN storms, malicious-domain lookups, internal hosts blocked to many destinations,
 outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), new devices, UniFi access point / switch
 offline, foreign APs using your Wi-Fi name ("evil twin"), rogue DHCP servers, gateway down, resources
@@ -147,6 +148,8 @@ noise, like a blocked port scan, and raise **no alert** by default. *Settings �
 From inside your network web attacks and scanning always alert.
 | Suricata (IDS) from the internet / from inside | a signature hit is **no alert** on its own, like CrowdSec / Q-Feeds - an internet address only once it triggers 20+ hits in 24h (one alert per address: info when IPS mode dropped every hit, else low); a device inside: high for a priority-1 signature that was NOT dropped, otherwise low and only an alert when other sources confirm it or it repeats (same signature in 6+ separate 10-minute periods, or 5+ different signatures, in 24h). *Settings › OPNsense*: which priorities count and SIDs that never do |
 | CrowdSec decision for an internet IP / for an internal IP | low (it is handled) / high |
+| fail2ban (SWAG) banned an internet IP / an internal IP | *Settings › SWAG & CrowdSec* (default low, or off) / high |
+| Honeypot touched from the internet / from inside | *Settings › SWAG & CrowdSec* (default low, or off) / high |
 | Internal device contacted a threat-intel address (blocked by Q-Feeds) / internet address of a threat list probes you | low - medium / high when other sources confirm it or the device keeps coming back (blocked threat traffic in 6+ separate 10-minute periods, or to 5+ different listed addresses, in 24h - the retries of one page visit count once) / info |
 | DNS tunneling, DGA names, NXDOMAIN storm | high, medium, low - each up when confirmed |
 | Malicious domain looked up (blocked): 1-2 domains / 3+ | medium / high, up when confirmed |
