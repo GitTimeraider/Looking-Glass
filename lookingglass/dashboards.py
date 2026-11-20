@@ -64,10 +64,16 @@ QF_DRILL = {"source": "firewall,qfeeds", "d_blocklist": "Q-Feeds"}
 QF_DIR = f"CASE WHEN {PRIV} THEN 'out' ELSE 'in' END"
 
 
+def log_sql(where: str, limit: int = 150, extra: str = "") -> str:
+    """A live log's query; ``extra``: one more condition (the live log's From filter)."""
+    return (f"SELECT ts, source, action, host(src_ip) src_ip, src_port, host(dst_ip) dst_ip, dst_port, domain, "
+            f"username, src_country, message FROM events WHERE {W} AND {where}{f' AND {extra}' if extra else ''} "
+            f"ORDER BY ts DESC LIMIT {limit}")
+
+
 def log_panel(where: str, title: str = "Live log", limit: int = 150) -> dict[str, Any]:
-    return {"id": "log", "title": title, "type": "log", "span": 3,
-            "sql": f"SELECT ts, source, action, host(src_ip) src_ip, src_port, host(dst_ip) dst_ip, dst_port, domain, "
-                   f"username, src_country, message FROM events WHERE {W} AND {where} ORDER BY ts DESC LIMIT {limit}"}
+    return {"id": "log", "title": title, "type": "log", "span": 3, "where": where, "limit": limit,
+            "sql": log_sql(where, limit)}
 
 
 DASHBOARDS: dict[str, dict[str, Any]] = {
@@ -153,19 +159,21 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                 f"count(*) FILTER (WHERE jsonb_array_length(coalesce(data->'tags', '[]'::jsonb)) > 0) AS \"Suspicious\", "
                 f"count(DISTINCT src_ip) AS \"Clients\", count(*) FILTER (WHERE action IN ('waf_block', 'bouncer_block', 'rate_limited')) AS \"WAF / bouncer / rate limited\" "
                 f"FROM events WHERE source = 'nginx' AND {W}",
-             "drill": {"tiles": {"4xx": {"action": "http_4*"}, "5xx": {"action": "http_5*"}, "WAF / bouncer / rate limited": {"action": "waf_block,bouncer_block,rate_limited"}}}},
+             "drill": {"tiles": {"4xx": {"status": "4xx"}, "5xx": {"status": "5xx"}, "Suspicious": {"tag": "any"},
+                                 "WAF / bouncer / rate limited": {"action": "waf_block,bouncer_block,rate_limited"}}}},
             {"id": "status", "title": "Responses by class", "type": "timeseries", "span": 2,
+             "drill": {"series": "status"},
              "sql": f"SELECT {B} t, CASE WHEN action ~ '^http_2' THEN '2xx' WHEN action ~ '^http_3' THEN '3xx' WHEN action ~ '^http_4' THEN '4xx' WHEN action ~ '^http_5' THEN '5xx' ELSE coalesce(action, 'other') END series, count(*) v FROM events WHERE source = 'nginx' AND {W} GROUP BY 1, 2 ORDER BY 1"},
             {"id": "codes", "title": "Status codes", "type": "pie",
              "sql": f"SELECT replace(coalesce(action, '?'), 'http_', '') label, count(*) v, action f_action FROM events WHERE source = 'nginx' AND {W} GROUP BY 1, 3 ORDER BY 2 DESC LIMIT 10"},
-            {"id": "attacks", "title": "Attack patterns over time", "type": "timeseries", "span": 2,
+            {"id": "attacks", "title": "Attack patterns over time", "type": "timeseries", "span": 2, "drill": {"series": "tag"},
              "sql": f"SELECT {B} t, tag series, count(*) v FROM (SELECT ts, jsonb_array_elements_text(data->'tags') tag FROM events WHERE source = 'nginx' AND {W} AND jsonb_typeof(data->'tags') = 'array') x GROUP BY 1, 2 ORDER BY 1"},
             {"id": "vhosts", "title": "Virtual hosts", "type": "pie", "drill": {"by": "domain"},
              "sql": f"SELECT coalesce(domain, '?') label, count(*) v FROM events WHERE source = 'nginx' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 8"},
             {"id": "paths", "title": "Top paths", "type": "table", "cols": [["path", "Path"], ["n", "Requests", "num"], ["err", "Errors", "num"]],
              "sql": f"SELECT left(data->>'path', 120) path, count(*) n, count(*) FILTER (WHERE action ~ '^http_[45]') err, max(data->>'path') o_d_path FROM events WHERE source = 'nginx' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 25"},
             {"id": "404", "title": "Top 4xx paths (probing)", "type": "table", "cols": [["path", "Path"], ["ips", "IPs", "num"], ["n", "Hits", "num"]],
-             "drill": {"base": {"action": "http_4*"}},
+             "drill": {"base": {"status": "4xx"}},
              "sql": f"SELECT left(data->>'path', 120) path, count(DISTINCT src_ip) ips, count(*) n, max(data->>'path') o_d_path FROM events WHERE source = 'nginx' AND action ~ '^http_4' AND {W} GROUP BY 1 ORDER BY 3 DESC LIMIT 25"},
             {"id": "clients", "title": "Top clients", "type": "table", "drill": {"by": {"ip": "ip"}}, "cols": [["ip", "Client", "ip"], ["country", "", "flag"], ["err", "Errors", "num"], ["sus", "Suspicious", "num"], ["n", "Requests", "num"]],
              "sql": f"SELECT host(src_ip) ip, max(src_country) country, count(*) FILTER (WHERE action ~ '^http_[45]') err, count(*) FILTER (WHERE jsonb_array_length(coalesce(data->'tags', '[]'::jsonb)) > 0) sus, count(*) n FROM events WHERE source = 'nginx' AND src_ip IS NOT NULL AND {W} GROUP BY 1 ORDER BY 5 DESC LIMIT 25"},
@@ -193,7 +201,8 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                 f"count(*) FILTER (WHERE action = 'waf_block') AS \"WAF (AppSec) blocks\", "
                 f"count(*) FILTER (WHERE action = 'rate_limited') AS \"Rate limited\" "
                 f"FROM events WHERE {SW} AND {W}",
-             "drill": {"base": SW_DRILL, "tiles": {"4xx": {"action": "http_4*"}, "5xx": {"action": "http_5*"},
+             "drill": {"base": SW_DRILL, "tiles": {"4xx": {"status": "4xx"}, "5xx": {"status": "5xx"},
+                                                   "Attack / scanner requests": {"tag": "any"},
                                                    "CrowdSec bouncer blocks": {"action": "bouncer_block"},
                                                    "WAF (AppSec) blocks": {"action": "waf_block"},
                                                    "Rate limited": {"action": "rate_limited"}}}},
@@ -646,6 +655,25 @@ def sql_order(sql: str, columns: list[str]) -> dict[str, Any] | None:
     return {"k": col, "dir": -1 if desc else 1} if col in columns else None
 
 
+async def run_log(name: str, panel_id: str, hours: float, scope: str) -> list[dict[str, Any]]:
+    """One live log of a dashboard with only local / only non-local (``public``) source addresses: the newest events
+    of that kind, not the unfiltered log with some rows hidden. KeyError: no such live log."""
+    from .event_filter import src_scope_sql
+
+    panel = next((p for p in DASHBOARDS[name]["panels"] if p["id"] == panel_id and p["type"] == "log"), None)
+    if panel is None:
+        raise KeyError(panel_id)
+    args: list[Any] = [hours * 3600]
+
+    def arg(v: Any) -> str:
+        args.append(v)
+        return f"${len(args)}"
+
+    sql = log_sql(panel["where"], panel["limit"], src_scope_sql(scope, arg))
+    async with db.heavy(hours), db.pool().acquire() as conn:
+        return db.records(await conn.fetch(sql, *args))
+
+
 def step_for(hours: float) -> int:
     """Chart bucket size: about 60 bars. From 2 days on whole hours (7 days: 3 h, 30 days: 12 h), so charts can be
     drawn from the hourly counts."""
@@ -679,7 +707,7 @@ async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] 
         sql = panel["sql"]
         fast = hours >= rollup.MIN_HOURS and (name, panel["id"]) in ROLLUP_PANELS
         args = [secs, step] if "$2" in sql else [secs]
-        out = {k: v for k, v in panel.items() if k != "sql"}
+        out = {k: v for k, v in panel.items() if k not in ("sql", "where", "limit")}
         try:
             async with db.heavy(hours), db.pool().acquire() as conn:
                 out["rows"] = db.records(await (rollup.fetch(conn, sql, *args) if fast else conn.fetch(sql, *args)))

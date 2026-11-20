@@ -9,7 +9,8 @@ The API user Looking Glass reads with, and what to set in OPNsense so all logs a
 1. Open **System › Access › Users**, click **+** and create a user, e.g. `lookingglass` (any random password).
 2. Give it privileges. Simplest: tick **GUI - All pages**. Stricter: only the *Diagnostics*, *Reporting*, *Firmware*,
    *Gateways*, *Unbound*, *CrowdSec*, *Q-Feeds* and *Intrusion Detection* pages (Looking Glass's *Setup & Status* page
-   shows every API call that is refused, so you can add the missing privilege later).
+   shows every API call that is refused, so you can add the missing privilege later). For **blocking from Looking
+   Glass** add *Firewall: Alias: Edit* - see [Blocking addresses](user-guide.md#blocking-addresses-in-opnsense).
 3. Save, open the user again, scroll to **API keys** and click **+**. Your browser downloads a text file with
    `key=...` and `secret=...`. You enter both in Looking Glass under *Settings › OPNsense*.
 
@@ -54,7 +55,9 @@ These steps were checked against the current OPNsense documentation and source (
 4. **nginx plugin** – nothing to do. OPNsense remote syslog never forwards nginx *access* logs; they exist only as files.
    Looking Glass therefore reads access, error and stream logs through the nginx log API (*Settings ›
    OPNsense › Pull nginx access / error logs*; the API user needs the nginx pages): a log with new lines every minute,
-   a quiet one less often (up to every 10 minutes; every read is a configd action on OPNsense). For real-time delivery instead:
+   a quiet one less often (up to every 10 minutes; every read is a configd action on OPNsense). Each read takes exactly
+   the lines added since the previous one; after a log rotation the rest of the old file is read from the rotated copy,
+   so nothing is lost at midnight. For real-time delivery instead:
    **Services › Nginx › Configuration**, tab **Other › SYSLOG Targets**, add a target (Host = Docker host,
    Port = 514, Severity *info*), then select it in each **HTTP(S) › HTTP Server** under *SYSLOG targets*.
    nginx then sends straight to Looking Glass over UDP.

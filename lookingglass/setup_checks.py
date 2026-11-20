@@ -453,9 +453,59 @@ async def run(settings: Settings) -> dict[str, Any]:
           f"{settings.ai_model} configured." if settings.ai_enabled else "Not configured. Optional: Settings › AI analyst.",
           link="/settings#ai")
 
+    _flag_dropped(checks, poller, status, uni)
     order = {"action": 0, "duplicate": 1, "info": 2, "ok": 3, "optional": 4}
     summary = {k: sum(1 for c in checks if c["status"] == k) for k in order}
     return {"checks": checks, "summary": summary, "generated": time.time()}
+
+
+# checks whose pull can have to leave data out (Poller.dropped), and what helps when it keeps happening
+DROPPED = {
+    "firewall": ("firewall_log", "Send filterlog via remote syslog (see Remote syslog above): it delivers every line."),
+    "dns": ("unbound_queries", "Unbound's API gives only its newest 1000 queries per read (read every 15 s while busy). "
+            "If this keeps happening, a client may be flooding DNS - see the DNS dashboard's top clients."),
+    "nginx": ("nginx_logs", "If this keeps happening: OPNsense › Services › Nginx › HTTP(S) › HTTP Server › SYSLOG targets "
+              "(every request delivered as it happens), then switch off the nginx pull here."),
+    "ids": ("ids", "Very many alerts at once - usually one noisy rule: see Threats › Suricata › top signatures, and "
+            "consider disabling or thresholding it on OPNsense (Services › Intrusion Detection › Policy)."),
+    "crowdsec": ("crowdsec", "Very many CrowdSec alerts at once - see Threats › CrowdSec."),
+    "qfeeds": ("qfeeds", "Log the Q-Feeds firewall rules and send filterlog via remote syslog: every hit then arrives."),
+}
+
+
+def _ago(t: float) -> str:
+    m = max(0, int((time.time() - t) / 60))
+    return f"{m} min ago" if m < 120 else f"{m // 60} h ago"
+
+
+def _flag_dropped(checks: list[dict[str, Any]], poller: dict[str, Any], unraid: dict[Any, Any], unifi: dict[str, Any]) -> None:
+    """A source that had to leave data out in the last 24 hours (more arrived than a poll can read): not "ok"."""
+    now = time.time()
+
+    def flag(c: dict[str, Any], text: str, todo: str | None) -> None:
+        if c["status"] == "ok":
+            c["status"] = "info"
+        c["summary"] += f" ⚠ {text}"
+        if todo and todo not in c["todo"]:
+            c["todo"].append(todo)
+
+    for c in checks:
+        cid = c["id"]
+        if cid in DROPPED:
+            job, todo = DROPPED[cid]
+            d = (poller.get(job) or {}).get("dropped") or {}
+            if d and now - (d.get("at") or 0) < 86400:
+                times = d.get("times") or 1
+                flag(c, f"Data was left out {times}× in 24 hours (last {_ago(d['at'])}): {d.get('what')}.", todo)
+        elif cid.startswith("unraid"):
+            for name, sec in ((unraid.get(cid[6:]) or {}).get("sections") or {}).items():
+                # "warned" = data was left out at that time (a warning without it is a setup hint, shown elsewhere)
+                if isinstance(sec, dict) and sec.get("warning") and now - (sec.get("warned") or 0) < 86400:
+                    flag(c, f"{name}: {sec['warning']}.", None)
+        elif cid == "unifi":
+            for name, sec in (unifi.get("sections") or {}).items():
+                if isinstance(sec, dict) and sec.get("warning") and now - (sec.get("warned") or 0) < 86400:
+                    flag(c, f"{name}: {sec['warning']}.", None)
 
 
 async def _crowdsec_check(check: Any, own_events: int, own_last: Any) -> None:

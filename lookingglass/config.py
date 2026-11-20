@@ -242,6 +242,7 @@ class Settings(BaseSettings):
     device_remove_days: int = 0
     metrics_retention_days: int = 90
     detection_interval: int = 60
+    source_silence_hours: int = 3  # alert when a normally continuous source sends nothing for this long (0 = off)
     long_refresh_7d: int = 60  # minutes: 7-day dashboard / Overview results are counted again this often (periods.py)
     long_refresh_30d: int = 360  # minutes: the same for periods over 7 days
     long_keep_days: int = 7  # 7 / 30 day views not opened for this many days are no longer refreshed
@@ -254,6 +255,19 @@ class Settings(BaseSettings):
     unraid_log_error_minutes: int = 10
     unraid_log_critical_count: int = 1  # emergency / alert / critical lines ([emerg], FATAL, PANIC) in those minutes (0 = off)
     unraid_log_critical_severity: str = "high"
+
+    # blocking (blocking.py, Settings › Blocking): the OPNsense alias Looking Glass fills; '' = off
+    block_alias: str = ""
+    block_hours: int = 24  # default duration offered on the Alerts page (0 = until removed)
+    block_never: str = ""  # IPs / networks that are never blocked (besides the internal networks)
+    block_auto: bool = False
+    block_auto_severity: str = "critical"
+    block_auto_hours: int = 24
+    # WAN quality (wan.py): alerts when a gateway is slower / loses more packets than it normally does
+    wan_alerts: bool = True
+    wan_latency_factor: int = 200  # % of the 7-day median latency
+    wan_latency_min_ms: int = 15  # ... and at least this many ms above it
+    wan_loss_pct: int = 2  # average packet loss over 24 hours
 
     # legacy: only imported once into the Unraid server list (Settings -> Integrations)
     unraid_name: str = "Unraid"

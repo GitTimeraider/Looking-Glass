@@ -34,7 +34,7 @@ ATTACK_PATTERNS = [
     ("xss", re.compile(r"<script|%3cscript|javascript:|onerror=|onload=", re.I)),
     ("rce", re.compile(r"\$\{jndi:|/bin/(ba)?sh|cmd\.exe|;\s*(wget|curl)\s|\|\s*(wget|curl)\s|%60|`|\$\(", re.I)),
     ("sensitive_file", re.compile(r"/\.env|/\.git/|/\.aws/|/\.ssh/|/etc/passwd|/wp-config|/config\.php|\.bak$|\.sql$|/\.htpasswd|/id_rsa", re.I)),
-    ("scanner_probe", re.compile(r"/wp-login|/wp-admin|/xmlrpc\.php|/phpmyadmin|/pma/|/cgi-bin/|/boaform|/HNAP1|/vendor/phpunit|/actuator|/solr/|/owa/|/autodiscover|/\.well-known/security|/manager/html|/console/|/geoserver|/remote/login", re.I)),
+    ("scanner_probe", re.compile(r"/wp-login|/wp-admin|/xmlrpc\.php|/phpmyadmin|/pma/|/cgi-bin/|/boaform|/HNAP1|/vendor/phpunit|/actuator|/solr/|/owa/|/autodiscover|/manager/html|/console/|/geoserver|/remote/login", re.I)),
 ]
 SCANNER_UA = re.compile(r"nmap|nikto|sqlmap|masscan|zgrab|nuclei|dirbuster|gobuster|wpscan|python-requests|go-http-client|curl/|libwww|censys|shodan|internetmeasurement|expanse", re.I)
 

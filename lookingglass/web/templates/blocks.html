@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top">
+  <h1>Blocked addresses</h1>
+  <span class="muted small" id="updated"></span>
+</header>
+<div class="card warn-box" id="notconf" hidden>Blocking is not set up yet. In the <b>OPNsense web UI</b>: <i>Firewall ›
+  Aliases</i> › <b>+</b>, type <b>External (advanced)</b>, a name such as <span class="mono">LookingGlass_block</span>, Save,
+  Apply. Then <i>Firewall › Rules › WAN</i> › <b>+</b>: Action <b>Block</b>, Source <b>that alias</b>, Save, Apply (put it at
+  the top). Give the API user the privilege <i>Firewall: Alias: Edit</i>. Finally enter the alias name in
+  <a href="/settings#blocking">Looking Glass › Settings › Blocking</a>.</div>
+<div class="grid kpis" id="kpis"></div>
+<div class="card" id="state" style="margin-top:14px"></div>
+<div class="card" style="margin-top:14px">
+  <h3>Block an address</h3>
+  <form class="filters" id="f" onsubmit="return false">
+    <input name="ip" placeholder="IP address or network, e.g. 203.0.113.7" required style="min-width:240px">
+    <select name="hours" title="How long">
+      <option value="1">1 hour</option><option value="24">1 day</option><option value="168">1 week</option>
+      <option value="720">30 days</option><option value="0">until I remove it</option>
+    </select>
+    <input name="reason" placeholder="Reason (optional)" style="min-width:240px">
+    <button type="submit" id="add">Block</button>
+  </form>
+  <div class="small" id="msg"></div>
+</div>
+<div class="card" style="margin-top:14px"><h3>Active blocks</h3><div id="active"></div></div>
+<div class="card" style="margin-top:14px"><h3>Ended <span class="muted small">removed by hand or expired, last 90 days</span></h3><div id="ended"></div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const kpi = (l, v, c = "") => `<div class="card kpi ${c}"><div class="v">${v}</div><div class="l">${LG.esc(l)}</div></div>`;
+let data = null;
+const until = b => b.expires_at ? `${LG.esc(LG.time(b.expires_at))} <span class="muted small">(${LG.left(b.expires_at)})</span>` : `<span class="muted">until removed</span>`;
+const by = b => b.auto ? `<span class="pill" title="Blocked automatically (Settings › Blocking)">auto</span>` : LG.esc(b.created_by || "–");
+async function load() {
+  try { data = await LG.api("/api/blocks"); } catch (e) { document.getElementById("active").innerHTML = `<div class="empty bad">${LG.esc(e.message)}</div>`; return; }
+  document.getElementById("updated").textContent = "updated " + LG.clock();
+  document.getElementById("notconf").hidden = data.configured;
+  const f = document.getElementById("f");
+  if (!f.dataset.init) { f.hours.value = String(data.default_hours); if (!f.hours.value) f.hours.value = "24"; f.dataset.init = 1; }
+  const act = data.blocks.filter(b => b.status === "active"), ended = data.blocks.filter(b => b.status !== "active");
+  const err = act.filter(b => b.last_error).length, st = data.state || {};
+  document.getElementById("kpis").innerHTML = kpi("Active blocks", act.length) +
+    kpi("Automatic", act.filter(b => b.auto).length) + kpi("Not in OPNsense yet", act.filter(b => !b.in_alias).length, act.some(b => !b.in_alias) ? "warn" : "ok") +
+    kpi("Errors", err, err ? "bad" : "") + kpi("Automatic blocking", data.auto.on ? `${data.auto.severity}+` : "off");
+  document.getElementById("state").innerHTML = `<div class="filters" style="margin:0;align-items:center">
+      <span>Alias <b class="mono">${LG.esc(data.alias || "–")}</b>${st.info && st.info.type ? ` <span class="pill">${LG.esc(st.info.type)}</span>` : ""}</span>
+      <span class="small muted">${st.at ? "last sync " + LG.ago(st.at) : "not synced yet"}${st.in_alias !== undefined ? ` · ${LG.num(st.in_alias)} address(es) in the alias${st.foreign ? `, ${LG.num(st.foreign)} not from Looking Glass (left alone)` : ""}` : ""}</span>
+      <button type="button" class="secondary small" id="sync" style="margin-left:auto">Sync now</button></div>` +
+    (st.error ? `<div class="small err" style="margin-top:6px">${LG.esc(st.error)}</div>` : "") +
+    (st.warning ? `<div class="small" style="margin-top:6px;color:var(--warn)">${LG.esc(st.warning)}</div>` : "");
+  document.getElementById("sync").onclick = async e => { e.target.disabled = true; try { await LG.api("/api/blocks/sync", { method: "POST" }); } catch (x) { alert(x.message); } load(); };
+  LG.table("#active", [
+    { k: "ip", l: "Address", s: true, f: v => `${LG.ip(v)} <a class="small" href="/timeline?ip=${encodeURIComponent(v.split("/")[0])}&hours=168" title="Timeline of this address">timeline</a>` },
+    { k: "created_at", l: "Since", s: true, f: v => LG.esc(LG.time(v)) },
+    { k: "expires_at", l: "Until", s: true, f: (v, b) => until(b) },
+    { k: "created_by", l: "By", f: (v, b) => by(b) },
+    { k: "reason", l: "Reason", f: (v, b) => `${LG.esc(v || "")}${b.alert_id ? ` <a href="/alerts#${b.alert_id}">#${b.alert_id}</a>` : ""}` },
+    { k: "in_alias", l: "In OPNsense", f: (v, b) => b.last_error ? `<span class="badge bad" title="${LG.esc(b.last_error)}">error</span> <span class="small err">${LG.esc(b.last_error)}</span>` : v ? `<span class="badge ok">yes</span>` : `<span class="badge warn">pending</span>` },
+    { k: "id", l: "", f: v => `<button type="button" class="secondary small" data-rm="${v}">Unblock</button>` },
+  ], act, "Nothing is blocked.");
+  LG.table("#ended", [
+    { k: "ip", l: "Address", s: true, f: v => LG.ip(v) },
+    { k: "created_at", l: "Blocked", s: true, f: v => LG.esc(LG.time(v)) },
+    { k: "removed_at", l: "Ended", s: true, f: v => LG.esc(LG.time(v)) },
+    { k: "status", l: "How", f: (v, b) => v === "expired" ? "expired" : `removed by ${LG.esc(b.removed_by || "?")}` },
+    { k: "created_by", l: "By", f: (v, b) => by(b) },
+    { k: "reason", l: "Reason", f: (v, b) => `${LG.esc(v || "")}${b.alert_id ? ` <a href="/alerts#${b.alert_id}">#${b.alert_id}</a>` : ""}` },
+  ], ended, "None.");
+  document.querySelectorAll("[data-rm]").forEach(b => b.onclick = async () => {
+    if (!confirm("Unblock this address? It is taken out of the OPNsense alias right away.")) return;
+    try { await LG.api(`/api/blocks/${b.dataset.rm}`, { method: "DELETE" }); } catch (e) { alert(e.message); }
+    load();
+  });
+}
+document.getElementById("f").onsubmit = async () => {
+  const f = document.getElementById("f"), msg = document.getElementById("msg");
+  const body = { ip: f.ip.value.trim(), hours: Number(f.hours.value), reason: f.reason.value.trim() };
+  msg.className = "small"; msg.textContent = "Blocking…";
+  try {
+    await LG.api("/api/blocks", { method: "POST", body });
+  } catch (e) {
+    if (/internal address/.test(e.message) && confirm(e.message + "\n\nBlock it anyway?")) {
+      try { await LG.api("/api/blocks", { method: "POST", body: { ...body, allow_internal: true } }); }
+      catch (x) { msg.className = "small err"; msg.textContent = x.message; return; }
+    } else { msg.className = "small err"; msg.textContent = e.message; return; }
+  }
+  msg.className = "small ok-msg"; msg.textContent = `${body.ip} blocked.`; f.ip.value = ""; f.reason.value = "";
+  load();
+};
+const q = LG.qs();
+if (q.ip) document.getElementById("f").ip.value = q.ip;
+load(); LG.autoRefresh(load, 30000);
+</script>
+{% endblock %}

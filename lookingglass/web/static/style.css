@@ -147,6 +147,9 @@ button:disabled { opacity: .5; cursor: wait; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .seg button { border: 0; border-radius: 0; background: var(--panel2); color: var(--text); font-weight: 500; }
 .seg button.on { background: var(--accent); color: #fff; }
+.seg.mini { margin-right: 10px; vertical-align: middle; }
+.seg.mini button { padding: 2px 8px; font-size: 12px; letter-spacing: normal; text-transform: none; }
+.seg.mini button + button { border-left: 1px solid var(--border); }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 13px; }

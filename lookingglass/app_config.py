@@ -51,9 +51,31 @@ GROUPS = {
     "behavior": "Behaviour & ML",
     "intel": "Threat intel & traps",
     "packages": "Container packages",
+    "blocking": "Blocking",
 }
 
 FIELDS: list[Field] = [
+    # Blocking (blocking.py)
+    Field("block_alias", "blocking", "OPNsense alias for blocked addresses", "str",
+          "Name of a Firewall › Aliases entry of type 'External (advanced)' that Looking Glass fills with the "
+          "addresses you block (and removes them when the block ends). Use it in a block rule on your WAN "
+          "(Firewall › Rules › WAN: Block, source = this alias) - and on other interfaces if you like. Empty = "
+          "blocking is off. The API user needs the privilege 'Firewall: Alias: Edit'.", placeholder="LookingGlass_block"),
+    Field("block_hours", "blocking", "Default block duration (hours)", "int",
+          "Offered when you block an address on the Alerts page. 0 = until you remove it.", min=0, max=8760),
+    Field("block_never", "blocking", "Never block", "list",
+          "IP addresses and networks (CIDR) that are never blocked, by hand or automatically - e.g. your VPN "
+          "provider, monitoring services, your office. The address you are using right now and OPNsense itself are "
+          "never blocked; internal devices only by hand, after a warning (to quarantine one, use the alias in a "
+          "rule on that device's interface too)."),
+    Field("block_auto", "blocking", "Block automatically", "bool",
+          "Block the internet source of every new open alert of the severity below (or worse). Internal devices are "
+          "never blocked automatically. Every automatic block is listed under General › Blocked addresses."),
+    Field("block_auto_severity", "blocking", "Automatically block from severity", "choice",
+          "critical = only the worst alerts (an attacker who got in); high also blocks e.g. brute force that "
+          "succeeded and confirmed attacks.", choices=("critical", "high")),
+    Field("block_auto_hours", "blocking", "Automatic blocks last (hours)", "int", "0 = until you remove them.",
+          min=0, max=8760),
     # OPNsense
     Field("opnsense_url", "opnsense", "OPNsense URL", "str", "Address of the OPNsense web GUI, add :port if not 443.",
           placeholder="https://192.168.1.1"),
@@ -68,6 +90,14 @@ FIELDS: list[Field] = [
           "alert only once the service has been stopped this long - a restart (config change, update) or a quick "
           "stop / start stays quiet. Such an alert closes by itself when the service runs again. 0 = alert right away.",
           min=0, max=240),
+    Field("wan_alerts", "opnsense", "WAN quality alerts", "bool",
+          "Alert when a gateway's latency over the last 24 hours is far above its own 7-day normal, or it loses "
+          "packets for a day (Infrastructure › OPNsense › WAN quality). Down / degraded right now is alerted separately."),
+    Field("wan_latency_factor", "opnsense", "WAN: latency alert at (% of normal)", "int",
+          "200 = the 24-hour median latency is twice the median of the 7 days before.", min=110, max=1000),
+    Field("wan_latency_min_ms", "opnsense", "WAN: and at least (ms) above normal", "int",
+          "Keeps a jump from 2 to 5 ms on a fibre line quiet.", min=1, max=1000),
+    Field("wan_loss_pct", "opnsense", "WAN: loss alert at (% over 24 h)", "int", "0 = no loss alerts.", min=0, max=100),
     Field("firewall_log_pull", "opnsense", "Pull firewall log via API", "choice",
           "auto = only when no filterlog arrives via syslog.", choices=("auto", "always", "never")),
     Field("unbound_query_pull", "opnsense", "Pull Unbound DNS queries", "bool", "Needs Reporting › Settings › Unbound DNS statistics."),
@@ -416,6 +446,11 @@ FIELDS: list[Field] = [
           "alert limits are kept. A removed device that comes back is a new device again.",
           min=0, max=3650),
     Field("detection_interval", "data", "Detection interval (seconds)", "int", "", min=10, max=3600),
+    Field("source_silence_hours", "data", "Alert when a source goes quiet (hours)", "int", "A source that normally sends "
+          "something every hour (firewall, web server, DNS, Suricata …) but has sent nothing new for this long raises an "
+          "alert - a log pull that stalled, a plugin that stopped, a syslog target that was removed. Counted by the time "
+          "of the events, so a pull running hours behind counts as quiet too. Closes by itself when events come back. "
+          "0 = off.", min=0, max=168),
     Field("long_refresh_7d", "data", "7-day views: count again every (minutes)", "int", "Overview and dashboards over "
           "7 days are counted in the background on this schedule, one at a time, and shown from the stored result "
           "(switching to 7d does not count anything). The refresh button next to the period counts one again at once.",
@@ -604,7 +639,7 @@ def _coerce(f: Field, value: Any) -> Any:
         if port is None:
             raise SettingsError(f"{f.label}: add the port, e.g. {v.rstrip('/')}:{default_port} ({tool}'s default) or "
                                 "the port you mapped in Docker")
-    if f.key in ("syslog_allowed_senders", "internal_networks") and v:
+    if f.key in ("syslog_allowed_senders", "internal_networks", "block_never") and v:
         for part in v.split(","):
             try:  # an invalid line is named, nothing is saved
                 ipaddress.ip_network(part.strip(), strict=False)
