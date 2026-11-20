@@ -326,6 +326,12 @@ async def alert_ports(filters: dict[str, Any] | None, since: datetime) -> dict[s
             "at": datetime.now(timezone.utc).isoformat()}
 
 
+# keys of alerts.data written by others, not by the detection: an update by raise_alert (which replaces data with what
+# the detection sees now) keeps them - notified = which notification rules mailed it already (notify.py; losing it
+# mailed the same alert again after every detection run), auto_block = the automatic OPNsense block (blocking.py)
+KEEP_DATA = "jsonb_strip_nulls(jsonb_build_object('notified', data->'notified', 'auto_block', data->'auto_block'))"
+
+
 async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint: str, description: str = "",
                       src_ip: str | None = None, dst_ip: str | None = None, data: dict | None = None,
                       count: int = 1, mode: str = "add", events: dict[str, Any] | None = None,
@@ -432,7 +438,7 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
     if silent and row:  # a muted alert that keeps happening (or one you closed): collect the sightings, stays closed
         count_sql = "count + $2" if mode == "add" else "GREATEST(count, $2)"
         await pool.execute(f"UPDATE alerts SET last_seen = now(), count = {count_sql}, severity = $3, description = $4, "
-                           "data = $5, close_reason = coalesce(close_reason, 'muted') WHERE id = $1",
+                           f"data = $5 || {KEEP_DATA}, close_reason = coalesce(close_reason, 'muted') WHERE id = $1",
                            row["id"], count, max(row["severity"], severity, key=SEVERITIES.index) if keep_max else severity,
                            description, data)
         return
@@ -457,7 +463,7 @@ async def raise_alert(rule: str, severity: str | Rating, title: str, fingerprint
         count_sql = "count + $2" if mode == "add" else "GREATEST(count, $2)"
         await pool.execute(
             # the title too: it can say what changed
-            f"UPDATE alerts SET last_seen = now(), count = {count_sql}, severity = $3, description = $4, data = $5, "
+            f"UPDATE alerts SET last_seen = now(), count = {count_sql}, severity = $3, description = $4, data = $5 || {KEEP_DATA}, "
             f"status = CASE WHEN $6 = 'closed' THEN 'closed' ELSE status END, title = $7 WHERE id = $1",
             row["id"], count, sev, description, data, status, title)
         return

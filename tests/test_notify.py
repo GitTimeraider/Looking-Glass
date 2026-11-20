@@ -104,3 +104,45 @@ def test_times_follow_zone_and_format():
     assert local_time(s12, t) == "2:05 PM" and "12-hour" in time_style(s12) and "24-hour" in time_style(s24)
     _, text, body = notify.compose({"id": 1}, [{"id": 3, "severity": "high", "title": "x", "data": {}, "last_seen": t}], "", s24)
     assert "Time: 2026-07-01 14:05 (Europe/Amsterdam)" in text and "14:05" in body
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_alert_seen_again_is_not_mailed_again(tmp_path):
+    """A detection that keeps seeing an open alert updates it (every run): that must not forget that it was mailed
+    (data.notified) - else the same alert was mailed again after every detection run."""
+    from lookingglass.detections import Rating, raise_alert
+
+    port = 25251
+    srv = subprocess.Popen([sys.executable, "tools/mock_smtp.py", str(port), str(tmp_path)], stdout=subprocess.PIPE)
+    time.sleep(0.7)
+    s = Settings(smtp_host="127.0.0.1", smtp_port=port, smtp_security="none", smtp_from="lg@example.org")
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            pool = db.pool()
+            await pool.execute("TRUNCATE alerts, notification_rules")
+            await pool.execute("INSERT INTO notification_rules (recipients, min_severity) VALUES ('me@example.org', 'medium')")
+            await raise_alert("port_scan", Rating("medium", "x"), "scan from 203.0.113.5", "scan:203.0.113.5", src_ip="203.0.113.5")
+            assert await notify.run_once(s) == 1
+            await pool.execute("UPDATE alerts SET data = data || '{\"auto_block\": {\"id\": 3}}'::jsonb")
+            for _ in range(3):  # the detection sees it again on its next runs
+                await raise_alert("port_scan", Rating("medium", "x"), "scan from 203.0.113.5", "scan:203.0.113.5",
+                                  src_ip="203.0.113.5", count=5, mode="max")
+                assert await notify.run_once(s) == 0
+            data = await pool.fetchval("SELECT data FROM alerts")
+            assert data["notified"] and data["auto_block"] == {"id": 3}
+            # it gets worse: mailed once more (escalation), then quiet again
+            await raise_alert("port_scan", Rating("high", "x"), "scan from 203.0.113.5", "scan:203.0.113.5", src_ip="203.0.113.5")
+            assert await notify.run_once(s) == 1
+            await raise_alert("port_scan", Rating("high", "x"), "scan from 203.0.113.5", "scan:203.0.113.5", src_ip="203.0.113.5")
+            assert await notify.run_once(s) == 0
+            assert len(list(tmp_path.glob("*.eml"))) == 2
+            await pool.execute("TRUNCATE alerts, notification_rules")
+        finally:
+            await db.close()
+
+    try:
+        asyncio.run(main())
+    finally:
+        srv.terminate()
