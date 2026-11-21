@@ -108,7 +108,9 @@ def test_hourly_counts_give_the_same_numbers_as_raw_events():
                 assert slices >= 6 and await pool.fetchval("SELECT sum(n) FROM event_rollup") == await pool.fetchval("SELECT count(*) FROM events")
                 await compare_all(conn)
             # old hours are dropped with the events
-            await pool.execute("INSERT INTO event_rollup VALUES (now() - interval '40 days', 'firewall', 'block', '', '', '', -1, '', 6, 5)")
+            await pool.execute("INSERT INTO event_rollup (bucket, source, action, proto, interface, direction, dst_port, "
+                               "src_country, severity, n) VALUES (now() - interval '40 days', 'firewall', 'block', '', '', '', "
+                               "-1, '', 6, 5)")  # columns named: a migrated table has them in another order
             await rollup.prune(30)
             assert await pool.fetchval("SELECT count(*) FROM event_rollup WHERE bucket < now() - interval '31 days'") == 0
             await pool.execute("TRUNCATE events, event_rollup")
