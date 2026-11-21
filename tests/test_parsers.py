@@ -119,6 +119,15 @@ def test_nginx_main_ext_and_ban_and_stream():
     assert ev["action"] == "stream_200" and ev["src_ip"] == "203.0.113.1"
 
 
+def test_nginx_public_policy_files_are_not_probes():
+    # security.txt / robots.txt are published for scanners to read: reading them is not an attack
+    for path in ("/.well-known/security.txt", "/security.txt", "/robots.txt"):
+        line = (f'<190>Oct 18 11:59:01 fw nginx: 198.51.100.7 - - [18/Oct/2026:11:59:01 +0000] "GET {path} HTTP/1.1" 200 10 '
+                '"-" "Mozilla/5.0 (compatible; Nuclei)"')
+        ev = parse_line(line, now=NOW)
+        assert [t for t in ev["data"]["tags"] if t != "scanner_ua"] == [], (path, ev["data"]["tags"])
+
+
 def test_configd_lines_are_stored_as_system():
     # every configd line arrives (OPNsense decides what it sends, e.g. only warnings): as a system event, not a login
     for sev, msg in ((4, "[abc] action allowed system.status for user root"),

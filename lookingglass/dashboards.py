@@ -37,6 +37,23 @@ CS_SEEN = ("(source = 'crowdsec' AND (ts > now() - make_interval(secs => $1) "
 BL = "(SELECT data->'{0}' FROM snapshots WHERE key = 'blocklists')"
 
 
+# SWAG (swag.py): its nginx lines are source nginx with program swag; fail2ban has its own source; CrowdSec in Docker
+# (crowdsec_lapi.py) is source crowdsec with program crowdsec-lapi; honeypot hits carry data.honeypot
+SW = "(source = 'nginx' AND program = 'swag')"
+SW_DRILL = {"source": "nginx", "program": "swag"}
+SW_BLOCK = "action IN ('bouncer_block', 'waf_block', 'rate_limited')"
+CSL = "(source = 'crowdsec' AND program = 'crowdsec-lapi')"
+CSL_DRILL = {"source": "crowdsec", "program": "crowdsec-lapi"}
+CSL_SEEN = f"({CS_SEEN} AND program = 'crowdsec-lapi')"
+HP = "(source IN ('nginx', 'fail2ban') AND data->>'honeypot' = 'true')"
+HP_DRILL = {"source": "nginx,fail2ban", "d_honeypot": "true"}
+F2B_DRILL = {"source": "fail2ban"}
+# fail2ban: per jail and address the latest ban / unban of the last 30 days - "banned now" when it is not an unban
+F2B_STATE = ("(SELECT DISTINCT ON (data->>'jail', src_ip) data->>'jail' jail, src_ip, action, ts, src_country FROM events "
+             "WHERE source = 'fail2ban' AND action IN ('ban', 'unban', 'restore_ban') AND src_ip IS NOT NULL "
+             "AND ts > now() - interval '30 days' ORDER BY data->>'jail', src_ip, ts DESC)")
+
+
 # Suricata alerts: eve "tls", "flow", "dns", ... records (eve syslog output) are not alerts
 IDS = "(source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject'))"
 IDS_DROP = "action IN ('drop', 'blocked')"
@@ -47,10 +64,16 @@ QF_DRILL = {"source": "firewall,qfeeds", "d_blocklist": "Q-Feeds"}
 QF_DIR = f"CASE WHEN {PRIV} THEN 'out' ELSE 'in' END"
 
 
+def log_sql(where: str, limit: int = 150, extra: str = "") -> str:
+    """A live log's query; ``extra``: one more condition (the live log's From filter)."""
+    return (f"SELECT ts, source, action, host(src_ip) src_ip, src_port, host(dst_ip) dst_ip, dst_port, domain, "
+            f"username, src_country, message FROM events WHERE {W} AND {where}{f' AND {extra}' if extra else ''} "
+            f"ORDER BY ts DESC LIMIT {limit}")
+
+
 def log_panel(where: str, title: str = "Live log", limit: int = 150) -> dict[str, Any]:
-    return {"id": "log", "title": title, "type": "log", "span": 3,
-            "sql": f"SELECT ts, source, action, host(src_ip) src_ip, src_port, host(dst_ip) dst_ip, dst_port, domain, "
-                   f"username, src_country, message FROM events WHERE {W} AND {where} ORDER BY ts DESC LIMIT {limit}"}
+    return {"id": "log", "title": title, "type": "log", "span": 3, "where": where, "limit": limit,
+            "sql": log_sql(where, limit)}
 
 
 DASHBOARDS: dict[str, dict[str, Any]] = {
@@ -134,21 +157,23 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                 f"SELECT count(*) AS \"Requests\", count(*) FILTER (WHERE action ~ '^http_4') AS \"4xx\", "
                 f"count(*) FILTER (WHERE action ~ '^http_5') AS \"5xx\", "
                 f"count(*) FILTER (WHERE jsonb_array_length(coalesce(data->'tags', '[]'::jsonb)) > 0) AS \"Suspicious\", "
-                f"count(DISTINCT src_ip) AS \"Clients\", count(*) FILTER (WHERE action IN ('waf_block', 'rate_limited')) AS \"WAF / rate limited\" "
+                f"count(DISTINCT src_ip) AS \"Clients\", count(*) FILTER (WHERE action IN ('waf_block', 'bouncer_block', 'rate_limited')) AS \"WAF / bouncer / rate limited\" "
                 f"FROM events WHERE source = 'nginx' AND {W}",
-             "drill": {"tiles": {"4xx": {"action": "http_4*"}, "5xx": {"action": "http_5*"}, "WAF / rate limited": {"action": "waf_block,rate_limited"}}}},
+             "drill": {"tiles": {"4xx": {"status": "4xx"}, "5xx": {"status": "5xx"}, "Suspicious": {"tag": "any"},
+                                 "WAF / bouncer / rate limited": {"action": "waf_block,bouncer_block,rate_limited"}}}},
             {"id": "status", "title": "Responses by class", "type": "timeseries", "span": 2,
+             "drill": {"series": "status"},
              "sql": f"SELECT {B} t, CASE WHEN action ~ '^http_2' THEN '2xx' WHEN action ~ '^http_3' THEN '3xx' WHEN action ~ '^http_4' THEN '4xx' WHEN action ~ '^http_5' THEN '5xx' ELSE coalesce(action, 'other') END series, count(*) v FROM events WHERE source = 'nginx' AND {W} GROUP BY 1, 2 ORDER BY 1"},
             {"id": "codes", "title": "Status codes", "type": "pie",
              "sql": f"SELECT replace(coalesce(action, '?'), 'http_', '') label, count(*) v, action f_action FROM events WHERE source = 'nginx' AND {W} GROUP BY 1, 3 ORDER BY 2 DESC LIMIT 10"},
-            {"id": "attacks", "title": "Attack patterns over time", "type": "timeseries", "span": 2,
+            {"id": "attacks", "title": "Attack patterns over time", "type": "timeseries", "span": 2, "drill": {"series": "tag"},
              "sql": f"SELECT {B} t, tag series, count(*) v FROM (SELECT ts, jsonb_array_elements_text(data->'tags') tag FROM events WHERE source = 'nginx' AND {W} AND jsonb_typeof(data->'tags') = 'array') x GROUP BY 1, 2 ORDER BY 1"},
             {"id": "vhosts", "title": "Virtual hosts", "type": "pie", "drill": {"by": "domain"},
              "sql": f"SELECT coalesce(domain, '?') label, count(*) v FROM events WHERE source = 'nginx' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 8"},
             {"id": "paths", "title": "Top paths", "type": "table", "cols": [["path", "Path"], ["n", "Requests", "num"], ["err", "Errors", "num"]],
              "sql": f"SELECT left(data->>'path', 120) path, count(*) n, count(*) FILTER (WHERE action ~ '^http_[45]') err, max(data->>'path') o_d_path FROM events WHERE source = 'nginx' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 25"},
             {"id": "404", "title": "Top 4xx paths (probing)", "type": "table", "cols": [["path", "Path"], ["ips", "IPs", "num"], ["n", "Hits", "num"]],
-             "drill": {"base": {"action": "http_4*"}},
+             "drill": {"base": {"status": "4xx"}},
              "sql": f"SELECT left(data->>'path', 120) path, count(DISTINCT src_ip) ips, count(*) n, max(data->>'path') o_d_path FROM events WHERE source = 'nginx' AND action ~ '^http_4' AND {W} GROUP BY 1 ORDER BY 3 DESC LIMIT 25"},
             {"id": "clients", "title": "Top clients", "type": "table", "drill": {"by": {"ip": "ip"}}, "cols": [["ip", "Client", "ip"], ["country", "", "flag"], ["err", "Errors", "num"], ["sus", "Suspicious", "num"], ["n", "Requests", "num"]],
              "sql": f"SELECT host(src_ip) ip, max(src_country) country, count(*) FILTER (WHERE action ~ '^http_[45]') err, count(*) FILTER (WHERE jsonb_array_length(coalesce(data->'tags', '[]'::jsonb)) > 0) sus, count(*) n FROM events WHERE source = 'nginx' AND src_ip IS NOT NULL AND {W} GROUP BY 1 ORDER BY 5 DESC LIMIT 25"},
@@ -157,6 +182,195 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             {"id": "countries", "title": "Requests by country", "type": "hbar", "drill": {"by": "country"},
              "sql": f"SELECT src_country label, count(*) v FROM events WHERE source = 'nginx' AND src_country IS NOT NULL AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 15"},
             log_panel("source = 'nginx'"),
+        ]},
+    "swag": {
+        # SWAG on the Docker host (swag.py) and CrowdSec's Local API (crowdsec_lapi.py)
+        "title": "SWAG & CrowdSec", "source": "nginx", "group": "swag",
+        "tabs": [{"id": "web", "title": "Web (nginx)", "source": "nginx"},
+                 {"id": "crowdsec", "title": "CrowdSec", "source": "crowdsec"},
+                 {"id": "fail2ban", "title": "fail2ban", "source": "fail2ban"},
+                 {"id": "honeypot", "title": "Honeypot", "source": "nginx,fail2ban"}],
+        "panels": [
+            # ------------------------------------------------------------------------------------------ Web ---
+            {"id": "sw_kpi", "tab": "web", "type": "stat", "span": 3, "sql":
+                f"SELECT count(*) FILTER (WHERE action ~ '^http_') AS \"Requests\", "
+                f"count(*) FILTER (WHERE action ~ '^http_4') AS \"4xx\", count(*) FILTER (WHERE action ~ '^http_5') AS \"5xx\", "
+                f"count(DISTINCT src_ip) AS \"Clients\", "
+                f"count(*) FILTER (WHERE jsonb_array_length(coalesce(data->'tags', '[]'::jsonb)) > 0) AS \"Attack / scanner requests\", "
+                f"count(*) FILTER (WHERE action = 'bouncer_block') AS \"CrowdSec bouncer blocks\", "
+                f"count(*) FILTER (WHERE action = 'waf_block') AS \"WAF (AppSec) blocks\", "
+                f"count(*) FILTER (WHERE action = 'rate_limited') AS \"Rate limited\" "
+                f"FROM events WHERE {SW} AND {W}",
+             "drill": {"base": SW_DRILL, "tiles": {"4xx": {"status": "4xx"}, "5xx": {"status": "5xx"},
+                                                   "Attack / scanner requests": {"tag": "any"},
+                                                   "CrowdSec bouncer blocks": {"action": "bouncer_block"},
+                                                   "WAF (AppSec) blocks": {"action": "waf_block"},
+                                                   "Rate limited": {"action": "rate_limited"}}}},
+            {"id": "sw_status", "tab": "web", "title": "Responses by class", "type": "timeseries", "span": 2,
+             "drill": {"base": SW_DRILL},
+             "sql": f"SELECT {B} t, CASE WHEN action ~ '^http_2' THEN '2xx' WHEN action ~ '^http_3' THEN '3xx' WHEN action ~ '^http_4' THEN '4xx' "
+                    f"WHEN action ~ '^http_5' THEN '5xx' WHEN {SW_BLOCK} THEN 'blocked' ELSE 'other' END series, count(*) v "
+                    f"FROM events WHERE {SW} AND {W} GROUP BY 1, 2 ORDER BY 1"},
+            {"id": "sw_codes", "tab": "web", "title": "Status codes", "type": "pie", "drill": {"base": SW_DRILL},
+             "sql": f"SELECT replace(coalesce(action, '?'), 'http_', '') label, count(*) v, action f_action FROM events WHERE {SW} AND {W} GROUP BY 1, 3 ORDER BY 2 DESC LIMIT 10"},
+            {"id": "sw_attacks", "tab": "web", "title": "Attack patterns over time", "type": "timeseries", "span": 2, "drill": {"base": SW_DRILL},
+             "sql": f"SELECT {B} t, tag series, count(*) v FROM (SELECT ts, jsonb_array_elements_text(data->'tags') tag FROM events WHERE {SW} AND {W} AND jsonb_typeof(data->'tags') = 'array') x GROUP BY 1, 2 ORDER BY 1"},
+            {"id": "sw_vhosts", "tab": "web", "title": "Sites (host names)", "type": "pie", "drill": {"base": SW_DRILL, "by": "domain"},
+             "sql": f"SELECT coalesce(domain, '(not logged)') label, count(*) v FROM events WHERE {SW} AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 8"},
+            {"id": "sw_paths", "tab": "web", "title": "Top paths", "type": "table", "drill": {"base": SW_DRILL},
+             "cols": [["path", "Path"], ["n", "Requests", "num"], ["err", "Errors", "num"]],
+             "sql": f"SELECT left(data->>'path', 120) path, count(*) n, count(*) FILTER (WHERE action ~ '^http_[45]') err, max(data->>'path') o_d_path FROM events WHERE {SW} AND data->>'path' IS NOT NULL AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 25"},
+            {"id": "sw_404", "tab": "web", "title": "Top 4xx paths (probing)", "type": "table", "drill": {"base": SW_DRILL},
+             "cols": [["path", "Path"], ["ips", "IPs", "num"], ["n", "Hits", "num"]],
+             "sql": f"SELECT left(data->>'path', 120) path, count(DISTINCT src_ip) ips, count(*) n, max(data->>'path') o_d_path FROM events WHERE {SW} AND action ~ '^http_4' AND {W} GROUP BY 1 ORDER BY 3 DESC LIMIT 25"},
+            {"id": "sw_clients", "tab": "web", "title": "Top clients", "type": "table", "drill": {"base": SW_DRILL, "by": {"ip": "ip"}},
+             "cols": [["ip", "Client", "ip"], ["country", "", "flag"], ["err", "Errors", "num"], ["sus", "Suspicious", "num"],
+                      ["blk", "Blocked", "num"], ["n", "Requests", "num"], ["last", "Last", "ago"]],
+             "sql": f"SELECT host(src_ip) ip, max(src_country) country, count(*) FILTER (WHERE action ~ '^http_[45]') err, "
+                    f"count(*) FILTER (WHERE jsonb_array_length(coalesce(data->'tags', '[]'::jsonb)) > 0) sus, "
+                    f"count(*) FILTER (WHERE {SW_BLOCK}) blk, count(*) n, max(ts) last FROM events "
+                    f"WHERE {SW} AND src_ip IS NOT NULL AND {W} GROUP BY 1 ORDER BY 6 DESC LIMIT 25"},
+            {"id": "sw_blocked", "tab": "web", "title": "Blocked by CrowdSec / WAF / rate limit", "type": "table", "drill": {"base": {**SW_DRILL, "action": "bouncer_block,waf_block,rate_limited"}, "by": {"ip": "ip"}},
+             "cols": [["ip", "Client", "ip"], ["country", "", "flag"], ["how", "How"], ["site", "Site"], ["n", "Blocks", "num"], ["last", "Last", "ago"]],
+             "sql": f"SELECT host(src_ip) ip, max(src_country) country, string_agg(DISTINCT coalesce(data->>'by', action), ', ') how, "
+                    f"max(domain) site, count(*) n, max(ts) last FROM events WHERE {SW} AND {SW_BLOCK} AND {W} GROUP BY 1 ORDER BY 5 DESC LIMIT 25"},
+            {"id": "sw_ua", "tab": "web", "title": "Top user agents", "type": "table", "drill": {"base": SW_DRILL},
+             "cols": [["ua", "User agent"], ["n", "Requests", "num"]],
+             "sql": f"SELECT left(coalesce(data->>'user_agent', '-'), 120) ua, count(*) n, max(data->>'user_agent') o_d_user_agent FROM events WHERE {SW} AND action ~ '^http_' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 20"},
+            {"id": "sw_countries", "tab": "web", "title": "Requests by country", "type": "hbar", "drill": {"base": SW_DRILL, "by": "country"},
+             "sql": f"SELECT src_country label, count(*) v FROM events WHERE {SW} AND src_country IS NOT NULL AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 15"},
+            {"id": "sw_errors", "tab": "web", "title": "nginx errors and warnings", "type": "table", "span": 3, "drill": {"base": {**SW_DRILL, "action": "http_error"}},
+             "cols": [["ts", "Last", "time"], ["level", "Level"], ["message", "Message"], ["n", "Count", "num"]],
+             "sql": f"SELECT max(ts) ts, data->>'level' level, left(regexp_replace(message, '^\\d+#\\d+: (\\*\\d+ )?', ''), 200) message, count(*) n "
+                    f"FROM events WHERE {SW} AND action = 'http_error' AND severity <= 4 AND {W} GROUP BY 2, 3 ORDER BY 1 DESC LIMIT 25"},
+            {**log_panel(SW), "id": "sw_log", "tab": "web"},
+            # ------------------------------------------------------------------------------------- CrowdSec ---
+            {"id": "csl_kpi", "tab": "crowdsec", "type": "stat", "span": 3, "sql":
+                f"SELECT (SELECT count(*) FROM events WHERE {CSL_SEEN} AND action = 'alert') AS \"Alerts\", "
+                f"(SELECT count(*) FROM events WHERE {CSL_SEEN} AND action = 'alert' AND data->>'appsec' = 'true') AS \"AppSec (WAF) alerts\", "
+                "(SELECT jsonb_array_length(data) FROM snapshots WHERE key = 'crowdsec_lapi_decisions' AND jsonb_typeof(data) = 'array') AS \"Active decisions\", "
+                f"(SELECT count(DISTINCT src_ip) FROM events WHERE {CSL_SEEN} AND action = 'alert') AS \"Attacking IPs\", "
+                f"(SELECT count(DISTINCT data->>'scenario') FROM events WHERE {CSL_SEEN} AND action = 'alert') AS \"Scenarios\", "
+                f"count(*) FILTER (WHERE action IN ('bouncer_block', 'waf_block')) AS \"Blocked in SWAG\", "
+                "(SELECT (data->'appsec'->>'blocked')::numeric::bigint FROM snapshots WHERE key = 'crowdsec_lapi_metrics') AS \"AppSec blocked (since start)\" "
+                f"FROM events WHERE {SW} AND {W}",
+             "drill": {"tiles": {"Alerts": {**CSL_DRILL, "action": "alert", "hours": 24 * 90},
+                                 "AppSec (WAF) alerts": {**CSL_DRILL, "action": "alert", "d_appsec": "true", "hours": 24 * 90},
+                                 "Active decisions": {**CSL_DRILL, "action": "ban,captcha", "hours": 24 * 90},
+                                 "Attacking IPs": {**CSL_DRILL, "action": "alert"}, "Scenarios": {**CSL_DRILL, "action": "alert"},
+                                 "Blocked in SWAG": {**SW_DRILL, "action": "bouncer_block,waf_block"},
+                                 "AppSec blocked (since start)": None}}},
+            {"id": "csl_time", "tab": "crowdsec", "title": "CrowdSec over time", "type": "timeseries", "span": 2,
+             "drill": {"series_drill": {"alerts": {**CSL_DRILL, "action": "alert"}, "decisions": {**CSL_DRILL, "action": "ban,captcha"},
+                                        "blocked in SWAG": {**SW_DRILL, "action": "bouncer_block,waf_block"}}},
+             "sql": f"SELECT {B} t, CASE WHEN source = 'nginx' THEN 'blocked in SWAG' WHEN action = 'alert' THEN 'alerts' ELSE 'decisions' END series, "
+                    f"count(*) v FROM events WHERE ({CSL} OR ({SW} AND action IN ('bouncer_block', 'waf_block'))) AND {W} GROUP BY 1, 2 ORDER BY 1"},
+            {"id": "csl_scen", "tab": "crowdsec", "title": "Scenarios", "type": "pie", "drill": {"base": {**CSL_DRILL, "action": "alert"}, "by": "d_scenario"},
+             "sql": f"SELECT coalesce(data->>'scenario', '?') label, count(*) v FROM events WHERE {CSL_SEEN} AND action = 'alert' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"},
+            {"id": "csl_ips", "tab": "crowdsec", "title": "Attackers", "type": "table", "span": 3, "drill": {"base": CSL_DRILL, "by": {"ip": "ip"}},
+             "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["as", "Network (AS)"], ["scenarios", "Scenarios"], ["sites", "Sites"],
+                      ["alerts", "Alerts", "num"], ["events", "Events", "num"], ["last", "Last", "ago"]],
+             "sql": f"SELECT host(src_ip) ip, max(src_country) country, max(data->>'as') \"as\", string_agg(DISTINCT data->>'scenario', ', ') scenarios, "
+                    f"string_agg(DISTINCT domain, ', ') sites, count(*) alerts, sum((data->>'events_count')::int) events, max(ts) last "
+                    f"FROM events WHERE {CSL_SEEN} AND action = 'alert' AND src_ip IS NOT NULL GROUP BY 1 ORDER BY 6 DESC LIMIT 25"},
+            # the bans in force (snapshot of the last poll): time left counts down in the browser; Unban deletes the
+            # decision through the Local API (needs the machine login - "id" is empty without it, so no button)
+            {"id": "csl_active", "tab": "crowdsec", "title": "Active bans (now)", "type": "table", "span": 3,
+             "drill": {"base": {**CSL_DRILL, "hours": 24 * 90}},
+             "cols": [["value", "Target"], ["country", "", "flag"], ["type", "Type"], ["scenario", "Scenario"], ["origin", "Origin"],
+                      ["until", "Time left", "left"], ["id", "", "unban"]],
+             "sql": "SELECT d->>'value' value, CASE WHEN lower(d->>'scope') IN ('ip', 'range') THEN split_part(d->>'value', '/', 1) END o_ip, "
+                    "d->>'country' country, d->>'type' type, d->>'scenario' scenario, d->>'origin' origin, "
+                    "(d->>'until')::timestamptz until, CASE WHEN (d->>'can_unban')::boolean THEN d->>'id' END id, 'lapi' unban_src "
+                    "FROM snapshots s, jsonb_array_elements(CASE WHEN jsonb_typeof(s.data) = 'array' THEN s.data ELSE '[]'::jsonb END) d "
+                    "WHERE s.key = 'crowdsec_lapi_decisions' AND $1 > 0 ORDER BY until DESC NULLS LAST LIMIT 500"},
+            {"id": "csl_countries", "tab": "crowdsec", "title": "Alerts by country", "type": "hbar", "drill": {"base": {**CSL_DRILL, "action": "alert"}, "by": "country"},
+             "sql": f"SELECT src_country label, count(*) v FROM events WHERE {CSL_SEEN} AND action = 'alert' AND src_country IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 12"},
+            {"id": "csl_appsec", "tab": "crowdsec", "title": "AppSec (WAF) and HTTP targets", "type": "table", "span": 3,
+             "drill": {"base": {**CSL_DRILL, "action": "alert"}, "by": {"d_scenario": "scenario"}},
+             "cols": [["scenario", "Scenario / rule"], ["uri", "Targets"], ["sites", "Sites"], ["ips", "IPs", "num"], ["n", "Alerts", "num"]],
+             "sql": f"SELECT data->>'scenario' scenario, left(string_agg(DISTINCT u, ' · '), 300) uri, string_agg(DISTINCT domain, ', ') sites, "
+                    f"count(DISTINCT src_ip) ips, count(DISTINCT id) n FROM events LEFT JOIN LATERAL "
+                    f"jsonb_array_elements_text(CASE WHEN jsonb_typeof(data->'meta'->'target_uri') = 'array' THEN data->'meta'->'target_uri' ELSE '[]'::jsonb END) u ON true "
+                    f"WHERE {CSL_SEEN} AND action = 'alert' AND (data ? 'meta') GROUP BY 1 ORDER BY 5 DESC LIMIT 25"},
+            {"id": "csl_acq", "tab": "crowdsec", "title": "What CrowdSec reads (metrics, since its start)", "type": "table", "span": 2,
+             "cols": [["source", "Log / source"], ["type", "Type"], ["read", "Lines read", "num"], ["parsed", "Parsed", "num"], ["unparsed", "Not parsed", "num"]],
+             "sql": "SELECT a->>'source' source, a->>'type' type, (a->>'read')::numeric::bigint read, (a->>'parsed')::numeric::bigint parsed, "
+                    "(a->>'unparsed')::numeric::bigint unparsed FROM snapshots s, jsonb_array_elements(CASE WHEN jsonb_typeof(s.data->'acquisition') = 'array' "
+                    "THEN s.data->'acquisition' ELSE '[]'::jsonb END) a WHERE s.key = 'crowdsec_lapi_metrics' AND $1 > 0 ORDER BY 3 DESC LIMIT 30"},
+            {"id": "csl_bouncers", "tab": "crowdsec", "title": "Bouncers asking for decisions", "type": "table",
+             "cols": [["bouncer", "Bouncer"], ["n", "Requests (since start)", "num"]],
+             "sql": "SELECT b.key bouncer, b.value::numeric::bigint n FROM snapshots s, jsonb_each(CASE WHEN jsonb_typeof(s.data->'bouncers') = 'object' "
+                    "THEN s.data->'bouncers' ELSE '{}'::jsonb END) b WHERE s.key = 'crowdsec_lapi_metrics' AND $1 > 0 ORDER BY 2 DESC"},
+            {**log_panel(f"({CSL} OR ({SW} AND action IN ('bouncer_block', 'waf_block')))"), "id": "csl_log", "tab": "crowdsec"},
+            # ------------------------------------------------------------------------------------- fail2ban ---
+            {"id": "f2b_kpi", "tab": "fail2ban", "type": "stat", "span": 3, "sql":
+                f"SELECT count(*) FILTER (WHERE action = 'ban') AS \"Bans\", count(*) FILTER (WHERE action = 'unban') AS \"Unbans\", "
+                f"count(*) FILTER (WHERE action = 'found') AS \"Matches (Found)\", "
+                f"count(DISTINCT src_ip) FILTER (WHERE action = 'ban') AS \"Banned IPs\", "
+                f"(SELECT count(*) FROM {F2B_STATE} st WHERE action <> 'unban') AS \"Banned now\", "
+                f"count(DISTINCT data->>'jail') FILTER (WHERE data ? 'jail') AS \"Active jails\" "
+                f"FROM events WHERE source = 'fail2ban' AND {W}",
+             "drill": {"base": F2B_DRILL, "tiles": {"Bans": {"action": "ban"}, "Unbans": {"action": "unban"},
+                                                    "Matches (Found)": {"action": "found"}, "Banned IPs": {"action": "ban"},
+                                                    "Banned now": {"action": "ban,restore_ban", "hours": 24 * 30}}}},
+            {"id": "f2b_time", "tab": "fail2ban", "title": "Bans per jail", "type": "timeseries", "span": 2,
+             "drill": {"base": {**F2B_DRILL, "action": "ban"}, "series": "d_jail"},
+             "sql": f"SELECT {B} t, coalesce(data->>'jail', '?') series, count(*) v FROM events WHERE source = 'fail2ban' AND action = 'ban' AND {W} GROUP BY 1, 2 ORDER BY 1"},
+            {"id": "f2b_act", "tab": "fail2ban", "title": "What fail2ban did", "type": "pie", "drill": {"base": F2B_DRILL, "by": "action"},
+             "sql": f"SELECT coalesce(action, 'other') label, count(*) v FROM events WHERE source = 'fail2ban' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 8"},
+            {"id": "f2b_jails", "tab": "fail2ban", "title": "Jails", "type": "table", "span": 3, "drill": {"base": F2B_DRILL, "by": {"d_jail": "jail"}},
+             "cols": [["jail", "Jail"], ["found", "Matches", "num"], ["bans", "Bans", "num"], ["ips", "Banned IPs", "num"], ["now", "Banned now", "num"], ["last", "Last ban", "ago"]],
+             "sql": f"SELECT j.jail, count(*) FILTER (WHERE e.action = 'found') found, count(*) FILTER (WHERE e.action = 'ban') bans, "
+                    f"count(DISTINCT e.src_ip) FILTER (WHERE e.action = 'ban') ips, "
+                    f"(SELECT count(*) FROM {F2B_STATE} st WHERE st.jail = j.jail AND st.action <> 'unban') now, "
+                    f"max(e.ts) FILTER (WHERE e.action = 'ban') last "
+                    f"FROM (SELECT DISTINCT data->>'jail' jail FROM events WHERE source = 'fail2ban' AND data ? 'jail' AND ts > now() - interval '30 days') j "
+                    f"LEFT JOIN events e ON e.source = 'fail2ban' AND e.data->>'jail' = j.jail AND e.ts > now() - make_interval(secs => $1) "
+                    f"GROUP BY 1 ORDER BY 3 DESC, 2 DESC LIMIT 40"},
+            {"id": "f2b_now", "tab": "fail2ban", "title": "Banned now", "type": "table", "span": 2, "drill": {"base": F2B_DRILL, "by": {"ip": "ip"}},
+             "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["jail", "Jail"], ["since", "Since", "time"]],
+             "sql": f"SELECT host(src_ip) ip, src_country country, jail, ts since FROM {F2B_STATE} st WHERE action <> 'unban' AND $1 > 0 ORDER BY ts DESC LIMIT 50"},
+            {"id": "f2b_countries", "tab": "fail2ban", "title": "Banned by country", "type": "hbar", "drill": {"base": {**F2B_DRILL, "action": "ban"}, "by": "country"},
+             "sql": f"SELECT src_country label, count(*) v FROM events WHERE source = 'fail2ban' AND action = 'ban' AND src_country IS NOT NULL AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 12"},
+            {"id": "f2b_ips", "tab": "fail2ban", "title": "Top offenders", "type": "table", "span": 3, "drill": {"base": F2B_DRILL, "by": {"ip": "ip"}},
+             "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["jails", "Jails"], ["found", "Matches", "num"], ["bans", "Bans", "num"],
+                      ["web", "Web requests", "num"], ["last", "Last", "ago"]],
+             "sql": f"SELECT host(e.src_ip) ip, max(e.src_country) country, string_agg(DISTINCT e.data->>'jail', ', ') jails, "
+                    f"count(*) FILTER (WHERE e.action = 'found') found, count(*) FILTER (WHERE e.action = 'ban') bans, "
+                    f"(SELECT count(*) FROM events w WHERE w.src_ip = e.src_ip AND {SW.replace('source', 'w.source').replace('program', 'w.program')} "
+                    f"AND w.ts > now() - make_interval(secs => $1)) web, max(e.ts) last "
+                    f"FROM events e WHERE e.source = 'fail2ban' AND e.src_ip IS NOT NULL AND e.action IN ('found', 'ban') "
+                    f"AND e.ts > now() - make_interval(secs => $1) GROUP BY e.src_ip ORDER BY 5 DESC, 4 DESC LIMIT 25"},
+            {**log_panel("source = 'fail2ban' AND action IS NOT NULL"), "id": "f2b_log", "tab": "fail2ban"},
+            # ------------------------------------------------------------------------------------- Honeypot ---
+            {"id": "hp_kpi", "tab": "honeypot", "type": "stat", "span": 3, "sql":
+                f"SELECT count(*) AS \"Hits\", count(DISTINCT src_ip) AS \"IPs\", count(DISTINCT src_country) AS \"Countries\", "
+                f"count(DISTINCT src_ip) FILTER (WHERE {PRIV}) AS \"From inside\", "
+                f"count(*) FILTER (WHERE source = 'fail2ban' AND action = 'ban') AS \"Bans by honeypot jails\", "
+                "(SELECT count(*) FROM alerts WHERE status = 'open' AND rule = 'honeypot') AS \"Open honeypot alerts\" "
+                f"FROM events WHERE {HP} AND {W}",
+             "drill": {"base": HP_DRILL, "tiles": {"Bans by honeypot jails": {"source": "fail2ban", "d_honeypot": "true", "action": "ban"},
+                                                   "Open honeypot alerts": {"url": "/alerts"}}}},
+            {"id": "hp_time", "tab": "honeypot", "title": "Honeypot hits over time", "type": "timeseries", "span": 3, "drill": {"base": HP_DRILL},
+             "sql": f"SELECT {B} t, CASE WHEN source = 'fail2ban' THEN 'fail2ban ' || coalesce(action, '') ELSE 'web requests' END series, count(*) v "
+                    f"FROM events WHERE {HP} AND {W} GROUP BY 1, 2 ORDER BY 1"},
+            {"id": "hp_ips", "tab": "honeypot", "title": "Who touched the honeypot", "type": "table", "span": 3, "drill": {"base": HP_DRILL, "by": {"ip": "ip"}},
+             "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["hits", "Hits", "num"], ["paths", "Paths"], ["ua", "User agent"],
+                      ["other", "Other requests", "num"], ["first", "First", "time"], ["last", "Last", "ago"]],
+             "sql": "SELECT host(h.src_ip) ip, max(h.src_country) country, count(*) hits, left(string_agg(DISTINCT h.data->>'path', ' · '), 200) paths, "
+                    "left(max(h.data->>'user_agent'), 100) ua, (SELECT count(*) FROM events o WHERE o.src_ip = h.src_ip AND o.source = 'nginx' "
+                    "AND coalesce(o.data->>'honeypot', '') <> 'true' AND o.ts > now() - make_interval(secs => $1)) other, min(h.ts) first, max(h.ts) last "
+                    "FROM events h WHERE h.source IN ('nginx', 'fail2ban') AND h.data->>'honeypot' = 'true' AND h.src_ip IS NOT NULL "
+                    "AND h.ts > now() - make_interval(secs => $1) GROUP BY h.src_ip ORDER BY 3 DESC LIMIT 50"},
+            {"id": "hp_paths", "tab": "honeypot", "title": "Trap paths hit", "type": "hbar", "drill": {"base": HP_DRILL},
+             "sql": f"SELECT left(coalesce(data->>'path', data->>'jail', '?'), 80) label, count(*) v FROM events WHERE {HP} AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 15"},
+            {"id": "hp_countries", "tab": "honeypot", "title": "By country", "type": "hbar", "drill": {"base": HP_DRILL, "by": "country"},
+             "sql": f"SELECT src_country label, count(*) v FROM events WHERE {HP} AND src_country IS NOT NULL AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 12"},
+            {"id": "hp_ua", "tab": "honeypot", "title": "User agents", "type": "table", "drill": {"base": HP_DRILL},
+             "cols": [["ua", "User agent"], ["n", "Hits", "num"]],
+             "sql": f"SELECT left(coalesce(data->>'user_agent', '-'), 120) ua, count(*) n FROM events WHERE {HP} AND source = 'nginx' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 20"},
+            {**log_panel(HP), "id": "hp_log", "tab": "honeypot"},
         ]},
     "threats": {
         # one page, four tabs: Main = all three sources together, then one tab per source (see run_dashboard)
@@ -172,7 +386,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                 f"count(*) FILTER (WHERE {IDS} AND {IDS_DROP}) AS \"Suricata dropped\", "
                 f"(SELECT count(*) FROM events WHERE {CS_SEEN} AND action = 'alert') AS \"CrowdSec alerts\", "
                 # active now (the API lists the current ones): a ban older than the period still counts
-                "(SELECT jsonb_array_length(data) FROM snapshots WHERE key = 'crowdsec_decisions' "
+                "(SELECT sum(jsonb_array_length(data))::bigint FROM snapshots WHERE key IN ('crowdsec_decisions', 'crowdsec_lapi_decisions') "
                 "AND jsonb_typeof(data) = 'array') AS \"CrowdSec active decisions\", "
                 f"count(*) FILTER (WHERE {CS_FW}) AS \"CrowdSec firewall blocks\", "
                 f"count(*) FILTER (WHERE {QF}) AS \"Q-Feeds hits\", "
@@ -222,7 +436,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             # -------------------------------------------------------------------------------------- CrowdSec ---
             {"id": "cs_kpi", "tab": "crowdsec", "type": "stat", "span": 3, "sql":
                 f"SELECT (SELECT count(*) FROM events WHERE {CS_SEEN} AND action = 'alert') AS \"Alerts\", "
-                "(SELECT jsonb_array_length(data) FROM snapshots WHERE key = 'crowdsec_decisions' "
+                "(SELECT sum(jsonb_array_length(data))::bigint FROM snapshots WHERE key IN ('crowdsec_decisions', 'crowdsec_lapi_decisions') "
                 "AND jsonb_typeof(data) = 'array') AS \"Active decisions\", "
                 f"count(*) AS \"Firewall blocks\", count(DISTINCT CASE WHEN direction = 'out' THEN dst_ip ELSE src_ip END) AS \"Blocked IPs\", "
                 f"({BL.format('crowdsec')}->>'size')::bigint AS \"Blocklist IPs\", "
@@ -241,7 +455,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                       ["origin", "Origin"], ["ends", "Time left", "left"], ["id", "", "unban"]],
              "sql": "SELECT d->>'id' id, d->>'lg_ip' o_ip, coalesce(d->>'lg_ip', d->>'lg_value', d->>'scope_value') ip, d->>'country' country, "
                     "coalesce(d->>'action', d->>'type', 'ban') \"type\", coalesce(d->>'reason', d->>'scenario') reason, "
-                    "coalesce(d->>'source', d->>'origin') origin, d->>'lg_until' ends "
+                    "coalesce(d->>'source', d->>'origin') origin, d->>'lg_until' ends, 'opnsense' unban_src "
                     "FROM snapshots s, jsonb_array_elements(CASE WHEN jsonb_typeof(s.data) = 'array' THEN s.data ELSE '[]'::jsonb END) d "
                     "WHERE s.key = 'crowdsec_decisions' AND $1::float8 IS NOT NULL ORDER BY ends DESC NULLS LAST LIMIT 500"},
             {"id": "cs_time", "tab": "crowdsec", "title": "CrowdSec over time", "type": "timeseries", "span": 3,
@@ -458,6 +672,25 @@ def sql_order(sql: str, columns: list[str]) -> dict[str, Any] | None:
     return {"k": col, "dir": -1 if desc else 1} if col in columns else None
 
 
+async def run_log(name: str, panel_id: str, hours: float, scope: str) -> list[dict[str, Any]]:
+    """One live log of a dashboard with only local / only non-local (``public``) source addresses: the newest events
+    of that kind, not the unfiltered log with some rows hidden. KeyError: no such live log."""
+    from .event_filter import src_scope_sql
+
+    panel = next((p for p in DASHBOARDS[name]["panels"] if p["id"] == panel_id and p["type"] == "log"), None)
+    if panel is None:
+        raise KeyError(panel_id)
+    args: list[Any] = [hours * 3600]
+
+    def arg(v: Any) -> str:
+        args.append(v)
+        return f"${len(args)}"
+
+    sql = log_sql(panel["where"], panel["limit"], src_scope_sql(scope, arg))
+    async with db.heavy(hours), db.pool().acquire() as conn:
+        return db.records(await conn.fetch(sql, *args))
+
+
 def step_for(hours: float) -> int:
     """Chart bucket size: about 60 bars. From 2 days on whole hours (7 days: 3 h, 30 days: 12 h), so charts can be
     drawn from the hourly counts."""
@@ -491,7 +724,7 @@ async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] 
         sql = panel["sql"]
         fast = hours >= rollup.MIN_HOURS and (name, panel["id"]) in ROLLUP_PANELS
         args = [secs, step] if "$2" in sql else [secs]
-        out = {k: v for k, v in panel.items() if k != "sql"}
+        out = {k: v for k, v in panel.items() if k not in ("sql", "where", "limit")}
         try:
             async with db.heavy(hours), db.pool().acquire() as conn:
                 out["rows"] = db.records(await (rollup.fetch(conn, sql, *args) if fast else conn.fetch(sql, *args)))

@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="top"><h1>Snooze &amp; maintenance</h1><span class="muted small" id="updated"></span></header>
+<p class="small muted">For a while, alerts that match are stored silently: not shown as open and not mailed - but they
+  still count for attack chains and the risk score, so a real attack during the maintenance is not lost. Alerts that
+  were already open stay open, but are not mailed while the snooze lasts. For something that should stay quiet for
+  good, use <i>Mute similar…</i> on the Alerts page instead.</p>
+<div class="card"><h3>Active and planned</h3><div id="active"></div></div>
+<div class="card" style="margin-top:14px" id="form-card">
+  <h3 id="form-title">New snooze</h3>
+  <form id="f" class="filter-form" onsubmit="return false">
+    <input type="hidden" name="sid">
+    <label>Name <span class="muted small">(what is going on)</span><input name="name" placeholder="e.g. Unraid parity check, firmware update OPNsense"></label>
+    <label>How long
+      <span class="inline-pair"><select name="minutes">
+        <option value="30">30 minutes</option><option value="60">1 hour</option><option value="120" selected>2 hours</option>
+        <option value="240">4 hours</option><option value="480">8 hours</option><option value="1440">1 day</option>
+        <option value="4320">3 days</option><option value="10080">1 week</option><option value="">until the end time →</option>
+      </select><input type="datetime-local" name="ends_at" title="End time (with 'until the end time')"></span></label>
+    <label>Start <span class="muted small">(empty = now; or plan a maintenance window)</span><input type="datetime-local" name="starts_at"></label>
+    <label>IP addresses / networks <span class="muted small">(source or destination; empty = every address)</span>
+      <input name="networks" placeholder="e.g. 192.168.1.10, 192.168.30.0/24"></label>
+    <label>Add a device's addresses<select id="dev"><option value="">pick a device…</option></select></label>
+    <div class="full"><div class="lbl">Rules <span class="muted small">(none ticked = all rules)</span></div>
+      <div id="rules" class="rule-groups"></div></div>
+  </form>
+  <div class="filters" style="margin-top:12px">
+    <button type="button" id="save">Snooze</button>
+    <button type="button" class="secondary" id="cancel" hidden>Cancel editing</button>
+  </div>
+  <div class="small" id="msg"></div>
+</div>
+<div class="card" style="margin-top:14px"><h3>Ended <span class="muted small">last 30 days</span></h3><div id="ended"></div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+let list = [], labels = {}, devices = [];
+const f = document.getElementById("f");
+const local = iso => { if (!iso) return ""; const d = new Date(iso); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+const toIso = v => v ? new Date(v).toISOString() : null;
+const what = s => {
+  const parts = [];
+  if (s.networks) parts.push(`addresses <span class="mono">${LG.esc(s.networks)}</span>`);
+  if ((s.rules || []).length) parts.push(`rules ${s.rules.map(r => `<span class="pill" title="${LG.esc(r)}">${LG.esc(labels[r] || r)}</span>`).join("")}`);
+  return parts.length ? parts.join(" · ") : `<b>every alert</b>`;
+};
+async function load() {
+  try { list = (await LG.api("/api/snoozes")).snoozes; } catch (e) { document.getElementById("active").innerHTML = `<div class="empty bad">${LG.esc(e.message)}</div>`; return; }
+  document.getElementById("updated").textContent = "updated " + LG.clock();
+  const cols = ended => [
+    { k: "name", l: "Name", f: (v, s) => `<b>${LG.esc(v || "snooze #" + s.id)}</b>${s.state === "planned" ? ` <span class="pill">planned</span>` : s.state === "active" ? ` <span class="badge ok">active</span>` : ""}` },
+    { k: "starts_at", l: "From", s: true, f: v => LG.esc(LG.time(v)) },
+    { k: "ends_at", l: "Until", s: true, f: v => `${LG.esc(LG.time(v))}${ended ? "" : ` <span class="muted small">(${LG.left(v)})</span>`}` },
+    { k: "networks", l: "Covers", f: (v, s) => what(s) },
+    { k: "hits", l: "Alerts snoozed", num: true },
+    { k: "created_by", l: "By" },
+    { k: "id", l: "", f: v => ended ? `<button type="button" class="secondary small" data-again="${v}" title="A new snooze with the same conditions">Again…</button> <button type="button" class="secondary small" data-del="${v}">Delete</button>`
+      : `<button type="button" class="secondary small" data-edit="${v}">Edit</button> <button type="button" class="secondary small" data-end="${v}">End now</button>` },
+  ];
+  LG.table("#active", cols(false), list.filter(s => s.state !== "ended"), "Nothing is snoozed.");
+  LG.table("#ended", cols(true), list.filter(s => s.state === "ended"), "None.");
+  document.querySelectorAll("[data-end]").forEach(b => b.onclick = async () => {
+    await LG.api(`/api/snoozes/${b.dataset.end}/end`, { method: "POST" }); load();
+  });
+  document.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    if (!confirm("Delete this snooze from the list?")) return;
+    await LG.api(`/api/snoozes/${b.dataset.del}`, { method: "DELETE" }); load();
+  });
+  document.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => edit(list.find(s => s.id === Number(b.dataset.edit)), true));
+  document.querySelectorAll("[data-again]").forEach(b => b.onclick = () => edit(list.find(s => s.id === Number(b.dataset.again)), false));
+}
+function edit(s, existing) {
+  f.sid.value = existing ? s.id : "";
+  f.name.value = s.name || "";
+  f.networks.value = s.networks || "";
+  f.querySelectorAll('input[name="rules"]').forEach(c => c.checked = (s.rules || []).includes(c.value));
+  document.querySelectorAll("#rules details").forEach(d => d.open = !!d.querySelector("input:checked"));
+  if (existing) { f.minutes.value = ""; f.starts_at.value = local(s.starts_at); f.ends_at.value = local(s.ends_at); }
+  else { f.minutes.value = "120"; f.starts_at.value = ""; f.ends_at.value = ""; }
+  document.getElementById("form-title").textContent = existing ? `Edit snooze #${s.id}` : "New snooze";
+  document.getElementById("save").textContent = existing ? "Save" : "Snooze";
+  document.getElementById("cancel").hidden = !existing;
+  document.getElementById("form-card").scrollIntoView({ behavior: "smooth" });
+}
+document.getElementById("cancel").onclick = () => edit({}, false);
+f.minutes.onchange = () => { if (!f.minutes.value && !f.ends_at.value) f.ends_at.focus(); };
+f.ends_at.oninput = () => { if (f.ends_at.value) f.minutes.value = ""; };
+document.getElementById("save").onclick = async () => {
+  const msg = document.getElementById("msg");
+  const body = { name: f.name.value, networks: f.networks.value, starts_at: toIso(f.starts_at.value),
+                 rules: [...f.querySelectorAll('input[name="rules"]:checked')].map(c => c.value) };
+  if (f.minutes.value) body.minutes = Number(f.minutes.value); else body.ends_at = toIso(f.ends_at.value);
+  if (!body.networks && !body.rules.length && !confirm("No address and no rule: this snoozes EVERY alert for that time. Continue?")) return;
+  try {
+    const sid = f.sid.value;
+    await LG.api(sid ? `/api/snoozes/${sid}` : "/api/snoozes", { method: sid ? "PUT" : "POST", body });
+  } catch (e) { msg.className = "small err"; msg.textContent = e.message; return; }
+  msg.className = "small ok-msg"; msg.textContent = "Saved.";
+  edit({}, false); load();
+};
+document.getElementById("dev").onchange = e => {
+  const d = devices.find(x => x.mac === e.target.value);
+  if (d) {
+    const have = f.networks.value.split(",").map(x => x.trim()).filter(Boolean);
+    f.networks.value = [...new Set([...have, ...[d.ip, ...(d.other_ips || [])].filter(Boolean)])].join(", ");
+    if (!f.name.value) f.name.value = `Maintenance ${d.hostname || d.ip}`;
+  }
+  e.target.value = "";
+};
+(async () => {
+  const [flt, devs] = await Promise.all([LG.api("/api/alert-filters"), LG.api("/api/devices?hours=1").catch(() => [])]);
+  Object.values(flt.rules).flat().forEach(r => labels[r.rule] = r.label);
+  document.getElementById("rules").innerHTML = Object.entries(flt.rules).map(([g, rules]) =>
+    `<details><summary>${LG.esc(g)}</summary>` +
+    rules.map(r => `<label class="chk"><input type="checkbox" name="rules" value="${LG.esc(r.rule)}"> ${LG.esc(r.label)}</label>`).join("") + `</details>`).join("");
+  devices = (Array.isArray(devs) ? devs : devs.devices || []).filter(d => d.ip).sort((a, b) => (a.hostname || a.ip).localeCompare(b.hostname || b.ip));
+  document.getElementById("dev").innerHTML = `<option value="">pick a device…</option>` +
+    devices.map(d => `<option value="${LG.esc(d.mac)}">${LG.esc(d.hostname || d.ip)} (${LG.esc(d.ip)})</option>`).join("");
+  // prefilled from the Alerts / Devices page: ?ip=…&rule=…&name=…&minutes=…
+  const q = LG.qs();
+  if (q.ip || q.rule || q.name) {
+    edit({ name: q.name || "", networks: q.ip || "", rules: q.rule ? q.rule.split(",") : [] }, false);
+    if (q.minutes) f.minutes.value = q.minutes;
+  }
+  load();
+})();
+LG.autoRefresh(load, 60000);
+</script>
+{% endblock %}

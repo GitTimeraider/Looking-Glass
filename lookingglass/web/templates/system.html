@@ -6,7 +6,7 @@
   <div class="seg" id="range"><button data-v="1">1h</button><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button></div>
 </header>
 <div class="tabs" id="tabs">
-  <button data-t="overview" class="on">Overview</button><button data-t="system">System &amp; network</button>
+  <button data-t="overview" class="on">Overview</button><button data-t="system">System &amp; network</button><button data-t="wan">WAN quality</button>
 </div>
 <section data-s="overview">
 <div class="grid g3">
@@ -38,17 +38,35 @@
     <div class="card"><h3>Interfaces</h3><div id="ifs"></div></div>
   </div>
 </section>
+<section data-s="wan" id="wan" hidden>
+  <div class="filters" style="align-items:center">
+    <p class="small muted" style="margin:0;flex:1;min-width:260px">How every gateway does over days and months, from OPNsense's gateway
+      monitor (dpinger): latency, jitter, packet loss and how often it was down - kept per day for two years. Alerts when a
+      line is far slower than its own normal or keeps losing packets: <a href="/settings#opnsense">Settings › OPNsense › WAN</a>.
+      The last hours are on the Overview tab.</p>
+    <div class="seg" id="wan-range"><button data-v="30">30d</button><button data-v="90">90d</button><button data-v="365">1y</button><button data-v="730">2y</button></div>
+  </div>
+  <div id="wan-none" class="card" hidden>No gateway data yet. Looking Glass reads it from OPNsense every poll
+    (<a href="/settings#opnsense">Settings › OPNsense</a>); the gateway needs monitoring on (OPNsense web UI: <i>System ›
+    Gateways › Configuration</i> › the gateway › <i>Disable Gateway Monitoring</i> unticked).</div>
+  <div id="wan-gws"></div>
+  <div class="card" id="wan-others" hidden><h3>Hidden and ignored gateways</h3>
+    <p class="small muted"><b>Hidden</b>: still collected and alerted, just not shown here. <b>Ignored</b>: not collected any
+      more and never alerted (also no "gateway down / degraded" alerts) - for gateways you do not use.</p><div id="wan-others-list"></div></div>
+</section>
 {% endblock %}
 {% block scripts %}
+<script src="/static/wan.js?v={{ asset_v }}"></script>
 <script>
-let hours = Number(localStorage.getItem("lg-hours-hw") || 24), tab = location.hash === "#system" ? "system" : "overview";
+let hours = Number(localStorage.getItem("lg-hours-hw") || 24), tab = ["#system", "#wan"].includes(location.hash) ? location.hash.slice(1) : "overview";
 LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours-hw", v); charts(); });
 function showTab(t) {
   tab = t;
   document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x.dataset.t === t));
   document.querySelectorAll("section[data-s]").forEach(s => s.hidden = s.dataset.s !== t);
   history.replaceState(null, "", t === "overview" ? location.pathname : "#" + t);
-  charts();
+  document.getElementById("range").hidden = t === "wan";  // the WAN tab has its own periods (days)
+  if (t === "wan") WAN.start(); else charts();
 }
 document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => showTab(b.dataset.t));
 const pct = v => Math.round(v) + "%";
@@ -138,6 +156,7 @@ async function overview() {
 }
 async function refresh() { await Promise.all([overview(), now()]); }
 showTab(tab); refresh();
-LG.autoRefresh(() => { refresh(); charts(); }, 60000);
+LG.autoRefresh(() => { if (tab !== "wan") { refresh(); charts(); } }, 60000);
+LG.autoRefresh(() => { if (tab === "wan") WAN.load(); }, 300000);
 </script>
 {% endblock %}

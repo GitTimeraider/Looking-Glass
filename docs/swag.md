@@ -1,0 +1,176 @@
+# SWAG, CrowdSec, fail2ban and honeypot (Docker)
+
+[← Back to the README](../README.md)
+
+Reading a [SWAG](https://docs.linuxserver.io/general/swag/) reverse proxy (nginx + fail2ban) and a
+[CrowdSec](https://www.crowdsec.net/) container that run on the **same Docker host** as Looking Glass (e.g. an Unraid
+server). Read only: nothing is changed in SWAG or CrowdSec.
+
+| What | How | What you get |
+|---|---|---|
+| SWAG nginx access logs | the log file, from SWAG's log folder mounted read-only | every request: site, path, status, client, country, user agent, attack patterns (SQLi, RCE, traversal, scanners) |
+| SWAG nginx error logs | the same | errors, rate limiting, `access forbidden`, **CrowdSec bouncer blocks** and **AppSec / WAF blocks** of SWAG's crowdsec mod |
+| fail2ban (inside SWAG) | the same (`fail2ban/fail2ban.log`) | matches, bans, unbans per jail, *banned now* |
+| Honeypot | paths, host names, jails or log files you mark as traps | every hit, who it was, what they tried |
+| CrowdSec (Docker) | its Local API (machine login and/or bouncer key) + metrics | alerts with scenario, AS, country, target site / URI, AppSec rule, decisions; active decisions incl. the community blocklist; which logs CrowdSec reads, AppSec counters, which bouncers are alive |
+
+Everything shows up under **Docker security › SWAG & CrowdSec** (tabs *Web*, *CrowdSec*, *fail2ban*, *Honeypot*).
+SWAG's requests are also part of the *Web server* dashboard, the Threats page's CrowdSec tab, the reports, the AI
+analyst and the web attack / scanner / CrowdSec detections - exactly like the OPNsense nginx and CrowdSec plugins
+(SWAG's events have program `swag`, Docker-CrowdSec's `crowdsec-lapi`).
+
+## 1. Give Looking Glass SWAG's log folder
+
+SWAG keeps all logs in its `/config/log` folder: `nginx/access.log`, `nginx/error.log`, `fail2ban/fail2ban.log`.
+
+**Unraid web UI** › *Docker* › click the **Looking Glass** icon › *Edit* › at the bottom **Add another Path, Port,
+Variable, Label or Device**:
+
+* Config Type: **Path**
+* Name: `SWAG logs`
+* Container Path: `/swag/log`
+* Host Path: SWAG's log folder, normally `/mnt/user/appdata/swag/log`
+* Access Mode: **Read Only**
+
+*Add*, then *Apply* (the container is recreated).
+
+**docker compose instead** (file `docker-compose.yml` of Looking Glass, on the Docker host) - add under
+`looking-glass:` › `volumes:` and run `docker compose up -d` in that folder:
+
+```yaml
+      - /mnt/user/appdata/swag/log:/swag/log:ro   # SWAG's /config/log
+```
+
+Looking Glass runs as user 10001 (or your PUID). SWAG's logs are normally readable by everyone (`-rw-r--r--`). If the
+test below says *permission denied*, run this in a **shell on the Docker host** (Unraid: *Terminal* icon top right):
+
+```bash
+chmod -R o+rX /mnt/user/appdata/swag/log
+```
+
+## 2. Get a CrowdSec login for Looking Glass
+
+In a **shell on the Docker host** (`crowdsec` = the name of your CrowdSec container, see `docker ps`):
+
+```bash
+docker exec crowdsec cscli machines add lookingglass --password 'choose-a-long-password' -f /dev/null
+```
+
+This is the login for alerts (the `-f /dev/null` keeps CrowdSec's own credentials file untouched). It is also what
+the **Unban** button of *SWAG & CrowdSec › CrowdSec › Active bans* uses (`cscli decisions delete --id`) - without the
+machine login the list is shown but has no Unban buttons. Optional - the active decisions including the community
+blocklist:
+
+```bash
+docker exec crowdsec cscli bouncers add lookingglass
+```
+
+It prints an API key **once**; copy it.
+
+Looking Glass must reach CrowdSec's API (port 8080 inside the CrowdSec container):
+
+* **Same Docker network** (best): on Unraid, *Docker* › Looking Glass › *Edit* › *Network Type*: the custom network
+  SWAG and CrowdSec use (e.g. `proxynet`). The URL is then `http://crowdsec:8080`.
+* **Otherwise**: map the port in the CrowdSec container (e.g. host 8081 → container 8080) and use
+  `http://<server-ip>:8081`.
+
+Optional metrics (port 6060 inside the CrowdSec container, same choice as above): CrowdSec's `config.yaml` needs
+`prometheus:` › `listen_addr: 0.0.0.0` (the default in the Docker image).
+
+## 3. Settings in Looking Glass
+
+**Looking Glass web UI** › *Settings* › **SWAG & CrowdSec**:
+
+* **SWAG log folder**: `/swag/log`
+* **nginx access logs / error logs / fail2ban log**: keep the defaults unless you changed SWAG's log files. Several
+  files and `*` work (`nginx/*access.log` for per-site logs).
+* **Honeypot** (optional, see below)
+* **CrowdSec Local API URL**: `http://crowdsec:8080`; **Machine name** `lookingglass` + its **password**; optionally
+  the **Bouncer API key** and the **metrics URL** `http://crowdsec:6060/metrics`.
+* **Test connection** - lists every log file (readable? lines understood?) and every CrowdSec part. Then **Save**.
+
+Also check *Settings › Ingestion & network › Time zone*: nginx's error log and fail2ban write local time without a
+zone, so it must be the time zone of the SWAG container (its `TZ` variable). Access-log times carry their own zone.
+
+Then **Setup & status** shows *SWAG (nginx + fail2ban)* and *CrowdSec (Docker)* with what arrives and what is missing
+(for example: CrowdSec does not read SWAG's logs, or no bouncer has asked CrowdSec for decisions - SWAG's crowdsec
+mod is not working).
+
+**Active bans** (tab *CrowdSec*) lists the decisions in force - address, country, type, scenario, origin and the
+**time left** - refreshed at every poll (*Poll interval*). **Unban** asks for confirmation, then removes the decision
+in CrowdSec; SWAG's bouncer lets the address in again almost at once (live mode, the default; it
+caches an answer for `CACHE_EXPIRATION` seconds) or at its next update (stream mode: `UPDATE_FREQUENCY`). CrowdSec can ban the address again if it keeps misbehaving. Community-blocklist
+bans (CAPI) are not listed there and cannot be unbanned one by one - use an allowlist in CrowdSec for those. fail2ban
+bans (tab *fail2ban*) are read from its log; lifting one needs `docker exec swag fail2ban-client set <jail> unbanip <ip>`
+in a shell on the Docker host.
+
+The first time a log is read, its last 5 MB are read too (*First read: older lines*), so the dashboards are not empty;
+CrowdSec's alerts of the last 7 days are read on the first poll. After that only new lines / alerts. Where each file
+was read up to is stored, so a restart neither misses nor repeats lines, and log rotation is followed.
+
+## Honeypot
+
+A honeypot is something nobody legitimate ever touches, so every hit is a scanner or an intruder. In *Settings › SWAG
+& CrowdSec › Honeypot*, one per line:
+
+| Line | Means |
+|---|---|
+| `/wp-login.php` | a request path; without `*` a prefix (also `/wp-login.php?x`), with `*` a pattern (`/secret*/admin`) |
+| `honeypot.example.com` | every request to that host name (a decoy subdomain) |
+| `jail:nginx-honeypot` | every match / ban of that fail2ban jail |
+| `file:nginx/honeypot.log` | everything in that log file (a decoy site with its own `access_log`) |
+
+Jails and log files with *honeypot* in their name count automatically.
+
+Hits are marked (`data.honeypot`, tag `honeypot`) and shown under *SWAG & CrowdSec › Honeypot*. Alerts (rule
+*Honeypot touched*): one per address - **high** from inside your network, from the internet the level of *Honeypot hit
+from the internet: alert* (default low, or off).
+
+A simple decoy in SWAG (file `/config/nginx/site-confs/default.conf` of SWAG, inside its `server { … }` block;
+restart SWAG afterwards with `docker restart swag`): paths that only scanners ask for, logged to their own file:
+
+```nginx
+location ~* ^/(wp-login\.php|xmlrpc\.php|phpmyadmin|\.env|\.git/) {
+    access_log /config/log/nginx/honeypot.log;
+    return 404;
+}
+```
+
+Then add `file:nginx/honeypot.log` and keep `nginx/access.log` in the access logs (those requests are then only in
+`honeypot.log` - add it to CrowdSec's `acquis.yaml` too if CrowdSec should see them). To also ban them, a fail2ban jail named e.g. `nginx-honeypot` on that file counts automatically.
+
+## Optional: the site name in every request
+
+SWAG's default access log has no host name, so the *Sites* chart shows *(not logged)*. To get it without changing the
+log CrowdSec reads, let nginx write a second log for Looking Glass. In SWAG's `/config/nginx/nginx.conf`, inside
+`http { … }`:
+
+```nginx
+log_format lookingglass '$host $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"';
+access_log /config/log/nginx/lookingglass.log lookingglass;
+```
+
+Restart SWAG (`docker restart swag` in a shell on the Docker host), then in *Settings › SWAG & CrowdSec › nginx access
+logs* replace `nginx/access.log` by `nginx/lookingglass.log` (not both: every request would be counted twice).
+SWAG's logrotate already rotates every `*.log` in that folder.
+
+## Alerts
+
+| Rule (*Settings › Alert filters › SWAG & CrowdSec*) | Severity |
+|---|---|
+| fail2ban banned an internet address / an address inside | the level of *fail2ban ban of an internet address: alert* (default low, or off) / **high** |
+| Honeypot touched from the internet / from inside | *Honeypot hit from the internet: alert* (default low) / **high** |
+| CrowdSec alert for an internet / internal address | low (handled) / high - the same rule as the OPNsense plugin |
+| Web attacks and scanners on SWAG | the same rules and settings as nginx on OPNsense (*Settings › Data & detection › Web attacks*) |
+| CrowdSec Local API unreachable for 10 minutes | medium, closes by itself |
+
+## Troubleshooting
+
+* **"… does not exist in the Looking Glass container"** - the volume of step 1 is missing or has another container
+  path than the one in Settings.
+* **CrowdSec: "wrong machine name / password"** - list the machines in a shell on the Docker host with
+  `docker exec crowdsec cscli machines list`; a machine must be *validated* (`cscli machines validate lookingglass`).
+* **CrowdSec: ConnectError / timeout** - Looking Glass cannot reach the container: same Docker network, or the host
+  IP and the mapped port (step 2).
+* **Development**: `python tools/mock_crowdsec.py --port 18080` is a fake Local API (machine `lookingglass` /
+  `test-pass`, bouncer key `test-bouncer-key`, metrics at `/metrics`).

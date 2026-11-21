@@ -21,9 +21,14 @@ class KeyFileError(RuntimeError):
     pass
 
 
+def key_path(data_dir: str) -> Path:
+    """Where the key file is (``LG_ENCRYPTION_KEY_FILE`` or <data_dir>/lookingglass.key)."""
+    return Path(os.environ.get("LG_ENCRYPTION_KEY_FILE") or Path(data_dir) / "lookingglass.key")
+
+
 def init(data_dir: str) -> None:
     global _fernet
-    path = Path(os.environ.get("LG_ENCRYPTION_KEY_FILE") or Path(data_dir) / "lookingglass.key")
+    path = key_path(data_dir)
     if path.exists():
         key = path.read_bytes().strip()
     else:

@@ -88,6 +88,7 @@ def test_qfeeds_poll_skips_plugin_copies_while_rule_lines_arrive(monkeypatch):
     async def run():
         p = object.__new__(Poller)
         p.settings, p.api, p.writer = Settings(), FakeApi(), Writer()
+        p._newest, p.status = {}, {}
         p.local_ts = lambda s: datetime.now(timezone.utc)
         filterlog.BLOCKLIST_SEEN.clear()
         await p.poll_qfeeds()  # no tagged log lines: the plugin's events are stored, tagged

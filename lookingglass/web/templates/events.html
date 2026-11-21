@@ -6,12 +6,25 @@
     <option value="">all sources</option>
     {% for s in ["firewall","nginx","unbound","crowdsec","suricata","qfeeds","auth","vpn","dhcp","system","unraid","docker"] %}<option>{{ s }}</option>{% endfor %}
   </select>
+  <select name="status" class="web-only" title="Web server answer: status class or code">
+    <option value="">any status</option><option value="2xx">2xx success</option><option value="3xx">3xx redirect</option>
+    <option value="4xx">4xx client error</option><option value="5xx">5xx server error</option>
+    <option value="4xx,5xx">4xx + 5xx (errors)</option><option value="other">no HTTP status (WAF, errors …)</option>
+  </select>
+  <select name="tag" class="web-only" title="Attack / scanner patterns the request matched">
+    <option value="">all requests</option><option value="any">suspicious (any pattern)</option><option value="none">not suspicious</option>
+    {% for t, label in [("scanner_probe", "scanner probe"), ("sensitive_file", "sensitive file"), ("path_traversal", "path traversal"),
+                        ("sqli", "SQL injection"), ("xss", "XSS"), ("rce", "remote code execution"), ("scanner_ua", "scanner user agent")] %}<option value="{{ t }}">{{ label }}</option>{% endfor %}
+  </select>
   <input name="ip" placeholder="any IP (source or destination)" title="IP or CIDR, several: comma separated">
   <input name="src" placeholder="source IP" title="Source IP or CIDR, several: comma separated">
+  <select name="src_scope" title="Local = private (10/8, 172.16/12, 192.168/16, fc00::/7), CGNAT / Tailscale (100.64/10), loopback and link-local addresses">
+    <option value="">any source address</option><option value="local">local sources only</option><option value="public">non-local sources only</option>
+  </select>
   <input name="dst" placeholder="destination IP" title="Destination IP or CIDR, several: comma separated">
   <input name="sport" placeholder="source port" title="Port or range, several: comma separated - e.g. 53, 1024-2048" size="11">
   <input name="dport" placeholder="destination port" title="Port or range, several: comma separated - e.g. 22, 80, 8000-8100" size="13">
-  <input name="action" placeholder="action (block, login_failed, …)">
+  <input name="action" placeholder="action (block, login_failed, http_404, …)" title="Several: comma separated; a * at the end matches the start (http_4* = every 4xx)">
   <input name="q" placeholder="text / domain / user" style="flex:1">
   <select name="min_severity">
     <option value="">any severity</option><option value="3">error+</option><option value="4">warning+</option><option value="5">notice+</option>
@@ -79,6 +92,18 @@ for (const [k, v] of Object.entries(qs)) {
   if (form.elements[k]) form.elements[k].value = v;
   else if (k !== "limit" && k !== "offset") extra[k] = v;
 }
+// web server filters: only with the nginx source (hidden = disabled = not sent); a value from a link that is not in
+// the list (e.g. status=404) is added to it
+for (const k of ["status", "tag"]) {
+  const sel = form.elements[k];
+  if (qs[k] && ![...sel.options].some(o => o.value === qs[k])) sel.add(new Option(qs[k].replaceAll(",", " + "), qs[k], true, true));
+}
+function showWeb() {
+  const on = form.elements.source.value === "nginx" || !!(form.elements.status.value || form.elements.tag.value) && !form.elements.source.value;
+  for (const el of form.querySelectorAll(".web-only")) { el.hidden = !on; el.disabled = !on; }
+}
+form.elements.source.addEventListener("change", showWeb);
+showWeb();
 if (qs.hours && !qs.start && !qs.end && !form.elements.hours.value) form.elements.hours.add(new Option(qs.hours + " hours", qs.hours, true, true));
 let offset = 0, rows = [];
 // the search shown: "Load more" continues it with ITS filters (not what the form says now, if changed without Search),

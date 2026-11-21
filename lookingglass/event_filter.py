@@ -4,7 +4,10 @@ Events button lists).
 ``params``: the search's query parameters - source, ip (either side) / src / dst (comma separated IPs or CIDRs),
 action ("a,b" any of, "http_4*" prefix), q (text), min_severity, hours or start / end (ISO), sport / dport (ports and
 ranges: "22, 8000-8100"; ``port`` = dport, from dashboard links), program, host, domain, user, proto, iface,
-direction, country and ``d_<key>`` for a key inside the event's JSON data (``none`` matches an empty value).
+direction, country, src_scope (``local`` = the source address is a local one - private, CGNAT, loopback,
+link-local - ``public`` = it is any other address; events without a source address match neither), status (web server: "2xx", "4xx,5xx", "404", "other" = not an HTTP answer), tag (web server
+attack / scanner patterns: "any" = suspicious, "none", or "sqli,rce") and ``d_<key>`` for a key inside the event's
+JSON data (``none`` matches an empty value).
 A wrong value raises ValueError with a message for the user.
 """
 from __future__ import annotations
@@ -14,6 +17,21 @@ import re
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
+
+# "local" source addresses: private (RFC 1918 / ULA), CGNAT (also Tailscale), loopback and link-local
+LOCAL_NETS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+              "fc00::/7", "fe80::/10", "::1/128"]
+SRC_SCOPES = ("local", "public")
+
+
+def src_scope_sql(scope: str, arg: Any) -> str:
+    """The condition for ``src_scope`` (local / public); ``arg`` adds a query argument and returns its $n."""
+    if scope not in SRC_SCOPES:
+        raise ValueError("Source: use local or public")
+    nets_arg = arg(LOCAL_NETS)
+    return (f"src_ip <<= ANY({nets_arg}::inet[])" if scope == "local"
+            else f"(src_ip IS NOT NULL AND NOT src_ip <<= ANY({nets_arg}::inet[]))")
+
 
 SIMPLE = {"program": "program", "host": "host", "domain": "domain", "user": "username", "proto": "proto",
           "iface": "interface", "direction": "direction", "country": "src_country"}
@@ -83,6 +101,8 @@ def build(params: Mapping[str, Any], args: list[Any] | None = None) -> tuple[lis
         if (value := get(key)) and value.strip():
             a = arg(nets(value, label))
             where.append("(" + " OR ".join(f"{c} <<= ANY({a}::inet[])" for c in cols) + ")")
+    if scope := (get("src_scope") or "").strip():
+        where.append(src_scope_sql(scope, arg))
     for key, col, label in (("sport", "src_port", "Source port"), ("dport", "dst_port", "Destination port"),
                             ("port", "dst_port", "Destination port")):
         if (value := get(key)) and value.strip():
@@ -97,6 +117,33 @@ def build(params: Mapping[str, Any], args: list[Any] | None = None) -> tuple[lis
         conds = ([f"action = ANY({arg(exact)}::text[])"] if exact else []) + \
                 ([f"action LIKE ANY({arg(prefixes)}::text[])"] if prefixes else [])
         where.append("(" + " OR ".join(conds) + ")")
+    if (status := get("status")) and status.strip():  # web server answers: classes (4xx), codes (404), other
+        exact, prefixes, other = [], [], False
+        for part in re.split(r"[,\s]+", status.strip().lower()):
+            if re.fullmatch(r"[1-5]xx", part):
+                prefixes.append(f"http_{part[0]}%")
+            elif re.fullmatch(r"[1-5]\d\d", part):
+                exact.append(f"http_{part}")
+            elif part == "other":
+                other = True
+            elif part:
+                raise ValueError(f"Status: '{part}' is not a status class (2xx, 4xx …) or code (404)")
+        conds = ([f"action = ANY({arg(exact)}::text[])"] if exact else []) + \
+                ([f"action LIKE ANY({arg(prefixes)}::text[])"] if prefixes else []) + \
+                (["coalesce(left(action, 5), '') <> 'http_'"] if other else [])
+        if conds:
+            where.append("(" + " OR ".join(conds) + ")")
+    if (tag := get("tag")) and tag.strip():  # web server attack / scanner patterns (data.tags)
+        tags = "CASE WHEN jsonb_typeof(data->'tags') = 'array' THEN data->'tags' END"
+        if tag == "any":
+            where.append(f"coalesce(jsonb_array_length({tags}), 0) > 0")
+        elif tag == "none":
+            where.append(f"coalesce(jsonb_array_length({tags}), 0) = 0")
+        else:
+            names = [t for t in re.split(r"[,\s]+", tag.strip()) if t]
+            if not all(re.fullmatch(r"[a-z_]{1,40}", t) for t in names):
+                raise ValueError("Pattern: use names like sqli, rce, scanner_probe (or any / none)")
+            where.append(f"coalesce({tags}, '[]'::jsonb) ?| {arg(names)}::text[]")
     if q := get("q"):
         a = arg(f"%{q}%")
         where.append(f"(message ILIKE {a} OR domain ILIKE {a} OR username ILIKE {a} OR program ILIKE {a})")

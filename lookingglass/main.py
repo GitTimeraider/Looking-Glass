@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import uvicorn
 
-from . import __version__, app_config, auth, crypto, db, db_config, notify, rollup
+from . import __version__, app_config, audit, auth, backup, blocking, crypto, db, db_config, notify, rollup, wan
 from .ai import Analyst, request_log
 from .backrest import BackrestPoller
 from .bichon import BichonPoller
@@ -56,6 +56,11 @@ async def housekeeping(settings) -> None:
                                max(settings.retention_days, 90))
             # comments of alerts that are gone (deleted here, by hand or with an older version)
             await pool.execute("DELETE FROM alert_comments c WHERE NOT EXISTS (SELECT 1 FROM alerts a WHERE a.id = c.alert_id)")
+            # audit log a year, ended blocks and snoozes 90 days, backups nobody downloaded an hour
+            await audit.cleanup(365)
+            await pool.execute("DELETE FROM blocks WHERE status <> 'active' AND removed_at < now() - interval '90 days'")
+            await pool.execute("DELETE FROM snoozes WHERE ends_at < now() - interval '90 days'")
+            backup.cleanup()
         except Exception:  # noqa: BLE001
             log.exception("housekeeping failed")
         await asyncio.sleep(3600)
@@ -178,6 +183,49 @@ async def backrest_supervisor(settings, group: str = "backrest") -> None:
     finally:  # shutdown: its jobs must not go on writing into the closing database
         if poller is not None:
             await _stop_poller(poller, task)
+
+
+async def swag_supervisor(settings, writer: EventWriter) -> None:
+    """Follow SWAG's logs and poll the CrowdSec Local API while they are configured (Settings › SWAG & CrowdSec);
+    restart each when its settings change."""
+    from .crowdsec_lapi import LapiPoller
+    from .swag import SwagReader
+
+    class _Reader:  # SwagReader has nothing to close
+        def __init__(self, reader: SwagReader) -> None:
+            self.reader = reader
+
+        async def run(self) -> None:
+            log.info("following SWAG logs in %s", self.reader.root)
+            await self.reader.run()
+
+        async def stop(self) -> None:
+            try:
+                await self.reader.save()
+            except Exception:  # noqa: BLE001
+                pass
+
+    parts: dict[str, list] = {"swag": [None, None, None], "crowdsec_lapi": [None, None, None]}  # sig, poller, task
+    try:
+        while True:
+            for group, enabled, make in (
+                    ("swag", lambda: settings.swag_enabled, lambda: _Reader(SwagReader(settings, writer.put))),
+                    ("crowdsec_lapi", lambda: settings.crowdsec_lapi_enabled, lambda: LapiPoller(settings, writer))):
+                st = parts[group]
+                new_sig = app_config.signature(settings, group)
+                if new_sig != st[0] or (st[2] is not None and st[2].done()):
+                    if st[1] is not None:
+                        await _stop_poller(st[1], st[2])
+                        st[1] = st[2] = None
+                    st[0] = new_sig
+                    if enabled():
+                        st[1] = make()
+                        st[2] = asyncio.create_task(st[1].run(), name=group)
+            await asyncio.sleep(5)
+    finally:
+        for st in parts.values():
+            if st[1] is not None:
+                await _stop_poller(st[1], st[2])
 
 
 async def daily_ai_report(settings, analyst: Analyst) -> None:
@@ -306,8 +354,11 @@ async def amain() -> None:
     background("unifi", lambda: unifi_supervisor(settings, writer))
     background("backrest", lambda: backrest_supervisor(settings))
     background("bichon", lambda: backrest_supervisor(settings, "bichon"))
+    background("swag", lambda: swag_supervisor(settings, writer))
     background("daily_report", lambda: daily_ai_report(settings, analyst))
     background("notifier", lambda: notify.notifier(settings))
+    background("blocking", lambda: blocking.loop(settings))  # OPNsense block alias (blocking.py)
+    background("wan_quality", lambda: wan.loop(settings))  # daily WAN quality (wan.py)
     from .intel import Intel
     intel = Intel(settings)
     background("threat_feeds", intel.updater)

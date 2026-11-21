@@ -22,7 +22,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 from starlette.middleware.sessions import SessionMiddleware
 
-from .. import __version__, app_config, auth, crypto, db, event_filter
+from .. import __version__, app_config, audit, auth, crypto, db, event_filter
 from ..ai import Analyst, request_log
 from ..config import Settings
 from . import asset_version
@@ -30,7 +30,7 @@ from ..ingest import STATS
 from .. import rollup
 from ..cache import ResultCache, stale_for, ttl_for
 from ..periods import Periods, is_long, key_of
-from ..dashboards import CS_FW, DASHBOARDS, IDS_DROP, QF, run_dashboard
+from ..dashboards import CS_FW, DASHBOARDS, IDS_DROP, QF, run_dashboard, run_log
 from ..reports import CATEGORIES, build_report, parse_categories, report_mail, report_title, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
 from ..parsers.common import real_name
@@ -57,6 +57,10 @@ PAGES = {
     "/": ("dashboard.html", "Overview"),
     "/events": ("events.html", "Events"),
     "/alerts": ("alerts.html", "Alerts"),
+    "/timeline": ("timeline.html", "Timeline"),
+    "/blocks": ("blocks.html", "Blocked addresses"),
+    "/snooze": ("snooze.html", "Snooze & maintenance"),
+    "/audit": ("audit.html", "Audit log"),
     "/system": ("system.html", "OPNsense"),
     "/devices": ("devices.html", "Devices"),
     "/unraid": ("unraid.html", "Unraid"),
@@ -95,7 +99,29 @@ class AuthGuard:
             if answer is not None:
                 await answer(scope, receive, send)
                 return
+            if audit.wanted(scope.get("method", ""), scope.get("path", "")):
+                await self._audited(scope, receive, send)
+                return
         await self.app(scope, receive, send)
+
+    async def _audited(self, scope, receive, send) -> None:
+        """Run a change and add it to the audit log with the status of its answer (also when it failed)."""
+        status: list[int] = []
+
+        async def capture(message) -> None:
+            if message["type"] == "http.response.start":
+                status.append(message["status"])
+            await send(message)
+
+        try:
+            await self.app(scope, receive, capture)
+        finally:
+            state = scope.get("state") or {}
+            user = state.get("user") if isinstance(state.get("user"), dict) else {}
+            client = scope.get("client")
+            detail = state.get("audit") if isinstance(state.get("audit"), dict) else None
+            await audit.record("change", user.get("username"), client[0] if client else None,
+                               f"{scope.get('method')} {scope.get('path')}", status[0] if status else 500, detail)
 
 
 class ClientGone(Exception):
@@ -172,6 +198,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                        max_age=7 * 24 * 3600, same_site="lax", https_only=settings.cookie_secure)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
     register_auth(app, settings, templates)
+    from .extra_routes import register as register_extra
+    register_extra(app, settings)
 
     @app.get("/brand/{key}")
     async def brand_image(key: str):
@@ -207,6 +235,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     @app.get("/hardware")
     async def hardware_moved():  # merged into the OPNsense page
         return RedirectResponse("/system")
+
+    @app.get("/wan")
+    async def wan_moved():  # now a tab of the OPNsense page
+        return RedirectResponse("/system#wan")
 
     @app.get("/reports/{report_id}", response_class=HTMLResponse)
     async def report_page(request: Request, report_id: int):
@@ -361,6 +393,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         # open alerts, devices and the system state are cheap and always current
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
         decisions = await db.get_snapshot("crowdsec_decisions")
+        lapi_decisions = await db.get_snapshot("crowdsec_lapi_decisions")  # CrowdSec in Docker (crowdsec_lapi.py)
+        if isinstance(lapi_decisions, list):
+            decisions = (decisions if isinstance(decisions, list) else []) + lapi_decisions
         blocklists = await db.get_snapshot("blocklists") or {}
         blocklist_n = ((blocklists.get("crowdsec") or {}) if isinstance(blocklists, dict) else {}).get("size")
         devices = await pool.fetchval("SELECT count(*) FROM devices WHERE last_seen > now() - interval '1 day'")
@@ -370,6 +405,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         has |= {k for k, n in (("crowdsec", kpi.get("crowdsec_fw")), ("qfeeds", kpi.get("qfeeds"))) if n}  # their firewall blocks
         enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
                    "nginx": settings.nginx_pull, "unbound": settings.unbound_query_pull}
+        docker_cs = settings.crowdsec_lapi_enabled  # CrowdSec / nginx (SWAG) in Docker: shown without OPNsense too
         # a plugin the OPNsense API says is not installed (the poll answers 400 / 404): its widgets are hidden too while
         # it sent nothing - otherwise they stay on the page empty, and look broken
         jobs = await db.get_snapshot("poller_status") or {}
@@ -377,7 +413,9 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         missing = {k for k, job in (("nginx", "nginx_logs"), ("qfeeds", "qfeeds"))
                    if isinstance(jobs.get(job), dict) and jobs[job].get("unsupported") and not jobs[job].get("forbidden")}
         enabled = {k: (v and settings.opnsense_enabled and k not in missing) or k in has for k, v in enabled.items()}
-        for k, on in (("suricata", settings.ids_pull), ("crowdsec", settings.crowdsec_pull), ("qfeeds", settings.qfeeds_pull)):
+        enabled["crowdsec"] = enabled["crowdsec"] or docker_cs
+        enabled["nginx"] = enabled["nginx"] or settings.swag_enabled
+        for k, on in (("suricata", settings.ids_pull), ("crowdsec", settings.crowdsec_pull or docker_cs), ("qfeeds", settings.qfeeds_pull)):
             if not on:  # switched off: hidden like its Threats tab, even with older data in the period
                 enabled[k] = False
         now_state = await overview_now(hours)
@@ -459,6 +497,17 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         all_filters = await alert_filters._filters()
         active_ids = {f["id"] for f in all_filters}
         filters = [f for f in all_filters if f["action"] != "severity"]
+        # blocked source addresses (Block…) and snoozes that cover an alert right now
+        from .. import blocking, snooze
+        try:
+            blocked = await blocking.active_for(list({a["src_ip"] for a in out if a.get("src_ip")}))
+        except Exception:  # noqa: BLE001
+            log.exception("alerts list: blocks")
+            blocked = {}
+        snoozed = await snooze.covering(out)
+        for a in out:
+            a["blocked"] = blocked.get(a.get("src_ip"))
+            a["snoozed_now"] = snoozed.get(a["id"])
         comments: dict[int, list[dict[str, Any]]] = {}
         if out:
             for r in await db.pool().fetch("SELECT id, alert_id, created_at, updated_at, author, body FROM alert_comments "
@@ -730,6 +779,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if reason not in (None, "false_positive", "resolved"):
             raise HTTPException(400, "invalid reason")
         comment = _comment_text(payload.get("comment"), required=False)
+        request.state.audit = {"alerts": ids[:50], "status": status, **({"reason": reason} if reason else {})}
         async with db.pool().acquire() as conn, conn.transaction():
             await conn.execute("UPDATE alerts SET status = $1, close_reason = $3 WHERE id = ANY($2::bigint[])",
                                status, ids, reason)
@@ -831,6 +881,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     # parts that are not plain tables
     PURGE_PARTS = {
         "backups": "Backups (the run history of all backup tools; Backrest's and Bichon's own history is not touched)",
+        "wan": "WAN quality (latency, loss, jitter and up / down history of every gateway; the other graphs are kept)",
     }
     BACKUP_TABLES = "backup_runs, backup_runs_removed"
 
@@ -850,39 +901,63 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                                        "pg_total_relation_size('backup_runs_removed')) size, "
                                        "(SELECT count(*) FROM backup_runs) rows")
         out.append({"key": "backups", "label": PURGE_PARTS["backups"], "rows": row["rows"], "size": row["size"]})
+        from .. import wan
+        row = await db.pool().fetchrow(
+            "SELECT pg_size_pretty(pg_total_relation_size('wan_daily')) size, (SELECT count(*) FROM wan_daily) days, "
+            "(SELECT count(*) FROM metrics WHERE name = ANY($1::text[])) samples", list(wan.NAMES))
+        out.append({"key": "wan", "label": PURGE_PARTS["wan"], "rows": row["days"] + row["samples"], "size": row["size"]})
         return out
 
     @app.post("/api/crowdsec/unban")
     async def crowdsec_unban(request: Request, payload: dict = Body(...)):
-        """Threats › CrowdSec › Active bans: delete one decision on OPNsense (cscli decisions delete --id). The API
-        user needs the CrowdSec privilege that already lets Looking Glass read the decisions."""
+        """Active bans lists: delete one CrowdSec decision. ``src`` "lapi": CrowdSec in Docker (SWAG & CrowdSec),
+        through its Local API with the machine login; "opnsense": the OPNsense CrowdSec plugin (Threats › CrowdSec)."""
+        from ..crowdsec_lapi import DECISIONS_KEY, LapiClient, LapiError
         from ..opnsense import ApiError, OPNsenseClient
 
         try:
             did = int(payload.get("id"))
         except (TypeError, ValueError):
             raise HTTPException(400, "No decision id.") from None
-        if not settings.opnsense_enabled:
-            raise HTTPException(400, "The OPNsense API is not set up (Settings › OPNsense).")
-        snap = await db.get_snapshot("crowdsec_decisions")
+        src = payload.get("src") or "opnsense"
+        if src == "lapi":
+            if not settings.crowdsec_lapi_url:
+                raise HTTPException(400, "CrowdSec is not set up (Settings › SWAG & CrowdSec).")
+            key, lapi = DECISIONS_KEY, LapiClient(settings)
+            try:
+                await lapi.delete_decision(did)
+            except LapiError as exc:
+                hint = (" (CrowdSec refused the machine login - Settings › SWAG & CrowdSec › Test connection)"
+                        if exc.status in (401, 403) else "")
+                raise HTTPException(400 if exc.status == 400 else 502, f"CrowdSec refused the unban: {exc}{hint}") from exc
+            except httpx.HTTPError as exc:
+                raise HTTPException(502, f"CrowdSec not reachable: {type(exc).__name__}: {exc}") from exc
+            finally:
+                await lapi.close()
+        elif src == "opnsense":
+            if not settings.opnsense_enabled:
+                raise HTTPException(400, "The OPNsense API is not set up (Settings › OPNsense).")
+            key, client = "crowdsec_decisions", OPNsenseClient(settings)
+            try:
+                await client.delete_crowdsec_decision(did)
+            except ApiError as exc:
+                hint = " (the API user lacks the CrowdSec privilege)" if exc.status == 403 else ""
+                raise HTTPException(502, f"OPNsense refused the unban: {exc}{hint}") from exc
+            except httpx.HTTPError as exc:
+                raise HTTPException(502, f"OPNsense not reachable: {type(exc).__name__}: {exc}") from exc
+            finally:
+                await client.close()
+        else:
+            raise HTTPException(400, "Unknown CrowdSec.")
+        # gone from the list at once, not only after the next poll
+        snap = await db.get_snapshot(key)
         rows = snap if isinstance(snap, list) else []
-        row = next((r for r in rows if isinstance(r, dict) and str(r.get("id")) == str(did)), None)
-        client = OPNsenseClient(settings)
-        try:
-            await client.delete_crowdsec_decision(did)
-        except ApiError as exc:
-            hint = " (the API user lacks the CrowdSec privilege)" if exc.status == 403 else ""
-            raise HTTPException(502, f"OPNsense refused the unban: {exc}{hint}") from exc
-        except httpx.HTTPError as exc:
-            raise HTTPException(502, f"OPNsense not reachable: {type(exc).__name__}: {exc}") from exc
-        finally:
-            await client.close()
-        # gone from the list at once, not only after the next pull (up to 2 minutes)
-        await db.set_snapshot("crowdsec_decisions", [r for r in rows if r is not row])
+        row = next((r for r in rows if isinstance(r, dict) and str(r.get("id")) == str(did)), None) or {}
+        await db.set_snapshot(key, [r for r in rows if not (isinstance(r, dict) and str(r.get("id")) == str(did))])
         results.clear()
-        value = (row or {}).get("lg_value") or (row or {}).get("scope_value") or "?"
-        log.warning("user %s removed CrowdSec decision %s (%s)", request.state.user["username"], did, value)
-        return {"ok": True, "id": did, "value": value}
+        value = row.get("value") if src == "lapi" else row.get("lg_value") or row.get("scope_value")
+        log.warning("user %s removed CrowdSec decision %s (%s, %s)", request.state.user["username"], did, value or "?", src)
+        return {"ok": True, "id": did, "value": value or "?"}
 
     @app.post("/api/admin/purge")
     async def purge(request: Request, payload: dict = Body(...)):
@@ -900,12 +975,17 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             await db.pool().execute(f"TRUNCATE {', '.join(tables)}")
         if "backups" in parts:
             await db.pool().execute("DELETE FROM snapshots WHERE key LIKE 'backup_jobs:%'")
+        if "wan" in parts:  # the gateway samples and the day values made from them; WAN alerts close by themselves
+            from .. import wan
+            await db.pool().execute("DELETE FROM metrics WHERE name = ANY($1::text[])", list(wan.NAMES))
+            await db.pool().execute("TRUNCATE wan_daily")
         results.clear()
         if "events" in parts:
             long_periods.forget()
         if "ai_chats" in parts:
             from .. import privacy
             privacy.invalidate()
+        request.state.audit = {"parts": parts}
         log.warning("user %s deleted collected data: %s", user["username"], ", ".join(parts))
         return {"ok": True, "deleted": parts}
 
@@ -1174,14 +1254,28 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 results.warm(("dash", name, h, tab), lambda h=h: dash_compute(name, h, tab), stale_for(h))
         return {**out, "as_of": as_of, "stale": stale}  # see overview(): "stale" = ask again shortly
 
+    @app.get("/api/dash/{name}/log/{panel}")
+    async def dash_log(name: str, panel: str, hours: float = Query(24, gt=0, le=24 * 90),
+                       src_scope: str = Query(..., pattern="^(local|public)$")):
+        """A live log with its From filter: only local or only non-local source addresses - the newest events of that
+        kind (the unfiltered log may hold only the other kind)."""
+        if name not in DASHBOARDS:
+            raise HTTPException(404)
+        try:
+            return {"rows": await run_log(name, panel, hours, src_scope)}
+        except KeyError:
+            raise HTTPException(404, "no such live log") from None
+
     async def dash_off(hours: float) -> set[str]:
         """Threats sources whose tab and tiles are hidden: switched off in Settings › OPNsense (even with older data in
         the period), or - with OPNsense not set up (yet) - without data in the period. Cheap: one EXISTS per source."""
-        pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull}
+        pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull or settings.crowdsec_lapi_enabled,
+                 "qfeeds": settings.qfeeds_pull}
         has = {r["s"] for r in await db.pool().fetch(
             "SELECT s FROM unnest($1::text[]) s WHERE EXISTS (SELECT 1 FROM events WHERE source = s "
             "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
-        return {k for k, on in pulls.items() if not on or (not settings.opnsense_enabled and k not in has)}
+        return {k for k, on in pulls.items()
+                if not on or (not settings.opnsense_enabled and k not in has and not (k == "crowdsec" and settings.crowdsec_lapi_enabled))}
 
     async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
         out = await run_dashboard(name, hours, await dash_off(hours), tab)
@@ -1658,11 +1752,13 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return app_config.public_view(settings)
 
     @app.put("/api/settings")
-    async def put_app_settings(payload: dict = Body(...)):
+    async def put_app_settings(request: Request, payload: dict = Body(...)):
         try:
             changed = await app_config.save(settings, payload.get("values") or {})
         except app_config.SettingsError as exc:
+            request.state.audit = {"error": str(exc)[:300]}
             raise HTTPException(400, str(exc)) from exc
+        request.state.audit = {"changed": changed}  # the names only: values can be secrets
         if changed:  # e.g. a source switched off: pages show it at once, not after the cached results expire
             results.clear()
         return {"ok": True, "changed": changed}
@@ -1727,6 +1823,18 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if not cand.bichon_token:
             return {"ok": False, "error": "An API token is required (Bichon › API tokens; 'Metrics only' is enough)"}
         return await test_connection(cand)
+
+    @app.post("/api/settings/test/swag")
+    async def test_swag(payload: dict = Body(...)):
+        from ..crowdsec_lapi import test_connection as test_lapi
+        from ..swag import test_logs
+
+        cand = _candidate(payload.get("values"))
+        if not cand.swag_enabled and not cand.crowdsec_lapi_url:
+            return {"ok": False, "error": "Enter the SWAG log folder and/or the CrowdSec Local API URL"}
+        parts = await test_logs(cand) + await test_lapi(cand)
+        return {"ok": any(p["ok"] for p in parts), "parts": parts,
+                "error": "; ".join(p["text"] for p in parts if not p["ok"])}
 
     @app.post("/api/settings/test/email")
     async def test_email(payload: dict = Body(...)):

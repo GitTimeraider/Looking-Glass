@@ -41,6 +41,7 @@ GROUPS = {
     "unifi": "UniFi",
     "backrest": "Backrest",
     "bichon": "Bichon",
+    "swag": "SWAG & CrowdSec",
     "email": "Email",
     "ai": "AI analyst",
     "reports": "Reports",
@@ -50,9 +51,31 @@ GROUPS = {
     "behavior": "Behaviour & ML",
     "intel": "Threat intel & traps",
     "packages": "Container packages",
+    "blocking": "Blocking",
 }
 
 FIELDS: list[Field] = [
+    # Blocking (blocking.py)
+    Field("block_alias", "blocking", "OPNsense alias for blocked addresses", "str",
+          "Name of a Firewall › Aliases entry of type 'External (advanced)' that Looking Glass fills with the "
+          "addresses you block (and removes them when the block ends). Use it in a block rule on your WAN "
+          "(Firewall › Rules › WAN: Block, source = this alias) - and on other interfaces if you like. Empty = "
+          "blocking is off. The API user needs the privilege 'Firewall: Alias: Edit'.", placeholder="LookingGlass_block"),
+    Field("block_hours", "blocking", "Default block duration (hours)", "int",
+          "Offered when you block an address on the Alerts page. 0 = until you remove it.", min=0, max=8760),
+    Field("block_never", "blocking", "Never block", "list",
+          "IP addresses and networks (CIDR) that are never blocked, by hand or automatically - e.g. your VPN "
+          "provider, monitoring services, your office. The address you are using right now and OPNsense itself are "
+          "never blocked; internal devices only by hand, after a warning (to quarantine one, use the alias in a "
+          "rule on that device's interface too)."),
+    Field("block_auto", "blocking", "Block automatically", "bool",
+          "Block the internet source of every new open alert of the severity below (or worse). Internal devices are "
+          "never blocked automatically. Every automatic block is listed under General › Blocked addresses."),
+    Field("block_auto_severity", "blocking", "Automatically block from severity", "choice",
+          "critical = only the worst alerts (an attacker who got in); high also blocks e.g. brute force that "
+          "succeeded and confirmed attacks.", choices=("critical", "high")),
+    Field("block_auto_hours", "blocking", "Automatic blocks last (hours)", "int", "0 = until you remove them.",
+          min=0, max=8760),
     # OPNsense
     Field("opnsense_url", "opnsense", "OPNsense URL", "str", "Address of the OPNsense web GUI, add :port if not 443.",
           placeholder="https://192.168.1.1"),
@@ -67,6 +90,14 @@ FIELDS: list[Field] = [
           "alert only once the service has been stopped this long - a restart (config change, update) or a quick "
           "stop / start stays quiet. Such an alert closes by itself when the service runs again. 0 = alert right away.",
           min=0, max=240),
+    Field("wan_alerts", "opnsense", "WAN quality alerts", "bool",
+          "Alert when a gateway's latency over the last 24 hours is far above its own 7-day normal, or it loses "
+          "packets for a day (Infrastructure › OPNsense › WAN quality). Down / degraded right now is alerted separately."),
+    Field("wan_latency_factor", "opnsense", "WAN: latency alert at (% of normal)", "int",
+          "200 = the 24-hour median latency is twice the median of the 7 days before.", min=110, max=1000),
+    Field("wan_latency_min_ms", "opnsense", "WAN: and at least (ms) above normal", "int",
+          "Keeps a jump from 2 to 5 ms on a fibre line quiet.", min=1, max=1000),
+    Field("wan_loss_pct", "opnsense", "WAN: loss alert at (% over 24 h)", "int", "0 = no loss alerts.", min=0, max=100),
     Field("firewall_log_pull", "opnsense", "Pull firewall log via API", "choice",
           "auto = only when no filterlog arrives via syslog.", choices=("auto", "always", "never")),
     Field("unbound_query_pull", "opnsense", "Pull Unbound DNS queries", "bool", "Needs Reporting › Settings › Unbound DNS statistics."),
@@ -164,6 +195,51 @@ FIELDS: list[Field] = [
     Field("bichon_offline_grace", "bichon", "Unreachable alert waits (minutes)", "int",
           "A 'Bichon unreachable' alert only once it has not answered for this long (container restarts / updates "
           "stay quiet). 0 = alert right away.", min=0, max=240),
+    # SWAG + CrowdSec in Docker (swag.py, crowdsec_lapi.py)
+    Field("swag_log_dir", "swag", "SWAG log folder (inside this container)", "str",
+          "SWAG's /config/log folder, mounted read-only into the Looking Glass container - e.g. on Unraid add the path "
+          "/mnt/user/appdata/swag/log → /swag/log (read only) to the Looking Glass container, then enter /swag/log. "
+          "Looking Glass reads nginx's access and error logs and fail2ban's log from it (like tail -f; rotated logs are "
+          "followed). Empty = SWAG off.", placeholder="/swag/log"),
+    Field("swag_name", "swag", "Name", "str", "Shown as the host of SWAG's events.", placeholder="SWAG"),
+    Field("swag_access_logs", "swag", "nginx access logs", "list", "Inside the log folder; * as wildcard, e.g. "
+          "nginx/*access.log for per-site logs. Combined format (SWAG's default) or the same with $host in front.",
+          placeholder="nginx/access.log"),
+    Field("swag_error_logs", "swag", "nginx error logs", "list", "Inside the log folder. CrowdSec bouncer blocks "
+          "(SWAG's crowdsec mod) and AppSec / WAF blocks are read from here.", placeholder="nginx/error.log"),
+    Field("swag_fail2ban_log", "swag", "fail2ban log", "str", "Inside the log folder. Empty = no fail2ban.",
+          placeholder="fail2ban/fail2ban.log"),
+    Field("swag_backfill_mb", "swag", "First read: older lines (MB)", "int", "The first time a log is read, this much of "
+          "its end is read too (so the dashboards are not empty). After that only new lines. 0 = only new lines.",
+          min=0, max=500),
+    Field("swag_honeypot", "swag", "Honeypot", "list", "What is a trap - one per line: a request path (/wp-admin, "
+          "/secret* - * as wildcard, without one it is a prefix), a host name (honeypot.example.com), a fail2ban jail "
+          "(jail:nginx-honeypot) or a whole log file (file:nginx/honeypot.log). Jails and log files with 'honeypot' in "
+          "their name count automatically. Nobody legitimate touches a trap: every hit is shown under SWAG › Honeypot.",
+          placeholder="/wp-login.php\njail:nginx-honeypot\nfile:nginx/honeypot.log"),
+    Field("swag_honeypot_internet", "swag", "Honeypot hit from the internet: alert", "choice", "The alert level of a "
+          "honeypot hit from an internet address (one alert per address). From inside your network it is always high.",
+          choices=("off", "info", "low", "medium", "high")),
+    Field("swag_fail2ban_alerts", "swag", "fail2ban ban of an internet address: alert", "choice", "The alert level "
+          "when fail2ban bans an internet address (one alert per address and jail). A ban of an address inside your "
+          "network is always high.", choices=("off", "info", "low", "medium")),
+    Field("crowdsec_lapi_url", "swag", "CrowdSec Local API URL", "str", "The CrowdSec container's API (LAPI), port "
+          "8080 inside the container. On the same Docker network: http://crowdsec:8080 (the container name); else the "
+          "host's IP address and the port you mapped. Empty = off.", placeholder="http://crowdsec:8080"),
+    Field("crowdsec_lapi_machine", "swag", "Machine name (alerts)", "str", "Alerts with all their details need a "
+          "machine login. In a shell on the Docker host: docker exec crowdsec cscli machines add lookingglass "
+          "--password <a long password> -f /dev/null - then enter lookingglass here.", placeholder="lookingglass"),
+    Field("crowdsec_lapi_password", "swag", "Machine password", "secret", "The password of that machine."),
+    Field("crowdsec_lapi_bouncer_key", "swag", "Bouncer API key (decisions)", "secret", "Optional: the active decisions "
+          "including the community blocklist. In a shell on the Docker host: docker exec crowdsec cscli bouncers add "
+          "lookingglass - it prints the key once. Without it the decisions come from the alerts (your own only)."),
+    Field("crowdsec_lapi_metrics_url", "swag", "CrowdSec metrics URL", "str", "Optional: CrowdSec's Prometheus "
+          "endpoint (port 6060) - shows which logs CrowdSec reads and parses and what its AppSec (WAF) blocked. Needs "
+          "prometheus listen_addr: 0.0.0.0 in CrowdSec's config.yaml.", placeholder="http://crowdsec:6060/metrics"),
+    Field("crowdsec_lapi_verify_ssl", "swag", "Verify TLS certificate", "bool",
+          "Only for an https URL. Off accepts a self-signed certificate."),
+    Field("crowdsec_lapi_poll_interval", "swag", "CrowdSec poll interval (seconds)", "int",
+          "How often alerts and decisions are read from the Local API.", min=15, max=3600),
     # email
     Field("smtp_host", "email", "SMTP server", "str", "Mail server that sends the notifications, e.g. smtp.gmail.com, "
           "smtp.office365.com, your provider's server or a local relay.", placeholder="smtp.example.com"),
@@ -370,6 +446,11 @@ FIELDS: list[Field] = [
           "alert limits are kept. A removed device that comes back is a new device again.",
           min=0, max=3650),
     Field("detection_interval", "data", "Detection interval (seconds)", "int", "", min=10, max=3600),
+    Field("source_silence_hours", "data", "Alert when a source goes quiet (hours)", "int", "A source that normally sends "
+          "something every hour (firewall, web server, DNS, Suricata …) but has sent nothing new for this long raises an "
+          "alert - a log pull that stalled, a plugin that stopped, a syslog target that was removed. Counted by the time "
+          "of the events, so a pull running hours behind counts as quiet too. Closes by itself when events come back. "
+          "0 = off.", min=0, max=168),
     Field("long_refresh_7d", "data", "7-day views: count again every (minutes)", "int", "Overview and dashboards over "
           "7 days are counted in the background on this schedule, one at a time, and shown from the stored result "
           "(switching to 7d does not count anything). The refresh button next to the period counts one again at once.",
@@ -458,6 +539,11 @@ SECRET_KEYS = {f.key for f in FIELDS if f.kind == "secret"}
 RESTART_GROUPS = {"backrest": ("backrest_url", "backrest_username", "backrest_password", "backrest_verify_ssl",
                                "backrest_poll_interval"),
                   "bichon": ("bichon_url", "bichon_token", "bichon_verify_ssl", "bichon_poll_interval"),
+                  "swag": ("swag_log_dir", "swag_name", "swag_access_logs", "swag_error_logs", "swag_fail2ban_log",
+                           "swag_backfill_mb", "swag_honeypot"),
+                  "crowdsec_lapi": ("crowdsec_lapi_url", "crowdsec_lapi_machine", "crowdsec_lapi_password",
+                                    "crowdsec_lapi_bouncer_key", "crowdsec_lapi_metrics_url",
+                                    "crowdsec_lapi_verify_ssl", "crowdsec_lapi_poll_interval"),
                   "unifi": ("unifi_url", "unifi_api_key", "unifi_username", "unifi_password", "unifi_site",
                             "unifi_verify_ssl", "unifi_poll_interval", "unifi_events"),
                   "opnsense": ("opnsense_url", "opnsense_api_key", "opnsense_api_secret", "opnsense_verify_ssl",
@@ -537,7 +623,8 @@ def _coerce(f: Field, value: Any) -> Any:
         raise SettingsError(f"{f.label}: at most 60 characters")
     if f.kind == "choice" and v not in f.choices:
         raise SettingsError(f"{f.label}: must be one of {', '.join(f.choices)}")
-    if f.key in ("opnsense_url", "ai_base_url", "backrest_url", "bichon_url") and v and \
+    if f.key in ("opnsense_url", "ai_base_url", "backrest_url", "bichon_url", "crowdsec_lapi_url",
+                 "crowdsec_lapi_metrics_url") and v and \
             not v.startswith(("http://", "https://")):
         raise SettingsError(f"{f.label}: must start with http:// or https://")
     if f.key in ("backrest_url", "bichon_url") and v:
@@ -552,7 +639,7 @@ def _coerce(f: Field, value: Any) -> Any:
         if port is None:
             raise SettingsError(f"{f.label}: add the port, e.g. {v.rstrip('/')}:{default_port} ({tool}'s default) or "
                                 "the port you mapped in Docker")
-    if f.key in ("syslog_allowed_senders", "internal_networks") and v:
+    if f.key in ("syslog_allowed_senders", "internal_networks", "block_never") and v:
         for part in v.split(","):
             try:  # an invalid line is named, nothing is saved
                 ipaddress.ip_network(part.strip(), strict=False)

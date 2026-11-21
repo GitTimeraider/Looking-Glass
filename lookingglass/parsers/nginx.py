@@ -23,6 +23,9 @@ _ERROR = re.compile(r"^(?P<time>\d{4}/\d\d/\d\d \d\d:\d\d:\d\d) \[(?P<level>\w+)
 _ERR_CLIENT = re.compile(r"client: ([0-9a-fA-F:.]+)")
 _ERR_SERVER = re.compile(r"server: ([^,]+)")
 _ERR_REQUEST = re.compile(r'request: "([^"]*)"')
+_ERR_HOST = re.compile(r'host: "([^"]*)"')
+# CrowdSec nginx (lua) bouncer, e.g. SWAG's crowdsec mod: "[Crowdsec] denied '1.2.3.4' with 'ban' (by appsec)"
+_CS_BOUNCER = re.compile(r"\[crowdsec\][^']*?denied '(?P<ip>[0-9a-fA-F:.]+)' with '(?P<remediation>\w+)'(?: \(by (?P<by>[\w-]+)\))?", re.I)
 
 # signatures of common attacks / scanners in request lines (used for tagging; detections aggregate)
 ATTACK_PATTERNS = [
@@ -31,7 +34,7 @@ ATTACK_PATTERNS = [
     ("xss", re.compile(r"<script|%3cscript|javascript:|onerror=|onload=", re.I)),
     ("rce", re.compile(r"\$\{jndi:|/bin/(ba)?sh|cmd\.exe|;\s*(wget|curl)\s|\|\s*(wget|curl)\s|%60|`|\$\(", re.I)),
     ("sensitive_file", re.compile(r"/\.env|/\.git/|/\.aws/|/\.ssh/|/etc/passwd|/wp-config|/config\.php|\.bak$|\.sql$|/\.htpasswd|/id_rsa", re.I)),
-    ("scanner_probe", re.compile(r"/wp-login|/wp-admin|/xmlrpc\.php|/phpmyadmin|/pma/|/cgi-bin/|/boaform|/HNAP1|/vendor/phpunit|/actuator|/solr/|/owa/|/autodiscover|/\.well-known/security|/manager/html|/console/|/geoserver|/remote/login", re.I)),
+    ("scanner_probe", re.compile(r"/wp-login|/wp-admin|/xmlrpc\.php|/phpmyadmin|/pma/|/cgi-bin/|/boaform|/HNAP1|/vendor/phpunit|/actuator|/solr/|/owa/|/autodiscover|/manager/html|/console/|/geoserver|/remote/login", re.I)),
 ]
 SCANNER_UA = re.compile(r"nmap|nikto|sqlmap|masscan|zgrab|nuclei|dirbuster|gobuster|wpscan|python-requests|go-http-client|curl/|libwww|censys|shodan|internetmeasurement|expanse", re.I)
 
@@ -94,11 +97,25 @@ def parse(ts: datetime, host: str | None, program: str | None, message: str) -> 
         sev = {"emerg": 0, "alert": 1, "crit": 2, "error": 3, "warn": 4, "notice": 5, "info": 6, "debug": 7}.get(level, 3)
         tags = classify(req.group(1) if req else "", None)
         action = "rate_limited" if "limiting requests" in text else "http_error"
+        data = {"level": level, "request": req.group(1) if req else None, "tags": tags}
+        src = client.group(1) if client else None
         if "access forbidden by rule" in text or "naxsi" in text.lower():
             action = "waf_block"
+        elif cs := _CS_BOUNCER.search(text):
+            # blocked by CrowdSec in nginx: a decision (ban / captcha) or the AppSec WAF ("by appsec")
+            by = (cs["by"] or "").lower()
+            action = "waf_block" if by == "appsec" else "bouncer_block"
+            src = src or cs["ip"]
+            data.update(remediation=cs["remediation"].lower(), by=by or None, blocked_by="crowdsec")
+            sev = 4  # the bouncer logs at [alert] level, but a block is the bouncer doing its job
+        hostm = _ERR_HOST.search(text)
+        if hostm:
+            data["host"] = hostm.group(1)
+        dom = server.group(1).strip() if server else None
+        if (not dom or dom in ("_", "localhost")) and hostm:
+            dom = hostm.group(1)
         return event(ts, "nginx", host=host, program=program or "nginx", severity=sev, action=action,
-                     src_ip=client.group(1) if client else None, domain=server.group(1).strip() if server else None,
-                     message=text[:4000], data={"level": level, "request": req.group(1) if req else None, "tags": tags})
+                     src_ip=src, domain=dom, message=text[:4000], data=data)
     ips = find_ips(msg)
     return event(ts, "nginx", host=host, program=program, severity=6, src_ip=ips[0] if ips else None, message=msg[:4000])
 

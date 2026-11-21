@@ -5,10 +5,10 @@
   the container's data volume and are never shown again after saving (leave a secret field empty to keep the current value).
   Changes apply immediately - no restart needed.</p>
 <div class="tabs" id="tabs">
-  <button data-t="opnsense" class="on">OPNsense</button><button data-t="unifi">UniFi</button><button data-t="backrest">Backrest</button><button data-t="bichon">Bichon</button><button data-t="ai">AI analyst</button><button data-t="reports">Reports</button>
-  <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button><button data-t="behavior">Behaviour &amp; ML</button><button data-t="intel">Threat intel &amp; traps</button><button data-t="filters">Alert filters</button><button data-t="email">Email &amp; notifications</button><button data-t="display">Display</button>
+  <button data-t="opnsense" class="on">OPNsense</button><button data-t="unifi">UniFi</button><button data-t="backrest">Backrest</button><button data-t="bichon">Bichon</button><button data-t="swag">SWAG &amp; CrowdSec</button><button data-t="ai">AI analyst</button><button data-t="reports">Reports</button>
+  <button data-t="unraid">Unraid servers</button><button data-t="ingest">Ingestion &amp; network</button><button data-t="data">Data &amp; detection</button><button data-t="behavior">Behaviour &amp; ML</button><button data-t="intel">Threat intel &amp; traps</button><button data-t="filters">Alert filters</button><button data-t="blocking">Blocking</button><button data-t="email">Email &amp; notifications</button><button data-t="display">Display</button>
 </div>
-{% for g in ["opnsense", "unifi", "backrest", "bichon", "ai", "reports", "ingest", "data", "behavior", "intel", "email", "display"] %}
+{% for g in ["opnsense", "unifi", "backrest", "bichon", "swag", "ai", "reports", "ingest", "data", "behavior", "intel", "blocking", "email", "display"] %}
 <section data-s="{{ g }}" {% if g != "opnsense" %}hidden{% endif %}>
   <div class="card">
     {% if g == "behavior" %}<p class="small muted">Looking Glass learns what is normal for every device and alerts on what is new
@@ -25,14 +25,27 @@
       <a href="https://github.com/rustmailer/bichon" target="_blank" rel="noopener">Bichon</a> (2.3 or newer) over its
       API - read only, nothing is changed in Bichon and no mail is read. Shown under Infrastructure › Backups.
       In Bichon: <i>API tokens</i> › new token with <b>Metrics only</b> ticked, then paste it here.</p>{% endif %}
+    {% if g == "swag" %}<p class="small muted">Reads a <a href="https://docs.linuxserver.io/general/swag/" target="_blank"
+      rel="noopener">SWAG</a> reverse proxy running in Docker on this server: its nginx access and error logs and its fail2ban
+      log, straight from SWAG's log folder (mounted read only into this container), plus the alerts, decisions and metrics of a
+      CrowdSec container over its Local API - read only, nothing is changed. Shown under SWAG &amp; CrowdSec; web attacks,
+      scanners, CrowdSec, fail2ban and honeypot hits raise alerts like OPNsense's. Step by step: Setup &amp; status, or the
+      SWAG page of the documentation.</p>{% endif %}
+    {% if g == "blocking" %}<p class="small muted">Block an attacker in OPNsense straight from an alert (<i>Block…</i>), on
+      the <a href="/blocks">Blocked addresses</a> page, or automatically for the worst alerts. Looking Glass only fills one alias -
+      your rules decide what it blocks. Set it up once in the <b>OPNsense web UI</b>: (1) <i>Firewall › Aliases</i> › <b>+</b>:
+      type <b>External (advanced)</b>, name e.g. <span class="mono">LookingGlass_block</span>, Save, Apply; (2) <i>Firewall ›
+      Rules › WAN</i> › <b>+</b>: Action <b>Block</b>, Source <b>LookingGlass_block</b>, Save, move it to the top, Apply; (3)
+      <i>System › Access › Users</i> › the API user › add the privilege <b>Firewall: Alias: Edit</b>. Then enter the alias name
+      below. Blocks end by themselves after their time; the alias is filled again after an OPNsense reboot.</p>{% endif %}
     {% if g == "reports" %}<p class="small muted">A report of the last days written on a schedule: statistics, alerts
       and - when the AI analyst is set up - its analysis. Reports can also be written by hand on the Reports page.</p>{% endif %}
     {% if g == "email" %}<h3>Mail server (SMTP)</h3>
     <p class="small muted">The account Looking Glass sends notification mails with. Below the mail server you choose what you want to be mailed about.</p>{% endif %}
-    <form class="settings-form" data-group="{{ g }}"></form>
+    <form class="settings-form" data-group="{{ g }}" autocomplete="off"></form>
     <div class="filters" style="margin-top:12px">
       <button type="button" data-save="{{ g }}">Save</button>
-      {% if g in ("opnsense", "unifi", "backrest", "bichon", "ai") %}<button type="button" class="secondary" data-test="{{ g }}">Test connection</button>{% endif %}
+      {% if g in ("opnsense", "unifi", "backrest", "bichon", "swag", "ai") %}<button type="button" class="secondary" data-test="{{ g }}">Test connection</button>{% endif %}
       {% if g == "display" %}<button type="button" class="secondary" id="display-defaults" title="Theme, accent, menu bar, corners, time format, name, logo and favicon back to the built-in defaults">Restore defaults</button>{% endif %}
       {% if g == "email" %}<input id="mail-test-to" placeholder="Test recipient (default: the sender address)" style="min-width:260px">
       <button type="button" class="secondary" data-test="email">Send test mail</button>{% endif %}
@@ -99,6 +112,20 @@
   </div>
   {% endif %}
   {% if g == "data" %}
+  <div class="card" style="margin-top:14px">
+    <h3>Backup</h3>
+    <p class="small muted">One file with the database <b>and</b> the encryption key (<span class="mono">lookingglass.key</span>):
+      everything needed to restore Looking Glass on this or a new machine. Because the key is in it, the file opens every
+      stored credential - keep it as safe as your passwords. <b>Settings only</b> leaves out the collected history (logs,
+      graphs, dashboard counts, threat feeds) and is small; settings, accounts, devices, alerts, rules, reports and learned
+      behaviour are in both. How to restore is in the README inside the file and in the documentation (Installation details › Backup and restore).</p>
+    <div class="purge-confirm">
+      <select id="bk-kind"><option value="full">Everything (database + key)</option><option value="config">Settings only (no history)</option></select>
+      <input type="password" id="bk-pw" placeholder="Your password" autocomplete="current-password">
+      <button type="button" id="bk-go">Make backup</button>
+    </div>
+    <div class="small" id="bk-msg"></div>
+  </div>
   <div class="card danger-zone" style="margin-top:14px">
     <h3>Delete collected data</h3>
     <p class="small muted">Start again with an empty history. Everything you configured is kept: these settings, all
@@ -170,7 +197,7 @@
     <a href="/unraid#packages">Unraid › Packages</a>. Read with Syft (included in the image) when an image is new or
     updated, or when you press Update there - never on a schedule. For the exact image each container runs, the
     server needs a Docker API (docker-socket-proxy with CONTAINERS=1 and IMAGES=1, above).</p>
-  <form class="settings-form" data-group="packages"></form>
+  <form class="settings-form" data-group="packages" autocomplete="off"></form>
   <div class="filters" style="margin-top:12px"><button type="button" data-save="packages">Save</button></div>
   <div class="small" id="msg-packages"></div>
 </div>
@@ -236,6 +263,29 @@
 {% endblock %}
 {% block scripts %}
 <script>
+/* ---------- backup (Data & detection) ---------- */
+document.getElementById("bk-go").onclick = async () => {
+  const msg = document.getElementById("bk-msg"), btn = document.getElementById("bk-go"), pw = document.getElementById("bk-pw");
+  const say = (t, cls = "") => { msg.className = "small " + cls; msg.innerHTML = t; };
+  if (!pw.value) return say("Enter your password first.", "err");
+  btn.disabled = true;
+  try {
+    const { job } = await LG.api("/api/admin/backup", { method: "POST", body: { kind: document.getElementById("bk-kind").value, password: pw.value } });
+    pw.value = "";
+    for (;;) {
+      const st = await LG.api(`/api/admin/backup/${job}`);
+      if (st.state === "failed") { say(LG.esc(st.error || "failed"), "err"); break; }
+      if (st.state === "ready") {
+        say(`Ready: <b>${LG.esc(st.file)}</b> (${LG.bytes(st.size)}). The download starts now; the file is deleted from the server after it (make a new backup if the download did not finish).`, "ok-msg");
+        location.href = `/api/admin/backup/${job}/download`;
+        break;
+      }
+      say(`<span class="spinner"></span> Making the backup… ${LG.esc(st.step || "")}${st.total ? ` (${st.done}/${st.total})` : ""}`);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  } catch (e) { say(LG.esc(e.message), "err"); }
+  btn.disabled = false;
+};
 /* ---------- generic settings tabs ---------- */
 document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
   document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x === b));
@@ -262,10 +312,12 @@ function fieldHtml(f) {
       <span class="image-preview"></span><input type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/x-icon,.ico">
       <button type="button" class="secondary small" data-image-clear>${f.key === "favicon" ? "Built-in icon" : "No logo"}</button></div>`;
   else if (f.kind === "text") input = `<textarea id="${id}" rows="4" placeholder="${LG.esc(f.placeholder || "")}">${LG.esc(f.value || "")}</textarea>`;
-  else if (f.kind === "secret") input = `<div class="secret-row"><input type="password" id="${id}" autocomplete="new-password"
+  // password managers must not fill these (a text field above a password field looks like a login form to them)
+  else if (f.kind === "secret") input = `<div class="secret-row"><input type="password" id="${id}" autocomplete="new-password" data-lpignore="true" data-1p-ignore data-bwignore data-form-type="other"
       placeholder="${f.is_set ? "•••••••• stored - type to replace" : "not set"}">
       ${f.is_set ? `<label class="chk small"><input type="checkbox" id="${id}-clear"> remove</label>` : ""}</div>`;
   else input = `<input id="${id}" type="${f.kind === "int" ? "number" : "text"}" value="${LG.esc(f.value ?? "")}" placeholder="${LG.esc(f.placeholder || "")}"
+      autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-bwignore data-form-type="other"
       ${f.min != null ? `min="${f.min}"` : ""} ${f.max != null ? `max="${f.max}"` : ""}>`;
   return f.kind === "bool" ? `<div class="setting">${input}${help}</div>`
     : `<div class="setting"><label for="${id}"><b>${LG.esc(f.label)}</b>${f.kind === "secret" ? ` <span class="badge ${f.is_set ? "ok" : ""}">${f.is_set ? "set" : "empty"}</span>` : ""}${f.kind === "list" ? ` <span class="small muted" data-count-for="${id}"></span>` : ""}</label>${input}${f.kind === "list" ? `<div class="small muted">One per line.${f.default ? ` <button type="button" class="secondary small" data-restore="${f.key}">Restore built-in list</button>` : ""}</div>` : ""}${help}</div>`;
@@ -385,6 +437,7 @@ document.querySelectorAll("[data-test]").forEach(b => b.onclick = async () => {
                          (r.history === true ? "The token can read the sync history: every sync with its result is shown."
                           : r.history === false ? "Metrics-only token: the sync history is built from what each poll sees." : "") +
                          " Click Save to keep these settings."
+      : g === "swag" ? (r.parts || []).map(p => `${p.ok ? "✓" : "⚠"} ${LG.esc(p.text)}`).join("<br>") + "<br>Click Save to keep these settings."
       : `The model answered: “${LG.esc(r.reply)}”. Click Save to keep these settings.`, true);
   } catch (e) { gmsg(g, LG.esc(e.message)); }
 });

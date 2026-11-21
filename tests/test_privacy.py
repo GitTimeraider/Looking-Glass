@@ -142,7 +142,7 @@ def test_analyst_sends_only_pseudonyms_and_answers_with_real_values(monkeypatch)
     async def fake_prompt(self):
         return "system"
 
-    async def fake_tool(name, args):
+    async def fake_tool(name, args, *_):
         tool_args.append(args)
         return json.dumps({"rows": [{"src": REAL["lan"], "hostname": REAL["host"], "mac": REAL["mac"]}]})
 

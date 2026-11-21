@@ -123,3 +123,25 @@ def test_crowdsec_check_names_the_missing_step():
             await db.pool().execute("DELETE FROM snapshots WHERE key IN ('poller_status', 'rule_labels', 'crowdsec_status', 'blocklists')")
             await db.close()
     asyncio.run(main())
+
+
+def test_dropped_data_turns_a_check_to_info():
+    import time
+
+    from lookingglass.setup_checks import _flag_dropped
+
+    now = time.time()
+    checks = [{"id": "dns", "status": "ok", "summary": "Per-client queries.", "todo": []},
+              {"id": "nginx", "status": "ok", "summary": "Access logs.", "todo": []},
+              {"id": "unraid1", "status": "ok", "summary": "Connected.", "todo": []},
+              {"id": "unifi", "status": "ok", "summary": "Connected.", "todo": []}]
+    poller = {"unbound_queries": {"ok": True, "dropped": {"what": "over 1000 DNS queries", "at": now - 300, "times": 3}},
+              "nginx_logs": {"ok": True, "dropped": {"what": "old", "at": now - 90000, "times": 1}}}  # over a day: gone
+    unraid = {"1": {"sections": {"syslog": {"ok": True, "warning": "syslog rotated", "warned": now},
+                                 "container_logs": {"ok": True, "warning": "stdout only"}}}}  # a setup hint, not loss
+    _flag_dropped(checks, poller, unraid, {"sections": {"events": {"ok": True}}})
+    dns, nginx, unraid_c, unifi = checks
+    assert dns["status"] == "info" and "3× in 24 hours" in dns["summary"] and dns["todo"]
+    assert nginx["status"] == "ok" and "⚠" not in nginx["summary"]
+    assert unraid_c["status"] == "info" and "syslog rotated" in unraid_c["summary"] and "stdout" not in unraid_c["summary"]
+    assert unifi["status"] == "ok"

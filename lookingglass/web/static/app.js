@@ -131,14 +131,15 @@ const LG = {
     if (s < 86400) return Math.round(s / 3600) + "h ago";
     return Math.round(s / 86400) + "d ago";
   },
-  /** Time until ``iso`` (a CrowdSec ban ending): "3h 12m", "45s"; "ended" once it passed. */
+  /** time until a moment in the future: "in 3h", "in 2d" ("ended" once it has passed) */
   left(iso) {
-    if (!iso) return "–";
+    if (!iso) return "";
     const s = (new Date(iso).getTime() - Date.now()) / 1000;
     if (isNaN(s)) return "–";
     if (s <= 0) return "ended";
-    const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
-    return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m ${Math.floor(s % 60)}s` : `${Math.floor(s)}s`;
+    if (s < 3600) return "in " + Math.max(1, Math.round(s / 60)) + "m";
+    if (s < 86400) return "in " + (s < 36000 ? Math.round(s / 360) / 10 : Math.round(s / 3600)) + "h";
+    return "in " + Math.round(s / 8640) / 10 + "d";
   },
   bytes(v) {
     if (v === null || v === undefined || isNaN(v)) return "–";
