@@ -287,7 +287,8 @@ function render(d) {
     r.swag_sites || [], "No SWAG requests in this period", undefined, "swag_sites");
   T("#t-swag-blocked", [{k: "ip", l: "Address", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "how", l: "How"}, {k: "n", l: "Blocked", num: true}],
     r.swag_blocked || [], "Nothing blocked in SWAG in this period (CrowdSec bouncer, AppSec, rate limit)", undefined, "swag_blocked");
-  T("#t-honeypot", [{k: "ip", l: "Address", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "what", l: "Trap"}, {k: "n", l: "Hits", num: true}],
+  T("#t-honeypot", [{k: "ip", l: "Address", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "what", l: "Trap"}, {k: "n", l: "Hits", num: true},
+      {k: "crowdsec", l: "CrowdSec", f: v => v ? badge(v === "banned now" ? "ok" : "", v) : `<span class="muted">–</span>`}],
     r.honeypot_hits || [], "No honeypot hits - are traps set? Settings › SWAG & CrowdSec › Honeypot", undefined, "honeypot_hits");
   T("#t-f2b-jails", [{k: "jail", l: "Jail"}, {k: "bans", l: "Bans", num: true}, {k: "ips", l: "IPs", num: true}, {k: "matches", l: "Matches", num: true}],
     r.fail2ban_jails || [], "No fail2ban bans or matches in this period", { k: "bans", dir: -1 }, "fail2ban_jails");

@@ -26,7 +26,7 @@ A tour of the pages: overview, alerts, dashboards, infrastructure, devices, even
   More widgets are under *+ Add widget…*, grouped:
   * *SWAG & CrowdSec* - on the page by default: **SWAG: responses**, **SWAG: blocked by CrowdSec / WAF** (addresses
     the bouncer, AppSec or rate limit stopped), **CrowdSec: banned now** (with the time left; *all / unban →* opens
-    the full list), **Honeypot hits**, **fail2ban: banned now**, **SWAG: attack patterns**, **SWAG: top clients**;
+    the full list, searchable by IP, country or scenario), **Honeypot hits**, **fail2ban: banned now**, **SWAG: attack patterns**, **SWAG: top clients**;
     under *+ Add widget…*: **SWAG: requests per site** and **fail2ban jails**. With SWAG set up the key figures also
     show **SWAG blocked** and **Honeypot hits**. (A layout you saved before keeps itself: add the new widgets with
     *Customize › + Add widget…*.)

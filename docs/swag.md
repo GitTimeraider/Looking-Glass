@@ -87,6 +87,7 @@ Optional metrics (port 6060 inside the CrowdSec container, same choice as above)
 * **Honeypot** (optional, see below)
 * **CrowdSec Local API URL**: `http://crowdsec:8080`; **Machine name** `lookingglass` + its **password**; optionally
   the **Bouncer API key** and the **metrics URL** `http://crowdsec:6060/metrics`.
+* No fail2ban? Empty the **fail2ban log** field: the *fail2ban* tab and widgets disappear.
 * **Test connection** - lists every log file (readable? lines understood?) and every CrowdSec part. Then **Save**.
 
 Also check *Settings › Ingestion & network › Time zone*: nginx's error log and fail2ban write local time without a
@@ -152,7 +153,11 @@ regex is all you do**. When the traps change, the requests of the last 30 days a
 shows earlier hits at once (no alerts are raised for those old hits). *Setup & status* shows the number of traps
 read, or why the file could not be read.
 
-Hits are marked (`data.honeypot`, tag `honeypot`) and shown under *SWAG & CrowdSec › Honeypot*. Alerts (rule
+Hits are marked (`data.honeypot`, tag `honeypot`) and shown under *SWAG & CrowdSec › Honeypot*. Whether a visitor got
+banned is taken from **CrowdSec** (a ban for any scenario, by CrowdSec in Docker or the OPNsense plugin): the key
+figures *Banned by CrowdSec* (banned in the period or now) and *Banned now*, and the *CrowdSec* / *Ban ends* columns of
+*Who touched the honeypot* (also on the Overview widget and in reports). *Bans by honeypot jails* is only shown when
+fail2ban is set up. Alerts (rule
 *Honeypot touched*): one per address - **high** from inside your network, from the internet the level of *Honeypot hit
 from the internet: alert* (default low, or off).
 

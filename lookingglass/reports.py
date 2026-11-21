@@ -9,6 +9,7 @@ from typing import Any
 
 from . import db
 from .alert_filters import RULES
+from .dashboards import cs_ban_now, cs_banned_in_period
 from .parsers.filterlog import QFEEDS
 
 log = logging.getLogger(__name__)
@@ -92,10 +93,13 @@ QUERIES: dict[str, str] = {
                       "count(DISTINCT src_ip) FILTER (WHERE action = 'ban') ips, count(*) FILTER (WHERE action = 'found') matches FROM events "
                       "WHERE source = 'fail2ban' AND action IN ('ban', 'found') AND ts > now() - make_interval(secs => $1) "
                       "GROUP BY 1 ORDER BY 2 DESC, 4 DESC LIMIT 15",
-    "honeypot_hits": "SELECT host(src_ip) ip, max(src_country) country, count(*) n, "
+    # with whether CrowdSec banned the address (any scenario): in force now, or decided in the period
+    "honeypot_hits": "SELECT ip, country, n, what, CASE WHEN " + cs_ban_now("x.addr") + " THEN 'banned now' WHEN "
+                     + cs_banned_in_period("x.addr") + " THEN 'banned' END crowdsec FROM ("
+                     "SELECT src_ip addr, host(src_ip) ip, max(src_country) country, count(*) n, "
                      "left(string_agg(DISTINCT coalesce(data->>'path', data->>'jail'), ', '), 200) what FROM events "
                      "WHERE source IN ('nginx', 'fail2ban') AND data->>'honeypot' = 'true' AND src_ip IS NOT NULL "
-                     "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
+                     "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 4 DESC LIMIT 15) x ORDER BY n DESC",
     # Q-Feeds: its firewall log lines too; direction from the addresses (a LAN rule logs outgoing traffic as "in")
     "qfeeds_hits": "SELECT host(src_ip) src, host(dst_ip) dst, CASE WHEN src_ip << '10.0.0.0/8' OR src_ip << '172.16.0.0/12' "
                    "OR src_ip << '192.168.0.0/16' OR src_ip << 'fc00::/7' OR src_ip << '100.64.0.0/10' THEN 'out' ELSE 'in' END direction, "

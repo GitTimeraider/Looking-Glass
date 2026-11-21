@@ -48,6 +48,30 @@ CSL_SEEN = f"({CS_SEEN} AND program = 'crowdsec-lapi')"
 HP = "(source IN ('nginx', 'fail2ban') AND data->>'honeypot' = 'true')"
 HP_DRILL = {"source": "nginx,fail2ban", "d_honeypot": "true"}
 F2B_DRILL = {"source": "fail2ban"}
+
+
+def cs_ban_now(ip: str) -> str:
+    """SQL: the address ``ip`` (an inet expression) is banned by CrowdSec right now - a decision of CrowdSec in Docker
+    or of the OPNsense plugin (their last poll) on that address or a range holding it."""
+    return ("EXISTS (SELECT 1 FROM snapshots cs, jsonb_array_elements(CASE WHEN jsonb_typeof(cs.data) = 'array' THEN cs.data "
+            "ELSE '[]'::jsonb END) d WHERE cs.key IN ('crowdsec_lapi_decisions', 'crowdsec_decisions') "
+            "AND CASE WHEN lower(coalesce(d->>'scope', d->>'lg_scope', '')) IN ('ip', 'range') "
+            f"THEN {ip} <<= coalesce(d->>'lg_value', d->>'value')::inet ELSE false END)")
+
+
+def cs_ban_until(ip: str) -> str:
+    """SQL: when the longest CrowdSec ban of ``ip`` in force ends (NULL: none)."""
+    return ("(SELECT max(coalesce(d->>'until', d->>'lg_until'))::timestamptz FROM snapshots cs, jsonb_array_elements("
+            "CASE WHEN jsonb_typeof(cs.data) = 'array' THEN cs.data ELSE '[]'::jsonb END) d "
+            "WHERE cs.key IN ('crowdsec_lapi_decisions', 'crowdsec_decisions') "
+            "AND CASE WHEN lower(coalesce(d->>'scope', d->>'lg_scope', '')) IN ('ip', 'range') "
+            f"THEN {ip} <<= coalesce(d->>'lg_value', d->>'value')::inet ELSE false END)")
+
+
+def cs_banned_in_period(ip: str) -> str:
+    """SQL: CrowdSec decided a ban / captcha on ``ip`` in the period ($1 seconds) - for whatever scenario."""
+    return ("EXISTS (SELECT 1 FROM events c WHERE c.source = 'crowdsec' AND c.action IN ('ban', 'captcha') "
+            f"AND c.src_ip = {ip} AND c.ts > now() - make_interval(secs => $1))")
 # fail2ban: per jail and address the latest ban / unban of the last 30 days - "banned now" when it is not an unban
 F2B_STATE = ("(SELECT DISTINCT ON (data->>'jail', src_ip) data->>'jail' jail, src_ip, action, ts, src_country FROM events "
              "WHERE source = 'fail2ban' AND action IN ('ban', 'unban', 'restore_ban') AND src_ip IS NOT NULL "
@@ -312,23 +336,34 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             {"id": "hp_kpi", "tab": "honeypot", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) AS \"Hits\", count(DISTINCT src_ip) AS \"IPs\", count(DISTINCT src_country) AS \"Countries\", "
                 f"count(DISTINCT src_ip) FILTER (WHERE {PRIV}) AS \"From inside\", "
+                # who touched it and got banned: by CrowdSec (any scenario, in the period / in force now), by fail2ban jails
+                f"(SELECT count(*) FROM (SELECT DISTINCT src_ip FROM events WHERE {HP} AND {W} AND src_ip IS NOT NULL) h "
+                f"WHERE {cs_banned_in_period('h.src_ip')} OR {cs_ban_now('h.src_ip')}) AS \"Banned by CrowdSec\", "
+                f"(SELECT count(*) FROM (SELECT DISTINCT src_ip FROM events WHERE {HP} AND {W} AND src_ip IS NOT NULL) h "
+                f"WHERE {cs_ban_now('h.src_ip')}) AS \"Banned now\", "
                 f"count(*) FILTER (WHERE source = 'fail2ban' AND action = 'ban') AS \"Bans by honeypot jails\", "
                 "(SELECT count(*) FROM alerts WHERE status = 'open' AND rule = 'honeypot') AS \"Open honeypot alerts\" "
                 f"FROM events WHERE {HP} AND {W}",
-             "needs_cols": {"Bans by honeypot jails": "fail2ban"},
+             "needs_cols": {"Bans by honeypot jails": "fail2ban", "Banned by CrowdSec": "crowdsec", "Banned now": "crowdsec"},
              "drill": {"base": HP_DRILL, "tiles": {"Bans by honeypot jails": {"source": "fail2ban", "d_honeypot": "true", "action": "ban"},
+                                                   "Banned by CrowdSec": None, "Banned now": {"url": "/dash/swag#crowdsec"},
                                                    "Open honeypot alerts": {"url": "/alerts"}}}},
             {"id": "hp_time", "tab": "honeypot", "title": "Honeypot hits over time", "type": "timeseries", "span": 3, "drill": {"base": HP_DRILL},
              "sql": f"SELECT {B} t, CASE WHEN source = 'fail2ban' THEN 'fail2ban ' || coalesce(action, '') ELSE 'web requests' END series, count(*) v "
                     f"FROM events WHERE {HP} AND {W} GROUP BY 1, 2 ORDER BY 1"},
             {"id": "hp_ips", "tab": "honeypot", "title": "Who touched the honeypot", "type": "table", "span": 3, "drill": {"base": HP_DRILL, "by": {"ip": "ip"}},
              "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["hits", "Hits", "num"], ["paths", "Paths"], ["ua", "User agent"],
-                      ["other", "Other requests", "num"], ["first", "First", "time"], ["last", "Last", "ago"]],
-             "sql": "SELECT host(h.src_ip) ip, max(h.src_country) country, count(*) hits, left(string_agg(DISTINCT h.data->>'path', ' · '), 200) paths, "
+                      ["other", "Other requests", "num"], ["cs", "CrowdSec"], ["cs_until", "Ban ends", "left"],
+                      ["first", "First", "time"], ["last", "Last", "ago"]],
+             "sql": "SELECT ip, country, hits, paths, ua, other, CASE WHEN cs_until IS NOT NULL OR banned_now THEN 'banned now' "
+                    "WHEN banned THEN 'banned' END cs, cs_until, first, last FROM ("
+                    "SELECT host(h.src_ip) ip, max(h.src_country) country, count(*) hits, left(string_agg(DISTINCT h.data->>'path', ' · '), 200) paths, "
                     "left(max(h.data->>'user_agent'), 100) ua, (SELECT count(*) FROM events o WHERE o.src_ip = h.src_ip AND o.source = 'nginx' "
-                    "AND coalesce(o.data->>'honeypot', '') <> 'true' AND o.ts > now() - make_interval(secs => $1)) other, min(h.ts) first, max(h.ts) last "
+                    "AND coalesce(o.data->>'honeypot', '') <> 'true' AND o.ts > now() - make_interval(secs => $1)) other, "
+                    f"{cs_ban_until('h.src_ip')} cs_until, {cs_ban_now('h.src_ip')} banned_now, {cs_banned_in_period('h.src_ip')} banned, "
+                    "min(h.ts) first, max(h.ts) last "
                     "FROM events h WHERE h.source IN ('nginx', 'fail2ban') AND h.data->>'honeypot' = 'true' AND h.src_ip IS NOT NULL "
-                    "AND h.ts > now() - make_interval(secs => $1) GROUP BY h.src_ip ORDER BY 3 DESC LIMIT 50"},
+                    "AND h.ts > now() - make_interval(secs => $1) GROUP BY h.src_ip ORDER BY 3 DESC LIMIT 50) x ORDER BY hits DESC"},
             {"id": "hp_paths", "tab": "honeypot", "title": "Trap paths hit", "type": "hbar", "drill": {"base": HP_DRILL},
              "sql": f"SELECT left(coalesce(data->>'path', data->>'jail', '?'), 80) label, count(*) v FROM events WHERE {HP} AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 15"},
             {"id": "hp_countries", "tab": "honeypot", "title": "By country", "type": "hbar", "drill": {"base": HP_DRILL, "by": "country"},

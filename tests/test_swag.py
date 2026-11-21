@@ -447,3 +447,45 @@ def test_fail2ban_tab_only_when_set_up():
         finally:
             await db.close()
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_honeypot_shows_crowdsec_bans():
+    """Honeypot tab / report: whether CrowdSec banned the visitors (any scenario) - now (a range counts) or earlier."""
+    from lookingglass import db
+    from lookingglass.dashboards import run_dashboard
+    from lookingglass.parsers.common import event
+    from lookingglass.reports import build_report
+
+    async def main():
+        await db.connect(DSN)
+        pool = db.pool()
+        try:
+            await pool.execute("TRUNCATE events")
+            now = datetime.now(timezone.utc)
+            hit = lambda ip: event(now - timedelta(hours=2), "nginx", program="swag", severity=4, action="http_404",  # noqa: E731
+                                   src_ip=ip, data={"path": "/.env", "honeypot": True, "tags": ["honeypot"]})
+            await db.copy_events([hit("203.0.113.7"), hit("198.51.100.8"), hit("192.0.2.9"),
+                                  # 198.51.100.8 was banned an hour ago (that ban has ended since)
+                                  event(now - timedelta(hours=1), "crowdsec", program="crowdsec-lapi", severity=4, action="ban",
+                                        src_ip="198.51.100.8")])
+            until = (now + timedelta(hours=3)).isoformat()
+            await db.set_snapshot("crowdsec_lapi_decisions", [
+                {"id": 1, "scope": "Range", "value": "203.0.113.0/24", "until": until},
+                {"id": 2, "scope": "Country", "value": "XX", "until": until}])  # not an address: ignored
+            res = await run_dashboard("swag", 24, set(), "honeypot")
+            by = {p["id"]: p for p in res["panels"]}
+            kpi = by["hp_kpi"]["rows"][0]
+            assert (kpi["IPs"], kpi["Banned by CrowdSec"], kpi["Banned now"]) == (3, 2, 1)
+            rows = {r["ip"]: r for r in by["hp_ips"]["rows"]}
+            assert rows["203.0.113.7"]["cs"] == "banned now" and rows["203.0.113.7"]["cs_until"] is not None
+            assert rows["198.51.100.8"]["cs"] == "banned" and rows["192.0.2.9"]["cs"] is None
+            off = await run_dashboard("swag", 24, {"crowdsec", "fail2ban"}, "honeypot")
+            assert "Banned now" not in off["panels"][0]["rows"][0]
+            rep = {r["ip"]: r["crowdsec"] for r in (await build_report(24))["honeypot_hits"]}
+            assert rep == {"203.0.113.7": "banned now", "198.51.100.8": "banned", "192.0.2.9": None}
+        finally:
+            await pool.execute("TRUNCATE events")
+            await pool.execute("DELETE FROM snapshots WHERE key = 'crowdsec_lapi_decisions'")
+            await db.close()
+    asyncio.run(main())

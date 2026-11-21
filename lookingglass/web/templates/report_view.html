@@ -29,7 +29,7 @@ const SECTIONS = [
   ["ids_signatures", "opnsense", "Suricata signatures", [{k: "signature", l: "Signature"}, {k: "classification", l: "Class"}, {k: "n", l: "Hits", num: true}]],
   ["crowdsec_scenarios", "opnsense", "CrowdSec scenarios", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}]],
   ["fail2ban_jails", "opnsense", "fail2ban jails (SWAG)", [{k: "jail", l: "Jail"}, {k: "bans", l: "Bans", num: true}, {k: "ips", l: "IPs", num: true}, {k: "matches", l: "Matches", num: true}]],
-  ["honeypot_hits", "opnsense", "Honeypot hits", [{k: "ip", l: "IP"}, {k: "country", l: "Country", f: LG.flag}, {k: "what", l: "What"}, {k: "n", l: "Hits", num: true}]],
+  ["honeypot_hits", "opnsense", "Honeypot hits", [{k: "ip", l: "IP"}, {k: "country", l: "Country", f: LG.flag}, {k: "what", l: "What"}, {k: "n", l: "Hits", num: true}, {k: "crowdsec", l: "CrowdSec"}]],
   ["qfeeds_hits", "opnsense", "Q-Feeds hits", [{k: "src", l: "Source"}, {k: "dst", l: "Destination"}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}]],
   ["swag_sites", "opnsense", "SWAG: requests per site", [{k: "site", l: "Site"}, {k: "ips", l: "IPs", num: true}, {k: "errors", l: "4xx/5xx", num: true}, {k: "n", l: "Requests", num: true}]],
   ["swag_blocked", "opnsense", "SWAG: blocked by CrowdSec / WAF / rate limit", [{k: "ip", l: "IP"}, {k: "country", l: "Country", f: LG.flag}, {k: "how", l: "How"}, {k: "n", l: "Blocked", num: true}]],
