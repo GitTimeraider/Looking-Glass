@@ -16,7 +16,7 @@ import re
 from typing import Any
 
 from . import db, rollup
-from .event_filter import LOCAL_NETS
+from .event_filter import LOCAL_SRC, SCOPE_SQL, scoped_sql  # noqa: F401 - SCOPE_SQL used by callers
 from .parsers.filterlog import QFEEDS as QF
 
 W = "ts > now() - make_interval(secs => $1)"
@@ -49,23 +49,7 @@ CSL_SEEN = f"({CS_SEEN} AND program = 'crowdsec-lapi')"
 HP = "(source IN ('nginx', 'fail2ban') AND data->>'honeypot' = 'true')"
 HP_DRILL = {"source": "nginx,fail2ban", "d_honeypot": "true"}
 F2B_DRILL = {"source": "fail2ban"}
-# a local source address - private, CGNAT, loopback (127.0.0.1: the SWAG host / container itself), link-local: the same
-# as Event search's "Source: local" (and the honeypot alert's INTERNAL, which also counts Settings › Internal networks)
-LOCAL_SRC = "(" + " OR ".join(f"src_ip << '{n}'" for n in LOCAL_NETS) + ")"
-
-# page-wide From filter (dashboards with "scope": True - SWAG & CrowdSec): every query of the page reads only the events
-# from local / non-local (public) source addresses. Each "FROM events" / "JOIN events" becomes a filtered subquery that
-# Postgres folds into the same plan, so it costs one address test per row read. Snapshots (bans now, metrics) are not
-# events and stay as they are.
-SCOPE_SQL = {"local": LOCAL_SRC, "public": f"(src_ip IS NOT NULL AND NOT {LOCAL_SRC})"}
-_EVENTS_REF = re.compile(r"\b(FROM|JOIN)\s+events\b(?:\s+(?:AS\s+)?(?!(?:WHERE|GROUP|ORDER|LEFT|RIGHT|INNER|FULL|CROSS|JOIN|"
-                         r"LIMIT|ON|UNION|HAVING|WINDOW|FILTER)\b)([A-Za-z_]\w*))?")
-
-
-def scoped_sql(sql: str, scope: str) -> str:
-    """``sql`` reading only the events of ``scope`` ("local" / "public")."""
-    cond = SCOPE_SQL[scope]
-    return _EVENTS_REF.sub(lambda m: f"{m.group(1)} (SELECT * FROM events WHERE {cond}) {m.group(2) or 'events'}", sql)
+# LOCAL_SRC / SCOPE_SQL / scoped_sql (event_filter): the page-wide From filter ("scope": True) and "From inside"
 
 
 def cs_ban_now(ip: str) -> str:
@@ -745,14 +729,14 @@ async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] 
 
     async def run(panel: dict[str, Any]) -> dict[str, Any]:
         sql = panel["sql"]
-        if scope:
-            sql = scoped_sql(sql, scope)
-        fast = hours >= rollup.MIN_HOURS and (name, panel["id"]) in ROLLUP_PANELS and not scope
+        fast = hours >= rollup.MIN_HOURS and (name, panel["id"]) in ROLLUP_PANELS
         args = [secs, step] if "$2" in sql else [secs]
         out = {k: v for k, v in panel.items() if k not in ("sql", "where", "limit")}
         try:
             async with db.heavy(hours), db.pool().acquire() as conn:
-                out["rows"] = db.records(await (rollup.fetch(conn, sql, *args) if fast else conn.fetch(sql, *args)))
+                # with the From filter: the hourly counts keep it as a dimension; raw queries read filtered events
+                out["rows"] = db.records(await (rollup.fetch(conn, sql, *args, scope=scope) if fast
+                                                else conn.fetch(scoped_sql(sql, scope) if scope else sql, *args)))
             if hide := {c for c, src in (panel.get("needs_cols") or {}).items() if src in off}:
                 out["rows"] = [{k: v for k, v in r.items() if k not in hide} for r in out["rows"]]
             if panel["type"] == "table" and out["rows"]:

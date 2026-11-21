@@ -20,6 +20,10 @@ A tour of the pages: overview, alerts, dashboards, infrastructure, devices, even
   address it had (its VLAN addresses too). Open it from an alert (*Timeline*: an hour before until an hour after it),
   from the Devices page (*timeline* next to *edit*) or type an address.
 * **Overview** – key figures, events over time and per source, open alerts and the top-N tables of every source.
+  **All / Local / Non-local** (top right) counts only events from local source addresses (private, CGNAT / Tailscale,
+  loopback, link-local - your own devices and servers) or only the others, e.g. to hide a NAS that polls its own web
+  page every second. Open alerts, devices, *banned now* and the UniFi / Unraid / backup state are not filtered. The
+  choice is remembered in this browser. The SWAG & CrowdSec page has the same switch for all its tabs.
   **Customize** (top right) lets you drag widgets around (or use ◀ ▶), make them ⅓ / ⅔ / full width and normal or
   tall, remove them and add others (e.g. *Firewall system*); *Done* saves the layout for your account, *Reset to
   default* brings back the standard one. Widgets of sources you switched off (e.g. Suricata) hide themselves.

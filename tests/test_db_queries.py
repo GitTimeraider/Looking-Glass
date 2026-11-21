@@ -116,3 +116,28 @@ def test_crowdsec_alert_pulled_late_counts_in_the_period():
             await db.pool().execute("TRUNCATE events")
             await db.close()
     asyncio.run(main())
+
+
+def test_every_query_works_with_the_from_filter():
+    """The All / Local / Non-local switch rewrites each events reference: every dashboard panel and report section must
+    still be valid SQL (e.g. 'IS NOT DISTINCT FROM events.dst_ip' is a column, not the table)."""
+    from lookingglass.event_filter import scoped_sql
+    from lookingglass.reports import QUERIES
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            queries = [(f"report {n}", q) for n, q in QUERIES.items()]
+            queries += [(f"{d} {p['id']}", p["sql"]) for d, spec in DASHBOARDS.items() for p in spec["panels"]]
+            broken = []
+            async with db.pool().acquire() as conn:
+                for name, q in queries:
+                    for scope in ("local", "public"):
+                        try:
+                            await conn.prepare(scoped_sql(q, scope))
+                        except Exception as exc:  # noqa: BLE001
+                            broken.append((name, scope, str(exc)[:100]))
+            assert not broken
+        finally:
+            await db.close()
+    asyncio.run(main())

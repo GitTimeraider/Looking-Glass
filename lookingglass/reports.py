@@ -10,6 +10,7 @@ from typing import Any
 from . import db
 from .alert_filters import RULES
 from .dashboards import cs_ban_now, cs_banned_in_period
+from .event_filter import scoped_sql
 from .parsers.filterlog import QFEEDS
 
 log = logging.getLogger(__name__)
@@ -224,8 +225,9 @@ def sections_for(categories: list[str]) -> list[str]:
 ROLLUP_QUERIES = {"totals_by_source", "firewall_actions"}  # web_status: SWAG only (program), not in the hourly counts
 
 
-async def build_report(hours: float = 24, categories: Any = None) -> dict[str, Any]:
-    """The report data: the sections of the given categories (None / all = everything)."""
+async def build_report(hours: float = 24, categories: Any = None, scope: str | None = None) -> dict[str, Any]:
+    """The report data: the sections of the given categories (None / all = everything). ``scope``: only events from
+    local / public source addresses (the Overview's From filter); sections that do not read events stay as they are."""
     secs = float(hours) * 3600
     cats = parse_categories(categories)
     rules = alert_rules(cats)
@@ -245,8 +247,8 @@ async def build_report(hours: float = 24, categories: Any = None) -> dict[str, A
         try:
             async with db.heavy(hours), db.pool().acquire() as conn:
                 if hours >= rollup.MIN_HOURS and name in ROLLUP_QUERIES:
-                    return name, db.records(await rollup.fetch(conn, sql, secs))
-                return name, db.records(await conn.fetch(sql, *args))
+                    return name, db.records(await rollup.fetch(conn, sql, secs, scope=scope))
+                return name, db.records(await conn.fetch(scoped_sql(sql, scope) if scope else sql, *args))
         except Exception as exc:  # noqa: BLE001
             log.warning("report section %s (%s h) failed: %r", name, hours, exc)
             failed.append(name)
@@ -260,7 +262,7 @@ async def build_report(hours: float = 24, categories: Any = None) -> dict[str, A
     return report
 
 
-async def timeline(hours: float = 24, buckets: int = 48) -> dict[str, Any]:
+async def timeline(hours: float = 24, buckets: int = 48, scope: str | None = None) -> dict[str, Any]:
     """Events per source and blocked events over time (Overview). From 2 days on in whole hours, counted from the
     hourly counts (rollup.py) - same numbers, a fraction of the work."""
     from . import rollup
@@ -273,8 +275,11 @@ async def timeline(hours: float = 24, buckets: int = 48) -> dict[str, Any]:
     async with db.pool().acquire() as conn:
         if hours >= rollup.MIN_HOURS:
             step = -(-step // 3600) * 3600
-            rows, blk = await rollup.fetch(conn, by_source, secs, step), await rollup.fetch(conn, blocked, secs, step)
+            rows = await rollup.fetch(conn, by_source, secs, step, scope=scope)
+            blk = await rollup.fetch(conn, blocked, secs, step, scope=scope)
         else:
+            if scope:
+                by_source, blocked = scoped_sql(by_source, scope), scoped_sql(blocked, scope)
             rows, blk = await conn.fetch(by_source, secs, step), await conn.fetch(blocked, secs, step)
     return {"step": step, "series": db.records(rows), "blocked": db.records(blk)}
 

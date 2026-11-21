@@ -30,6 +30,7 @@ from ..ingest import STATS
 from .. import rollup
 from ..cache import ResultCache, stale_for, ttl_for
 from ..periods import Gone as PeriodGone, Periods, is_long, key_of
+from ..event_filter import SCOPE_SQL, scoped_sql
 from ..dashboards import CS_FW, DASHBOARDS, F2B_STATE, HP, IDS_DROP, QF, SW, SW_BLOCK, run_dashboard, run_log
 from ..reports import CATEGORIES, build_report, parse_categories, report_mail, report_title, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
@@ -250,9 +251,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     results = ResultCache()
     app.state.results = results
 
-    async def overview_counts(hours: float) -> dict[str, Any]:
-        """The part of the Overview that counts events (the expensive part): cached."""
+    async def overview_counts(hours: float, scope: str | None = None) -> dict[str, Any]:
+        """The part of the Overview that counts events (the expensive part): cached. ``scope``: the From filter (only
+        events from local / public source addresses) - the hourly counts keep it, raw queries read filtered events."""
         secs = hours * 3600
+        sc = (lambda sql: scoped_sql(sql, scope)) if scope else (lambda sql: sql)
         # plain counts (from 2 days on from the hourly counts) and the distinct blocked sources apart: in one query
         # count(DISTINCT) FILTER sorts every event of the period (30 days: seconds instead of a fraction)
         counts = ("SELECT coalesce(count(*), 0) total, coalesce(count(*) FILTER (WHERE action IN ('block', 'drop', 'ban')), 0) blocked, "
@@ -278,29 +281,30 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
 
         async def kpi_counts() -> dict[str, Any]:
             async with db.heavy(hours), db.pool().acquire() as conn:
-                row = await (rollup.fetch(conn, counts, secs) if hours >= rollup.MIN_HOURS else conn.fetch(counts, secs))
+                row = await (rollup.fetch(conn, counts, secs, scope=scope) if hours >= rollup.MIN_HOURS
+                             else conn.fetch(sc(counts), secs))
             return dict(row[0])
 
         async def threat_counts() -> dict[str, Any]:
             async with db.heavy(hours), db.pool().acquire() as conn:
-                return dict(await conn.fetchrow(threats, secs))
+                return dict(await conn.fetchrow(sc(threats), secs))
 
         async def threat_list(name: str) -> tuple[str, list[dict[str, Any]]]:
             try:
                 async with db.heavy(hours), db.pool().acquire() as conn:
-                    return name, db.records(await conn.fetch(threat_lists[name], secs))
+                    return name, db.records(await conn.fetch(sc(threat_lists[name]), secs))
             except Exception as exc:  # noqa: BLE001 - one list failing leaves that widget empty, not the overview
                 log.warning("overview list %s (%s h) failed: %r", name, hours, exc)
                 return name, []
 
         async def blocked_ips() -> int:
             async with db.heavy(hours), db.pool().acquire() as conn:
-                return await conn.fetchval(
+                return await conn.fetchval(sc(
                     "SELECT count(*) FROM (SELECT DISTINCT src_ip FROM events WHERE action IN ('block', 'drop') "
-                    "AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1)) x", secs)
+                    "AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1)) x"), secs)
 
         kpi, thr, ips, report, tl, *lists = await asyncio.gather(
-            kpi_counts(), threat_counts(), blocked_ips(), build_report(hours), timeline(hours),
+            kpi_counts(), threat_counts(), blocked_ips(), build_report(hours, scope=scope), timeline(hours, scope=scope),
             *(threat_list(n) for n in threat_lists))
         return {"kpi": db.jsonable({**kpi, **thr, "blocked_ips": ips}), "report": report, "timeline": tl,
                 "threats": dict(lists)}
@@ -321,7 +325,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return scope if scope in ("local", "public") and DASHBOARDS[name].get("scope") else None
 
     # 7 / 30 days: counted on a schedule in the background and shown from the stored result (periods.py)
-    long_periods = Periods(settings, {"overview": overview_counts, "dash": dash_compute_args})
+    async def overview_counts_args(*args: Any) -> dict[str, Any]:
+        """A stored 7 / 30 day Overview: (hours) or, with the From filter, (scope, hours) - the hours last."""
+        return await overview_counts(args[-1], args[0] if len(args) == 2 else None)
+
+    long_periods = Periods(settings, {"overview": overview_counts_args, "dash": dash_compute_args})
     app.state.periods = long_periods
 
     def long_info(got: dict[str, Any]) -> dict[str, Any]:
@@ -345,7 +353,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if not is_long(hours) or hours > 24 * 90:
             raise HTTPException(400, "only periods over a day are counted in the background")
         if payload.get("kind") == "overview":
-            key = key_of("overview", hours)
+            scope = payload.get("scope") if payload.get("scope") in SCOPE_SQL else None
+            key = key_of("overview", scope, hours) if scope else key_of("overview", hours)
         elif payload.get("kind") == "dash" and payload.get("name") in DASHBOARDS:
             name = payload["name"]
             key = key_of("dash", *dash_key_args(name, dash_tab(name, payload.get("tab")), dash_scope(name, payload.get("scope")), hours))
@@ -400,10 +409,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 "crowdsec_bans_total": len(bans) if isinstance(bans, list) else None, "fail2ban_now": f2b_now}
 
     @app.get("/api/overview")
-    async def overview(request: Request, hours: float = Query(24, gt=0, le=24 * 90)):
+    async def overview(request: Request, hours: float = Query(24, gt=0, le=24 * 90),
+                       scope: str | None = Query(None, pattern="^(local|public)$")):
         pool = db.pool()
         if is_long(hours):  # never counted here: the stored result (periods.py)
-            got = await long_periods.get("overview", hours)
+            got = await (long_periods.get("overview", scope, hours) if scope else long_periods.get("overview", hours))
             if got["data"] is None:
                 return {"pending": True, **long_info(got)}
             counted, extra = got["data"], long_info(got)
@@ -411,11 +421,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             # an expired result of this period (picked again not long after) is answered at once and computed again
             # in the background: "stale" makes the page ask again shortly
             counted, as_of, stale = await until_disconnected(request, results.fetch(
-                ("overview", hours), ttl_for(hours), lambda: overview_counts(hours), stale_for(hours)))
+                ("overview", hours, scope), ttl_for(hours), lambda: overview_counts(hours, scope), stale_for(hours)))
             extra = {"as_of": as_of, "stale": stale}
             for h in OVERVIEW_HOURS:  # the other short periods ahead of time (low priority), so switching is instant
                 if h != hours and not is_long(h):
-                    results.warm(("overview", h), lambda h=h: overview_counts(h), stale_for(h))
+                    results.warm(("overview", h, scope), lambda h=h: overview_counts(h, scope), stale_for(h))
         kpi = counted["kpi"]
         # open alerts, devices and the system state are cheap and always current
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
@@ -454,6 +464,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                        backups=settings.backups_enabled)
         return {
             "sources": enabled,
+            "scope": scope,  # the From filter the counts were made with (open alerts, devices and live state: not)
             "kpi": {**kpi, "open_alerts": {r["severity"]: r["n"] for r in alerts},
                     "crowdsec_decisions": len(decisions) if isinstance(decisions, list) else None,
                     "crowdsec_blocklist": blocklist_n, "devices": devices},

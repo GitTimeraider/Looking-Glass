@@ -23,6 +23,25 @@ LOCAL_NETS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", 
               "fc00::/7", "fe80::/10", "::1/128"]
 SRC_SCOPES = ("local", "public")
 
+# a local source address - private, CGNAT, loopback (127.0.0.1: the SWAG host / container itself), link-local: the same
+# as Event search's "Source: local" (and the honeypot alert's INTERNAL, which also counts Settings › Internal networks)
+LOCAL_SRC = "(" + " OR ".join(f"src_ip <<= '{n}'" for n in LOCAL_NETS) + ")"
+
+# page-wide From filter (dashboards with "scope": True - SWAG & CrowdSec): every query of the page reads only the events
+# from local / non-local (public) source addresses. Each "FROM events" / "JOIN events" becomes a filtered subquery that
+# Postgres folds into the same plan, so it costs one address test per row read. Snapshots (bans now, metrics) are not
+# events and stay as they are.
+SCOPE_SQL = {"local": LOCAL_SRC, "public": f"(src_ip IS NOT NULL AND NOT {LOCAL_SRC})"}
+# not "IS NOT DISTINCT FROM events.dst_ip" (a column, not the table) nor "events.x"
+_EVENTS_REF = re.compile(r"(?<!DISTINCT )\b(FROM|JOIN)\s+events\b(?!\s*\.)(?:\s+(?:AS\s+)?(?!(?:WHERE|GROUP|ORDER|LEFT|RIGHT|INNER|FULL|CROSS|JOIN|"
+                         r"LIMIT|ON|UNION|HAVING|WINDOW|FILTER)\b)([A-Za-z_]\w*))?")
+
+
+def scoped_sql(sql: str, scope: str) -> str:
+    """``sql`` reading only the events of ``scope`` ("local" / "public")."""
+    cond = SCOPE_SQL[scope]
+    return _EVENTS_REF.sub(lambda m: f"{m.group(1)} (SELECT * FROM events WHERE {cond}) {m.group(2) or 'events'}", sql)
+
 
 def src_scope_sql(scope: str, arg: Any) -> str:
     """The condition for ``src_scope`` (local / public); ``arg`` adds a query argument and returns its $n."""

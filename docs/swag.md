@@ -109,6 +109,13 @@ The first time a log is read, its last 5 MB are read too (*First read: older lin
 CrowdSec's alerts of the last 7 days are read on the first poll. After that only new lines / alerts. Where each file
 was read up to is stored, so a restart neither misses nor repeats lines, and log rotation is followed.
 
+## Only local or only internet traffic
+
+**All / Local / Non-local** at the top of *SWAG & CrowdSec* filters every tab, chart and table by source address
+(local = private, CGNAT / Tailscale, loopback and link-local), e.g. *Non-local* to hide the NAS's own Unraid page and
+Nextcloud sync, or *Local* to see only them. Clicking a chart opens Event search with the same filter; the live log
+follows the switch. The current bans and CrowdSec's metrics are not events and are shown as they are.
+
 ## Honeypot
 
 A honeypot is something nobody legitimate ever touches, so every hit is a scanner or an intruder. In *Settings › SWAG
