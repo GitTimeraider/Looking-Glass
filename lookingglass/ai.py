@@ -32,8 +32,8 @@ events(id bigint, ts timestamptz, received_at timestamptz, source text, host tex
        severity smallint /*syslog 0=emerg..7=debug*/, action text, src_ip inet, src_port int, dst_ip inet, dst_port int,
        proto text, interface text, direction text, username text, domain text, src_country text, dst_country text,
        message text, data jsonb, uid text)
-  source values: firewall (pf filterlog), nginx (web server/reverse proxy: program 'swag' = the SWAG reverse proxy in Docker,
-                 else the OPNsense nginx plugin), unbound (DNS), crowdsec (program 'crowdsec-lapi' = CrowdSec in Docker,
+  source values: firewall (pf filterlog), nginx (web server/reverse proxy: program 'swag' = the SWAG reverse proxy in Docker;
+                 older rows with another program came from the OPNsense nginx plugin, no longer read), unbound (DNS), crowdsec (program 'crowdsec-lapi' = CrowdSec in Docker,
                  else the OPNsense plugin), fail2ban (SWAG's fail2ban: data.jail), suricata (IDS/IPS),
                  qfeeds (threat intel blocks), auth (ssh / web GUI logins), vpn, dhcp, system,
                  unraid (Unraid syslog + notifications, host = server name), docker (Unraid container logs, program = container),

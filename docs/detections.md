@@ -7,7 +7,7 @@ What Looking Glass detects, how alerts are muted, mailed and closed, and how sev
 ## Built-in detections
 
 Port scans, host sweeps, brute force (SSH / web GUI / VPN), **successful login after failures**, logins from public IPs,
-web attacks & scanners (OPNsense nginx and [SWAG](swag.md)), Suricata signatures, CrowdSec alerts (OPNsense plugin and
+web attacks & scanners ([SWAG](swag.md)), Suricata signatures, CrowdSec alerts (OPNsense plugin and
 CrowdSec in Docker), fail2ban bans, honeypot hits, Q-Feeds hits (inbound probing / outbound C2),
 DNS tunneling, DGA domains, NXDOMAIN storms, malicious-domain lookups, internal hosts blocked to many destinations,
 outbound connections on suspicious ports (Tor, IRC, RDP, SMB, mining pools…), new devices, UniFi access point / switch

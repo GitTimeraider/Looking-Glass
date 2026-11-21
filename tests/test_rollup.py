@@ -4,6 +4,7 @@ import os
 import pytest
 
 from lookingglass import cache, db, rollup
+from lookingglass.event_filter import scoped_sql
 from lookingglass.dashboards import DASHBOARDS, ROLLUP_PANELS, step_for
 from lookingglass.reports import QUERIES, ROLLUP_QUERIES
 
@@ -107,7 +108,9 @@ def test_hourly_counts_give_the_same_numbers_as_raw_events():
                 assert slices >= 6 and await pool.fetchval("SELECT sum(n) FROM event_rollup") == await pool.fetchval("SELECT count(*) FROM events")
                 await compare_all(conn)
             # old hours are dropped with the events
-            await pool.execute("INSERT INTO event_rollup VALUES (now() - interval '40 days', 'firewall', 'block', '', '', '', -1, '', 6, 5)")
+            await pool.execute("INSERT INTO event_rollup (bucket, source, action, proto, interface, direction, dst_port, "
+                               "src_country, severity, n) VALUES (now() - interval '40 days', 'firewall', 'block', '', '', '', "
+                               "-1, '', 6, 5)")  # columns named: a migrated table has them in another order
             await rollup.prune(30)
             assert await pool.fetchval("SELECT count(*) FROM event_rollup WHERE bucket < now() - interval '31 days'") == 0
             await pool.execute("TRUNCATE events, event_rollup")
@@ -125,7 +128,9 @@ class StillThere:
 
 
 @pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
-def test_dashboard_and_overview_use_the_hourly_counts_from_two_days():
+def test_dashboard_and_overview_use_the_hourly_counts_from_two_days(monkeypatch):
+    # background counting pauses 0.5 s between queries on purpose (db.LOW_PAUSE); not needed to check the numbers
+    monkeypatch.setattr(db, "LOW_PAUSE", 0)
     from lookingglass.config import Settings
     from lookingglass.dashboards import run_dashboard
     from lookingglass.reports import timeline
@@ -152,38 +157,50 @@ def test_dashboard_and_overview_use_the_hourly_counts_from_two_days():
                 "CASE WHEN i % 3 = 0 THEN 'drop' ELSE 'block' END, '198.51.100.7', CASE i % 3 WHEN 1 THEN "
                 "'{\"blocklist\": \"CrowdSec\"}'::jsonb WHEN 2 THEN '{\"blocklist\": \"Q-Feeds\"}'::jsonb END "
                 "FROM generate_series(1, 90) i")
+            # local sources too (the From filter): a NAS polling a web page, every hour of the last three days
+            await pool.execute(
+                "INSERT INTO events (ts, received_at, source, program, action, src_ip) SELECT now() - i * interval '1 hour', "
+                "now() - i * interval '1 hour', 'nginx', 'swag', 'http_200', '192.168.3.3' FROM generate_series(1, 72) i")
             await rollup.step()
             await rollup.step()
             app = create_app(Settings(secret_key="x" * 40), None)
             ov = next(r.endpoint for r in app.routes if getattr(r, "path", "") == "/api/overview")
             await pool.execute("TRUNCATE period_results")
-            for hours in (24, 168):
-                out = await ov(request=StillThere(), hours=hours)
+            for hours, scope in [(h, s) for h in (24, 168) for s in (None, "local", "public")]:
+                out = await ov(request=StillThere(), hours=hours, scope=scope)
                 if hours == 168:  # 7 days: never counted when asked - counted in the background (periods.py)
                     assert out["pending"] and out["refreshing"]
                     periods = app.state.periods
                     await periods.count(periods.urgent.pop(0))
-                    out = await ov(request=StillThere(), hours=hours)
+                    out = await ov(request=StillThere(), hours=hours, scope=scope)
                     assert out["long"] and out["as_of"] and not out["refreshing"]
+                assert out["scope"] == scope
                 kpi = out["kpi"]
-                raw = await pool.fetchrow(
+                sc = (lambda q: scoped_sql(q, scope)) if scope else (lambda q: q)  # noqa: E731
+                raw = await pool.fetchrow(sc(
                     "SELECT count(*) total, count(DISTINCT src_ip) FILTER (WHERE action IN ('block', 'drop')) ips "
-                    "FROM events WHERE ts > now() - make_interval(secs => $1)", hours * 3600)
+                    "FROM events WHERE ts > now() - make_interval(secs => $1)"), hours * 3600)
+                if scope:  # the filter splits: 192.168.3.3 local, the rest with an address public
+                    assert raw["total"] and raw["total"] < (await pool.fetchval(
+                        "SELECT count(*) FROM events WHERE ts > now() - make_interval(secs => $1)", hours * 3600))
+                    tl = out["timeline"]["series"]
+                    assert sum(r["n"] for r in tl) == raw["total"]
                 assert kpi["total"] == raw["total"] and kpi["blocked_ips"] == raw["ips"]
                 assert isinstance(kpi["login_failed"], int)
                 # the threat tiles: the same definitions as the Threats page (dashboards.IDS_DROP / CS_FW / QF)
-                thr = await pool.fetchrow(
+                thr = await pool.fetchrow(sc(
                     "SELECT count(*) FILTER (WHERE source = 'suricata' AND action IN ('drop', 'blocked')) ids, "
                     "count(*) FILTER (WHERE source = 'firewall' AND lower(data->>'blocklist') = 'crowdsec') cs, "
                     "count(*) FILTER (WHERE source = 'firewall' AND lower(data->>'blocklist') = 'q-feeds') qf "
-                    "FROM events WHERE ts > now() - make_interval(secs => $1)", hours * 3600)
+                    "FROM events WHERE ts > now() - make_interval(secs => $1)"), hours * 3600)
                 assert (kpi["ids_dropped"], kpi["crowdsec_fw"], kpi["qfeeds"]) == (thr["ids"], thr["cs"], thr["qf"])
-                assert thr["cs"] and thr["qf"] and thr["ids"]
+                assert bool(thr["cs"] and thr["qf"] and thr["ids"]) == (scope != "local")
                 # the lists of the optional threat widgets, and the live part (UniFi / Unraid / Backups widgets)
                 lists = out["threats"]
                 assert sum(x["n"] for x in lists["crowdsec_ips"]) == thr["cs"]  # one blocked address in the seed
                 assert sum(x["n"] for x in lists["ids_dropped"]) == thr["ids"]
-                assert set(out["now"]) == {"unifi_devices", "unraid", "backup_jobs"} and "backups" in out["sources"]
+                assert set(out["now"]) == {"unifi_devices", "unraid", "backup_jobs", "crowdsec_bans", "crowdsec_bans_total",
+                                       "fail2ban_now"} and "backups" in out["sources"]
             await pool.execute("TRUNCATE events, event_rollup")
         finally:
             await db.close()

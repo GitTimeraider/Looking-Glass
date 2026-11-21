@@ -15,6 +15,7 @@ import logging
 import re
 
 from . import db
+from .event_filter import LOCAL_SRC, SCOPE_SQL
 
 log = logging.getLogger(__name__)
 
@@ -24,14 +25,17 @@ MIN_HOURS = 48  # windows from this length use the hourly counts (shorter ones: 
 # the event's hour; a time stamp in the future (wrong time zone) counts at its receive time - the hourly repair in
 # housekeeping sets ts = received_at for those, so the hour stays the same afterwards
 _BUCKET = ("date_trunc('hour', CASE WHEN ts > received_at + interval '2 minutes' THEN received_at ELSE ts END)")
-_DIMS = "source, action, proto, interface, direction, dst_port, src_country, severity"
+_DIMS = "source, action, proto, interface, direction, dst_port, src_country, severity, src_scope"
+# the From filter (local / non-local source address) of an event, kept as a dimension so a filtered 7 / 30 day view
+# reads the hourly counts too
+_SCOPE = f"CASE WHEN src_ip IS NULL THEN '' WHEN {LOCAL_SRC} THEN 'local' ELSE 'public' END"
 
 COUNT_SQL = f"""
 INSERT INTO event_rollup (bucket, {_DIMS}, n)
 SELECT {_BUCKET}, source, coalesce(action, ''), coalesce(proto, ''), coalesce(interface, ''), coalesce(direction, ''),
-       coalesce(dst_port, -1), coalesce(src_country, ''), severity, count(*)
+       coalesce(dst_port, -1), coalesce(src_country, ''), severity, {_SCOPE}, count(*)
 FROM events WHERE id > $1 AND id <= $2
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
 ON CONFLICT (bucket, {_DIMS}) DO UPDATE SET n = event_rollup.n + EXCLUDED.n
 """
 
@@ -45,19 +49,27 @@ RELATION = f"""(
 SELECT bucket AS ts, source, nullif(action, '') AS action, nullif(proto, '') AS proto, nullif(interface, '') AS interface,
        nullif(direction, '') AS direction, nullif(dst_port, -1) AS dst_port, nullif(src_country, '') AS src_country,
        severity, n
-  FROM event_rollup WHERE bucket >= {_FIRST_FULL}
+  FROM event_rollup WHERE bucket >= {_FIRST_FULL}{{rollup_scope}}
 UNION ALL
-SELECT {_COLS}, 1 FROM events WHERE ts > {_START} AND ts < {_FIRST_FULL} AND id <= {{upto}}
+SELECT {_COLS}, 1 FROM events WHERE ts > {_START} AND ts < {_FIRST_FULL} AND id <= {{upto}}{{raw_scope}}
 UNION ALL
-SELECT {_COLS}, 1 FROM events WHERE id > {{upto}} AND ts > {_START}
+SELECT {_COLS}, 1 FROM events WHERE id > {{upto}} AND ts > {_START}{{raw_scope}}
 ) AS e"""
 
 
-def convert(sql: str, upto: int) -> str:
+def relation(upto: int, scope: str | None = None) -> str:
+    rollup_scope = f" AND src_scope = '{scope}'" if scope in SCOPE_SQL else ""
+    raw_scope = f" AND {SCOPE_SQL[scope]}" if scope in SCOPE_SQL else ""
+    return (RELATION.replace("{upto}", str(int(upto))).replace("{rollup_scope}", rollup_scope)
+            .replace("{raw_scope}", raw_scope))
+
+
+def convert(sql: str, upto: int, scope: str | None = None) -> str:
     """A panel query over raw events, rewritten for the hourly counts: ``FROM events`` -> the combined relation,
     ``count(*)`` -> ``coalesce(sum(n), 0)`` (also with FILTER). ``upto`` must be read in the same snapshot as the
-    query runs in (``fetch``), or events counted in the meantime would be counted twice."""
-    return _counts(sql.replace("FROM events", "FROM " + RELATION.replace("{upto}", str(int(upto)))))
+    query runs in (``fetch``), or events counted in the meantime would be counted twice. ``scope``: only events from
+    local / public source addresses (the From filter)."""
+    return _counts(sql.replace("FROM events", "FROM " + relation(upto, scope)))
 
 
 def _counts(sql: str) -> str:
@@ -86,11 +98,11 @@ def _counts(sql: str) -> str:
     return "".join(out)
 
 
-async def fetch(conn, sql: str, *args):
+async def fetch(conn, sql: str, *args, scope: str | None = None):
     """Run a panel query (written for raw events) on the hourly counts, in one consistent snapshot."""
     async with conn.transaction(isolation="repeatable_read", readonly=True):
         upto = await conn.fetchval("SELECT upto FROM event_rollup_state") or 0
-        return await conn.fetch(convert(sql, upto), *args)
+        return await conn.fetch(convert(sql, upto, scope), *args)
 
 
 async def step(batch: int = BATCH, backlog_only: bool = False) -> int:

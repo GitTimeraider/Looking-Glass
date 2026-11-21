@@ -15,9 +15,11 @@ server). Read only: nothing is changed in SWAG or CrowdSec.
 | CrowdSec (Docker) | its Local API (machine login and/or bouncer key) + metrics | alerts with scenario, AS, country, target site / URI, AppSec rule, decisions; active decisions incl. the community blocklist; which logs CrowdSec reads, AppSec counters, which bouncers are alive |
 
 Everything shows up under **Docker security › SWAG & CrowdSec** (tabs *Web*, *CrowdSec*, *fail2ban*, *Honeypot*).
-SWAG's requests are also part of the *Web server* dashboard, the Threats page's CrowdSec tab, the reports, the AI
-analyst and the web attack / scanner / CrowdSec detections - exactly like the OPNsense nginx and CrowdSec plugins
-(SWAG's events have program `swag`, Docker-CrowdSec's `crowdsec-lapi`).
+SWAG's requests and Docker-CrowdSec's alerts and decisions are also part of the Overview's *SWAG & CrowdSec*
+widgets, the reports, the AI analyst and the web attack / scanner / CrowdSec detections (SWAG's events have program
+`swag`, Docker-CrowdSec's `crowdsec-lapi`). They are kept apart from the OPNsense CrowdSec plugin: *OPNsense security ›
+Threats* and the Overview's *CrowdSec (OPNsense)* widgets count only the plugin; alerts say *CrowdSec (OPNsense)* or
+*CrowdSec (SWAG)*, and the reports have a section for each.
 
 ## 1. Give Looking Glass SWAG's log folder
 
@@ -56,8 +58,10 @@ In a **shell on the Docker host** (`crowdsec` = the name of your CrowdSec contai
 docker exec crowdsec cscli machines add lookingglass --password 'choose-a-long-password' -f /dev/null
 ```
 
-This is a read login for alerts (the `-f /dev/null` keeps CrowdSec's own credentials file untouched). Optional - the
-active decisions including the community blocklist:
+This is the login for alerts (the `-f /dev/null` keeps CrowdSec's own credentials file untouched). It is also what
+the **Unban** button of *SWAG & CrowdSec › CrowdSec › Active bans* uses (`cscli decisions delete --id`) - without the
+machine login the list is shown but has no Unban buttons. Optional - the active decisions including the community
+blocklist:
 
 ```bash
 docker exec crowdsec cscli bouncers add lookingglass
@@ -85,6 +89,7 @@ Optional metrics (port 6060 inside the CrowdSec container, same choice as above)
 * **Honeypot** (optional, see below)
 * **CrowdSec Local API URL**: `http://crowdsec:8080`; **Machine name** `lookingglass` + its **password**; optionally
   the **Bouncer API key** and the **metrics URL** `http://crowdsec:6060/metrics`.
+* No fail2ban? Empty the **fail2ban log** field: the *fail2ban* tab and widgets disappear.
 * **Test connection** - lists every log file (readable? lines understood?) and every CrowdSec part. Then **Save**.
 
 Also check *Settings › Ingestion & network › Time zone*: nginx's error log and fail2ban write local time without a
@@ -94,9 +99,24 @@ Then **Setup & status** shows *SWAG (nginx + fail2ban)* and *CrowdSec (Docker)* 
 (for example: CrowdSec does not read SWAG's logs, or no bouncer has asked CrowdSec for decisions - SWAG's crowdsec
 mod is not working).
 
+**Active bans** (tab *CrowdSec*) lists the decisions in force - address, country, type, scenario, origin and the
+**time left** - refreshed at every poll (*Poll interval*). **Unban** asks for confirmation, then removes the decision
+in CrowdSec; SWAG's bouncer lets the address in again almost at once (live mode, the default; it
+caches an answer for `CACHE_EXPIRATION` seconds) or at its next update (stream mode: `UPDATE_FREQUENCY`). CrowdSec can ban the address again if it keeps misbehaving. Community-blocklist
+bans (CAPI) are not listed there and cannot be unbanned one by one - use an allowlist in CrowdSec for those. fail2ban
+bans (tab *fail2ban*) are read from its log; lifting one needs `docker exec swag fail2ban-client set <jail> unbanip <ip>`
+in a shell on the Docker host.
+
 The first time a log is read, its last 5 MB are read too (*First read: older lines*), so the dashboards are not empty;
 CrowdSec's alerts of the last 7 days are read on the first poll. After that only new lines / alerts. Where each file
 was read up to is stored, so a restart neither misses nor repeats lines, and log rotation is followed.
+
+## Only local or only internet traffic
+
+**All / Local / Non-local** at the top of *SWAG & CrowdSec* filters every tab, chart and table by source address
+(local = private, CGNAT / Tailscale, loopback and link-local), e.g. *Non-local* to hide the NAS's own Unraid page and
+Nextcloud sync, or *Local* to see only them. Clicking a chart opens Event search with the same filter; the live log
+follows the switch. The current bans and CrowdSec's metrics are not events and are shown as they are.
 
 ## Honeypot
 
@@ -110,9 +130,43 @@ A honeypot is something nobody legitimate ever touches, so every hit is a scanne
 | `jail:nginx-honeypot` | every match / ban of that fail2ban jail |
 | `file:nginx/honeypot.log` | everything in that log file (a decoy site with its own `access_log`) |
 
-Jails and log files with *honeypot* in their name count automatically.
+Jails and log files with *honeypot* in their name count automatically. **With none of these set, every honeypot
+widget stays at 0.**
 
-Hits are marked (`data.honeypot`, tag `honeypot`) and shown under *SWAG & CrowdSec › Honeypot*. Alerts (rule
+### Honeypot from your nginx config file (no typing)
+
+Already have the trap locations in a SWAG config file, e.g.
+
+```nginx
+location ~* ^/(wp-admin|wp-login\.php|xmlrpc\.php|phpmyadmin|\.git|\.env|\.aws|server-status|cgi-bin|boaform|HNAP1)(/|\.|$) {
+    return 404;
+}
+```
+
+then point Looking Glass at that file instead of copying the paths:
+
+1. **Unraid web UI › Docker tab ›** click the Looking Glass icon › **Edit** › **Add another Path, Port, Variable,
+   Label or Device**: Config Type *Path*, Container Path `/swag/nginx`, Host Path `/mnt/user/appdata/swag/nginx`
+   (SWAG's nginx folder), Access Mode **Read Only** › **Add** › **Apply**. (Docker Compose:
+   `- /path/to/swag/config/nginx:/swag/nginx:ro`.)
+2. **Looking Glass web UI › Settings › SWAG & CrowdSec › Honeypot from nginx config**: the file as the container sees
+   it, e.g. `/swag/nginx/honeypot.conf` (a path without a leading `/` is taken from the folder above the log folder, so
+   `nginx/honeypot.conf` works too; several files and `*` are allowed). **Test connection** shows how many trap
+   locations it found, then **Save**.
+
+Every `location` in the file is a trap, matched the way nginx does it: `~` (regex), `~*` (regex, any case), `=`
+(exact path) and prefix (`^~ /x/` or `/x`), against the decoded path without the query. A location that matches
+every page (`location /`) is skipped, as is a named one (`@x`); put the traps in a file of their own rather than
+pointing at a whole site config. The file is read again within 30 seconds whenever it changes - **adding a path to the
+regex is all you do**. When the traps change, the requests of the last 30 days are checked again, so the Honeypot tab
+shows earlier hits at once (no alerts are raised for those old hits). *Setup & status* shows the number of traps
+read, or why the file could not be read.
+
+Hits are marked (`data.honeypot`, tag `honeypot`) and shown under *SWAG & CrowdSec › Honeypot*. Whether a visitor got
+banned is taken from **CrowdSec** (a ban for any scenario, by CrowdSec in Docker or the OPNsense plugin): the key
+figures *Banned by CrowdSec* (banned in the period or now) and *Banned now*, and the *CrowdSec* / *Ban ends* columns of
+*Who touched the honeypot* (also on the Overview widget and in reports). *Bans by honeypot jails* is only shown when
+fail2ban is set up. Alerts (rule
 *Honeypot touched*): one per address - **high** from inside your network, from the internet the level of *Honeypot hit
 from the internet: alert* (default low, or off).
 

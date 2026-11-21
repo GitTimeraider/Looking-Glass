@@ -363,8 +363,9 @@ CREATE TABLE IF NOT EXISTS event_rollup (
     dst_port    INTEGER NOT NULL,
     src_country TEXT NOT NULL,
     severity    SMALLINT NOT NULL,
+    src_scope   TEXT NOT NULL DEFAULT '',          -- local / public source address, '' = none (the From filter)
     n           INTEGER NOT NULL,
-    PRIMARY KEY (bucket, source, action, proto, interface, direction, dst_port, src_country, severity)
+    PRIMARY KEY (bucket, source, action, proto, interface, direction, dst_port, src_country, severity, src_scope)
 );
 -- upto: every event with id <= upto is counted in event_rollup; seen: the newest id at the previous run (events up to
 -- there are counted next time - one run later, so a batch still being written is never skipped)
@@ -374,6 +375,18 @@ CREATE TABLE IF NOT EXISTS event_rollup_state (
     seen BIGINT NOT NULL DEFAULT 0
 );
 INSERT INTO event_rollup_state (one) VALUES (true) ON CONFLICT DO NOTHING;
+-- hourly counts from before src_scope: emptied once and counted again from the events (rollup.loop, in slices), so
+-- the From filter of the 7 / 30 day views is exact
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'event_rollup' AND column_name = 'src_scope') THEN
+        TRUNCATE event_rollup;
+        UPDATE event_rollup_state SET upto = 0, seen = 0;
+        ALTER TABLE event_rollup ADD COLUMN src_scope TEXT NOT NULL DEFAULT '';
+        ALTER TABLE event_rollup DROP CONSTRAINT IF EXISTS event_rollup_pkey;
+        ALTER TABLE event_rollup ADD PRIMARY KEY (bucket, source, action, proto, interface, direction, dst_port,
+                                                  src_country, severity, src_scope);
+    END IF;
+END $$;
 
 -- container packages (packages.py, Unraid › Packages): one row per image in use; its list is in /data/packages
 CREATE TABLE IF NOT EXISTS image_packages (

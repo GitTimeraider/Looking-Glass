@@ -6,6 +6,9 @@
   <div class="seg" id="range">
     <button data-v="1">1h</button><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button>
   </div>
+  {% if scope_filter %}<div class="seg" id="scope" title="Source addresses the whole page counts (every tab, chart and table). Local = private, CGNAT / Tailscale, loopback and link-local addresses - e.g. your own devices and the server itself">
+    <button data-v="">All</button><button data-v="local">Local</button><button data-v="public">Non-local</button>
+  </div>{% endif %}
 </header>
 <div class="tabs" id="dtabs" hidden></div>
 <div class="grid g3" id="panels" style="grid-auto-flow: row dense"></div>
@@ -16,10 +19,42 @@ const NAME = "{{ name }}";
 let hours = Number(localStorage.getItem("lg-hours-" + NAME) || 24);
 LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours-" + NAME, v); auto.touch(); load(); });
 
+// the page's From filter (SWAG & CrowdSec): "" = all, "local", "public"; remembered per dashboard in this browser
+const scopeEl = document.getElementById("scope");
+let pageScope = "";
+try { pageScope = scopeEl ? (localStorage.getItem("lg-scope-" + NAME) || "") : ""; } catch { /* not kept */ }
+if (!["", "local", "public"].includes(pageScope)) pageScope = "";
+if (scopeEl) LG.seg(scopeEl, pageScope, v => {
+  pageScope = v;
+  try { v ? localStorage.setItem("lg-scope-" + NAME, v) : localStorage.removeItem("lg-scope-" + NAME); } catch { /* not kept */ }
+  built = false;  // the live log's own From toggle comes and goes with it
+  auto.touch(); load();
+});
+
 const FMT = {
   ip: LG.ip, flag: LG.flag, ago: LG.ago, time: LG.time, sev: LG.sev, src: LG.src, bytes: LG.bytes,
   num: LG.num,
+  // CrowdSec Active bans (SWAG & CrowdSec, Threats): time left (counts down, see the timer below) and Unban
+  left: v => `<span data-left="${LG.esc(v || "")}">${LG.esc(LG.left(v))}</span>`,
+  unban: (v, r) => v ? `<button type="button" class="small danger" data-unban="${LG.esc(v)}" data-src="${LG.esc(r.unban_src || "")}" data-what="${LG.esc(r.ip || r.value || "")}">Unban</button>` : "",
 };
+setInterval(() => document.querySelectorAll("[data-left]").forEach(el => { el.textContent = LG.left(el.dataset.left); }), 30000);
+document.getElementById("panels").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-unban]");
+  if (!b) return;
+  e.stopPropagation();
+  if (!confirm(`Remove the CrowdSec decision for ${b.dataset.what || "this address"}?\n\nCrowdSec lifts the ban now and the bouncers follow at their next update; ` +
+               "it can ban the address again if it keeps misbehaving.")) return;
+  b.disabled = true; b.textContent = "Unbanning…";
+  try {
+    await LG.api("/api/crowdsec/unban", { method: "POST", body: { id: b.dataset.unban, src: b.dataset.src } });
+    b.closest("tr").remove();
+    load();
+  } catch (err) {
+    b.disabled = false; b.textContent = "Unban";
+    alert("Unban failed: " + err.message);
+  }
+});
 let built = false, step = 3600;
 // dashboards with tabs (Threats): the tab is in the address (#suricata), only its panels are loaded
 let tab = decodeURIComponent(location.hash.slice(1)), builtTab = null;
@@ -48,6 +83,7 @@ function drillBase(p, d) {
   const dr = p.drill || {};
   const params = { hours, ...(dr.base || {}) };
   if (!("source" in params) && d.source) params.source = d.source;
+  if (pageScope) params.src_scope = pageScope;  // Event search shows the same addresses the page counted
   return params;
 }
 function rowFilters(p, r) {
@@ -79,7 +115,7 @@ function build(d) {
     const body = p.type === "stat" ? `<div class="grid kpis" id="p-${p.id}"></div>`
       : ["timeseries", "bar", "hbar", "pie"].includes(p.type) ? `<div class="chart-box${p.type === "hbar" ? " tall" : ""}"><canvas id="c-${p.id}"></canvas></div>`
       : `<div id="p-${p.id}"></div>`;
-    return p.type === "stat" ? `<div class="${span}">${body}</div>` : `<div class="card ${span}"><h3>${LG.esc(p.title || "")}${SORTABLE_CHARTS.includes(p.type) ? `<span data-sort-slot="${p.id}"></span>` : ""}<span class="sp"></span>${p.type === "log" ? `${fromToggle(p)}<a class="small" data-search-all="${p.id}" href="${logSearchUrl(d, p)}">search all →</a>` : ""}</h3>${body}</div>`;
+    return p.type === "stat" ? `<div class="${span}">${body}</div>` : `<div class="card ${span}"><h3>${LG.esc(p.title || "")}${SORTABLE_CHARTS.includes(p.type) ? `<span data-sort-slot="${p.id}"></span>` : ""}<span class="sp"></span>${p.search ? `<input type="search" class="tsearch" data-search="${p.id}" placeholder="${LG.esc(p.search.placeholder || "Search…")}" value="${LG.esc(searchQ[p.id] || "")}" aria-label="Search ${LG.esc(p.title || "")}">` : ""}${p.type === "log" ? `${pageScope ? "" : fromToggle(p)}<a class="small" data-search-all="${p.id}" href="${logSearchUrl(d, p)}">search all →</a>` : ""}</h3>${body}</div>`;
   }).join("");
   box.querySelectorAll("[data-from]").forEach(seg => seg.querySelectorAll("button").forEach(b => b.onclick = () => {
     const id = seg.dataset.from, cur = logFrom(id);
@@ -90,6 +126,11 @@ function build(d) {
     paintFrom(seg);
     if (lastData) render(lastData, id);
   }));
+  // search box of a table (Active bans): filters the rows already loaded, as you type
+  box.querySelectorAll("input[data-search]").forEach(inp => inp.oninput = () => {
+    searchQ[inp.dataset.search] = inp.value;
+    if (lastData) render(lastData, inp.dataset.search);
+  });
   box.querySelectorAll("[data-sort-slot]").forEach(slot => {
     const id = slot.dataset.sortSlot, t = LG.sortToggle(`${NAME}:${id}`, () => { if (lastData) render(lastData, id); });
     chartSort[id] = t.mode; slot.replaceWith(t.el);
@@ -101,7 +142,7 @@ function build(d) {
 /* live logs: From filter - local and / or non-local source addresses (per log, remembered in this browser). With one
    of them off the log shows the newest events of the other kind, asked from the server, not the same rows thinned out */
 const fromKey = id => `lg-logfrom-${NAME}:${id}`;
-function logFrom(id) { try { const v = localStorage.getItem(fromKey(id)); return v === "local" || v === "public" ? v : ""; } catch { return ""; } }
+function logFrom(id) { if (pageScope) return pageScope; try { const v = localStorage.getItem(fromKey(id)); return v === "local" || v === "public" ? v : ""; } catch { return ""; } }
 function setLogFrom(id, v) { try { v ? localStorage.setItem(fromKey(id), v) : localStorage.removeItem(fromKey(id)); } catch { /* not kept */ } }
 function fromToggle(p) {
   return `<span class="seg mini" data-from="${p.id}" title="Which source addresses (From) this log shows. Local = private, CGNAT / Tailscale, loopback and link-local addresses">` +
@@ -140,11 +181,21 @@ async function loadLog(p, scope) {
   }
 }
 
-const SORTABLE_CHARTS = ["hbar", "pie"], chartSort = {};
+const SORTABLE_CHARTS = ["hbar", "pie"], chartSort = {}, searchQ = {};
+/* panel.search = {cols, placeholder, show}: rows whose columns contain the text (any case); without a search only the
+   first ``show`` rows are drawn (a long list stays quick) with a note how many more there are */
+function searched(p, rows) {
+  const q = (searchQ[p.id] || "").trim().toLowerCase(), cfg = p.search;
+  const hit = q ? rows.filter(r => cfg.cols.some(c => String(r[c] ?? "").toLowerCase().includes(q))) : rows;
+  const show = q ? hit.length : (cfg.show || hit.length);
+  const note = q ? `${LG.num(hit.length)} of ${LG.num(rows.length)} match` :
+    hit.length > show ? `${LG.num(show)} of ${LG.num(hit.length)} shown – search to find the others` : "";
+  return { rows: hit.slice(0, show), note, empty: q ? `Nothing matches “${q}”` : "No data" };
+}
 let lastData = null;
 // table columns: label for the unlabelled country column, newest / biggest first for times and sizes
 const tableCols = p => (p.cols || Object.keys((p.rows || [])[0] || {}).filter(k => !/^[fo]_/.test(k)).map(k => [k, k]))
-  .map(([k, l, f]) => ({ k, l: l || (f === "flag" ? "Country" : ""), num: f === "num", desc: ["time", "ago", "bytes"].includes(f),
+  .map(([k, l, f]) => ({ k, l: l || (f === "flag" ? "Country" : ""), num: f === "num", desc: ["time", "ago", "bytes", "left"].includes(f),
                          f: f && f !== "num" ? FMT[f] : undefined }));
 
 function render(d, only) {
@@ -178,8 +229,10 @@ function render(d, only) {
       const sorted = p.type === "hbar" ? LG.sortRows(rows, chartSort[p.id] && chartSort[p.id]()) : rows;
       LG.barChart("c-" + p.id, sorted, p.type === "hbar", base && (r => go(p, { ...base, ...rowFilters(p, r) })));
     } else if (p.type === "table") {
-      LG.table("#p-" + p.id, tableCols(p), rows, "No data", base && (r => go(p, { ...base, ...rowFilters(p, r) })),
+      const s = p.search ? searched(p, rows) : { rows, note: "", empty: "No data" };
+      LG.table("#p-" + p.id, tableCols(p), s.rows, s.empty, base && (r => go(p, { ...base, ...rowFilters(p, r) })),
                { sortAll: true, order: p.order });
+      if (s.note) document.getElementById("p-" + p.id).insertAdjacentHTML("beforeend", `<div class="small muted" style="margin-top:6px">${LG.esc(s.note)}</div>`);
     } else if (p.type === "log") {
       const scope = logFrom(p.id);
       if (scope) loadLog(p, scope);
@@ -190,9 +243,9 @@ function render(d, only) {
 
 async function load() {
   try {
-    const d = await LG.api(`/api/dash/${NAME}?hours=${hours}${tab ? `&tab=${encodeURIComponent(tab)}` : ""}`,
+    const d = await LG.api(`/api/dash/${NAME}?hours=${hours}${tab ? `&tab=${encodeURIComponent(tab)}` : ""}${pageScope ? `&scope=${pageScope}` : ""}`,
                            { signal: LG.latest("dash") });
-    const view = { kind: "dash", name: NAME, tab: tab || null, hours };
+    const view = { kind: "dash", name: NAME, tab: tab || null, hours, scope: pageScope || null };
     // 7 / 30 days never counted yet: counted in the background. The tabs and periods stay usable meanwhile; the
     // panels of another period are not kept (their numbers would not belong to this one)
     if (d.pending) {

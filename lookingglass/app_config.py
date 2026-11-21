@@ -120,8 +120,6 @@ FIELDS: list[Field] = [
     Field("ids_ignore_sids", "opnsense", "Suricata: SIDs that never raise an alert", "list",
           "Signature IDs (the SID column under Threats › Suricata). Their hits are still stored and shown.",
           placeholder="2210050"),
-    Field("nginx_pull", "opnsense", "Pull nginx access / error logs", "bool",
-          "nginx plugin: its access logs are never sent by OPNsense remote syslog, so they are read via the API."),
     Field("vpn_pull", "opnsense", "Pull VPN status (WireGuard, OpenVPN, IPsec)", "bool",
           "Peers, handshakes, sessions and traffic. WireGuard does not log connections, so this is the only source."),
     # UniFi
@@ -217,6 +215,14 @@ FIELDS: list[Field] = [
           "(jail:nginx-honeypot) or a whole log file (file:nginx/honeypot.log). Jails and log files with 'honeypot' in "
           "their name count automatically. Nobody legitimate touches a trap: every hit is shown under SWAG › Honeypot.",
           placeholder="/wp-login.php\njail:nginx-honeypot\nfile:nginx/honeypot.log"),
+    Field("swag_honeypot_conf", "swag", "Honeypot from nginx config", "list", "Instead of (or as well as) typing traps "
+          "above: SWAG's nginx config file(s) holding your trap locations, e.g. the file with "
+          "location ~* ^/(wp-admin|\\.env|...)(/|\\.|$) { return 404; }. Every location in it is a trap (regex ~ / ~*, "
+          "exact =, prefix); one that matches every page (location /) is skipped. The file is read again whenever it "
+          "changes, so a growing list needs no work here. Mount SWAG's nginx folder read only into the Looking Glass "
+          "container (on Unraid: /mnt/user/appdata/swag/nginx → /swag/nginx) and enter e.g. /swag/nginx/honeypot.conf. "
+          "A path without a leading / is taken from the folder above the log folder (nginx/honeypot.conf = "
+          "/swag/nginx/honeypot.conf). * as wildcard.", placeholder="/swag/nginx/honeypot.conf"),
     Field("swag_honeypot_internet", "swag", "Honeypot hit from the internet: alert", "choice", "The alert level of a "
           "honeypot hit from an internet address (one alert per address). From inside your network it is always high.",
           choices=("off", "info", "low", "medium", "high")),
@@ -540,7 +546,7 @@ RESTART_GROUPS = {"backrest": ("backrest_url", "backrest_username", "backrest_pa
                                "backrest_poll_interval"),
                   "bichon": ("bichon_url", "bichon_token", "bichon_verify_ssl", "bichon_poll_interval"),
                   "swag": ("swag_log_dir", "swag_name", "swag_access_logs", "swag_error_logs", "swag_fail2ban_log",
-                           "swag_backfill_mb", "swag_honeypot"),
+                           "swag_backfill_mb", "swag_honeypot", "swag_honeypot_conf"),
                   "crowdsec_lapi": ("crowdsec_lapi_url", "crowdsec_lapi_machine", "crowdsec_lapi_password",
                                     "crowdsec_lapi_bouncer_key", "crowdsec_lapi_metrics_url",
                                     "crowdsec_lapi_verify_ssl", "crowdsec_lapi_poll_interval"),
@@ -548,7 +554,7 @@ RESTART_GROUPS = {"backrest": ("backrest_url", "backrest_username", "backrest_pa
                             "unifi_verify_ssl", "unifi_poll_interval", "unifi_events"),
                   "opnsense": ("opnsense_url", "opnsense_api_key", "opnsense_api_secret", "opnsense_verify_ssl",
                                "opnsense_ca_pem", "poll_interval", "firewall_log_pull", "unbound_query_pull",
-                               "crowdsec_pull", "qfeeds_pull", "ids_pull", "nginx_pull", "vpn_pull")}
+                               "crowdsec_pull", "qfeeds_pull", "ids_pull", "vpn_pull")}
 
 
 @dataclass

@@ -7,6 +7,9 @@
   <div class="seg" id="range">
     <button data-v="1">1h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button>
   </div>
+  <div class="seg" id="scope" title="Source addresses the counted widgets use (key figures, charts, top lists). Local = private, CGNAT / Tailscale, loopback and link-local addresses - e.g. your own devices and servers. Open alerts, devices, bans now and UniFi / Unraid / backup state are not filtered.">
+    <button data-v="">All</button><button data-v="local">Local</button><button data-v="public">Non-local</button>
+  </div>
 </header>
 
 <div class="layout-bar" id="layout-bar" hidden>
@@ -42,15 +45,23 @@ const WIDGETS = [
   { id: "dns", title: "DNS top domains", w: 1, body: "table", el: "dns", src: "unbound" },
   { id: "dns-blocked", title: "DNS blocked", w: 1, body: "table", el: "dns-blocked", src: "unbound" },
   { id: "dns-clients", title: "DNS clients", w: 1, body: "table", el: "dns-clients", src: "unbound" },
-  { id: "web", title: "Web (nginx) responses", w: 1, body: "chart", el: "web", src: "nginx", sort: "web", small: true },
-  { id: "web-tags", title: "Web attack patterns", w: 1, body: "table", el: "web-tags", src: "nginx" },
-  { id: "web-clients", title: "Web top clients", w: 1, body: "table", el: "web-clients", src: "nginx" },
+  // SWAG & CrowdSec (Docker): the web server is SWAG; hidden while SWAG / its fail2ban / CrowdSec's Local API is not set up
+  { id: "web", title: "SWAG: responses", w: 1, body: "chart", el: "web", src: "nginx", sort: "web", small: true, link: ["/dash/swag", "SWAG →"] },
+  { id: "swag-blocked", title: "SWAG: blocked by CrowdSec / WAF", w: 1, body: "table", el: "swag-blocked", src: "nginx" },
+  { id: "cs-bans", title: "CrowdSec: banned now", w: 1, body: "table", el: "cs-bans", src: "crowdsec_lapi", link: ["/dash/swag#crowdsec", "all / unban →"] },
+  { id: "honeypot", title: "Honeypot hits", w: 1, body: "table", el: "honeypot", src: "nginx", link: ["/dash/swag#honeypot", "Honeypot →"] },
+  { id: "f2b-now", title: "fail2ban: banned now", w: 1, body: "table", el: "f2b-now", src: "fail2ban" },
+  { id: "web-tags", title: "SWAG: attack patterns", w: 1, body: "table", el: "web-tags", src: "nginx" },
+  { id: "web-clients", title: "SWAG: top clients", w: 1, body: "table", el: "web-clients", src: "nginx" },
+  { id: "swag-sites", title: "SWAG: requests per site", w: 1, body: "table", el: "swag-sites", src: "nginx", optional: true },
+  { id: "cs-lapi-scen", title: "CrowdSec (SWAG): scenarios", w: 1, body: "table", el: "cs-lapi-scen", src: "crowdsec_lapi", optional: true },
+  { id: "f2b-jails", title: "fail2ban jails", w: 1, body: "table", el: "f2b-jails", src: "fail2ban", optional: true },
   { id: "ids", title: "Suricata signatures", w: 1, body: "table", el: "ids", src: "suricata" },
   { id: "ids-src", title: "Suricata: top sources", w: 1, body: "table", el: "ids-src", src: "suricata", optional: true },
   { id: "ids-dst", title: "Suricata: targeted hosts", w: 1, body: "table", el: "ids-dst", src: "suricata", optional: true },
   { id: "ids-cls", title: "Suricata classifications", w: 1, body: "table", el: "ids-cls", src: "suricata", optional: true },
   { id: "ids-int", title: "Suricata: internal hosts alerting", w: 1, body: "table", el: "ids-int", src: "suricata", optional: true },
-  { id: "cs", title: "CrowdSec scenarios", w: 1, body: "table", el: "cs", src: "crowdsec" },
+  { id: "cs", title: "CrowdSec (OPNsense): scenarios", w: 1, body: "table", el: "cs", src: "crowdsec" },
   { id: "qf", title: "Q-Feeds threat-intel hits", w: 1, body: "table", el: "qf", src: "qfeeds" },
   { id: "talkers", title: "Internal top talkers", w: 1, body: "table", el: "talkers" },
   { id: "devices", title: "New devices", w: 1, body: "table", el: "devices" },
@@ -70,7 +81,8 @@ const WIDGETS = [
   { id: "backup-jobs", title: "Backup jobs", w: 2, body: "table", el: "backup-jobs", src: "backups", optional: true, group: "Backups", link: ["/backups", "Backups →"] },
 ];
 // the group of the older widgets, for the Add widget list
-const GROUP_OF_SRC = { suricata: "Threats", crowdsec: "Threats", qfeeds: "Threats", unbound: "DNS", nginx: "Web server" };
+const GROUP_OF_SRC = { suricata: "Threats", crowdsec: "Threats", qfeeds: "Threats", unbound: "DNS", nginx: "SWAG & CrowdSec",
+                       fail2ban: "SWAG & CrowdSec", crowdsec_lapi: "SWAG & CrowdSec" };
 const groupOf = w => w.group || GROUP_OF_SRC[w.src] || "Firewall & general";
 const BY_ID = Object.fromEntries(WIDGETS.map(w => [w.id, w]));
 const DEFAULT_LAYOUT = WIDGETS.filter(w => !w.optional).map(w => ({ id: w.id, w: w.w, h: 1 }));
@@ -172,6 +184,15 @@ document.getElementById("layout-save").onclick = async () => {
   } catch (err) { alert("Saving the layout failed: " + err.message); return; }
   setEditing(false);
 };
+// the From filter: "" = all, "local", "public" (remembered in this browser)
+let scope = "";
+try { scope = localStorage.getItem("lg-scope-overview") || ""; } catch { /* not kept */ }
+if (!["", "local", "public"].includes(scope)) scope = "";
+LG.seg(document.getElementById("scope"), scope, v => {
+  scope = v;
+  try { v ? localStorage.setItem("lg-scope-overview", v) : localStorage.removeItem("lg-scope-overview"); } catch { /* not kept */ }
+  auto.touch(); load();
+});
 LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours", v); auto.touch(); load(); });
 
 function kpi(label, value, cls = "") { return `<div class="card kpi ${cls}"><div class="v">${value}</div><div class="l">${LG.esc(label)}</div></div>`; }
@@ -204,7 +225,7 @@ function drawSources(r) {
 function drawWeb(r) {
   const box = $("c-web") && $("c-web").parentElement;
   if (box) box.dataset.empty = failed.has("web_status") ? FAILED_MSG
-    : "No nginx requests in this period (the nginx plugin on OPNsense - see Setup & status)";
+    : "No SWAG requests in this period (Settings › SWAG & CrowdSec - see Setup & status)";
   const ws = LG.sortRows((r.web_status || []).map(x => ({ label: String(x.status || "other").replace("http_", ""), v: x.n })), sortWeb.mode());
   LG.chart("c-web", { type: "bar", data: { labels: ws.map(x => x.label),
     datasets: [{ data: ws.map(x => x.v), backgroundColor: ws.map(x => /^5/.test(x.label) ? "#ef4444" : /^4/.test(x.label) ? "#f59e0b" : "#22c55e") }] },
@@ -214,7 +235,7 @@ function drawWeb(r) {
 const $ = id => document.getElementById(id);
 async function load() {
   let d;
-  try { d = await LG.api(`/api/overview?hours=${hours}`, { signal: LG.latest("overview") }); }
+  try { d = await LG.api(`/api/overview?hours=${hours}${scope ? `&scope=${scope}` : ""}`, { signal: LG.latest("overview") }); }
   catch (e) { if (!LG.aborted(e)) document.getElementById("updated").textContent = "Failed to load: " + e.message; return; }
   // 7 / 30 days never counted yet: the server counts it in the background; what is shown belongs to another period
   $("widgets").classList.toggle("pending-period", !!d.pending);
@@ -222,7 +243,7 @@ async function load() {
   last = d;
   render(d);
 }
-const VIEW = () => ({ kind: "overview", hours });
+const VIEW = () => ({ kind: "overview", hours, scope: scope || null });
 function render(d) {
   const k = d.kpi, oa = k.open_alerts || {}, on = d.sources || {};
   srcOn = on;
@@ -238,6 +259,8 @@ function render(d) {
     (on.suricata ? kpi("Suricata dropped", LG.num(k.ids_dropped), k.ids_dropped ? "warn" : "") : "") +
     (on.qfeeds ? kpi("Q-Feeds hits", LG.num(k.qfeeds), k.qfeeds ? "warn" : "") : "") +
     (on.crowdsec ? kpi("CrowdSec firewall blocks", LG.num(k.crowdsec_fw), k.crowdsec_fw ? "warn" : "") : "") +
+    (on.nginx ? kpi("SWAG blocked", LG.num(k.swag_blocked), k.swag_blocked ? "warn" : "") : "") +
+    (on.nginx ? kpi("Honeypot hits", LG.num(k.honeypot), k.honeypot ? "warn" : "") : "") +
     kpi("Devices (24h)", LG.num(k.devices));
   LG.updated(document.getElementById("updated"), d, load, VIEW());
 
@@ -270,15 +293,27 @@ function render(d) {
   T("#t-dns-clients", [{k: "client", l: "Client", f: LG.ip}, {k: "blocked", l: "Blocked", num: true}, {k: "n", l: "Queries", num: true}], r.dns_clients);
   try { drawWeb(r); } catch (e) { console.error("web chart", e); }
   T("#t-web-tags", [{k: "tag", l: "Pattern"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Requests", num: true}], r.web_attack_tags,
-    r.web_status && r.web_status.length ? "No attack patterns seen" : "No nginx requests in this period", undefined, "web_attack_tags");
+    r.web_status && r.web_status.length ? "No attack patterns seen" : "No SWAG requests in this period", undefined, "web_attack_tags");
   T("#t-web-clients", [{k: "ip", l: "Client", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "errors", l: "4xx/5xx", num: true}, {k: "n", l: "Req", num: true}], r.web_top_clients,
-    "No nginx requests in this period (the nginx plugin on OPNsense - see Setup & status)", undefined, "web_top_clients");
+    "No SWAG requests in this period (Settings › SWAG & CrowdSec - see Setup & status)", undefined, "web_top_clients");
+  T("#t-swag-sites", [{k: "site", l: "Site"}, {k: "ips", l: "IPs", num: true}, {k: "errors", l: "4xx/5xx", num: true}, {k: "n", l: "Req", num: true}],
+    r.swag_sites || [], "No SWAG requests in this period", undefined, "swag_sites");
+  T("#t-swag-blocked", [{k: "ip", l: "Address", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "how", l: "How"}, {k: "n", l: "Blocked", num: true}],
+    r.swag_blocked || [], "Nothing blocked in SWAG in this period (CrowdSec bouncer, AppSec, rate limit)", undefined, "swag_blocked");
+  T("#t-honeypot", [{k: "ip", l: "Address", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "what", l: "Trap"}, {k: "n", l: "Hits", num: true},
+      {k: "crowdsec", l: "CrowdSec", f: v => v ? badge(v === "banned now" ? "ok" : "", v) : `<span class="muted">–</span>`}],
+    r.honeypot_hits || [], "No honeypot hits - are traps set? Settings › SWAG & CrowdSec › Honeypot", undefined, "honeypot_hits");
+  T("#t-f2b-jails", [{k: "jail", l: "Jail"}, {k: "bans", l: "Bans", num: true}, {k: "ips", l: "IPs", num: true}, {k: "matches", l: "Matches", num: true}],
+    r.fail2ban_jails || [], "No fail2ban bans or matches in this period", { k: "bans", dir: -1 }, "fail2ban_jails");
   T("#t-ids", [{k: "signature", l: "Signature"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_signatures, "No Suricata alerts");
   T("#t-ids-src", [{k: "ip", l: "Source", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "sigs", l: "Sigs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_top_sources, "No Suricata alerts");
   T("#t-ids-dst", [{k: "ip", l: "Destination", f: LG.ip}, {k: "port", l: "Port"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_top_targets, "No Suricata alerts");
   T("#t-ids-cls", [{k: "classification", l: "Classification"}, {k: "dropped", l: "Dropped", num: true}, {k: "n", l: "Hits", num: true}], r.ids_classifications, "No Suricata alerts");
   T("#t-ids-int", [{k: "ip", l: "Host", f: LG.ip}, {k: "sigs", l: "Sigs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_internal_hosts, "No internal host triggered Suricata");
-  T("#t-cs", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}], r.crowdsec_scenarios);
+  T("#t-cs", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}], r.crowdsec_scenarios,
+    "No alerts / decisions of the OPNsense CrowdSec plugin in this period");
+  T("#t-cs-lapi-scen", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}],
+    r.crowdsec_lapi_scenarios || [], "No alerts / decisions of CrowdSec (SWAG) in this period");
   T("#t-qf", [{k: "src", l: "Source", f: LG.ip}, {k: "dst", l: "Destination", f: LG.ip}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}], r.qfeeds_hits,
     "No Q-Feeds hits in this period (only logged firewall rules that use the Q-Feeds aliases count)", undefined, "qfeeds_hits");
   T("#t-talkers", [{k: "ip", l: "Host", f: LG.ip}, {k: "peers", l: "Peers", num: true}, {k: "n", l: "Events", num: true}], r.top_talkers_internal,
@@ -327,6 +362,15 @@ function renderMore(d) {
   T("#t-sec-clients", [{k: "name", l: "Device"}, {k: "ip", l: "IP", f: LG.ip}, {k: "conn_where", l: "Connected to"},
     {k: "fw", l: "FW blocks", num: true}, {k: "dns", l: "DNS blocked", num: true}, {k: "threats", l: "Threats", num: true}],
     r.clients_with_security_events || [], "No known device had security events", { k: "threats", dir: -1 });
+  // SWAG & CrowdSec: bans in force now
+  const csTotal = now.crowdsec_bans_total;
+  T("#t-cs-bans", [{k: "value", l: "Address", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "scenario", l: "Scenario",
+      f: v => LG.esc(String(v || "").replace(/^crowdsecurity\//, ""))}, {k: "until", l: "Time left", f: LG.left, desc: true}],
+    now.crowdsec_bans || [], "CrowdSec has no ban in force (community blocklist not counted)", { k: "until", dir: -1 });
+  if ($("t-cs-bans") && csTotal > (now.crowdsec_bans || []).length)
+    $("t-cs-bans").insertAdjacentHTML("beforeend", `<div class="small muted">${LG.num(csTotal)} in total – the 50 longest-running shown</div>`);
+  T("#t-f2b-now", [{k: "ip", l: "Address", f: LG.ip}, {k: "country", l: "", f: LG.flag}, {k: "jail", l: "Jail"}, {k: "ts", l: "Banned", f: LG.ago}],
+    now.fail2ban_now || [], "fail2ban has nobody banned (last 30 days of its log)", { k: "ts", dir: -1 });
   // UniFi
   T("#t-unifi-now", [{k: "name", l: "Device", f: (v, x) => `${LG.esc(v)}<div class="small muted">${LG.esc(x.model || "")}</div>`},
     {k: "state", l: "State", s: x => /^(connected|online)$/.test(x.state) ? 1 : 0,

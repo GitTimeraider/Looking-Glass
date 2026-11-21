@@ -9,6 +9,8 @@ from typing import Any
 
 from . import db
 from .alert_filters import RULES
+from .dashboards import cs_ban_now, cs_banned_in_period
+from .event_filter import scoped_sql
 from .parsers.filterlog import QFEEDS
 
 log = logging.getLogger(__name__)
@@ -51,11 +53,11 @@ QUERIES: dict[str, str] = {
                    "AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
     "dns_clients": "SELECT host(src_ip) client, count(*) n, count(*) FILTER (WHERE action IN ('block', 'drop')) blocked FROM events "
                    "WHERE source = 'unbound' AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
-    "web_status": "SELECT action status, count(*)::bigint n FROM events WHERE source = 'nginx' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
+    "web_status": "SELECT action status, count(*)::bigint n FROM events WHERE source = 'nginx' AND program = 'swag' AND action ~ '^http_' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
     "web_top_clients": "SELECT host(src_ip) ip, src_country country, count(*) n, count(*) FILTER (WHERE action ~ '^http_[45]') errors FROM events "
-                       "WHERE source = 'nginx' AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
+                       "WHERE source = 'nginx' AND program = 'swag' AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
     "web_attack_tags": "SELECT tag, count(*) n, count(DISTINCT src_ip) ips FROM (SELECT src_ip, jsonb_array_elements_text(data->'tags') tag FROM events "
-                       "WHERE source = 'nginx' AND ts > now() - make_interval(secs => $1) AND jsonb_typeof(data->'tags') = 'array') t GROUP BY 1 ORDER BY 2 DESC",
+                       "WHERE source = 'nginx' AND program = 'swag' AND ts > now() - make_interval(secs => $1) AND jsonb_typeof(data->'tags') = 'array') t GROUP BY 1 ORDER BY 2 DESC",
     "auth_failures": "SELECT host(src_ip) ip, source, count(*) n, array_agg(DISTINCT username) FILTER (WHERE username IS NOT NULL) users FROM events "
                      f"WHERE action = 'login_failed' AND ts > now() - make_interval(secs => $1) {CATEGORY_FILTER} "
                      "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
@@ -77,17 +79,33 @@ QUERIES: dict[str, str] = {
                           "WHERE source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject') AND (src_ip << '10.0.0.0/8' "
                           "OR src_ip << '172.16.0.0/12' OR src_ip << '192.168.0.0/16' OR src_ip << 'fc00::/7') "
                           "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
+    # the OPNsense CrowdSec plugin and CrowdSec in Docker (program crowdsec-lapi, next to SWAG) apart
     "crowdsec_scenarios": "SELECT coalesce(data->>'scenario', data->>'reason') scenario, count(*) n, count(DISTINCT src_ip) ips FROM events "
-                          "WHERE source = 'crowdsec' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
-    # SWAG (swag.py): fail2ban jails and honeypot hits
+                          "WHERE source = 'crowdsec' AND program IS DISTINCT FROM 'crowdsec-lapi' "
+                          "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
+    "crowdsec_lapi_scenarios": "SELECT coalesce(data->>'scenario', data->>'reason') scenario, count(*) n, count(DISTINCT src_ip) ips "
+                               "FROM events WHERE source = 'crowdsec' AND program = 'crowdsec-lapi' "
+                               "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
+    # SWAG (swag.py): requests per site, what its CrowdSec bouncer / AppSec / rate limit stopped, fail2ban jails and
+    # honeypot hits
+    "swag_sites": "SELECT coalesce(domain, '?') site, count(*) n, count(*) FILTER (WHERE action ~ '^http_[45]') errors, "
+                  "count(DISTINCT src_ip) ips FROM events WHERE source = 'nginx' AND program = 'swag' AND action ~ '^http_' "
+                  "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
+    "swag_blocked": "SELECT host(src_ip) ip, max(src_country) country, count(*) n, "
+                    "string_agg(DISTINCT replace(action, '_', ' '), ', ') how, max(ts) last FROM events "
+                    "WHERE source = 'nginx' AND program = 'swag' AND action IN ('bouncer_block', 'waf_block', 'rate_limited') "
+                    "AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1) GROUP BY src_ip ORDER BY 3 DESC LIMIT 15",
     "fail2ban_jails": "SELECT coalesce(data->>'jail', '?') jail, count(*) FILTER (WHERE action = 'ban') bans, "
                       "count(DISTINCT src_ip) FILTER (WHERE action = 'ban') ips, count(*) FILTER (WHERE action = 'found') matches FROM events "
                       "WHERE source = 'fail2ban' AND action IN ('ban', 'found') AND ts > now() - make_interval(secs => $1) "
                       "GROUP BY 1 ORDER BY 2 DESC, 4 DESC LIMIT 15",
-    "honeypot_hits": "SELECT host(src_ip) ip, max(src_country) country, count(*) n, "
+    # with whether CrowdSec banned the address (any scenario): in force now, or decided in the period
+    "honeypot_hits": "SELECT ip, country, n, what, CASE WHEN " + cs_ban_now("x.addr") + " THEN 'banned now' WHEN "
+                     + cs_banned_in_period("x.addr") + " THEN 'banned' END crowdsec FROM ("
+                     "SELECT src_ip addr, host(src_ip) ip, max(src_country) country, count(*) n, "
                      "left(string_agg(DISTINCT coalesce(data->>'path', data->>'jail'), ', '), 200) what FROM events "
                      "WHERE source IN ('nginx', 'fail2ban') AND data->>'honeypot' = 'true' AND src_ip IS NOT NULL "
-                     "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
+                     "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 4 DESC LIMIT 15) x ORDER BY n DESC",
     # Q-Feeds: its firewall log lines too; direction from the addresses (a LAN rule logs outgoing traffic as "in")
     "qfeeds_hits": "SELECT host(src_ip) src, host(dst_ip) dst, CASE WHEN src_ip << '10.0.0.0/8' OR src_ip << '172.16.0.0/12' "
                    "OR src_ip << '192.168.0.0/16' OR src_ip << 'fc00::/7' OR src_ip << '100.64.0.0/10' THEN 'out' ELSE 'in' END direction, "
@@ -209,11 +227,12 @@ def sections_for(categories: list[str]) -> list[str]:
 
 # only count events per source / action: from 2 days on read from the hourly counts (rollup.py), same numbers
 # (::bigint keeps them whole numbers there: sum(n) is a numeric)
-ROLLUP_QUERIES = {"totals_by_source", "firewall_actions", "web_status"}
+ROLLUP_QUERIES = {"totals_by_source", "firewall_actions"}  # web_status: SWAG only (program), not in the hourly counts
 
 
-async def build_report(hours: float = 24, categories: Any = None) -> dict[str, Any]:
-    """The report data: the sections of the given categories (None / all = everything)."""
+async def build_report(hours: float = 24, categories: Any = None, scope: str | None = None) -> dict[str, Any]:
+    """The report data: the sections of the given categories (None / all = everything). ``scope``: only events from
+    local / public source addresses (the Overview's From filter); sections that do not read events stay as they are."""
     secs = float(hours) * 3600
     cats = parse_categories(categories)
     rules = alert_rules(cats)
@@ -233,8 +252,8 @@ async def build_report(hours: float = 24, categories: Any = None) -> dict[str, A
         try:
             async with db.heavy(hours), db.pool().acquire() as conn:
                 if hours >= rollup.MIN_HOURS and name in ROLLUP_QUERIES:
-                    return name, db.records(await rollup.fetch(conn, sql, secs))
-                return name, db.records(await conn.fetch(sql, *args))
+                    return name, db.records(await rollup.fetch(conn, sql, secs, scope=scope))
+                return name, db.records(await conn.fetch(scoped_sql(sql, scope) if scope else sql, *args))
         except Exception as exc:  # noqa: BLE001
             log.warning("report section %s (%s h) failed: %r", name, hours, exc)
             failed.append(name)
@@ -248,7 +267,7 @@ async def build_report(hours: float = 24, categories: Any = None) -> dict[str, A
     return report
 
 
-async def timeline(hours: float = 24, buckets: int = 48) -> dict[str, Any]:
+async def timeline(hours: float = 24, buckets: int = 48, scope: str | None = None) -> dict[str, Any]:
     """Events per source and blocked events over time (Overview). From 2 days on in whole hours, counted from the
     hourly counts (rollup.py) - same numbers, a fraction of the work."""
     from . import rollup
@@ -261,8 +280,11 @@ async def timeline(hours: float = 24, buckets: int = 48) -> dict[str, Any]:
     async with db.pool().acquire() as conn:
         if hours >= rollup.MIN_HOURS:
             step = -(-step // 3600) * 3600
-            rows, blk = await rollup.fetch(conn, by_source, secs, step), await rollup.fetch(conn, blocked, secs, step)
+            rows = await rollup.fetch(conn, by_source, secs, step, scope=scope)
+            blk = await rollup.fetch(conn, blocked, secs, step, scope=scope)
         else:
+            if scope:
+                by_source, blocked = scoped_sql(by_source, scope), scoped_sql(blocked, scope)
             rows, blk = await conn.fetch(by_source, secs, step), await conn.fetch(blocked, secs, step)
     return {"step": step, "series": db.records(rows), "blocked": db.records(blk)}
 

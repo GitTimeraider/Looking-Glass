@@ -155,7 +155,6 @@ class Settings(BaseSettings):
     ids_pull: bool = True
     ids_alert_priority: int = 3
     ids_ignore_sids: str = ""
-    nginx_pull: bool = True
     web_internet_alerts: str = "through"  # web attacks / scanners from the internet: through / attacks / all
     web_through_min: int = 1
     web_success_codes: str = "2xx"
@@ -194,6 +193,7 @@ class Settings(BaseSettings):
     swag_fail2ban_log: str = "fail2ban/fail2ban.log"
     swag_backfill_mb: int = 5  # first read of a log: this much of its end is read (0 = only new lines)
     swag_honeypot: str = ""  # honeypot paths (/x), host names, fail2ban jails (jail:name) and log files (file:path)
+    swag_honeypot_conf: str = ""  # nginx config file(s) whose location blocks are traps, e.g. /swag/nginx/honeypot.conf
     swag_honeypot_internet: str = "low"  # alert severity of a honeypot hit from the internet ("off" = none)
     swag_fail2ban_alerts: str = "low"  # alert severity of a fail2ban ban of an internet address ("off" = none)
     crowdsec_lapi_url: str = ""  # e.g. http://crowdsec:8080
@@ -301,6 +301,11 @@ class Settings(BaseSettings):
     def swag_enabled(self) -> bool:
         """SWAG's log folder is set (Settings › SWAG & CrowdSec)."""
         return bool(self.swag_log_dir.strip())
+
+    @property
+    def fail2ban_enabled(self) -> bool:
+        """SWAG's log folder and its fail2ban log are set (Settings › SWAG & CrowdSec): the fail2ban tab and widgets."""
+        return self.swag_enabled and bool(self.swag_fail2ban_log.strip())
 
     @property
     def crowdsec_lapi_enabled(self) -> bool:

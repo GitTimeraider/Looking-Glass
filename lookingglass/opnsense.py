@@ -19,9 +19,8 @@ from . import db
 from .config import Settings
 from .ingest import STATS, EventWriter
 from .parsers import filterlog
-from .parsers import nginx as nginx_parser
 from .parsers.common import event, ip_or_none, real_name
-from .parsers.security import (crowdsec_alert_from_api, crowdsec_decision_from_api, ids_from_api,
+from .parsers.security import (crowdsec_alert_from_api, crowdsec_ban_row, crowdsec_decision_from_api, ids_from_api,
                                unbound_from_api)
 from .parsers.syslog import parse_iso
 
@@ -69,6 +68,10 @@ class OPNsenseClient:
         r = await self.client.post(f"/api/{path.lstrip('/')}", json=payload or {})
         return self._result(r)
 
+    async def delete(self, path: str) -> Any:
+        r = await self.client.delete(f"/api/{path.lstrip('/')}")
+        return self._result(r)
+
     async def search(self, path: str, rows: int = 500, sort: dict[str, str] | None = None,
                      page: int = 1) -> list[dict[str, Any]]:
         """Call a ``search*`` endpoint (bootgrid style) and return its rows; ``sort`` e.g. {"timestamp": "desc"};
@@ -83,6 +86,19 @@ class OPNsenseClient:
         if isinstance(res, dict):
             return res.get("rows") or []
         return res if isinstance(res, list) else []
+
+    async def delete_crowdsec_decision(self, decision_id: int) -> None:
+        """``cscli decisions delete --id``: the CrowdSec plugin's own Decisions page asks with DELETE; older
+        versions took POST. Raises ApiError when OPNsense says it did not work."""
+        path = f"crowdsec/decisions/del/{int(decision_id)}"
+        try:
+            res = await self.delete(path)
+        except ApiError as exc:
+            if exc.status not in (404, 405):
+                raise
+            res = await self.post(path)
+        if isinstance(res, dict) and str(res.get("result", "")).lower() not in ("deleted", "ok", "saved", "done"):
+            raise ApiError(200, f"OPNsense answered {json.dumps(res)[:200]}")
 
     @staticmethod
     def _result(r: httpx.Response) -> Any:
@@ -192,9 +208,6 @@ class Poller:
         self._dns_ip_names: dict[str, str] = {}  # IP -> host name Unbound reports for a client
         self._prev_if: dict[str, tuple[float, float, float]] = {}
         self._arp_prev: dict[str, str] = {}  # IP -> MAC of the last ARP table (ARP spoofing detection)
-        # nginx log pull (poll_nginx): every log read is a configd action on OPNsense, so quiet logs are read less often
-        self._nginx_servers: dict[str, tuple[float, list[Any] | None]] = {}  # kind -> (until, servers; None = no such log)
-        self._nginx_logs: dict[str, dict[str, Any]] = {}  # "kind/server id" -> {"total", "top", "every", "next"}
         # newest time read per pull that reads newest-first pages (_pull_newest): the next read pages back to it
         self._newest: dict[str, datetime] = {}
         self._unbound_newest: float | None = None  # newest query time read from Unbound
@@ -223,8 +236,6 @@ class Poller:
             self.jobs.append(("qfeeds", 300, self.poll_qfeeds))  # expensive on OPNsense (log crawl), see poll_qfeeds
         if settings.ids_pull:
             self.jobs.append(("ids", 60, self.poll_ids))
-        if settings.nginx_pull:
-            self.jobs.append(("nginx_logs", 60, self.poll_nginx))
         if settings.vpn_pull:
             self.jobs.append(("vpn", p, self.poll_vpn))
         self._next: dict[str, float] = {}
@@ -714,7 +725,7 @@ class Poller:
             if ev:
                 self.writer.put(ev)
 
-    # ------------------------------------------------------------ nginx ---
+    # ------------------------------------------------------- local time ---
     def local_tz(self):
         """OPNsense's local time zone: measured from its clock, else the Looking Glass time zone setting."""
         if self.utc_offset is not None:
@@ -731,148 +742,6 @@ class Poller:
         except ValueError:
             return parse_iso(value)
         return dt if dt.tzinfo else dt.replace(tzinfo=self.local_tz()).astimezone(timezone.utc)
-
-    # nginx log pull. The os-nginx log API (scripts/nginx/read_log.php + LogParserBase.php) returns a log NEWEST LINE
-    # FIRST, pages count from 0, and "total" is the number of lines in the file. A log is append-only between rotations,
-    # so the lines added since the last read are exactly the newest (total - previous total); the line that was newest
-    # last time must then sit right behind them - if it does not (or the file got shorter), the log was rotated and the
-    # rest of the old file is read from rotation 0 (<server>.access.log.0.gz).
-    # A log with new lines is read again after NGINX_EVERY seconds, one without new lines waits twice as long each time
-    # up to NGINX_MAX_EVERY; the server lists are read every NGINX_LIST_EVERY seconds. Every read is a configd action
-    # on OPNsense that parses the whole file, so a read asks for all the lines it needs at once.
-    NGINX_EVERY = 60
-    NGINX_MAX_EVERY = 600
-    NGINX_LIST_EVERY = 600
-    NGINX_PAGE = 1000  # lines asked for when nothing says more are needed
-    NGINX_BACKFILL = 5000  # first read after a start: the newest lines (already stored ones are dropped by uid)
-    NGINX_MAX_LINES = 50000  # most lines taken from one file in one read
-
-    async def _nginx_server_list(self, kind: str, now: float) -> list[Any]:
-        until, servers = self._nginx_servers.get(kind, (0.0, None))
-        if now < until:
-            return servers or []
-        try:
-            res = await self.api.get(f"nginx/logs/{kind}")
-        except ApiError as exc:
-            if exc.status in (400, 404) and kind != "accesses":  # this nginx version has no such log: ask again in an hour
-                self._nginx_servers[kind] = (now + 3600, None)
-                return []
-            raise
-        servers = res if isinstance(res, list) else []
-        self._nginx_servers[kind] = (now + self.NGINX_LIST_EVERY, servers)
-        return servers
-
-    def _nginx_due(self, key: str, now: float) -> bool:
-        return now >= self._nginx_logs.get(key, {}).get("next", 0.0)
-
-    def _nginx_schedule(self, key: str, changed: bool, now: float, **state: Any) -> None:
-        """New lines = read again in a minute; none = read less often."""
-        st = self._nginx_logs.get(key) or {}
-        every = self.NGINX_EVERY if changed or "every" not in st else min(self.NGINX_MAX_EVERY, st["every"] * 2)
-        # a little early, so the job (every NGINX_EVERY s) picks it up on the round that is due
-        self._nginx_logs[key] = {**st, **state, "every": every, "next": now + every - 5}
-
-    @staticmethod
-    def _nginx_line_id(line: Any) -> str:
-        return hashlib.sha1(json.dumps(line, sort_keys=True, default=str).encode()).hexdigest()
-
-    async def _nginx_newest(self, kind: str, sid: str, fileno: int, want: int,
-                            first: Any = None) -> tuple[list[Any], int | None] | None:
-        """The newest ``want`` lines of a log file (newest first) and its line count; None = no such file.
-        ``first``: the answer for its page 0 of NGINX_PAGE lines, when already in hand."""
-        want = max(1, min(want, self.NGINX_MAX_LINES + 1))
-        res = first
-        if isinstance(res, dict) and not res.get("error"):
-            have = len(res.get("lines") or [])
-            if want > have and int(res.get("total") or 0) > have:  # more lines needed than that page holds
-                res = None
-        if res is None:
-            res = await self.api.get(f"nginx/logs/{kind}/{sid}/{fileno}/0/{max(want, self.NGINX_PAGE)}")
-        if not isinstance(res, dict) or res.get("error"):
-            return None
-        total = res.get("total")
-        return list(res.get("lines") or [])[:want], (int(total) if total is not None else None)
-
-    async def poll_nginx(self) -> None:
-        """os-nginx access / error / stream logs via its log API: OPNsense remote syslog only forwards nginx's
-        global error log, the per-server access logs exist as files only (/var/log/nginx/<server>.access.log)."""
-        tz = self.local_tz()  # nginx error log times are OPNsense local time without zone
-        now = datetime.now(timezone.utc)
-        mono = time.monotonic()
-        kinds = (("accesses", nginx_parser.access_from_api), ("errors", nginx_parser.error_from_api),
-                 ("streamaccesses", nginx_parser.stream_from_api))
-        for kind, convert in kinds:
-            for srv in await self._nginx_server_list(kind, mono):
-                if not isinstance(srv, dict):
-                    continue
-                sid = str(srv.get("id") or "")
-                key = f"{kind}/{sid}"
-                if not sid or sid == "perm_ban" or not self._nginx_due(key, mono):
-                    continue
-                name = srv.get("server_name") or (f"port {srv['port']}" if srv.get("port") else sid)
-                new = await self._nginx_new_lines(kind, sid, key, mono)
-                for line in reversed(new):  # oldest first
-                    if not isinstance(line, dict):
-                        continue
-                    ev = convert(line, name, now, None, tz) if kind == "errors" else convert(line, name, now)
-                    if ev:
-                        ev["uid"] = "ngx:" + hashlib.sha1(f"{kind}|{sid}|{json.dumps(line, sort_keys=True)}".encode()).hexdigest()
-                        self.writer.put(ev)
-
-    async def _nginx_new_lines(self, kind: str, sid: str, key: str, mono: float) -> list[Any]:
-        """The lines of one log that were not read before (newest first), across a rotation."""
-        st = self._nginx_logs.get(key) or {}
-        prev_total, prev_top = st.get("total"), st.get("top")
-        first = await self.api.get(f"nginx/logs/{kind}/{sid}/-1/0/{self.NGINX_PAGE}")
-        if not isinstance(first, dict) or first.get("error"):
-            # no such file (yet; nginx creates it on the first request after a rotation): keep the place in the old one
-            self._nginx_schedule(key, False, mono)
-            return []
-        total = first.get("total")
-        if total is None or prev_total is None:
-            # first read since the start (or an old plugin without "total"): the newest lines; stored ones are dropped by uid
-            got = await self._nginx_newest(kind, sid, -1, self.NGINX_BACKFILL if prev_total is None else self.NGINX_PAGE, first)
-            lines, total = got if got else ([], None)
-            top = self._nginx_line_id(lines[0]) if lines else None
-            self._nginx_schedule(key, top != prev_top, mono, total=total, top=top)
-            return lines
-        total = int(total)
-        added = total - prev_total
-        if added >= 0:
-            got = await self._nginx_newest(kind, sid, -1, added + 1, first)
-            lines = got[0] if got else []
-            anchor = lines[added] if added < len(lines) else None
-            capped = added > self.NGINX_MAX_LINES and len(lines) > self.NGINX_MAX_LINES
-            if capped or prev_top is None or (anchor is not None and self._nginx_line_id(anchor) == prev_top):
-                new = lines[:min(added, self.NGINX_MAX_LINES)]
-                if capped:
-                    self.dropped("nginx_logs", f"{key}: {added} new lines since the last read, only the newest {len(new)} taken")
-                self._nginx_schedule(key, bool(new), mono, total=total,
-                                     top=self._nginx_line_id(new[0]) if new else prev_top)
-                return new
-        # rotated (the file is shorter, or the line read last is not where it should be): the whole new file, plus
-        # what was written to the old one (now rotation 0) after the last read
-        got = await self._nginx_newest(kind, sid, -1, total, first)
-        current = got[0] if got else []
-        old: list[Any] = []
-        page0 = await self.api.get(f"nginx/logs/{kind}/{sid}/0/0/{self.NGINX_PAGE}")
-        if isinstance(page0, dict) and not page0.get("error"):
-            old_total = page0.get("total")
-            gap = int(old_total) - prev_total if old_total is not None else -1
-            rot = await self._nginx_newest(kind, sid, 0, gap + 1 if gap >= 0 else self.NGINX_PAGE, page0)
-            old_lines = rot[0] if rot else []
-            if gap >= 0 and (prev_top is None or (gap < len(old_lines) and self._nginx_line_id(old_lines[gap]) == prev_top)):
-                old = old_lines[:gap]
-            else:  # not the file read last time (rotated twice?): its newest lines, stored ones are dropped by uid
-                old = old_lines
-        else:
-            self.dropped("nginx_logs", f"{key}: log rotated and the rotated file could not be read - lines written "
-                                       "just before the rotation are missing")
-        log.info("nginx %s: log rotated, %d lines from the new file and %d from the rotated one", key, len(current), len(old))
-        new = current + old
-        self._nginx_schedule(key, bool(new), mono, total=total,
-                             top=self._nginx_line_id(current[0]) if current else None)
-        return new
 
     # -------------------------------------------------------------- VPN ---
     async def poll_vpn(self) -> None:
@@ -940,7 +809,8 @@ class Poller:
             if ev:
                 self.writer.put(ev)
         decisions = await self.api.search("crowdsec/decisions/search", rows=5000)
-        await db.set_snapshot("crowdsec_decisions", decisions[:5000])
+        now = datetime.now(timezone.utc)
+        await db.set_snapshot("crowdsec_decisions", [crowdsec_ban_row(r, now) for r in decisions[:5000]])
         for row in decisions:
             ev = crowdsec_decision_from_api(row)
             if ev:

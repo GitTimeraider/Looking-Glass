@@ -29,8 +29,9 @@ from . import asset_version
 from ..ingest import STATS
 from .. import rollup
 from ..cache import ResultCache, stale_for, ttl_for
-from ..periods import Periods, is_long, key_of
-from ..dashboards import CS_FW, DASHBOARDS, IDS_DROP, QF, run_dashboard, run_log
+from ..periods import Gone as PeriodGone, Periods, is_long, key_of
+from ..event_filter import SCOPE_SQL, scoped_sql
+from ..dashboards import CS_FW, DASHBOARDS, F2B_STATE, HP, IDS_DROP, QF, SW, SW_BLOCK, run_dashboard, run_log
 from ..reports import CATEGORIES, build_report, parse_categories, report_mail, report_title, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
 from ..parsers.common import real_name
@@ -250,9 +251,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     results = ResultCache()
     app.state.results = results
 
-    async def overview_counts(hours: float) -> dict[str, Any]:
-        """The part of the Overview that counts events (the expensive part): cached."""
+    async def overview_counts(hours: float, scope: str | None = None) -> dict[str, Any]:
+        """The part of the Overview that counts events (the expensive part): cached. ``scope``: the From filter (only
+        events from local / public source addresses) - the hourly counts keep it, raw queries read filtered events."""
         secs = hours * 3600
+        sc = (lambda sql: scoped_sql(sql, scope)) if scope else (lambda sql: sql)
         # plain counts (from 2 days on from the hourly counts) and the distinct blocked sources apart: in one query
         # count(DISTINCT) FILTER sorts every event of the period (30 days: seconds instead of a fraction)
         counts = ("SELECT coalesce(count(*), 0) total, coalesce(count(*) FILTER (WHERE action IN ('block', 'drop', 'ban')), 0) blocked, "
@@ -262,7 +265,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         # the blocks of the CrowdSec / Q-Feeds rules are firewall lines tagged in data (not in the hourly counts): raw,
         # each on its own (partial) index - the same definitions as the Threats page
         threats = (f"SELECT (SELECT count(*) FROM events WHERE {CS_FW} AND ts > now() - make_interval(secs => $1)) crowdsec_fw, "
-                   f"(SELECT count(*) FROM events WHERE {QF} AND ts > now() - make_interval(secs => $1)) qfeeds")
+                   f"(SELECT count(*) FROM events WHERE {QF} AND ts > now() - make_interval(secs => $1)) qfeeds, "
+                   # SWAG: requests its CrowdSec bouncer / AppSec / rate limit stopped, and honeypot hits
+                   f"(SELECT count(*) FROM events WHERE {SW} AND {SW_BLOCK} AND ts > now() - make_interval(secs => $1)) swag_blocked, "
+                   f"(SELECT count(*) FROM events WHERE {HP} AND ts > now() - make_interval(secs => $1)) honeypot")
         # lists for the optional threat widgets (not in the scheduled reports): the addresses CrowdSec's rules blocked
         # (the outside end of the connection) and the Suricata signatures that dropped traffic
         threat_lists = {
@@ -275,38 +281,55 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
 
         async def kpi_counts() -> dict[str, Any]:
             async with db.heavy(hours), db.pool().acquire() as conn:
-                row = await (rollup.fetch(conn, counts, secs) if hours >= rollup.MIN_HOURS else conn.fetch(counts, secs))
+                row = await (rollup.fetch(conn, counts, secs, scope=scope) if hours >= rollup.MIN_HOURS
+                             else conn.fetch(sc(counts), secs))
             return dict(row[0])
 
         async def threat_counts() -> dict[str, Any]:
             async with db.heavy(hours), db.pool().acquire() as conn:
-                return dict(await conn.fetchrow(threats, secs))
+                return dict(await conn.fetchrow(sc(threats), secs))
 
         async def threat_list(name: str) -> tuple[str, list[dict[str, Any]]]:
             try:
                 async with db.heavy(hours), db.pool().acquire() as conn:
-                    return name, db.records(await conn.fetch(threat_lists[name], secs))
+                    return name, db.records(await conn.fetch(sc(threat_lists[name]), secs))
             except Exception as exc:  # noqa: BLE001 - one list failing leaves that widget empty, not the overview
                 log.warning("overview list %s (%s h) failed: %r", name, hours, exc)
                 return name, []
 
         async def blocked_ips() -> int:
             async with db.heavy(hours), db.pool().acquire() as conn:
-                return await conn.fetchval(
+                return await conn.fetchval(sc(
                     "SELECT count(*) FROM (SELECT DISTINCT src_ip FROM events WHERE action IN ('block', 'drop') "
-                    "AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1)) x", secs)
+                    "AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1)) x"), secs)
 
         kpi, thr, ips, report, tl, *lists = await asyncio.gather(
-            kpi_counts(), threat_counts(), blocked_ips(), build_report(hours), timeline(hours),
+            kpi_counts(), threat_counts(), blocked_ips(), build_report(hours, scope=scope), timeline(hours, scope=scope),
             *(threat_list(n) for n in threat_lists))
         return {"kpi": db.jsonable({**kpi, **thr, "blocked_ips": ips}), "report": report, "timeline": tl,
                 "threats": dict(lists)}
 
-    async def dash_compute_args(name: str, tab: str | None, hours: float) -> dict[str, Any]:
-        return await dash_compute(name, hours, tab)
+    async def dash_compute_args(name: str, tab: str | None, *rest: Any) -> dict[str, Any]:
+        """A stored 7 / 30 day view: (name, tab, hours) or, with the page's From filter, (name, tab, scope, hours) -
+        the hours always last (periods.py stores them)."""
+        if name not in DASHBOARDS:  # a stored 7 / 30 day view of a removed dashboard (the OPNsense nginx page)
+            raise PeriodGone(name)
+        scope, hours = (rest[0], rest[1]) if len(rest) == 2 else (None, rest[0])
+        return await dash_compute(name, hours, tab, scope)
+
+    def dash_key_args(name: str, tab: str | None, scope: str | None, hours: float) -> tuple:
+        """The key of a stored dashboard view; without a From filter the same as before there was one."""
+        return (name, tab, scope, hours) if scope else (name, tab, hours)
+
+    def dash_scope(name: str, scope: str | None) -> str | None:
+        return scope if scope in ("local", "public") and DASHBOARDS[name].get("scope") else None
 
     # 7 / 30 days: counted on a schedule in the background and shown from the stored result (periods.py)
-    long_periods = Periods(settings, {"overview": overview_counts, "dash": dash_compute_args})
+    async def overview_counts_args(*args: Any) -> dict[str, Any]:
+        """A stored 7 / 30 day Overview: (hours) or, with the From filter, (scope, hours) - the hours last."""
+        return await overview_counts(args[-1], args[0] if len(args) == 2 else None)
+
+    long_periods = Periods(settings, {"overview": overview_counts_args, "dash": dash_compute_args})
     app.state.periods = long_periods
 
     def long_info(got: dict[str, Any]) -> dict[str, Any]:
@@ -330,9 +353,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if not is_long(hours) or hours > 24 * 90:
             raise HTTPException(400, "only periods over a day are counted in the background")
         if payload.get("kind") == "overview":
-            key = key_of("overview", hours)
+            scope = payload.get("scope") if payload.get("scope") in SCOPE_SQL else None
+            key = key_of("overview", scope, hours) if scope else key_of("overview", hours)
         elif payload.get("kind") == "dash" and payload.get("name") in DASHBOARDS:
-            key = key_of("dash", payload["name"], dash_tab(payload["name"], payload.get("tab")), hours)
+            name = payload["name"]
+            key = key_of("dash", *dash_key_args(name, dash_tab(name, payload.get("tab")), dash_scope(name, payload.get("scope")), hours))
         else:
             raise HTTPException(400, "unknown view")
         long_periods.refresh(key)
@@ -370,13 +395,25 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             jobs = [{k: j.get(k) for k in ("source_label", "job", "state", "schedule", "last_started", "last_good",
                                            "last_finished_status", "last_message", "ok", "warned", "failed")}
                     for j in ov["jobs"]]
-        return {"unifi_devices": unifi, "unraid": unraid, "backup_jobs": jobs}
+        # SWAG & CrowdSec: the bans in force now (CrowdSec in Docker: its last poll; fail2ban: latest ban without unban)
+        bans = await db.get_snapshot("crowdsec_lapi_decisions")
+        cs_bans = sorted(({k: d.get(k) for k in ("value", "country", "type", "scenario", "origin", "until")}
+                          for d in (bans if isinstance(bans, list) else []) if isinstance(d, dict)),
+                         key=lambda d: str(d.get("until") or ""), reverse=True)[:50]
+        f2b_now = []
+        if settings.swag_enabled:
+            f2b_now = db.records(await db.pool().fetch(
+                f"SELECT jail, host(src_ip) ip, src_country country, ts FROM {F2B_STATE} s WHERE action <> 'unban' "
+                "ORDER BY ts DESC LIMIT 50"))
+        return {"unifi_devices": unifi, "unraid": unraid, "backup_jobs": jobs, "crowdsec_bans": cs_bans,
+                "crowdsec_bans_total": len(bans) if isinstance(bans, list) else None, "fail2ban_now": f2b_now}
 
     @app.get("/api/overview")
-    async def overview(request: Request, hours: float = Query(24, gt=0, le=24 * 90)):
+    async def overview(request: Request, hours: float = Query(24, gt=0, le=24 * 90),
+                       scope: str | None = Query(None, pattern="^(local|public)$")):
         pool = db.pool()
         if is_long(hours):  # never counted here: the stored result (periods.py)
-            got = await long_periods.get("overview", hours)
+            got = await (long_periods.get("overview", scope, hours) if scope else long_periods.get("overview", hours))
             if got["data"] is None:
                 return {"pending": True, **long_info(got)}
             counted, extra = got["data"], long_info(got)
@@ -384,38 +421,40 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             # an expired result of this period (picked again not long after) is answered at once and computed again
             # in the background: "stale" makes the page ask again shortly
             counted, as_of, stale = await until_disconnected(request, results.fetch(
-                ("overview", hours), ttl_for(hours), lambda: overview_counts(hours), stale_for(hours)))
+                ("overview", hours, scope), ttl_for(hours), lambda: overview_counts(hours, scope), stale_for(hours)))
             extra = {"as_of": as_of, "stale": stale}
             for h in OVERVIEW_HOURS:  # the other short periods ahead of time (low priority), so switching is instant
                 if h != hours and not is_long(h):
-                    results.warm(("overview", h), lambda h=h: overview_counts(h), stale_for(h))
+                    results.warm(("overview", h, scope), lambda h=h: overview_counts(h, scope), stale_for(h))
         kpi = counted["kpi"]
         # open alerts, devices and the system state are cheap and always current
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
-        decisions = await db.get_snapshot("crowdsec_decisions")
-        lapi_decisions = await db.get_snapshot("crowdsec_lapi_decisions")  # CrowdSec in Docker (crowdsec_lapi.py)
-        if isinstance(lapi_decisions, list):
-            decisions = (decisions if isinstance(decisions, list) else []) + lapi_decisions
+        decisions = await db.get_snapshot("crowdsec_decisions")  # the OPNsense plugin
+        lapi_decisions = await db.get_snapshot("crowdsec_lapi_decisions")  # CrowdSec in Docker (crowdsec_lapi.py): apart
         blocklists = await db.get_snapshot("blocklists") or {}
         blocklist_n = ((blocklists.get("crowdsec") or {}) if isinstance(blocklists, dict) else {}).get("size")
         devices = await pool.fetchval("SELECT count(*) FROM devices WHERE last_seen > now() - interval '1 day'")
         report = counted["report"]
         # optional sources: hide their overview cards when their pull is off and they have no data in the period
-        has = {r["source"] for r in report.get("totals_by_source") or []}
-        has |= {k for k, n in (("crowdsec", kpi.get("crowdsec_fw")), ("qfeeds", kpi.get("qfeeds"))) if n}  # their firewall blocks
+        has = {r["source"] for r in report.get("totals_by_source") or []} - {"crowdsec"}
+        # CrowdSec: the OPNsense plugin's own events (CrowdSec in Docker writes the same source) or its firewall blocks
+        has |= {k for k, n in (("crowdsec", kpi.get("crowdsec_fw") or report.get("crowdsec_scenarios")),
+                               ("qfeeds", kpi.get("qfeeds"))) if n}
         enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
-                   "nginx": settings.nginx_pull, "unbound": settings.unbound_query_pull}
-        docker_cs = settings.crowdsec_lapi_enabled  # CrowdSec / nginx (SWAG) in Docker: shown without OPNsense too
+                   "unbound": settings.unbound_query_pull}
+        docker_cs = settings.crowdsec_lapi_enabled  # CrowdSec in Docker: its own widgets (SWAG & CrowdSec group)
         # a plugin the OPNsense API says is not installed (the poll answers 400 / 404): its widgets are hidden too while
         # it sent nothing - otherwise they stay on the page empty, and look broken
         jobs = await db.get_snapshot("poller_status") or {}
         jobs = jobs if isinstance(jobs, dict) else {}
-        missing = {k for k, job in (("nginx", "nginx_logs"), ("qfeeds", "qfeeds"))
+        missing = {k for k, job in (("qfeeds", "qfeeds"),)
                    if isinstance(jobs.get(job), dict) and jobs[job].get("unsupported") and not jobs[job].get("forbidden")}
         enabled = {k: (v and settings.opnsense_enabled and k not in missing) or k in has for k, v in enabled.items()}
-        enabled["crowdsec"] = enabled["crowdsec"] or docker_cs
-        enabled["nginx"] = enabled["nginx"] or settings.swag_enabled
-        for k, on in (("suricata", settings.ids_pull), ("crowdsec", settings.crowdsec_pull or docker_cs), ("qfeeds", settings.qfeeds_pull)):
+        # the web server is SWAG (the OPNsense nginx plugin is no longer read); its widgets follow SWAG's settings
+        enabled["nginx"] = settings.swag_enabled
+        enabled["fail2ban"] = settings.fail2ban_enabled
+        enabled["crowdsec_lapi"] = docker_cs
+        for k, on in (("suricata", settings.ids_pull), ("crowdsec", settings.crowdsec_pull), ("qfeeds", settings.qfeeds_pull)):
             if not on:  # switched off: hidden like its Threats tab, even with older data in the period
                 enabled[k] = False
         now_state = await overview_now(hours)
@@ -424,8 +463,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                        backups=settings.backups_enabled)
         return {
             "sources": enabled,
+            "scope": scope,  # the From filter the counts were made with (open alerts, devices and live state: not)
             "kpi": {**kpi, "open_alerts": {r["severity"]: r["n"] for r in alerts},
                     "crowdsec_decisions": len(decisions) if isinstance(decisions, list) else None,
+                    "crowdsec_lapi_decisions": len(lapi_decisions) if isinstance(lapi_decisions, list) else None,
                     "crowdsec_blocklist": blocklist_n, "devices": devices},
             "timeline": counted["timeline"],
             "report": report,
@@ -908,6 +949,57 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         out.append({"key": "wan", "label": PURGE_PARTS["wan"], "rows": row["days"] + row["samples"], "size": row["size"]})
         return out
 
+    @app.post("/api/crowdsec/unban")
+    async def crowdsec_unban(request: Request, payload: dict = Body(...)):
+        """Active bans lists: delete one CrowdSec decision. ``src`` "lapi": CrowdSec in Docker (SWAG & CrowdSec),
+        through its Local API with the machine login; "opnsense": the OPNsense CrowdSec plugin (Threats › CrowdSec)."""
+        from ..crowdsec_lapi import DECISIONS_KEY, LapiClient, LapiError
+        from ..opnsense import ApiError, OPNsenseClient
+
+        try:
+            did = int(payload.get("id"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "No decision id.") from None
+        src = payload.get("src") or "opnsense"
+        if src == "lapi":
+            if not settings.crowdsec_lapi_url:
+                raise HTTPException(400, "CrowdSec is not set up (Settings › SWAG & CrowdSec).")
+            key, lapi = DECISIONS_KEY, LapiClient(settings)
+            try:
+                await lapi.delete_decision(did)
+            except LapiError as exc:
+                hint = (" (CrowdSec refused the machine login - Settings › SWAG & CrowdSec › Test connection)"
+                        if exc.status in (401, 403) else "")
+                raise HTTPException(400 if exc.status == 400 else 502, f"CrowdSec refused the unban: {exc}{hint}") from exc
+            except httpx.HTTPError as exc:
+                raise HTTPException(502, f"CrowdSec not reachable: {type(exc).__name__}: {exc}") from exc
+            finally:
+                await lapi.close()
+        elif src == "opnsense":
+            if not settings.opnsense_enabled:
+                raise HTTPException(400, "The OPNsense API is not set up (Settings › OPNsense).")
+            key, client = "crowdsec_decisions", OPNsenseClient(settings)
+            try:
+                await client.delete_crowdsec_decision(did)
+            except ApiError as exc:
+                hint = " (the API user lacks the CrowdSec privilege)" if exc.status == 403 else ""
+                raise HTTPException(502, f"OPNsense refused the unban: {exc}{hint}") from exc
+            except httpx.HTTPError as exc:
+                raise HTTPException(502, f"OPNsense not reachable: {type(exc).__name__}: {exc}") from exc
+            finally:
+                await client.close()
+        else:
+            raise HTTPException(400, "Unknown CrowdSec.")
+        # gone from the list at once, not only after the next poll
+        snap = await db.get_snapshot(key)
+        rows = snap if isinstance(snap, list) else []
+        row = next((r for r in rows if isinstance(r, dict) and str(r.get("id")) == str(did)), None) or {}
+        await db.set_snapshot(key, [r for r in rows if not (isinstance(r, dict) and str(r.get("id")) == str(did))])
+        results.clear()
+        value = row.get("value") if src == "lapi" else row.get("lg_value") or row.get("scope_value")
+        log.warning("user %s removed CrowdSec decision %s (%s, %s)", request.state.user["username"], did, value or "?", src)
+        return {"ok": True, "id": did, "value": value or "?"}
+
     @app.post("/api/admin/purge")
     async def purge(request: Request, payload: dict = Body(...)):
         parts = [p for p in payload.get("parts") or [] if p in PURGE or p in PURGE_PARTS]
@@ -1172,35 +1264,40 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def dash_page(request: Request, name: str):
         if name == "suricata":  # Suricata is a tab of the Threats page
             return RedirectResponse("/dash/threats#suricata")
+        if name == "web":  # the OPNsense nginx page is gone: the web server is SWAG's
+            return RedirectResponse("/dash/swag#web")
         if name == "unifi":  # the former "Wi-Fi & clients" dashboard: its contents live on the UniFi page
             return RedirectResponse("/unifi#clients")
         if name not in DASHBOARDS:
             raise HTTPException(404)
         return templates.TemplateResponse(request, "dash.html", {
             "title": DASHBOARDS[name]["title"], "path": f"/dash/{name}", "version": __version__, "name": name,
+            "scope_filter": bool(DASHBOARDS[name].get("scope")),
             "ai_enabled": settings.ai_enabled, "user": request.session.get("user")})
 
     @app.get("/api/dash/{name}")
     async def dash_data(request: Request, name: str, hours: float = Query(24, gt=0, le=24 * 90),
-                        tab: str | None = Query(None, max_length=40)):
+                        tab: str | None = Query(None, max_length=40),
+                        scope: str | None = Query(None, pattern="^(local|public)$")):
         if name not in DASHBOARDS:
             raise HTTPException(404)
+        scope = dash_scope(name, scope)  # the page's From filter (SWAG & CrowdSec)
         if is_long(hours):  # see overview(): the stored result, counted in the background
             tab = dash_tab(name, tab)
-            got = await long_periods.get("dash", name, tab, hours)
+            got = await long_periods.get("dash", *dash_key_args(name, tab, scope, hours))
             if got["data"] is None:
                 # not counted yet: the tabs still go along, so another tab or period can be picked meanwhile
                 off = await dash_off(hours)
                 tabs = [{"id": t["id"], "title": t["title"]} for t in DASHBOARDS[name].get("tabs") or []
                         if t.get("needs") not in off]
-                return {"pending": True, "name": name, "title": DASHBOARDS[name]["title"], "tabs": tabs, "tab": tab,
+                return {"pending": True, "name": name, "title": DASHBOARDS[name]["title"], "tabs": tabs, "tab": tab, "scope": scope,
                         **long_info(got)}
             return {**got["data"], **long_info(got)}
         out, as_of, stale = await until_disconnected(request, results.fetch(
-            ("dash", name, hours, tab), ttl_for(hours), lambda: dash_compute(name, hours, tab), stale_for(hours)))
+            ("dash", name, hours, tab, scope), ttl_for(hours), lambda: dash_compute(name, hours, tab, scope), stale_for(hours)))
         for h in DASH_HOURS:  # see overview()
             if h != hours and not is_long(h):
-                results.warm(("dash", name, h, tab), lambda h=h: dash_compute(name, h, tab), stale_for(h))
+                results.warm(("dash", name, h, tab, scope), lambda h=h: dash_compute(name, h, tab, scope), stale_for(h))
         return {**out, "as_of": as_of, "stale": stale}  # see overview(): "stale" = ask again shortly
 
     @app.get("/api/dash/{name}/log/{panel}")
@@ -1218,16 +1315,20 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def dash_off(hours: float) -> set[str]:
         """Threats sources whose tab and tiles are hidden: switched off in Settings › OPNsense (even with older data in
         the period), or - with OPNsense not set up (yet) - without data in the period. Cheap: one EXISTS per source."""
-        pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull or settings.crowdsec_lapi_enabled,
-                 "qfeeds": settings.qfeeds_pull}
+        # "crowdsec" = the OPNsense plugin (Threats page); CrowdSec in Docker has its own page and never counts here
+        pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull}
         has = {r["s"] for r in await db.pool().fetch(
             "SELECT s FROM unnest($1::text[]) s WHERE EXISTS (SELECT 1 FROM events WHERE source = s "
-            "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
-        return {k for k, on in pulls.items()
-                if not on or (not settings.opnsense_enabled and k not in has and not (k == "crowdsec" and settings.crowdsec_lapi_enabled))}
+            "AND program IS DISTINCT FROM 'crowdsec-lapi' AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
+        off = {k for k, on in pulls.items() if not on or (not settings.opnsense_enabled and k not in has)}
+        if not (settings.crowdsec_lapi_enabled or "crowdsec" not in off):
+            off.add("crowdsec_any")  # no CrowdSec at all: the Honeypot tab's CrowdSec tiles
+        if not settings.fail2ban_enabled:
+            off.add("fail2ban")  # SWAG & CrowdSec › fail2ban tab: only with SWAG's fail2ban log set (Settings)
+        return off
 
-    async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
-        out = await run_dashboard(name, hours, await dash_off(hours), tab)
+    async def dash_compute(name: str, hours: float, tab: str | None = None, scope: str | None = None) -> dict[str, Any]:
+        out = await run_dashboard(name, hours, await dash_off(hours), tab, scope)
         if out.get("tab") == "suricata":
             out["notice"] = await suricata_notice(hours)
         return out

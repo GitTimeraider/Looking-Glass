@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .common import event, find_ips, int_or_none, ip_or_none
@@ -168,6 +168,34 @@ def crowdsec_decision_from_api(row: dict[str, Any]) -> dict[str, Any] | None:
                                                "events_count", "alert_id")
                        if row.get(k) not in (None, "")},
                  uid=f'cs-dec:{row.get("id")}')
+
+
+_GO_DUR = re.compile(r"(\d+(?:\.\d+)?)(ns|us|µs|ms|h|m|s)")
+_GO_UNIT = {"ns": 1e-9, "us": 1e-6, "µs": 1e-6, "ms": 1e-3, "s": 1, "m": 60, "h": 3600}
+
+
+def go_duration(value: Any) -> float | None:
+    """cscli's remaining time of a decision, a Go duration: '3h59m12.345s' / '-1m2s' / '45ms' -> seconds."""
+    v = str(value or "").strip()
+    neg = v.startswith("-")
+    v = v.lstrip("+-")
+    if not v or _GO_DUR.sub("", v):
+        return None
+    secs = sum(float(n) * _GO_UNIT[u] for n, u in _GO_DUR.findall(v))
+    return -secs if neg else secs
+
+
+def crowdsec_ban_row(row: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """A row of ``/api/crowdsec/decisions/search`` with what the Active bans list needs added (lg_*): the scope and
+    value apart, the address (when the scope is an IP / range) and when it ends. OPNsense gives the time left at the
+    moment of asking (cscli's "duration") - turned into an absolute time, so the list keeps counting down between pulls."""
+    scope, value = crowdsec_scope_value(row.get("scope_value") or row.get("value"))
+    scope = row.get("scope") or scope
+    left = row.get("expiration") or row.get("duration") or row.get("until")
+    secs = go_duration(left)  # newer plugin versions may give a timestamp instead
+    end = now + timedelta(seconds=secs) if secs is not None else parse_iso(str(left)) if left else None
+    return {**row, "lg_scope": scope or "Ip", "lg_value": value, "lg_ip": _crowdsec_ip(scope, value),
+            "lg_until": end.isoformat() if end else None}
 
 
 # --------------------------------------------------------------- Suricata ---

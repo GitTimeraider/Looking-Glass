@@ -627,3 +627,8 @@ nav.side a.brand:hover span, .mbar a.brand:hover span { color: var(--accent); }
   padding: 4px; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted); font-size: 12px; }
 .image-field .image-preview img { max-height: 32px; max-width: 190px; }
 .image-field input[type=file] { max-width: 260px; }
+
+/* search box in a dashboard table's title (Active bans) */
+h3 .tsearch { width: 240px; max-width: 50%; margin-left: 8px; padding: 4px 8px; font-size: 12px; font-weight: 400;
+              text-transform: none; letter-spacing: normal; }
+@media (max-width: 640px) { h3 .tsearch { max-width: 60%; } }

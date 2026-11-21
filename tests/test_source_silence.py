@@ -43,7 +43,7 @@ def test_source_silence_alerts_and_closes():
             await db.copy_events(evs)
             await count()
 
-            eng = DetectionEngine(Settings(source_silence_hours=3, ids_pull=False))
+            eng = DetectionEngine(Settings(source_silence_hours=3, ids_pull=False, swag_log_dir="/swag/log"))  # nginx = SWAG
             await eng.source_silence()
             rows = await pool.fetch("SELECT title, status, fingerprint FROM alerts WHERE rule = 'source_silence'")
             assert [(r["fingerprint"], r["status"]) for r in rows] == [("source_silence:nginx", "open")]

@@ -88,7 +88,7 @@ async def run(settings: Settings) -> dict[str, Any]:
     # ------------------------------------------------------------- basics ---
     sysjob = _job(poller, "system")
     if not settings.opnsense_enabled:
-        check("api", "OPNsense API", "action", [], "Not configured - system state, DNS statistics, VPN, nginx, Suricata, "
+        check("api", "OPNsense API", "action", [], "Not configured - system state, DNS statistics, VPN, Suricata, "
               "CrowdSec and Q-Feeds all come from the API.",
               ["Looking Glass › Settings › OPNsense: enter URL, API key and secret, Test connection, Save."], link="/settings#opnsense")
     elif sysjob.get("ok"):
@@ -169,31 +169,6 @@ async def run(settings: Settings) -> dict[str, Any]:
         check("dns", "DNS (Unbound)", "action", ["API"] if uq.get("ok") else [],
               "No DNS queries yet." + (f" {_api_problem(uq, 'Unbound statistics')}" if _api_problem(uq, "Unbound statistics") else ""),
               ["OPNsense › Reporting › Settings: tick 'Unbound DNS statistics', Save. (No Unbound query logging needed.)"])
-
-    # -------------------------------------------------------------- nginx ---
-    ngx_api, ngx_sys = n("nginx:api"), agg.get("nginx:syslog", {}).get("http", 0)
-    nj = _job(poller, "nginx_logs")
-    if ngx_api and ngx_sys:
-        check("nginx", "Web server (nginx)", "duplicate", ["API", "syslog"], "Access logs arrive via the nginx API and via a "
-              "nginx SYSLOG target - every request is counted twice.",
-              ["Either remove the SYSLOG target (OPNsense › Services › Nginx › HTTP(S) › HTTP Server › SYSLOG targets), or switch "
-               "off Looking Glass › Settings › OPNsense › Pull nginx access / error logs."],
-              count=ngx_api, last_seen=last("nginx"), link="/dash/web")
-    elif ngx_api or (nj.get("ok") and settings.nginx_pull):
-        check("nginx", "Web server (nginx)", "ok", ["API"], "Access, error and stream logs via the nginx API (every minute)." +
-              ("" if ngx_api else " No requests in 24 hours."),
-              avoid=["A nginx SYSLOG target (would duplicate)."], count=ngx_api, last_seen=last("nginx"), link="/dash/web")
-    elif ngx_sys:
-        check("nginx", "Web server (nginx)", "ok", ["syslog"], "Access logs via a nginx SYSLOG target.",
-              avoid=["Turning the nginx API pull back on (would duplicate)."], count=ngx_sys, last_seen=last("nginx"), link="/dash/web")
-    elif nj.get("forbidden"):
-        check("nginx", "Web server (nginx)", "action", [], "The API user may not read the nginx logs.",
-              [f"{PRIV}: add the 'Services: Nginx' pages (or 'GUI - All pages')."])
-    elif nj.get("unsupported") or not settings.nginx_pull:
-        check("nginx", "Web server (nginx)", "optional", [], "nginx plugin not installed (or the pull is switched off). "
-              "Only needed if you publish websites through OPNsense.")
-    else:
-        check("nginx", "Web server (nginx)", "info", [], _api_problem(nj, "nginx logs") or "Waiting for the first poll.")
 
     # ---------------------------------------------------------------- IDS ---
     ids_api, ids_sys = n("suricata:api"), n("suricata:syslog")
@@ -464,8 +439,6 @@ DROPPED = {
     "firewall": ("firewall_log", "Send filterlog via remote syslog (see Remote syslog above): it delivers every line."),
     "dns": ("unbound_queries", "Unbound's API gives only its newest 1000 queries per read (read every 15 s while busy). "
             "If this keeps happening, a client may be flooding DNS - see the DNS dashboard's top clients."),
-    "nginx": ("nginx_logs", "If this keeps happening: OPNsense › Services › Nginx › HTTP(S) › HTTP Server › SYSLOG targets "
-              "(every request delivered as it happens), then switch off the nginx pull here."),
     "ids": ("ids", "Very many alerts at once - usually one noisy rule: see Threats › Suricata › top signatures, and "
             "consider disabling or thresholding it on OPNsense (Services › Intrusion Detection › Policy)."),
     "crowdsec": ("crowdsec", "Very many CrowdSec alerts at once - see Threats › CrowdSec."),
@@ -604,8 +577,16 @@ async def _swag_checks(settings: Settings, check: Any, n: Any, last: Any) -> Non
                  for p in missing]
         summary = (f"Reading {reading} log file(s) from {st.get('dir')}: {counts['web']:,} nginx and "
                    f"{counts['f2b']:,} fail2ban events in 24 hours" + (f", {counts['hp']:,} honeypot hits" if counts["hp"] else "") + ".")
-        if not settings.swag_honeypot.strip():
-            summary += " No honeypot set (optional)."
+        hp = st.get("honeypot") or {}
+        for f, c in (hp.get("conf") or {}).items():
+            if c.get("error"):
+                todo.append(f"Honeypot config {f}: {c['error']} - on Unraid: Docker tab › Looking Glass › Edit › Add another "
+                            "Path: container path /swag/nginx, host path /mnt/user/appdata/swag/nginx, Read Only")
+            else:
+                summary += f" Honeypot: {c.get('traps', 0)} trap location(s) from {f}."
+        if not settings.swag_honeypot.strip() and not settings.swag_honeypot_conf.strip():
+            summary += (" No honeypot set (optional): Settings › SWAG & CrowdSec › Honeypot, or Honeypot from nginx config "
+                        "for your trap locations file.")
         check("swag", "SWAG (nginx + fail2ban)", "action" if bad or not reading else "info" if missing else "ok",
               ["log files"], summary, todo, count=counts["web"] + counts["f2b"],
               last_seen=counts["last"].isoformat() if counts["last"] else None, link="/dash/swag")

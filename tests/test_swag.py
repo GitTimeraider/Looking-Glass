@@ -208,6 +208,17 @@ def test_swag_dashboard_and_detections():
                     assert kpi["Bans"] == 3 and kpi["Unbans"] == 1 and kpi["Banned now"] >= 2
                 if tab == "honeypot":
                     assert res["panels"][0]["rows"][0]["IPs"] == 2
+            # Active bans: time left and an Unban button only with the machine login (can_unban)
+            until = (now + timedelta(hours=2)).isoformat()
+            await db.set_snapshot(lapi.DECISIONS_KEY, [
+                {"id": 7, "type": "ban", "scope": "Ip", "value": "203.0.113.9", "until": until, "can_unban": True},
+                {"id": 8, "type": "ban", "scope": "Country", "value": "XX", "until": None, "can_unban": False}])
+            res = await run_dashboard("swag", 24, tab="crowdsec")
+            bans = next(p for p in res["panels"] if p["id"] == "csl_active")
+            assert not bans.get("error") and [r["value"] for r in bans["rows"]] == ["203.0.113.9", "XX"]
+            assert (bans["rows"][0]["id"], bans["rows"][0]["o_ip"], bans["rows"][0]["unban_src"]) == ("7", "203.0.113.9", "lapi")
+            assert bans["rows"][1]["id"] is None and bans["rows"][1]["o_ip"] is None
+            await pool.execute("DELETE FROM snapshots WHERE key = $1", lapi.DECISIONS_KEY)
             eng = DetectionEngine(Settings())
             for rule in ("fail2ban", "honeypot"):
                 await db.kv_set(f"wm:{rule}", 0)
@@ -259,3 +270,271 @@ def test_lapi_login_trims_and_explains_a_wrong_password():
 def test_lapi_user_agent_has_exactly_one_slash():
     ua = lapi.user_agent()
     assert ua.startswith("looking-glass/") and ua.count("/") == 1
+
+
+def test_lapi_delete_decision_needs_the_machine_login():
+    import httpx
+    from lookingglass.config import Settings
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path, request.headers.get("authorization")))
+        if request.url.path == "/v1/watchers/login":
+            return httpx.Response(200, json={"code": 200, "expire": "2099-01-01T00:00:00Z", "token": "t"})
+        return httpx.Response(200, json={"nbDeleted": "1"})
+
+    async def main():
+        client = lapi.LapiClient(Settings(crowdsec_lapi_url="http://cs:8080", crowdsec_lapi_machine="lg",
+                                          crowdsec_lapi_password="pw"))
+        client.http = httpx.AsyncClient(base_url="http://cs:8080", transport=httpx.MockTransport(handler))
+        assert await client.delete_decision(42) == 1
+        assert calls[-1] == ("DELETE", "/v1/decisions/42", "Bearer t")
+        await client.close()
+        bouncer_only = lapi.LapiClient(Settings(crowdsec_lapi_url="http://cs:8080", crowdsec_lapi_bouncer_key="k"))
+        with pytest.raises(lapi.LapiError, match="machine login"):
+            await bouncer_only.delete_decision(42)
+        await bouncer_only.close()
+    asyncio.run(main())
+
+
+def test_lapi_poll_stores_until_and_can_unban(monkeypatch):
+    from lookingglass import db
+    from lookingglass.config import Settings
+    stored = {}
+
+    async def set_snapshot(key, data):
+        stored[key] = data
+
+    async def decisions(self):
+        return [{"id": 1, "origin": "cscli", "type": "ban", "scope": "Ip", "value": "203.0.113.4", "duration": "1h30m0s"},
+                {"id": 2, "origin": "CAPI", "type": "ban", "scope": "Ip", "value": "192.0.2.1", "duration": "100h"}]
+    monkeypatch.setattr(db, "set_snapshot", set_snapshot)
+    monkeypatch.setattr(lapi.LapiClient, "decisions", decisions)
+
+    class Writer:
+        def put(self, ev):
+            pass
+
+    async def main():
+        p = lapi.LapiPoller(Settings(crowdsec_lapi_url="http://cs:8080", crowdsec_lapi_bouncer_key="k"), Writer())
+        before = datetime.now(timezone.utc)
+        await p.poll()
+        await p.stop()
+        (d,) = stored[lapi.DECISIONS_KEY]  # the community blocklist is not listed
+        assert d["can_unban"] is False and d["value"] == "203.0.113.4"
+        left = (datetime.fromisoformat(d["until"]) - before).total_seconds()
+        assert 5390 <= left <= 5410
+    asyncio.run(main())
+
+
+# ------------------------------------------------------------------------------- honeypot from nginx config ---
+TRAP_CONF = r'''
+# traps - grows over time
+location ~* ^/(wp-admin|wp-login\.php|wp-content|wp-includes|xmlrpc\.php|wordpress|phpmyadmin|pma|myadmin|adminer|\.git|\.svn|\.hg|\.env|\.aws|\.ssh|\.docker|\.DS_Store|server-status|cgi-bin|vendor/phpunit|boaform|HNAP1)(/|\.|$) {
+    return 404;
+}
+location = /secret.php { return 404; }   # exact
+location ^~ /trap/ { return 444; }
+location / { proxy_pass http://app; }
+location ~ "^/x(?<n>\d{2})$" { return 404; }
+location @named { }
+'''
+
+
+def test_nginx_conf_traps_like_nginx():
+    from lookingglass.swag import nginx_conf_traps
+    traps, problems = nginx_conf_traps(TRAP_CONF)
+    assert [k for k, _ in traps] == ["regex", "exact", "prefix", "regex"]
+    assert problems == ["location /: matches every page, skipped"]
+    hp = Honeypot("")
+    hp.conf_traps = traps
+    hits = {p: hp.request(p, None) for p in ("/wp-login.php", "/WP-ADMIN/x", "/.env", "/.env.bak?x=1", "/%2Eenv",
+                                              "/wordpressx", "/index.html", "/blog/wp-admin", "/secret.php",
+                                              "/secret.php2", "/trap/a", "/x12", "/x123")}
+    assert [p for p, hit in hits.items() if hit] == ["/wp-login.php", "/WP-ADMIN/x", "/.env", "/.env.bak?x=1", "/%2Eenv",
+                                                    "/secret.php", "/trap/a", "/x12"]
+    _, problems = nginx_conf_traps("location ~ ^/(unclosed { return 404; }")
+    assert "not understood" in problems[0]
+
+
+def test_honeypot_conf_file_is_read_again_when_it_changes(tmp_path):
+    (tmp_path / "nginx").mkdir()
+    conf = tmp_path / "nginx" / "honeypot.conf"
+    conf.write_text("location ~* ^/(wp-admin|\\.env)(/|\\.|$) { return 404; }\n")
+    hp = Honeypot("", "nginx/honeypot.conf", str(tmp_path))  # relative: next to the log folder
+    assert hp.request("/.env", None) and not hp.request("/.git/config", None)
+    fp = hp.fingerprint()
+    assert hp.reload() is False  # unchanged
+    conf.write_text("location ~* ^/(wp-admin|\\.env|\\.git)(/|\\.|$) { return 404; }\n# longer now\n")
+    assert hp.reload() is True and hp.request("/.git/config", None) and hp.fingerprint() != fp
+    assert hp.conf_status[str(conf)] == {"traps": 1, "problems": [], "error": None}
+    missing = Honeypot("", "/nowhere/honeypot.conf")
+    assert "not found" in missing.conf_status["/nowhere/honeypot.conf"]["error"] and not missing.has_request_traps
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_honeypot_marks_stored_requests_and_new_report_sections(tmp_path):
+    from lookingglass import db
+    from lookingglass.config import Settings
+    from lookingglass.parsers.common import event
+    from lookingglass.reports import build_report
+    from lookingglass.swag import RETAG_KEY, SwagReader
+
+    conf = tmp_path / "honeypot.conf"
+    conf.write_text("location ~* ^/(wp-login\\.php|\\.env)(/|\\.|$) { return 404; }\n")
+
+    async def main():
+        await db.connect(DSN)
+        pool = db.pool()
+        try:
+            await pool.execute("TRUNCATE events")
+            await db.kv_set(RETAG_KEY, None)
+            now = datetime.now(timezone.utc)
+            await db.copy_events([
+                event(now - timedelta(days=2), "nginx", program="swag", severity=6, action="http_404", src_ip="203.0.113.7",
+                      domain="blog.example.com", data={"path": "/wp-login.php", "tags": ["wordpress"]}),
+                event(now - timedelta(hours=1), "nginx", program="swag", severity=6, action="http_200", src_ip="203.0.113.8",
+                      domain="blog.example.com", data={"path": "/index.html"}),
+                event(now - timedelta(days=40), "nginx", program="swag", severity=6, action="http_404", src_ip="203.0.113.9",
+                      data={"path": "/.env"}),  # older than 30 days: left alone
+                event(now - timedelta(hours=1), "nginx", program="swag", severity=4, action="bouncer_block",
+                      src_ip="203.0.113.10", domain="blog.example.com")])
+            reader = SwagReader(Settings(swag_log_dir=str(tmp_path / "log"), swag_honeypot_conf=str(conf)), lambda e: None)
+            assert await reader.retag() == 1
+            assert await reader.retag() == 0  # same traps: not checked again
+            row = await pool.fetchrow("SELECT data FROM events WHERE host(src_ip) = '203.0.113.7'")
+            assert row["data"]["honeypot"] is True and row["data"]["tags"] == ["wordpress", "honeypot"]
+            rep = await build_report(24 * 3)
+            assert [r["ip"] for r in rep["honeypot_hits"]] == ["203.0.113.7"]
+            assert rep["swag_blocked"][0]["ip"] == "203.0.113.10" and rep["swag_blocked"][0]["how"] == "bouncer block"
+            assert {r["site"]: r["n"] for r in rep["swag_sites"]} == {"blog.example.com": 2}
+        finally:
+            await pool.execute("TRUNCATE events")
+            await db.close()
+    asyncio.run(main())
+
+
+def test_swag_page_layout():
+    from lookingglass.dashboards import DASHBOARDS
+    spec = DASHBOARDS["swag"]
+    web = [p["id"] for p in spec["panels"] if p.get("tab") == "web"]
+    assert web.index("sw_log") == web.index("sw_errors") - 1  # live log right above the nginx errors
+    assert "csl_bouncers" not in [p["id"] for p in spec["panels"]]
+    active = next(p for p in spec["panels"] if p["id"] == "csl_active")
+    assert "value" in active["search"]["cols"] and "LIMIT 5000" in active["sql"]
+    assert next(t for t in spec["tabs"] if t["id"] == "fail2ban")["needs"] == "fail2ban"
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_fail2ban_tab_only_when_set_up():
+    from lookingglass import db
+    from lookingglass.config import Settings
+    from lookingglass.dashboards import run_dashboard
+
+    assert Settings(swag_log_dir="/swag/log").fail2ban_enabled  # the default fail2ban log
+    assert not Settings(swag_log_dir="/swag/log", swag_fail2ban_log=" ").fail2ban_enabled
+    assert not Settings(swag_log_dir="").fail2ban_enabled
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            on = await run_dashboard("swag", 24, set(), "fail2ban")
+            assert "fail2ban" in [t["id"] for t in on["tabs"]] and on["tab"] == "fail2ban"
+            off = await run_dashboard("swag", 24, {"fail2ban"}, "fail2ban")  # what dash_off gives without fail2ban
+            assert "fail2ban" not in [t["id"] for t in off["tabs"]] and off["tab"] == "web"
+            hp = await run_dashboard("swag", 24, {"fail2ban"}, "honeypot")
+            assert "Bans by honeypot jails" not in hp["panels"][0]["rows"][0]
+        finally:
+            await db.close()
+    asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_honeypot_shows_crowdsec_bans():
+    """Honeypot tab / report: whether CrowdSec banned the visitors (any scenario) - now (a range counts) or earlier."""
+    from lookingglass import db
+    from lookingglass.dashboards import run_dashboard
+    from lookingglass.parsers.common import event
+    from lookingglass.reports import build_report
+
+    async def main():
+        await db.connect(DSN)
+        pool = db.pool()
+        try:
+            await pool.execute("TRUNCATE events")
+            now = datetime.now(timezone.utc)
+            hit = lambda ip: event(now - timedelta(hours=2), "nginx", program="swag", severity=4, action="http_404",  # noqa: E731
+                                   src_ip=ip, data={"path": "/.env", "honeypot": True, "tags": ["honeypot"]})
+            await db.copy_events([hit("203.0.113.7"), hit("198.51.100.8"), hit("192.0.2.9"), hit("127.0.0.1"),
+                                  # 198.51.100.8 was banned an hour ago (that ban has ended since)
+                                  event(now - timedelta(hours=1), "crowdsec", program="crowdsec-lapi", severity=4, action="ban",
+                                        src_ip="198.51.100.8")])
+            until = (now + timedelta(hours=3)).isoformat()
+            await db.set_snapshot("crowdsec_lapi_decisions", [
+                {"id": 1, "scope": "Range", "value": "203.0.113.0/24", "until": until},
+                {"id": 2, "scope": "Country", "value": "XX", "until": until}])  # not an address: ignored
+            res = await run_dashboard("swag", 24, set(), "honeypot")
+            by = {p["id"]: p for p in res["panels"]}
+            kpi = by["hp_kpi"]["rows"][0]
+            assert (kpi["IPs"], kpi["Banned by CrowdSec"], kpi["Banned now"]) == (4, 2, 1)
+            assert kpi["From inside"] == 1  # 127.0.0.1 (the SWAG host itself) is inside, as for the alert
+            rows = {r["ip"]: r for r in by["hp_ips"]["rows"]}
+            assert rows["203.0.113.7"]["cs"] == "banned now" and rows["203.0.113.7"]["cs_until"] is not None
+            assert rows["198.51.100.8"]["cs"] == "banned" and rows["192.0.2.9"]["cs"] is None
+            off = await run_dashboard("swag", 24, {"crowdsec_any", "fail2ban"}, "honeypot")  # no CrowdSec at all
+            assert "Banned now" not in off["panels"][0]["rows"][0]
+            opn_off = await run_dashboard("swag", 24, {"crowdsec", "fail2ban"}, "honeypot")  # only the OPNsense plugin off
+            assert "Banned now" in opn_off["panels"][0]["rows"][0]
+            rep = {r["ip"]: r["crowdsec"] for r in (await build_report(24))["honeypot_hits"]}
+            assert rep == {"203.0.113.7": "banned now", "198.51.100.8": "banned", "192.0.2.9": None, "127.0.0.1": None}
+        finally:
+            await pool.execute("TRUNCATE events")
+            await pool.execute("DELETE FROM snapshots WHERE key = 'crowdsec_lapi_decisions'")
+            await db.close()
+    asyncio.run(main())
+
+
+def test_honeypot_error_line_keeps_the_trap_path():
+    hp = Honeypot("/wp-login.php")
+    line = ('2024/05/01 12:00:00 [error] 812#812: *9 open() "/config/www/wp-login.php" failed (2: No such file or directory), '
+            'client: 127.0.0.1, server: _, request: "GET /wp-login.php?x=1 HTTP/1.1", host: "localhost"')
+    ev = parse_line("error", line, "nginx/error.log", "SWAG", timezone.utc, hp, now=NOW)
+    assert ev["data"]["honeypot"] is True and ev["data"]["path"] == "/wp-login.php" and ev["src_ip"] == "127.0.0.1"
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_swag_page_from_filter():
+    """SWAG & CrowdSec's All / Local / Non-local switch: every panel of every tab counts only those source addresses."""
+    from lookingglass import db
+    from lookingglass.dashboards import run_dashboard
+    from lookingglass.parsers.common import event
+
+    async def main():
+        await db.connect(DSN)
+        pool = db.pool()
+        try:
+            await pool.execute("TRUNCATE events")
+            now = datetime.now(timezone.utc)
+            req = lambda ip, path, i: event(now - timedelta(minutes=i), "nginx", program="swag", severity=6,  # noqa: E731
+                                            action="http_200", src_ip=ip, data={"path": path})
+            await db.copy_events([req("192.168.3.3", "/plugins/x/Preclear.php", i) for i in range(30)]
+                                 + [req("127.0.0.1", "/health", 1)]
+                                 + [req("203.0.113.7", "/", i) for i in range(5)])
+            counts = {}
+            for scope in (None, "local", "public"):
+                for tab in ("web", "crowdsec", "fail2ban", "honeypot"):
+                    res = await run_dashboard("swag", 24, set(), tab, scope)
+                    assert not [(p["id"], p["error"]) for p in res["panels"] if p.get("error")], (scope, tab)
+                    assert res["scope"] == scope and res["scope_filter"] is True
+                    if tab == "web":
+                        by = {p["id"]: p for p in res["panels"]}
+                        counts[scope] = (by["sw_kpi"]["rows"][0]["Requests"], {r["path"] for r in by["sw_paths"]["rows"]})
+            assert counts[None][0] == 36 and counts["local"][0] == 31 and counts["public"][0] == 5
+            assert counts["public"][1] == {"/"} and "/plugins/x/Preclear.php" in counts["local"][1]
+            # dashboards without the switch ignore it
+            fw = await run_dashboard("firewall", 24, set(), None, "local")
+            assert fw["scope"] is None and fw["scope_filter"] is False
+        finally:
+            await pool.execute("TRUNCATE events")
+            await db.close()
+    asyncio.run(main())

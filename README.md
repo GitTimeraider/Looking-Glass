@@ -39,7 +39,6 @@ the default look: dark theme, purple accent, menu bar at the top and square corn
 | Source | How | What you get |
 |---|---|---|
 | Firewall (pf `filterlog`) | syslog, or API fallback | blocked/allowed traffic, rule names, scans, sweeps |
-| nginx plugin | syslog (access via nginx *SYSLOG Targets*, errors automatically) | requests, status codes, attack patterns (SQLi, RCE, traversal, scanners), WAF / rate limit |
 | Unbound DNS | API (reporting DB) and/or syslog (`log-queries`) | per-client queries, blocklist hits, NXDOMAIN, DNS tunneling / DGA detection |
 | CrowdSec | API (alerts + decisions) + syslog | scenarios, bans |
 | Suricata | API + syslog | signatures, classifications |
@@ -74,7 +73,7 @@ Details: [Detections and alerts](docs/detections.md) · [Behaviour, machine lear
 | Page | What is in it |
 |---|---|
 | [Installation details](docs/installation.md) | setup wizard, MFA, the Settings tabs (incl. Display), password reset, GeoIP, PostgreSQL notes, backup and restore, updating, database load |
-| [OPNsense setup](docs/opnsense.md) | the API user and key, remote syslog, firewall logging, Unbound, nginx, VPN, Suricata, Q-Feeds, CrowdSec |
+| [OPNsense setup](docs/opnsense.md) | the API user and key, remote syslog, firewall logging, Unbound, VPN, Suricata, Q-Feeds, CrowdSec |
 | [UniFi](docs/unifi.md) | adding a UniFi controller (API key or local account) |
 | [Unraid](docs/unraid.md) | adding Unraid servers, alerts, spun-down disks, container packages |
 | [SWAG, CrowdSec, fail2ban and honeypot](docs/swag.md) | mounting SWAG's logs, a CrowdSec login, honeypot traps |
