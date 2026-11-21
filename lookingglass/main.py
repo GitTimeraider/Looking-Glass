@@ -185,6 +185,49 @@ async def backrest_supervisor(settings, group: str = "backrest") -> None:
             await _stop_poller(poller, task)
 
 
+async def swag_supervisor(settings, writer: EventWriter) -> None:
+    """Follow SWAG's logs and poll the CrowdSec Local API while they are configured (Settings › SWAG & CrowdSec);
+    restart each when its settings change."""
+    from .crowdsec_lapi import LapiPoller
+    from .swag import SwagReader
+
+    class _Reader:  # SwagReader has nothing to close
+        def __init__(self, reader: SwagReader) -> None:
+            self.reader = reader
+
+        async def run(self) -> None:
+            log.info("following SWAG logs in %s", self.reader.root)
+            await self.reader.run()
+
+        async def stop(self) -> None:
+            try:
+                await self.reader.save()
+            except Exception:  # noqa: BLE001
+                pass
+
+    parts: dict[str, list] = {"swag": [None, None, None], "crowdsec_lapi": [None, None, None]}  # sig, poller, task
+    try:
+        while True:
+            for group, enabled, make in (
+                    ("swag", lambda: settings.swag_enabled, lambda: _Reader(SwagReader(settings, writer.put))),
+                    ("crowdsec_lapi", lambda: settings.crowdsec_lapi_enabled, lambda: LapiPoller(settings, writer))):
+                st = parts[group]
+                new_sig = app_config.signature(settings, group)
+                if new_sig != st[0] or (st[2] is not None and st[2].done()):
+                    if st[1] is not None:
+                        await _stop_poller(st[1], st[2])
+                        st[1] = st[2] = None
+                    st[0] = new_sig
+                    if enabled():
+                        st[1] = make()
+                        st[2] = asyncio.create_task(st[1].run(), name=group)
+            await asyncio.sleep(5)
+    finally:
+        for st in parts.values():
+            if st[1] is not None:
+                await _stop_poller(st[1], st[2])
+
+
 async def daily_ai_report(settings, analyst: Analyst) -> None:
     """The scheduled report: every ``report_every_days`` days at the set hour, covering those days; mailed when
     recipients are set."""
@@ -311,6 +354,7 @@ async def amain() -> None:
     background("unifi", lambda: unifi_supervisor(settings, writer))
     background("backrest", lambda: backrest_supervisor(settings))
     background("bichon", lambda: backrest_supervisor(settings, "bichon"))
+    background("swag", lambda: swag_supervisor(settings, writer))
     background("daily_report", lambda: daily_ai_report(settings, analyst))
     background("notifier", lambda: notify.notifier(settings))
     background("blocking", lambda: blocking.loop(settings))  # OPNsense block alias (blocking.py)

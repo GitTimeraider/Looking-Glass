@@ -79,6 +79,15 @@ QUERIES: dict[str, str] = {
                           "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
     "crowdsec_scenarios": "SELECT coalesce(data->>'scenario', data->>'reason') scenario, count(*) n, count(DISTINCT src_ip) ips FROM events "
                           "WHERE source = 'crowdsec' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
+    # SWAG (swag.py): fail2ban jails and honeypot hits
+    "fail2ban_jails": "SELECT coalesce(data->>'jail', '?') jail, count(*) FILTER (WHERE action = 'ban') bans, "
+                      "count(DISTINCT src_ip) FILTER (WHERE action = 'ban') ips, count(*) FILTER (WHERE action = 'found') matches FROM events "
+                      "WHERE source = 'fail2ban' AND action IN ('ban', 'found') AND ts > now() - make_interval(secs => $1) "
+                      "GROUP BY 1 ORDER BY 2 DESC, 4 DESC LIMIT 15",
+    "honeypot_hits": "SELECT host(src_ip) ip, max(src_country) country, count(*) n, "
+                     "left(string_agg(DISTINCT coalesce(data->>'path', data->>'jail'), ', '), 200) what FROM events "
+                     "WHERE source IN ('nginx', 'fail2ban') AND data->>'honeypot' = 'true' AND src_ip IS NOT NULL "
+                     "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
     # Q-Feeds: its firewall log lines too; direction from the addresses (a LAN rule logs outgoing traffic as "in")
     "qfeeds_hits": "SELECT host(src_ip) src, host(dst_ip) dst, CASE WHEN src_ip << '10.0.0.0/8' OR src_ip << '172.16.0.0/12' "
                    "OR src_ip << '192.168.0.0/16' OR src_ip << 'fc00::/7' OR src_ip << '100.64.0.0/10' THEN 'out' ELSE 'in' END direction, "

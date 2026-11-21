@@ -186,6 +186,23 @@ class Settings(BaseSettings):
     bichon_backup_overdue_hours: int = 0  # Bichon's own backup; 0 = no overdue alert (its schedule is not readable)
     bichon_alert_warnings: bool = True
     bichon_offline_grace: int = 15  # minutes
+    # SWAG (linuxserver.io reverse proxy) log folder + CrowdSec Local API in Docker (swag.py, crowdsec_lapi.py)
+    swag_log_dir: str = ""  # SWAG's /config/log, mounted read-only into this container, e.g. /swag/log
+    swag_name: str = "SWAG"
+    swag_access_logs: str = "nginx/access.log"
+    swag_error_logs: str = "nginx/error.log"
+    swag_fail2ban_log: str = "fail2ban/fail2ban.log"
+    swag_backfill_mb: int = 5  # first read of a log: this much of its end is read (0 = only new lines)
+    swag_honeypot: str = ""  # honeypot paths (/x), host names, fail2ban jails (jail:name) and log files (file:path)
+    swag_honeypot_internet: str = "low"  # alert severity of a honeypot hit from the internet ("off" = none)
+    swag_fail2ban_alerts: str = "low"  # alert severity of a fail2ban ban of an internet address ("off" = none)
+    crowdsec_lapi_url: str = ""  # e.g. http://crowdsec:8080
+    crowdsec_lapi_machine: str = ""
+    crowdsec_lapi_password: str = ""
+    crowdsec_lapi_bouncer_key: str = ""
+    crowdsec_lapi_metrics_url: str = ""  # e.g. http://crowdsec:6060/metrics
+    crowdsec_lapi_verify_ssl: bool = False
+    crowdsec_lapi_poll_interval: int = 60
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_security: str = "starttls"
@@ -279,6 +296,17 @@ class Settings(BaseSettings):
     def backups_enabled(self) -> bool:
         """Any backup tool connected (Infrastructure › Backups, the reports' Backups part)."""
         return self.backrest_enabled or self.bichon_enabled
+
+    @property
+    def swag_enabled(self) -> bool:
+        """SWAG's log folder is set (Settings › SWAG & CrowdSec)."""
+        return bool(self.swag_log_dir.strip())
+
+    @property
+    def crowdsec_lapi_enabled(self) -> bool:
+        """A CrowdSec Local API with a machine login (alerts) or a bouncer key (decisions)."""
+        return bool(self.crowdsec_lapi_url and ((self.crowdsec_lapi_machine and self.crowdsec_lapi_password)
+                                                or self.crowdsec_lapi_bouncer_key))
 
     @property
     def smtp_enabled(self) -> bool:

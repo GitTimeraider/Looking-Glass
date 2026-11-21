@@ -50,12 +50,14 @@ the default look: dark theme, purple accent, menu bar at the top and square corn
 | **UniFi** | UniFi Network API (API key or local account) | access points, switches (ports, PoE, errors), consoles: state, firmware/updates, load; **Wi-Fi / wired clients** with AP or switch port, SSID, signal, experience, traffic; health; client connects / roams, device offline, **rogue / evil-twin APs, rogue DHCP**; and *where* every device is connected, shown in alerts and the device list |
 | **Unraid** | Unraid API (GraphQL) + optional Docker socket proxy | CPU/cores, memory, temperatures, network, array/parity, disks (temp, errors, SMART), shares, **Docker containers** (state, CPU/mem) and **their logs**, Unraid syslog, **notifications**, VMs, UPS (Unraid UPS service, or the **NUT plugin** via upsd port 3493), **packages inside every container image** (Syft, optional) |
 | **Backrest** (restic backups) | Backrest API (read only, user + password) | plans, repositories, schedules and retention; **every backup run** with result, duration, data scanned / added, files and **speed**; forget / prune / check runs; repository size, compression and snapshot count over time; alerts for failed, overdue and warning backups and failed repository checks |
+| **SWAG** (Docker reverse proxy) | its log folder, mounted read-only | every request (site, path, status, attack patterns), nginx errors, **CrowdSec bouncer and AppSec / WAF blocks**, **fail2ban** matches / bans / *banned now* per jail, **honeypot** hits |
+| **CrowdSec** (Docker) | Local API (machine login / bouncer key) + metrics | alerts with scenario, AS, country, target site / URI, AppSec rule and decisions; active decisions incl. community blocklist; which logs CrowdSec reads, AppSec counters, live bouncers |
 | **Bichon** (mail archive) | Bichon API (read only, an API token - "Metrics only" is enough) | mail accounts with sync interval, **every mail sync** with result (ok / partial / failed), duration, new mails and failed folders; mails archived, archive and search-index size over time; Bichon's own backup; alerts for failed, partial and overdue syncs and a failed Bichon backup |
 
 ## What it detects
 
 Port scans, host sweeps, brute force and password spraying, logins after failures or from new countries, web attacks,
-Suricata / CrowdSec / Q-Feeds hits, DNS tunneling and random (DGA) domains, beaconing, lateral movement, DNS bypass,
+Suricata / CrowdSec / Q-Feeds hits, fail2ban bans and honeypot hits (SWAG), DNS tunneling and random (DGA) domains, beaconing, lateral movement, DNS bypass,
 attack chains, new and rogue devices, evil-twin access points, rogue DHCP, ARP spoofing, canary traps, resource and
 service problems on OPNsense and Unraid, WAN lines that get slower or lose packets over days, failed backups and more. On top of that it learns what is normal for every
 device (behaviour & machine learning) and checks traffic against threat-intel feeds. Every alert explains its severity
@@ -75,6 +77,7 @@ Details: [Detections and alerts](docs/detections.md) · [Behaviour, machine lear
 | [OPNsense setup](docs/opnsense.md) | the API user and key, remote syslog, firewall logging, Unbound, nginx, VPN, Suricata, Q-Feeds, CrowdSec |
 | [UniFi](docs/unifi.md) | adding a UniFi controller (API key or local account) |
 | [Unraid](docs/unraid.md) | adding Unraid servers, alerts, spun-down disks, container packages |
+| [SWAG, CrowdSec, fail2ban and honeypot](docs/swag.md) | mounting SWAG's logs, a CrowdSec login, honeypot traps |
 | [Backups: Backrest and Bichon](docs/backups.md) | backup jobs and mail-archive syncs |
 | [Using Looking Glass](docs/user-guide.md) | a tour of every page: overview, alerts, timeline, dashboards, WAN quality, devices, event search, reports; blocking in OPNsense; snooze / maintenance windows; audit log |
 | [Detections and alerts](docs/detections.md) | every detection, alert filters, email notifications, closing alerts, severity |

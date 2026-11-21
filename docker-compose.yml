@@ -25,6 +25,8 @@ services:
       - "514:5514/tcp"     # syslog from OPNsense (TCP)
     volumes:
       - ./data:/data       # encryption key, saved database connection (back it up!) + optional GeoLite2-City.mmdb
+      # optional: SWAG's log folder (nginx + fail2ban), read only - Settings › SWAG & CrowdSec › SWAG log folder /swag/log
+      # - /path/to/swag/config/log:/swag/log:ro
     logging:               # setup and reset codes are printed to this log - keep a few MB of it
       driver: json-file
       options: { max-size: "20m", max-file: "3" }

@@ -32,17 +32,21 @@ events(id bigint, ts timestamptz, received_at timestamptz, source text, host tex
        severity smallint /*syslog 0=emerg..7=debug*/, action text, src_ip inet, src_port int, dst_ip inet, dst_port int,
        proto text, interface text, direction text, username text, domain text, src_country text, dst_country text,
        message text, data jsonb, uid text)
-  source values: firewall (pf filterlog), nginx (web server/reverse proxy), unbound (DNS), crowdsec, suricata (IDS/IPS),
+  source values: firewall (pf filterlog), nginx (web server/reverse proxy: program 'swag' = the SWAG reverse proxy in Docker,
+                 else the OPNsense nginx plugin), unbound (DNS), crowdsec (program 'crowdsec-lapi' = CrowdSec in Docker,
+                 else the OPNsense plugin), fail2ban (SWAG's fail2ban: data.jail), suricata (IDS/IPS),
                  qfeeds (threat intel blocks), auth (ssh / web GUI logins), vpn, dhcp, system,
                  unraid (Unraid syslog + notifications, host = server name), docker (Unraid container logs, program = container),
                  unifi (UniFi controller events: Wi-Fi / wired clients and APs / switches; src_ip = client IP when known)
-  action examples: firewall: pass/block; nginx: http_200, http_404, waf_block, rate_limited; unbound: query, reply,
-                   block, nxdomain; crowdsec: alert, ban; suricata: alert, drop, blocked; auth: login_failed, login_success,
+  action examples: firewall: pass/block; nginx: http_200, http_404, waf_block (WAF / CrowdSec AppSec), bouncer_block
+                   (CrowdSec bouncer in nginx), rate_limited, http_error; unbound: query, reply,
+                   block, nxdomain; crowdsec: alert, ban, captcha; fail2ban: found, ban, unban, restore_ban; suricata: alert, drop, blocked; auth: login_failed, login_success,
                    config_change; dhcp: lease; unifi: client_connect, client_disconnect, client_roam, client_blocked,
                    device_offline, device_online, device_restart, rogue_ap, rogue_dhcp, poe_disconnect, login_success / login_failed (controller admin logins), ips_alert
   data keys: firewall {label (rule description), rid, reason, tcpflags}; nginx {method, path, status, user_agent, tags[]};
              unbound {qtype, rcode, blocklist, category}; suricata {sid, signature, classification, priority};
-             crowdsec {scenario, decisions};
+             crowdsec {scenario, decisions, as, country, events_count, appsec, meta {target_uri[], target_fqdn[], rule_name[] ...}};
+             fail2ban {jail, honeypot}; honeypot hits (traps): data.honeypot = true (nginx tags[] also has 'honeypot');
              unifi {key (EVT_...), mac (client), ap, ap_from, ap_to, ssid, sw, port, subsystem}
 alerts(id, created_at, last_seen, rule, severity /*info|low|medium|high|critical*/, title, description, src_ip inet,
        dst_ip inet, count int, status /*open|acknowledged|closed*/, close_reason /*false_positive|resolved|muted|known_false_positive = a repeat of an alert closed as false positive, see data.repeat_of*/, fingerprint, data jsonb)
