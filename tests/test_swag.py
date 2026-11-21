@@ -222,3 +222,33 @@ def test_swag_dashboard_and_detections():
         finally:
             await db.close()
     asyncio.run(main())
+
+
+def test_lapi_login_trims_and_explains_a_wrong_password():
+    import httpx
+    from lookingglass.config import Settings
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+        body = json.loads(request.content)
+        if body == {"machine_id": "lookingglass", "password": "s3cret", "scenarios": []}:
+            return httpx.Response(200, json={"code": 200, "expire": "2099-01-01T00:00:00Z", "token": "t"})
+        return httpx.Response(401, json={"code": 401, "message": "incorrect Username or Password"})
+
+    async def main():
+        for password, ok in ((" s3cret\n", True), ("wrong", False)):
+            client = lapi.LapiClient(Settings(crowdsec_lapi_url="http://cs:8080", crowdsec_lapi_machine="lookingglass ",
+                                              crowdsec_lapi_password=password))
+            client.http = httpx.AsyncClient(base_url="http://cs:8080", transport=httpx.MockTransport(handler))
+            try:
+                if ok:
+                    await client.login()
+                    assert client.token == "t"
+                else:
+                    with pytest.raises(lapi.LapiError) as exc:
+                        await client.login()
+                    msg = str(exc.value)
+                    assert "machine 'lookingglass' with a 5-character password" in msg and "--force" in msg
+            finally:
+                await client.close()
+    asyncio.run(main())

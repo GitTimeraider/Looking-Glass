@@ -48,8 +48,8 @@ UNREACHABLE_GRACE = 600  # seconds before a "CrowdSec unreachable" alert
 
 
 class LapiError(Exception):
-    def __init__(self, status: int, text: str) -> None:
-        super().__init__(f"HTTP {status}: {text[:200]}")
+    def __init__(self, status: int, text: str, hint: str = "") -> None:
+        super().__init__(f"HTTP {status}: {text[:200]}{hint}")
         self.status = status
 
 
@@ -213,17 +213,35 @@ class LapiClient:
         await self.http.aclose()
 
     @property
+    def machine(self) -> str:
+        return (self.settings.crowdsec_lapi_machine or "").strip()
+
+    @property
+    def password(self) -> str:
+        return (self.settings.crowdsec_lapi_password or "").strip()
+
+    @property
+    def bouncer_key(self) -> str:
+        return (self.settings.crowdsec_lapi_bouncer_key or "").strip()
+
+    @property
     def has_machine(self) -> bool:
-        return bool(self.settings.crowdsec_lapi_machine and self.settings.crowdsec_lapi_password)
+        return bool(self.machine and self.password)
 
     async def login(self) -> None:
-        r = await self.http.post("/v1/watchers/login", json={
-            "machine_id": self.settings.crowdsec_lapi_machine, "password": self.settings.crowdsec_lapi_password,
-            "scenarios": []})
+        # pasted values often carry a space or line break at the end: never part of a machine name / cscli password
+        machine, password = self.machine, self.password
+        r = await self.http.post("/v1/watchers/login", json={"machine_id": machine, "password": password, "scenarios": []})
         if r.status_code != 200:
-            hint = (" - wrong machine name / password, or the machine is not validated (cscli machines validate <name>)"
-                    if r.status_code in (401, 403) else "")
-            raise LapiError(r.status_code, (r.text or "login failed") + hint)
+            hint = ""
+            if r.status_code in (401, 403):
+                hint = (f" - sent machine '{machine}' with a {len(password)}-character password. CrowdSec knows the "
+                        "machine but the password does not match: set it again with single quotes around it "
+                        "(docker exec crowdsec cscli machines add " + machine + " --password '<password>' --force "
+                        "-f /dev/null), then enter the same password here and Save"
+                        if "incorrect" in (r.text or "").lower() else
+                        " - the machine is not validated: docker exec crowdsec cscli machines validate " + machine)
+            raise LapiError(r.status_code, r.text or "login failed", hint)
         body = r.json()
         self.token = body.get("token")
         exp = _ts(body.get("expire"))
@@ -251,7 +269,7 @@ class LapiClient:
         return await self.machine_get("/v1/alerts", params) or []
 
     async def decisions(self) -> list[dict[str, Any]]:
-        r = await self.http.get("/v1/decisions", headers={"X-Api-Key": self.settings.crowdsec_lapi_bouncer_key})
+        r = await self.http.get("/v1/decisions", headers={"X-Api-Key": self.bouncer_key})
         if r.status_code in (401, 403):
             raise LapiError(r.status_code, "bouncer key refused (cscli bouncers list)")
         if r.status_code != 200:
@@ -294,7 +312,7 @@ class LapiPoller:
                     log.exception("CrowdSec poll failed")
                 else:
                     log.warning("CrowdSec Local API: %s", exc)
-                self.status.update(ok=False, error=f"{type(exc).__name__}: {exc}"[:400], last=time.time())
+                self.status.update(ok=False, error=f"{type(exc).__name__}: {exc}"[:800], last=time.time())
                 if isinstance(exc, (httpx.HTTPError, OSError)):
                     await self.unreachable(str(exc) or type(exc).__name__)
             await db.set_snapshot(STATUS_KEY, self.status)
