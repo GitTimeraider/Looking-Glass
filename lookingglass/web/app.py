@@ -305,10 +305,20 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return {"kpi": db.jsonable({**kpi, **thr, "blocked_ips": ips}), "report": report, "timeline": tl,
                 "threats": dict(lists)}
 
-    async def dash_compute_args(name: str, tab: str | None, hours: float) -> dict[str, Any]:
+    async def dash_compute_args(name: str, tab: str | None, *rest: Any) -> dict[str, Any]:
+        """A stored 7 / 30 day view: (name, tab, hours) or, with the page's From filter, (name, tab, scope, hours) -
+        the hours always last (periods.py stores them)."""
         if name not in DASHBOARDS:  # a stored 7 / 30 day view of a removed dashboard (the OPNsense nginx page)
             raise PeriodGone(name)
-        return await dash_compute(name, hours, tab)
+        scope, hours = (rest[0], rest[1]) if len(rest) == 2 else (None, rest[0])
+        return await dash_compute(name, hours, tab, scope)
+
+    def dash_key_args(name: str, tab: str | None, scope: str | None, hours: float) -> tuple:
+        """The key of a stored dashboard view; without a From filter the same as before there was one."""
+        return (name, tab, scope, hours) if scope else (name, tab, hours)
+
+    def dash_scope(name: str, scope: str | None) -> str | None:
+        return scope if scope in ("local", "public") and DASHBOARDS[name].get("scope") else None
 
     # 7 / 30 days: counted on a schedule in the background and shown from the stored result (periods.py)
     long_periods = Periods(settings, {"overview": overview_counts, "dash": dash_compute_args})
@@ -337,7 +347,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         if payload.get("kind") == "overview":
             key = key_of("overview", hours)
         elif payload.get("kind") == "dash" and payload.get("name") in DASHBOARDS:
-            key = key_of("dash", payload["name"], dash_tab(payload["name"], payload.get("tab")), hours)
+            name = payload["name"]
+            key = key_of("dash", *dash_key_args(name, dash_tab(name, payload.get("tab")), dash_scope(name, payload.get("scope")), hours))
         else:
             raise HTTPException(400, "unknown view")
         long_periods.refresh(key)
@@ -1250,29 +1261,32 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             raise HTTPException(404)
         return templates.TemplateResponse(request, "dash.html", {
             "title": DASHBOARDS[name]["title"], "path": f"/dash/{name}", "version": __version__, "name": name,
+            "scope_filter": bool(DASHBOARDS[name].get("scope")),
             "ai_enabled": settings.ai_enabled, "user": request.session.get("user")})
 
     @app.get("/api/dash/{name}")
     async def dash_data(request: Request, name: str, hours: float = Query(24, gt=0, le=24 * 90),
-                        tab: str | None = Query(None, max_length=40)):
+                        tab: str | None = Query(None, max_length=40),
+                        scope: str | None = Query(None, pattern="^(local|public)$")):
         if name not in DASHBOARDS:
             raise HTTPException(404)
+        scope = dash_scope(name, scope)  # the page's From filter (SWAG & CrowdSec)
         if is_long(hours):  # see overview(): the stored result, counted in the background
             tab = dash_tab(name, tab)
-            got = await long_periods.get("dash", name, tab, hours)
+            got = await long_periods.get("dash", *dash_key_args(name, tab, scope, hours))
             if got["data"] is None:
                 # not counted yet: the tabs still go along, so another tab or period can be picked meanwhile
                 off = await dash_off(hours)
                 tabs = [{"id": t["id"], "title": t["title"]} for t in DASHBOARDS[name].get("tabs") or []
                         if t.get("needs") not in off]
-                return {"pending": True, "name": name, "title": DASHBOARDS[name]["title"], "tabs": tabs, "tab": tab,
+                return {"pending": True, "name": name, "title": DASHBOARDS[name]["title"], "tabs": tabs, "tab": tab, "scope": scope,
                         **long_info(got)}
             return {**got["data"], **long_info(got)}
         out, as_of, stale = await until_disconnected(request, results.fetch(
-            ("dash", name, hours, tab), ttl_for(hours), lambda: dash_compute(name, hours, tab), stale_for(hours)))
+            ("dash", name, hours, tab, scope), ttl_for(hours), lambda: dash_compute(name, hours, tab, scope), stale_for(hours)))
         for h in DASH_HOURS:  # see overview()
             if h != hours and not is_long(h):
-                results.warm(("dash", name, h, tab), lambda h=h: dash_compute(name, h, tab), stale_for(h))
+                results.warm(("dash", name, h, tab, scope), lambda h=h: dash_compute(name, h, tab, scope), stale_for(h))
         return {**out, "as_of": as_of, "stale": stale}  # see overview(): "stale" = ask again shortly
 
     @app.get("/api/dash/{name}/log/{panel}")
@@ -1301,8 +1315,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             off.add("fail2ban")  # SWAG & CrowdSec › fail2ban tab: only with SWAG's fail2ban log set (Settings)
         return off
 
-    async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
-        out = await run_dashboard(name, hours, await dash_off(hours), tab)
+    async def dash_compute(name: str, hours: float, tab: str | None = None, scope: str | None = None) -> dict[str, Any]:
+        out = await run_dashboard(name, hours, await dash_off(hours), tab, scope)
         if out.get("tab") == "suricata":
             out["notice"] = await suricata_notice(hours)
         return out

@@ -6,6 +6,9 @@
   <div class="seg" id="range">
     <button data-v="1">1h</button><button data-v="6">6h</button><button data-v="24">24h</button><button data-v="168">7d</button><button data-v="720">30d</button>
   </div>
+  {% if scope_filter %}<div class="seg" id="scope" title="Source addresses the whole page counts (every tab, chart and table). Local = private, CGNAT / Tailscale, loopback and link-local addresses - e.g. your own devices and the server itself">
+    <button data-v="">All</button><button data-v="local">Local</button><button data-v="public">Non-local</button>
+  </div>{% endif %}
 </header>
 <div class="tabs" id="dtabs" hidden></div>
 <div class="grid g3" id="panels" style="grid-auto-flow: row dense"></div>
@@ -15,6 +18,18 @@
 const NAME = "{{ name }}";
 let hours = Number(localStorage.getItem("lg-hours-" + NAME) || 24);
 LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localStorage.setItem("lg-hours-" + NAME, v); auto.touch(); load(); });
+
+// the page's From filter (SWAG & CrowdSec): "" = all, "local", "public"; remembered per dashboard in this browser
+const scopeEl = document.getElementById("scope");
+let pageScope = "";
+try { pageScope = scopeEl ? (localStorage.getItem("lg-scope-" + NAME) || "") : ""; } catch { /* not kept */ }
+if (!["", "local", "public"].includes(pageScope)) pageScope = "";
+if (scopeEl) LG.seg(scopeEl, pageScope, v => {
+  pageScope = v;
+  try { v ? localStorage.setItem("lg-scope-" + NAME, v) : localStorage.removeItem("lg-scope-" + NAME); } catch { /* not kept */ }
+  built = false;  // the live log's own From toggle comes and goes with it
+  auto.touch(); load();
+});
 
 const FMT = {
   ip: LG.ip, flag: LG.flag, ago: LG.ago, time: LG.time, sev: LG.sev, src: LG.src, bytes: LG.bytes,
@@ -68,6 +83,7 @@ function drillBase(p, d) {
   const dr = p.drill || {};
   const params = { hours, ...(dr.base || {}) };
   if (!("source" in params) && d.source) params.source = d.source;
+  if (pageScope) params.src_scope = pageScope;  // Event search shows the same addresses the page counted
   return params;
 }
 function rowFilters(p, r) {
@@ -99,7 +115,7 @@ function build(d) {
     const body = p.type === "stat" ? `<div class="grid kpis" id="p-${p.id}"></div>`
       : ["timeseries", "bar", "hbar", "pie"].includes(p.type) ? `<div class="chart-box${p.type === "hbar" ? " tall" : ""}"><canvas id="c-${p.id}"></canvas></div>`
       : `<div id="p-${p.id}"></div>`;
-    return p.type === "stat" ? `<div class="${span}">${body}</div>` : `<div class="card ${span}"><h3>${LG.esc(p.title || "")}${SORTABLE_CHARTS.includes(p.type) ? `<span data-sort-slot="${p.id}"></span>` : ""}<span class="sp"></span>${p.search ? `<input type="search" class="tsearch" data-search="${p.id}" placeholder="${LG.esc(p.search.placeholder || "Search…")}" value="${LG.esc(searchQ[p.id] || "")}" aria-label="Search ${LG.esc(p.title || "")}">` : ""}${p.type === "log" ? `${fromToggle(p)}<a class="small" data-search-all="${p.id}" href="${logSearchUrl(d, p)}">search all →</a>` : ""}</h3>${body}</div>`;
+    return p.type === "stat" ? `<div class="${span}">${body}</div>` : `<div class="card ${span}"><h3>${LG.esc(p.title || "")}${SORTABLE_CHARTS.includes(p.type) ? `<span data-sort-slot="${p.id}"></span>` : ""}<span class="sp"></span>${p.search ? `<input type="search" class="tsearch" data-search="${p.id}" placeholder="${LG.esc(p.search.placeholder || "Search…")}" value="${LG.esc(searchQ[p.id] || "")}" aria-label="Search ${LG.esc(p.title || "")}">` : ""}${p.type === "log" ? `${pageScope ? "" : fromToggle(p)}<a class="small" data-search-all="${p.id}" href="${logSearchUrl(d, p)}">search all →</a>` : ""}</h3>${body}</div>`;
   }).join("");
   box.querySelectorAll("[data-from]").forEach(seg => seg.querySelectorAll("button").forEach(b => b.onclick = () => {
     const id = seg.dataset.from, cur = logFrom(id);
@@ -126,7 +142,7 @@ function build(d) {
 /* live logs: From filter - local and / or non-local source addresses (per log, remembered in this browser). With one
    of them off the log shows the newest events of the other kind, asked from the server, not the same rows thinned out */
 const fromKey = id => `lg-logfrom-${NAME}:${id}`;
-function logFrom(id) { try { const v = localStorage.getItem(fromKey(id)); return v === "local" || v === "public" ? v : ""; } catch { return ""; } }
+function logFrom(id) { if (pageScope) return pageScope; try { const v = localStorage.getItem(fromKey(id)); return v === "local" || v === "public" ? v : ""; } catch { return ""; } }
 function setLogFrom(id, v) { try { v ? localStorage.setItem(fromKey(id), v) : localStorage.removeItem(fromKey(id)); } catch { /* not kept */ } }
 function fromToggle(p) {
   return `<span class="seg mini" data-from="${p.id}" title="Which source addresses (From) this log shows. Local = private, CGNAT / Tailscale, loopback and link-local addresses">` +
@@ -227,9 +243,9 @@ function render(d, only) {
 
 async function load() {
   try {
-    const d = await LG.api(`/api/dash/${NAME}?hours=${hours}${tab ? `&tab=${encodeURIComponent(tab)}` : ""}`,
+    const d = await LG.api(`/api/dash/${NAME}?hours=${hours}${tab ? `&tab=${encodeURIComponent(tab)}` : ""}${pageScope ? `&scope=${pageScope}` : ""}`,
                            { signal: LG.latest("dash") });
-    const view = { kind: "dash", name: NAME, tab: tab || null, hours };
+    const view = { kind: "dash", name: NAME, tab: tab || null, hours, scope: pageScope || null };
     // 7 / 30 days never counted yet: counted in the background. The tabs and periods stay usable meanwhile; the
     // panels of another period are not kept (their numbers would not belong to this one)
     if (d.pending) {

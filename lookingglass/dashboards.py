@@ -53,6 +53,20 @@ F2B_DRILL = {"source": "fail2ban"}
 # as Event search's "Source: local" (and the honeypot alert's INTERNAL, which also counts Settings › Internal networks)
 LOCAL_SRC = "(" + " OR ".join(f"src_ip << '{n}'" for n in LOCAL_NETS) + ")"
 
+# page-wide From filter (dashboards with "scope": True - SWAG & CrowdSec): every query of the page reads only the events
+# from local / non-local (public) source addresses. Each "FROM events" / "JOIN events" becomes a filtered subquery that
+# Postgres folds into the same plan, so it costs one address test per row read. Snapshots (bans now, metrics) are not
+# events and stay as they are.
+SCOPE_SQL = {"local": LOCAL_SRC, "public": f"(src_ip IS NOT NULL AND NOT {LOCAL_SRC})"}
+_EVENTS_REF = re.compile(r"\b(FROM|JOIN)\s+events\b(?:\s+(?:AS\s+)?(?!(?:WHERE|GROUP|ORDER|LEFT|RIGHT|INNER|FULL|CROSS|JOIN|"
+                         r"LIMIT|ON|UNION|HAVING|WINDOW|FILTER)\b)([A-Za-z_]\w*))?")
+
+
+def scoped_sql(sql: str, scope: str) -> str:
+    """``sql`` reading only the events of ``scope`` ("local" / "public")."""
+    cond = SCOPE_SQL[scope]
+    return _EVENTS_REF.sub(lambda m: f"{m.group(1)} (SELECT * FROM events WHERE {cond}) {m.group(2) or 'events'}", sql)
+
 
 def cs_ban_now(ip: str) -> str:
     """SQL: the address ``ip`` (an inet expression) is banned by CrowdSec right now - a decision of CrowdSec in Docker
@@ -181,7 +195,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
         ]},
     "swag": {
         # SWAG on the Docker host (swag.py) and CrowdSec's Local API (crowdsec_lapi.py)
-        "title": "SWAG & CrowdSec", "source": "nginx", "group": "swag",
+        "title": "SWAG & CrowdSec", "source": "nginx", "group": "swag", "scope": True,  # All / Local / Non-local
         "tabs": [{"id": "web", "title": "Web (nginx)", "source": "nginx"},
                  {"id": "crowdsec", "title": "CrowdSec", "source": "crowdsec"},
                  {"id": "fail2ban", "title": "fail2ban", "source": "fail2ban", "needs": "fail2ban"},  # hidden without it
@@ -714,12 +728,15 @@ ROLLUP_PANELS = {("firewall", "actions"), ("firewall", "proto"), ("firewall", "i
 
 
 async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] = frozenset(),
-                        tab: str | None = None) -> dict[str, Any]:
+                        tab: str | None = None, scope: str | None = None) -> dict[str, Any]:
     """``off``: optional sources (suricata, crowdsec, qfeeds) that are switched off and have no data in the period -
     their panels ("needs"), stat tiles ("needs_cols") and tabs ("needs") are left out.
-    ``tab``: on a dashboard with "tabs" only that tab's panels are run (default: the first tab)."""
+    ``tab``: on a dashboard with "tabs" only that tab's panels are run (default: the first tab).
+    ``scope``: "local" / "public" - only events from such source addresses (dashboards with "scope": True)."""
     spec = DASHBOARDS[name]
     tabs = [t for t in spec.get("tabs") or [] if t.get("needs") not in off]
+    if scope and (scope not in SCOPE_SQL or not spec.get("scope")):
+        scope = None
     source = spec.get("source")
     if tabs:
         cur = next((t for t in tabs if t["id"] == tab), tabs[0])
@@ -728,7 +745,9 @@ async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] 
 
     async def run(panel: dict[str, Any]) -> dict[str, Any]:
         sql = panel["sql"]
-        fast = hours >= rollup.MIN_HOURS and (name, panel["id"]) in ROLLUP_PANELS
+        if scope:
+            sql = scoped_sql(sql, scope)
+        fast = hours >= rollup.MIN_HOURS and (name, panel["id"]) in ROLLUP_PANELS and not scope
         args = [secs, step] if "$2" in sql else [secs]
         out = {k: v for k, v in panel.items() if k not in ("sql", "where", "limit")}
         try:
@@ -744,7 +763,8 @@ async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] 
 
     panels = await asyncio.gather(*(run(p) for p in spec["panels"]
                                     if p.get("needs") not in off and (not tabs or p.get("tab", tabs[0]["id"]) == tab)))
-    out = {"name": name, "title": spec["title"], "source": source, "step": step, "panels": panels}
+    out = {"name": name, "title": spec["title"], "source": source, "step": step, "panels": panels,
+           "scope_filter": bool(spec.get("scope")), "scope": scope}
     if tabs:
         out.update(tabs=[{"id": t["id"], "title": t["title"]} for t in tabs], tab=tab)
     return out

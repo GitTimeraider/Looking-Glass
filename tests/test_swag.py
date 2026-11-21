@@ -498,3 +498,41 @@ def test_honeypot_error_line_keeps_the_trap_path():
             'client: 127.0.0.1, server: _, request: "GET /wp-login.php?x=1 HTTP/1.1", host: "localhost"')
     ev = parse_line("error", line, "nginx/error.log", "SWAG", timezone.utc, hp, now=NOW)
     assert ev["data"]["honeypot"] is True and ev["data"]["path"] == "/wp-login.php" and ev["src_ip"] == "127.0.0.1"
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_swag_page_from_filter():
+    """SWAG & CrowdSec's All / Local / Non-local switch: every panel of every tab counts only those source addresses."""
+    from lookingglass import db
+    from lookingglass.dashboards import run_dashboard
+    from lookingglass.parsers.common import event
+
+    async def main():
+        await db.connect(DSN)
+        pool = db.pool()
+        try:
+            await pool.execute("TRUNCATE events")
+            now = datetime.now(timezone.utc)
+            req = lambda ip, path, i: event(now - timedelta(minutes=i), "nginx", program="swag", severity=6,  # noqa: E731
+                                            action="http_200", src_ip=ip, data={"path": path})
+            await db.copy_events([req("192.168.3.3", "/plugins/x/Preclear.php", i) for i in range(30)]
+                                 + [req("127.0.0.1", "/health", 1)]
+                                 + [req("203.0.113.7", "/", i) for i in range(5)])
+            counts = {}
+            for scope in (None, "local", "public"):
+                for tab in ("web", "crowdsec", "fail2ban", "honeypot"):
+                    res = await run_dashboard("swag", 24, set(), tab, scope)
+                    assert not [(p["id"], p["error"]) for p in res["panels"] if p.get("error")], (scope, tab)
+                    assert res["scope"] == scope and res["scope_filter"] is True
+                    if tab == "web":
+                        by = {p["id"]: p for p in res["panels"]}
+                        counts[scope] = (by["sw_kpi"]["rows"][0]["Requests"], {r["path"] for r in by["sw_paths"]["rows"]})
+            assert counts[None][0] == 36 and counts["local"][0] == 31 and counts["public"][0] == 5
+            assert counts["public"][1] == {"/"} and "/plugins/x/Preclear.php" in counts["local"][1]
+            # dashboards without the switch ignore it
+            fw = await run_dashboard("firewall", 24, set(), None, "local")
+            assert fw["scope"] is None and fw["scope_filter"] is False
+        finally:
+            await pool.execute("TRUNCATE events")
+            await db.close()
+    asyncio.run(main())
