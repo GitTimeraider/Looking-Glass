@@ -79,8 +79,13 @@ QUERIES: dict[str, str] = {
                           "WHERE source = 'suricata' AND action IN ('alert', 'drop', 'blocked', 'reject') AND (src_ip << '10.0.0.0/8' "
                           "OR src_ip << '172.16.0.0/12' OR src_ip << '192.168.0.0/16' OR src_ip << 'fc00::/7') "
                           "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
+    # the OPNsense CrowdSec plugin and CrowdSec in Docker (program crowdsec-lapi, next to SWAG) apart
     "crowdsec_scenarios": "SELECT coalesce(data->>'scenario', data->>'reason') scenario, count(*) n, count(DISTINCT src_ip) ips FROM events "
-                          "WHERE source = 'crowdsec' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
+                          "WHERE source = 'crowdsec' AND program IS DISTINCT FROM 'crowdsec-lapi' "
+                          "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
+    "crowdsec_lapi_scenarios": "SELECT coalesce(data->>'scenario', data->>'reason') scenario, count(*) n, count(DISTINCT src_ip) ips "
+                               "FROM events WHERE source = 'crowdsec' AND program = 'crowdsec-lapi' "
+                               "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
     # SWAG (swag.py): requests per site, what its CrowdSec bouncer / AppSec / rate limit stopped, fail2ban jails and
     # honeypot hits
     "swag_sites": "SELECT coalesce(domain, '?') site, count(*) n, count(*) FILTER (WHERE action ~ '^http_[45]') errors, "

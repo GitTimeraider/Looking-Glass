@@ -171,6 +171,8 @@ def build(params: Mapping[str, Any], args: list[Any] | None = None) -> tuple[lis
     for param, col in SIMPLE.items():
         if (v := get(param)) is not None:
             where.append(f"{col} IS NULL" if v == "none" else f"{col} = {arg(v)}")
+    if (v := get("not_program")) is not None:  # e.g. the OPNsense CrowdSec plugin: not CrowdSec in Docker (crowdsec-lapi)
+        where.append(f"program IS DISTINCT FROM {arg(v)}")
     for key, v in params.items():
         if key.startswith("d_") and re.fullmatch(r"d_[A-Za-z0-9_]{1,40}", key):
             k = arg(key[2:])

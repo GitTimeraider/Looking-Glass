@@ -481,8 +481,10 @@ def test_honeypot_shows_crowdsec_bans():
             rows = {r["ip"]: r for r in by["hp_ips"]["rows"]}
             assert rows["203.0.113.7"]["cs"] == "banned now" and rows["203.0.113.7"]["cs_until"] is not None
             assert rows["198.51.100.8"]["cs"] == "banned" and rows["192.0.2.9"]["cs"] is None
-            off = await run_dashboard("swag", 24, {"crowdsec", "fail2ban"}, "honeypot")
+            off = await run_dashboard("swag", 24, {"crowdsec_any", "fail2ban"}, "honeypot")  # no CrowdSec at all
             assert "Banned now" not in off["panels"][0]["rows"][0]
+            opn_off = await run_dashboard("swag", 24, {"crowdsec", "fail2ban"}, "honeypot")  # only the OPNsense plugin off
+            assert "Banned now" in opn_off["panels"][0]["rows"][0]
             rep = {r["ip"]: r["crowdsec"] for r in (await build_report(24))["honeypot_hits"]}
             assert rep == {"203.0.113.7": "banned now", "198.51.100.8": "banned", "192.0.2.9": None, "127.0.0.1": None}
         finally:

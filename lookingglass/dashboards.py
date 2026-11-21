@@ -34,6 +34,13 @@ CS_FW = "(source = 'firewall' AND (lower(data->>'blocklist') = 'crowdsec' OR dat
 # (source, ts) index narrows it to CrowdSec.
 CS_SEEN = ("(source = 'crowdsec' AND (ts > now() - make_interval(secs => $1) "
            "OR received_at > now() - make_interval(secs => $1)))")
+# the OPNsense CrowdSec plugin only (Threats page, Overview's Threats widgets): CrowdSec in Docker (crowdsec_lapi.py,
+# SWAG & CrowdSec page) writes the same source with program crowdsec-lapi, and its decisions to their own snapshot
+CS_OPN = "(source = 'crowdsec' AND program IS DISTINCT FROM 'crowdsec-lapi')"
+CS_OPN_SEEN = f"({CS_SEEN} AND program IS DISTINCT FROM 'crowdsec-lapi')"
+CS_OPN_DRILL = {"source": "crowdsec", "not_program": "crowdsec-lapi"}
+CS_OPN_DECISIONS = ("(SELECT jsonb_array_length(data) FROM snapshots WHERE key = 'crowdsec_decisions' "
+                    "AND jsonb_typeof(data) = 'array')")
 # one blocklist of that setting from the poller's snapshot (lower-case name)
 BL = "(SELECT data->'{0}' FROM snapshots WHERE key = 'blocklists')"
 
@@ -346,7 +353,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                 f"count(*) FILTER (WHERE source = 'fail2ban' AND action = 'ban') AS \"Bans by honeypot jails\", "
                 "(SELECT count(*) FROM alerts WHERE status = 'open' AND rule = 'honeypot') AS \"Open honeypot alerts\" "
                 f"FROM events WHERE {HP} AND {W}",
-             "needs_cols": {"Bans by honeypot jails": "fail2ban", "Banned by CrowdSec": "crowdsec", "Banned now": "crowdsec"},
+             "needs_cols": {"Bans by honeypot jails": "fail2ban", "Banned by CrowdSec": "crowdsec_any", "Banned now": "crowdsec_any"},
              "drill": {"base": HP_DRILL, "tiles": {"From inside": {"src_scope": "local"}, "Bans by honeypot jails": {"source": "fail2ban", "d_honeypot": "true", "action": "ban"},
                                                    "Banned by CrowdSec": None, "Banned now": {"url": "/dash/swag#crowdsec"},
                                                    "Open honeypot alerts": {"url": "/alerts"}}}},
@@ -387,19 +394,18 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             {"id": "kpi", "tab": "main", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) FILTER (WHERE {IDS}) AS \"Suricata alerts\", "
                 f"count(*) FILTER (WHERE {IDS} AND {IDS_DROP}) AS \"Suricata dropped\", "
-                f"(SELECT count(*) FROM events WHERE {CS_SEEN} AND action = 'alert') AS \"CrowdSec alerts\", "
+                f"(SELECT count(*) FROM events WHERE {CS_OPN_SEEN} AND action = 'alert') AS \"CrowdSec alerts\", "
                 # active now (the API lists the current ones): a ban older than the period still counts
-                "(SELECT sum(jsonb_array_length(data))::bigint FROM snapshots WHERE key IN ('crowdsec_decisions', 'crowdsec_lapi_decisions') "
-                "AND jsonb_typeof(data) = 'array') AS \"CrowdSec active decisions\", "
+                f"{CS_OPN_DECISIONS} AS \"CrowdSec active decisions\", "
                 f"count(*) FILTER (WHERE {CS_FW}) AS \"CrowdSec firewall blocks\", "
                 f"count(*) FILTER (WHERE {QF}) AS \"Q-Feeds hits\", "
                 f"count(*) FILTER (WHERE {QF} AND {PRIV}) AS \"Outbound threat-intel hits\", "
                 f"(SELECT count(*) FROM alerts WHERE status = 'open' AND severity IN ('high', 'critical')) AS \"Open high/critical alerts\" "
-                f"FROM events WHERE (source IN ('suricata', 'crowdsec') OR {CS_FW} OR {QF}) AND {W}",
+                f"FROM events WHERE (source = 'suricata' OR {CS_OPN} OR {CS_FW} OR {QF}) AND {W}",
              "drill": {"tiles": {"Suricata alerts": {"source": "suricata", "action": "alert,drop,blocked,reject"},
                                  "Suricata dropped": {"source": "suricata", "action": "drop,blocked"},
-                                 "CrowdSec alerts": {"source": "crowdsec", "action": "alert", "hours": 24 * 90},
-                                 "CrowdSec active decisions": {"source": "crowdsec", "action": "ban,captcha", "hours": 24 * 90},
+                                 "CrowdSec alerts": {**CS_OPN_DRILL, "action": "alert", "hours": 24 * 90},
+                                 "CrowdSec active decisions": {**CS_OPN_DRILL, "action": "ban,captcha", "hours": 24 * 90},
                                  "CrowdSec firewall blocks": {"source": "firewall", "d_blocklist": "CrowdSec"},
                                  "Q-Feeds hits": QF_DRILL, "Outbound threat-intel hits": QF_DRILL,
                                  "Open high/critical alerts": {"url": "/alerts"}}},
@@ -411,7 +417,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             {"id": "src", "tab": "main", "title": "Threat events by source", "type": "timeseries", "span": 2,
              "drill": {"series": "source", "series_drill": {"crowdsec": {"source": "firewall", "d_blocklist": "CrowdSec"}, "qfeeds": QF_DRILL}},
              "sql": f"SELECT {B} t, CASE WHEN {QF} THEN 'qfeeds' WHEN source = 'firewall' THEN 'crowdsec' ELSE source END series, "
-                    f"count(*) v FROM events WHERE ({IDS} OR source = 'crowdsec' OR {CS_FW} OR {QF}) AND {W} GROUP BY 1, 2 ORDER BY 1"},
+                    f"count(*) v FROM events WHERE ({IDS} OR {CS_OPN} OR {CS_FW} OR {QF}) AND {W} GROUP BY 1, 2 ORDER BY 1"},
             {"id": "blk", "tab": "main", "title": "Blocks per source", "type": "bar", "drill": {"base": {"source": ""}},
              "sql": f"SELECT 'Suricata (dropped)' label, count(*) FILTER (WHERE {IDS} AND {IDS_DROP}) v, "
                     f"'suricata' o_source, 'drop,blocked' o_action, NULL o_d_blocklist FROM events WHERE source = 'suricata' AND {W} "
@@ -421,10 +427,10 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
              "sql": "SELECT rule label, count(*) v FROM alerts WHERE last_seen > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 10"},
             {"id": "sev", "tab": "main", "title": "Alerts over time by severity", "type": "timeseries", "span": 2, "drill": {"url": "/alerts"},
              "sql": "SELECT to_timestamp(floor(extract(epoch FROM created_at) / $2) * $2) t, severity series, count(*) v FROM alerts WHERE created_at > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 1"},
-            {**log_panel(f"({IDS} OR source = 'crowdsec' OR {QF})"), "tab": "main"},
+            {**log_panel(f"({IDS} OR {CS_OPN} OR {QF})"), "tab": "main"},
             {"id": "attackers", "tab": "main", "title": "Top attackers across all sources", "type": "table", "span": 3, "drill": {"base": {"source": ""}, "by": {"ip": "ip"}},
              "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["sources", "Seen by"], ["n", "Events", "num"], ["last", "Last", "ago"]],
-             "sql": f"SELECT host(src_ip) ip, max(src_country) country, array_agg(DISTINCT source) sources, count(*) n, max(ts) last FROM events WHERE {W} AND src_ip IS NOT NULL AND NOT {PRIV} AND ({IDS} OR source IN ('crowdsec', 'qfeeds') OR action IN ('block', 'login_failed', 'waf_block')) GROUP BY 1 ORDER BY 4 DESC LIMIT 25"},
+             "sql": f"SELECT host(src_ip) ip, max(src_country) country, array_agg(DISTINCT source) sources, count(*) n, max(ts) last FROM events WHERE {W} AND src_ip IS NOT NULL AND NOT {PRIV} AND ({IDS} OR {CS_OPN} OR source = 'qfeeds' OR (action IN ('block', 'login_failed') AND source IN ('firewall', 'auth', 'vpn'))) GROUP BY 1 ORDER BY 4 DESC LIMIT 25"},
             {"id": "blocklists", "tab": "main", "title": "Blocklists (Settings › OPNsense › Blocklist aliases)", "type": "table", "span": 3,
              "drill": {"base": {"source": "firewall"}, "by": {"d_blocklist": "name"}},
              "cols": [["name", "Blocklist"], ["aliases", "Aliases"], ["size", "Addresses", "num"], ["rules", "Rules", "num"],
@@ -438,15 +444,14 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                     "WHERE s.key = 'blocklists' ORDER BY 1"},
             # -------------------------------------------------------------------------------------- CrowdSec ---
             {"id": "cs_kpi", "tab": "crowdsec", "type": "stat", "span": 3, "sql":
-                f"SELECT (SELECT count(*) FROM events WHERE {CS_SEEN} AND action = 'alert') AS \"Alerts\", "
-                "(SELECT sum(jsonb_array_length(data))::bigint FROM snapshots WHERE key IN ('crowdsec_decisions', 'crowdsec_lapi_decisions') "
-                "AND jsonb_typeof(data) = 'array') AS \"Active decisions\", "
+                f"SELECT (SELECT count(*) FROM events WHERE {CS_OPN_SEEN} AND action = 'alert') AS \"Alerts\", "
+                f"{CS_OPN_DECISIONS} AS \"Active decisions\", "
                 f"count(*) AS \"Firewall blocks\", count(DISTINCT CASE WHEN direction = 'out' THEN dst_ip ELSE src_ip END) AS \"Blocked IPs\", "
                 f"({BL.format('crowdsec')}->>'size')::bigint AS \"Blocklist IPs\", "
                 f"({BL.format('crowdsec')}->>'packets')::bigint AS \"Blocked packets (since rules loaded)\" "
                 f"FROM events WHERE {CS_FW} AND {W}",
-             "drill": {"tiles": {"Alerts": {"source": "crowdsec", "action": "alert", "hours": 24 * 90},
-                                 "Active decisions": {"source": "crowdsec", "action": "ban,captcha", "hours": 24 * 90},
+             "drill": {"tiles": {"Alerts": {**CS_OPN_DRILL, "action": "alert", "hours": 24 * 90},
+                                 "Active decisions": {**CS_OPN_DRILL, "action": "ban,captcha", "hours": 24 * 90},
                                  "Firewall blocks": {"source": "firewall", "d_blocklist": "CrowdSec"},
                                  "Blocked IPs": {"source": "firewall", "d_blocklist": "CrowdSec"},
                                  "Blocklist IPs": None, "Blocked packets (since rules loaded)": None}}},
@@ -454,7 +459,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             # counts down in the browser, the unban column deletes the decision on OPNsense (POST /api/crowdsec/unban)
             {"id": "cs_bans", "tab": "crowdsec", "title": "Active bans", "type": "table", "span": 3, "needs": "crowdsec",
              "search": {"cols": ["ip", "country", "reason", "origin"], "placeholder": "Search IP, country, reason…", "show": 200},
-             "drill": {"base": {"source": "crowdsec", "hours": 24 * 90}},
+             "drill": {"base": {**CS_OPN_DRILL, "hours": 24 * 90}},
              "cols": [["ip", "IP / value", "ip"], ["country", "", "flag"], ["type", "Type"], ["reason", "Reason"],
                       ["origin", "Origin"], ["ends", "Time left", "left"], ["id", "", "unban"]],
              "sql": "SELECT d->>'id' id, d->>'lg_ip' o_ip, coalesce(d->>'lg_ip', d->>'lg_value', d->>'scope_value') ip, d->>'country' country, "
@@ -464,9 +469,9 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                     "WHERE s.key = 'crowdsec_decisions' AND $1::float8 IS NOT NULL ORDER BY ends DESC NULLS LAST LIMIT 5000"},
             {"id": "cs_time", "tab": "crowdsec", "title": "CrowdSec over time", "type": "timeseries", "span": 3,
              "drill": {"series_drill": {"firewall blocks": {"source": "firewall", "d_blocklist": "CrowdSec"},
-                                        "alerts": {"source": "crowdsec", "action": "alert"}, "decisions": {"source": "crowdsec", "action": "ban,captcha"}}},
+                                        "alerts": {**CS_OPN_DRILL, "action": "alert"}, "decisions": {**CS_OPN_DRILL, "action": "ban,captcha"}}},
              "sql": f"SELECT {B} t, CASE WHEN source = 'firewall' THEN 'firewall blocks' WHEN action = 'alert' THEN 'alerts' "
-                    f"ELSE 'decisions' END series, count(*) v FROM events WHERE (source = 'crowdsec' OR {CS_FW}) AND {W} GROUP BY 1, 2 ORDER BY 1"},
+                    f"ELSE 'decisions' END series, count(*) v FROM events WHERE ({CS_OPN} OR {CS_FW}) AND {W} GROUP BY 1, 2 ORDER BY 1"},
             {"id": "cs_dir", "tab": "crowdsec", "title": "Blocked direction", "type": "pie",
              "drill": {"base": {"source": "firewall", "d_blocklist": "CrowdSec"}, "by": "direction"},
              "sql": f"SELECT coalesce(direction, '?') label, count(*) v FROM events WHERE {CS_FW} AND {W} GROUP BY 1 ORDER BY 2 DESC"},
@@ -483,7 +488,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             {"id": "cs_ports", "tab": "crowdsec", "title": "Ports they tried", "type": "hbar", "fill_md": True,
              "drill": {"base": {"source": "firewall", "d_blocklist": "CrowdSec"}, "by": "port"},
              "sql": f"SELECT dst_port::text label, count(*) v FROM events WHERE {CS_FW} AND dst_port IS NOT NULL AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 12"},
-            {**log_panel(f"(source = 'crowdsec' OR {CS_FW})"), "id": "cs_log", "tab": "crowdsec"},
+            {**log_panel(f"({CS_OPN} OR {CS_FW})"), "id": "cs_log", "tab": "crowdsec"},
             # --------------------------------------------------------------------------------------- Q-Feeds ---
             {"id": "qf_kpi", "tab": "qfeeds", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) AS \"Hits\", count(*) FILTER (WHERE NOT {PRIV}) AS \"Inbound\", "

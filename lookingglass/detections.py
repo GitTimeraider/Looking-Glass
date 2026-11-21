@@ -1182,19 +1182,22 @@ class DetectionEngine:
         last, current = await self._watermark("crowdsec")
         rows = await db.pool().fetch(
             "SELECT src_ip, coalesce(data->>'scenario', data->>'reason', 'unknown') AS scenario, count(*) AS hits, "
-            "min(ts) AS first, max(ts) AS last "
+            "min(ts) AS first, max(ts) AS last, program IS NOT DISTINCT FROM 'crowdsec-lapi' AS docker "
             "FROM events WHERE id > $1 AND id <= $2 AND source = 'crowdsec' AND action IN ('alert', 'ban', 'captcha') "
-            "GROUP BY 1, 2", last, current)
+            "GROUP BY 1, 2, 6", last, current)
         for r in rows:
             ip = str(r["src_ip"]) if r["src_ip"] else None
             internal = self.internal(ip) if ip else False
             rating = Rating("high", "behaviour detected from INSIDE the network", sticky=True) if internal else \
                 Rating("low", "CrowdSec detected it and handles it (ban / captcha) - working as intended", sticky=True)
+            # which CrowdSec: the OPNsense plugin or CrowdSec in Docker next to SWAG - kept apart, each its own alert
+            which, fp, evs = (("SWAG", f"crowdsec-lapi:{ip}:{r['scenario']}", {"program": "crowdsec-lapi"}) if r["docker"] else
+                              ("OPNsense", f"crowdsec:{ip}:{r['scenario']}", {"not_program": "crowdsec-lapi"}))
             await raise_alert("crowdsec", rating,
-                              f"CrowdSec: {r['scenario']} from {ip}{' (INTERNAL)' if internal else ''}",
-                              f"crowdsec:{ip}:{r['scenario']}", src_ip=ip, events={"source": "crowdsec", "ip": ip}, count=r["hits"],
+                              f"CrowdSec ({which}): {r['scenario']} from {ip}{' (INTERNAL)' if internal else ''}",
+                              fp, src_ip=ip, events={"source": "crowdsec", "ip": ip, **evs}, count=r["hits"],
                               span=(r["first"], r["last"]),
-                              description=f"CrowdSec detected behaviour '{r['scenario']}' from {ip}.")
+                              description=f"CrowdSec on {which} detected behaviour '{r['scenario']}' from {ip}.")
         await self._commit("crowdsec", current)
 
     async def fail2ban_bans(self) -> None:

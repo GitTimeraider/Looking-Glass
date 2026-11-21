@@ -141,3 +141,52 @@ def test_every_query_works_with_the_from_filter():
         finally:
             await db.close()
     asyncio.run(main())
+
+
+def test_opnsense_and_docker_crowdsec_stay_apart():
+    """Threats (OPNsense) counts only the OPNsense CrowdSec plugin; SWAG & CrowdSec only CrowdSec in Docker
+    (program crowdsec-lapi); alerts say which one; Event search can leave the Docker one out."""
+    from datetime import datetime, timezone
+
+    from lookingglass import event_filter
+    from lookingglass.config import Settings
+    from lookingglass.detections import DetectionEngine
+    from lookingglass.parsers.common import event
+
+    async def main():
+        await db.connect(DSN)
+        pool = db.pool()
+        try:
+            await pool.execute("TRUNCATE events, alerts")
+            now = datetime.now(timezone.utc)
+            await db.copy_events([
+                event(now, "crowdsec", program="crowdsec", severity=4, action="alert", src_ip="45.9.9.9",
+                      data={"scenario": "crowdsecurity/ssh-bf"}),
+                event(now, "crowdsec", program="crowdsec-lapi", severity=4, action="alert", src_ip="45.8.8.8",
+                      data={"scenario": "crowdsecurity/http-probing"})])
+            await db.set_snapshot("crowdsec_decisions", [{"id": 1, "lg_value": "45.9.9.9"}])
+            await db.set_snapshot("crowdsec_lapi_decisions", [{"id": 7, "value": "45.8.8.8"}, {"id": 8, "value": "45.7.7.7"}])
+            thr = await run_dashboard("threats", 24, set(), "crowdsec")
+            by = {p["id"]: p for p in thr["panels"]}
+            assert (by["cs_kpi"]["rows"][0]["Alerts"], by["cs_kpi"]["rows"][0]["Active decisions"]) == (1, 1)
+            assert {r["series"]: r["v"] for r in by["cs_time"]["rows"]} == {"alerts": 1}
+            main = {p["id"]: p for p in (await run_dashboard("threats", 24))["panels"]}
+            assert (main["kpi"]["rows"][0]["CrowdSec alerts"], main["kpi"]["rows"][0]["CrowdSec active decisions"]) == (1, 1)
+            assert {r["ip"] for r in main["attackers"]["rows"]} == {"45.9.9.9"}
+            swag = {p["id"]: p for p in (await run_dashboard("swag", 24, set(), "crowdsec"))["panels"]}
+            assert swag["csl_kpi"]["rows"][0]["Active decisions"] == 2 and [r["value"] for r in swag["csl_active"]["rows"]]
+            # Event search: the OPNsense one only
+            where, args = event_filter.build({"source": "crowdsec", "not_program": "crowdsec-lapi", "hours": 24})
+            ips = {r["ip"] for r in await pool.fetch(f"SELECT host(src_ip) ip FROM events WHERE {' AND '.join(where)}", *args)}
+            assert ips == {"45.9.9.9"}
+            # alerts: one each, saying which CrowdSec, each linking to its own events
+            await db.kv_set("wm:crowdsec", 0)
+            await DetectionEngine(Settings()).crowdsec_alerts()
+            got = {r["title"]: r["fingerprint"] for r in await pool.fetch("SELECT title, fingerprint FROM alerts WHERE rule = 'crowdsec'")}
+            assert got == {"CrowdSec (OPNsense): crowdsecurity/ssh-bf from 45.9.9.9": "crowdsec:45.9.9.9:crowdsecurity/ssh-bf",
+                           "CrowdSec (SWAG): crowdsecurity/http-probing from 45.8.8.8": "crowdsec-lapi:45.8.8.8:crowdsecurity/http-probing"}
+        finally:
+            await pool.execute("TRUNCATE events, alerts")
+            await pool.execute("DELETE FROM snapshots WHERE key IN ('crowdsec_decisions', 'crowdsec_lapi_decisions')")
+            await db.close()
+    asyncio.run(main())

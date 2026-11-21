@@ -15,9 +15,11 @@ server). Read only: nothing is changed in SWAG or CrowdSec.
 | CrowdSec (Docker) | its Local API (machine login and/or bouncer key) + metrics | alerts with scenario, AS, country, target site / URI, AppSec rule, decisions; active decisions incl. the community blocklist; which logs CrowdSec reads, AppSec counters, which bouncers are alive |
 
 Everything shows up under **Docker security › SWAG & CrowdSec** (tabs *Web*, *CrowdSec*, *fail2ban*, *Honeypot*).
-SWAG's requests are also part of the *Web server* dashboard, the Threats page's CrowdSec tab, the reports, the AI
-analyst and the web attack / scanner / CrowdSec detections - exactly like the OPNsense CrowdSec plugin
-(SWAG's events have program `swag`, Docker-CrowdSec's `crowdsec-lapi`).
+SWAG's requests and Docker-CrowdSec's alerts and decisions are also part of the Overview's *SWAG & CrowdSec*
+widgets, the reports, the AI analyst and the web attack / scanner / CrowdSec detections (SWAG's events have program
+`swag`, Docker-CrowdSec's `crowdsec-lapi`). They are kept apart from the OPNsense CrowdSec plugin: *OPNsense security ›
+Threats* and the Overview's *CrowdSec (OPNsense)* widgets count only the plugin; alerts say *CrowdSec (OPNsense)* or
+*CrowdSec (SWAG)*, and the reports have a section for each.
 
 ## 1. Give Looking Glass SWAG's log folder
 

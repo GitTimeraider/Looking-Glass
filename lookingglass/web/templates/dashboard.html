@@ -54,13 +54,14 @@ const WIDGETS = [
   { id: "web-tags", title: "SWAG: attack patterns", w: 1, body: "table", el: "web-tags", src: "nginx" },
   { id: "web-clients", title: "SWAG: top clients", w: 1, body: "table", el: "web-clients", src: "nginx" },
   { id: "swag-sites", title: "SWAG: requests per site", w: 1, body: "table", el: "swag-sites", src: "nginx", optional: true },
+  { id: "cs-lapi-scen", title: "CrowdSec (SWAG): scenarios", w: 1, body: "table", el: "cs-lapi-scen", src: "crowdsec_lapi", optional: true },
   { id: "f2b-jails", title: "fail2ban jails", w: 1, body: "table", el: "f2b-jails", src: "fail2ban", optional: true },
   { id: "ids", title: "Suricata signatures", w: 1, body: "table", el: "ids", src: "suricata" },
   { id: "ids-src", title: "Suricata: top sources", w: 1, body: "table", el: "ids-src", src: "suricata", optional: true },
   { id: "ids-dst", title: "Suricata: targeted hosts", w: 1, body: "table", el: "ids-dst", src: "suricata", optional: true },
   { id: "ids-cls", title: "Suricata classifications", w: 1, body: "table", el: "ids-cls", src: "suricata", optional: true },
   { id: "ids-int", title: "Suricata: internal hosts alerting", w: 1, body: "table", el: "ids-int", src: "suricata", optional: true },
-  { id: "cs", title: "CrowdSec scenarios", w: 1, body: "table", el: "cs", src: "crowdsec" },
+  { id: "cs", title: "CrowdSec (OPNsense): scenarios", w: 1, body: "table", el: "cs", src: "crowdsec" },
   { id: "qf", title: "Q-Feeds threat-intel hits", w: 1, body: "table", el: "qf", src: "qfeeds" },
   { id: "talkers", title: "Internal top talkers", w: 1, body: "table", el: "talkers" },
   { id: "devices", title: "New devices", w: 1, body: "table", el: "devices" },
@@ -309,7 +310,10 @@ function render(d) {
   T("#t-ids-dst", [{k: "ip", l: "Destination", f: LG.ip}, {k: "port", l: "Port"}, {k: "sources", l: "Srcs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_top_targets, "No Suricata alerts");
   T("#t-ids-cls", [{k: "classification", l: "Classification"}, {k: "dropped", l: "Dropped", num: true}, {k: "n", l: "Hits", num: true}], r.ids_classifications, "No Suricata alerts");
   T("#t-ids-int", [{k: "ip", l: "Host", f: LG.ip}, {k: "sigs", l: "Sigs", num: true}, {k: "n", l: "Hits", num: true}], r.ids_internal_hosts, "No internal host triggered Suricata");
-  T("#t-cs", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}], r.crowdsec_scenarios);
+  T("#t-cs", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}], r.crowdsec_scenarios,
+    "No alerts / decisions of the OPNsense CrowdSec plugin in this period");
+  T("#t-cs-lapi-scen", [{k: "scenario", l: "Scenario"}, {k: "ips", l: "IPs", num: true}, {k: "n", l: "Events", num: true}],
+    r.crowdsec_lapi_scenarios || [], "No alerts / decisions of CrowdSec (SWAG) in this period");
   T("#t-qf", [{k: "src", l: "Source", f: LG.ip}, {k: "dst", l: "Destination", f: LG.ip}, {k: "direction", l: "Dir"}, {k: "n", l: "Hits", num: true}], r.qfeeds_hits,
     "No Q-Feeds hits in this period (only logged firewall rules that use the Q-Feeds aliases count)", undefined, "qfeeds_hits");
   T("#t-talkers", [{k: "ip", l: "Host", f: LG.ip}, {k: "peers", l: "Peers", num: true}, {k: "n", l: "Events", num: true}], r.top_talkers_internal,

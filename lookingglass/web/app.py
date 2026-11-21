@@ -429,20 +429,20 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         kpi = counted["kpi"]
         # open alerts, devices and the system state are cheap and always current
         alerts = await pool.fetch("SELECT severity, count(*) n FROM alerts WHERE status = 'open' GROUP BY 1")
-        decisions = await db.get_snapshot("crowdsec_decisions")
-        lapi_decisions = await db.get_snapshot("crowdsec_lapi_decisions")  # CrowdSec in Docker (crowdsec_lapi.py)
-        if isinstance(lapi_decisions, list):
-            decisions = (decisions if isinstance(decisions, list) else []) + lapi_decisions
+        decisions = await db.get_snapshot("crowdsec_decisions")  # the OPNsense plugin
+        lapi_decisions = await db.get_snapshot("crowdsec_lapi_decisions")  # CrowdSec in Docker (crowdsec_lapi.py): apart
         blocklists = await db.get_snapshot("blocklists") or {}
         blocklist_n = ((blocklists.get("crowdsec") or {}) if isinstance(blocklists, dict) else {}).get("size")
         devices = await pool.fetchval("SELECT count(*) FROM devices WHERE last_seen > now() - interval '1 day'")
         report = counted["report"]
         # optional sources: hide their overview cards when their pull is off and they have no data in the period
-        has = {r["source"] for r in report.get("totals_by_source") or []}
-        has |= {k for k, n in (("crowdsec", kpi.get("crowdsec_fw")), ("qfeeds", kpi.get("qfeeds"))) if n}  # their firewall blocks
+        has = {r["source"] for r in report.get("totals_by_source") or []} - {"crowdsec"}
+        # CrowdSec: the OPNsense plugin's own events (CrowdSec in Docker writes the same source) or its firewall blocks
+        has |= {k for k, n in (("crowdsec", kpi.get("crowdsec_fw") or report.get("crowdsec_scenarios")),
+                               ("qfeeds", kpi.get("qfeeds"))) if n}
         enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
                    "unbound": settings.unbound_query_pull}
-        docker_cs = settings.crowdsec_lapi_enabled  # CrowdSec / nginx (SWAG) in Docker: shown without OPNsense too
+        docker_cs = settings.crowdsec_lapi_enabled  # CrowdSec in Docker: its own widgets (SWAG & CrowdSec group)
         # a plugin the OPNsense API says is not installed (the poll answers 400 / 404): its widgets are hidden too while
         # it sent nothing - otherwise they stay on the page empty, and look broken
         jobs = await db.get_snapshot("poller_status") or {}
@@ -450,12 +450,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         missing = {k for k, job in (("qfeeds", "qfeeds"),)
                    if isinstance(jobs.get(job), dict) and jobs[job].get("unsupported") and not jobs[job].get("forbidden")}
         enabled = {k: (v and settings.opnsense_enabled and k not in missing) or k in has for k, v in enabled.items()}
-        enabled["crowdsec"] = enabled["crowdsec"] or docker_cs
         # the web server is SWAG (the OPNsense nginx plugin is no longer read); its widgets follow SWAG's settings
         enabled["nginx"] = settings.swag_enabled
         enabled["fail2ban"] = settings.fail2ban_enabled
         enabled["crowdsec_lapi"] = docker_cs
-        for k, on in (("suricata", settings.ids_pull), ("crowdsec", settings.crowdsec_pull or docker_cs), ("qfeeds", settings.qfeeds_pull)):
+        for k, on in (("suricata", settings.ids_pull), ("crowdsec", settings.crowdsec_pull), ("qfeeds", settings.qfeeds_pull)):
             if not on:  # switched off: hidden like its Threats tab, even with older data in the period
                 enabled[k] = False
         now_state = await overview_now(hours)
@@ -467,6 +466,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             "scope": scope,  # the From filter the counts were made with (open alerts, devices and live state: not)
             "kpi": {**kpi, "open_alerts": {r["severity"]: r["n"] for r in alerts},
                     "crowdsec_decisions": len(decisions) if isinstance(decisions, list) else None,
+                    "crowdsec_lapi_decisions": len(lapi_decisions) if isinstance(lapi_decisions, list) else None,
                     "crowdsec_blocklist": blocklist_n, "devices": devices},
             "timeline": counted["timeline"],
             "report": report,
@@ -1315,13 +1315,14 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def dash_off(hours: float) -> set[str]:
         """Threats sources whose tab and tiles are hidden: switched off in Settings › OPNsense (even with older data in
         the period), or - with OPNsense not set up (yet) - without data in the period. Cheap: one EXISTS per source."""
-        pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull or settings.crowdsec_lapi_enabled,
-                 "qfeeds": settings.qfeeds_pull}
+        # "crowdsec" = the OPNsense plugin (Threats page); CrowdSec in Docker has its own page and never counts here
+        pulls = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull}
         has = {r["s"] for r in await db.pool().fetch(
             "SELECT s FROM unnest($1::text[]) s WHERE EXISTS (SELECT 1 FROM events WHERE source = s "
-            "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
-        off = {k for k, on in pulls.items()
-               if not on or (not settings.opnsense_enabled and k not in has and not (k == "crowdsec" and settings.crowdsec_lapi_enabled))}
+            "AND program IS DISTINCT FROM 'crowdsec-lapi' AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
+        off = {k for k, on in pulls.items() if not on or (not settings.opnsense_enabled and k not in has)}
+        if not (settings.crowdsec_lapi_enabled or "crowdsec" not in off):
+            off.add("crowdsec_any")  # no CrowdSec at all: the Honeypot tab's CrowdSec tiles
         if not settings.fail2ban_enabled:
             off.add("fail2ban")  # SWAG & CrowdSec › fail2ban tab: only with SWAG's fail2ban log set (Settings)
         return off

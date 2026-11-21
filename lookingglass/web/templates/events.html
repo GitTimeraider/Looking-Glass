@@ -47,7 +47,7 @@
 const form = document.getElementById("f");
 const qs = LG.qs();
 // filters that came from a dashboard click and have no form field: shown as removable chips
-const LABELS = { program: "program", host: "host", domain: "domain", user: "user", port: "port", proto: "protocol",
+const LABELS = { program: "program", not_program: "program is not", host: "host", domain: "domain", user: "user", port: "port", proto: "protocol",
                  iface: "interface", direction: "direction", country: "country" };
 const extra = {};
 /* custom time range: a date picker + a time field in the 24 / 12 hour format of Settings › Display (a browser
