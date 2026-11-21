@@ -412,3 +412,38 @@ def test_honeypot_marks_stored_requests_and_new_report_sections(tmp_path):
             await pool.execute("TRUNCATE events")
             await db.close()
     asyncio.run(main())
+
+
+def test_swag_page_layout():
+    from lookingglass.dashboards import DASHBOARDS
+    spec = DASHBOARDS["swag"]
+    web = [p["id"] for p in spec["panels"] if p.get("tab") == "web"]
+    assert web.index("sw_log") == web.index("sw_errors") - 1  # live log right above the nginx errors
+    assert "csl_bouncers" not in [p["id"] for p in spec["panels"]]
+    active = next(p for p in spec["panels"] if p["id"] == "csl_active")
+    assert "value" in active["search"]["cols"] and "LIMIT 5000" in active["sql"]
+    assert next(t for t in spec["tabs"] if t["id"] == "fail2ban")["needs"] == "fail2ban"
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_fail2ban_tab_only_when_set_up():
+    from lookingglass import db
+    from lookingglass.config import Settings
+    from lookingglass.dashboards import run_dashboard
+
+    assert Settings(swag_log_dir="/swag/log").fail2ban_enabled  # the default fail2ban log
+    assert not Settings(swag_log_dir="/swag/log", swag_fail2ban_log=" ").fail2ban_enabled
+    assert not Settings(swag_log_dir="").fail2ban_enabled
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            on = await run_dashboard("swag", 24, set(), "fail2ban")
+            assert "fail2ban" in [t["id"] for t in on["tabs"]] and on["tab"] == "fail2ban"
+            off = await run_dashboard("swag", 24, {"fail2ban"}, "fail2ban")  # what dash_off gives without fail2ban
+            assert "fail2ban" not in [t["id"] for t in off["tabs"]] and off["tab"] == "web"
+            hp = await run_dashboard("swag", 24, {"fail2ban"}, "honeypot")
+            assert "Bans by honeypot jails" not in hp["panels"][0]["rows"][0]
+        finally:
+            await db.close()
+    asyncio.run(main())

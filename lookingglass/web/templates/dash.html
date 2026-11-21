@@ -99,7 +99,7 @@ function build(d) {
     const body = p.type === "stat" ? `<div class="grid kpis" id="p-${p.id}"></div>`
       : ["timeseries", "bar", "hbar", "pie"].includes(p.type) ? `<div class="chart-box${p.type === "hbar" ? " tall" : ""}"><canvas id="c-${p.id}"></canvas></div>`
       : `<div id="p-${p.id}"></div>`;
-    return p.type === "stat" ? `<div class="${span}">${body}</div>` : `<div class="card ${span}"><h3>${LG.esc(p.title || "")}${SORTABLE_CHARTS.includes(p.type) ? `<span data-sort-slot="${p.id}"></span>` : ""}<span class="sp"></span>${p.type === "log" ? `${fromToggle(p)}<a class="small" data-search-all="${p.id}" href="${logSearchUrl(d, p)}">search all →</a>` : ""}</h3>${body}</div>`;
+    return p.type === "stat" ? `<div class="${span}">${body}</div>` : `<div class="card ${span}"><h3>${LG.esc(p.title || "")}${SORTABLE_CHARTS.includes(p.type) ? `<span data-sort-slot="${p.id}"></span>` : ""}<span class="sp"></span>${p.search ? `<input type="search" class="tsearch" data-search="${p.id}" placeholder="${LG.esc(p.search.placeholder || "Search…")}" value="${LG.esc(searchQ[p.id] || "")}" aria-label="Search ${LG.esc(p.title || "")}">` : ""}${p.type === "log" ? `${fromToggle(p)}<a class="small" data-search-all="${p.id}" href="${logSearchUrl(d, p)}">search all →</a>` : ""}</h3>${body}</div>`;
   }).join("");
   box.querySelectorAll("[data-from]").forEach(seg => seg.querySelectorAll("button").forEach(b => b.onclick = () => {
     const id = seg.dataset.from, cur = logFrom(id);
@@ -110,6 +110,11 @@ function build(d) {
     paintFrom(seg);
     if (lastData) render(lastData, id);
   }));
+  // search box of a table (Active bans): filters the rows already loaded, as you type
+  box.querySelectorAll("input[data-search]").forEach(inp => inp.oninput = () => {
+    searchQ[inp.dataset.search] = inp.value;
+    if (lastData) render(lastData, inp.dataset.search);
+  });
   box.querySelectorAll("[data-sort-slot]").forEach(slot => {
     const id = slot.dataset.sortSlot, t = LG.sortToggle(`${NAME}:${id}`, () => { if (lastData) render(lastData, id); });
     chartSort[id] = t.mode; slot.replaceWith(t.el);
@@ -160,7 +165,17 @@ async function loadLog(p, scope) {
   }
 }
 
-const SORTABLE_CHARTS = ["hbar", "pie"], chartSort = {};
+const SORTABLE_CHARTS = ["hbar", "pie"], chartSort = {}, searchQ = {};
+/* panel.search = {cols, placeholder, show}: rows whose columns contain the text (any case); without a search only the
+   first ``show`` rows are drawn (a long list stays quick) with a note how many more there are */
+function searched(p, rows) {
+  const q = (searchQ[p.id] || "").trim().toLowerCase(), cfg = p.search;
+  const hit = q ? rows.filter(r => cfg.cols.some(c => String(r[c] ?? "").toLowerCase().includes(q))) : rows;
+  const show = q ? hit.length : (cfg.show || hit.length);
+  const note = q ? `${LG.num(hit.length)} of ${LG.num(rows.length)} match` :
+    hit.length > show ? `${LG.num(show)} of ${LG.num(hit.length)} shown – search to find the others` : "";
+  return { rows: hit.slice(0, show), note, empty: q ? `Nothing matches “${q}”` : "No data" };
+}
 let lastData = null;
 // table columns: label for the unlabelled country column, newest / biggest first for times and sizes
 const tableCols = p => (p.cols || Object.keys((p.rows || [])[0] || {}).filter(k => !/^[fo]_/.test(k)).map(k => [k, k]))
@@ -198,8 +213,10 @@ function render(d, only) {
       const sorted = p.type === "hbar" ? LG.sortRows(rows, chartSort[p.id] && chartSort[p.id]()) : rows;
       LG.barChart("c-" + p.id, sorted, p.type === "hbar", base && (r => go(p, { ...base, ...rowFilters(p, r) })));
     } else if (p.type === "table") {
-      LG.table("#p-" + p.id, tableCols(p), rows, "No data", base && (r => go(p, { ...base, ...rowFilters(p, r) })),
+      const s = p.search ? searched(p, rows) : { rows, note: "", empty: "No data" };
+      LG.table("#p-" + p.id, tableCols(p), s.rows, s.empty, base && (r => go(p, { ...base, ...rowFilters(p, r) })),
                { sortAll: true, order: p.order });
+      if (s.note) document.getElementById("p-" + p.id).insertAdjacentHTML("beforeend", `<div class="small muted" style="margin-top:6px">${LG.esc(s.note)}</div>`);
     } else if (p.type === "log") {
       const scope = logFrom(p.id);
       if (scope) loadLog(p, scope);

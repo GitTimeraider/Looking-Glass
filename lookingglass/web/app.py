@@ -432,7 +432,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         enabled["crowdsec"] = enabled["crowdsec"] or docker_cs
         # the web server is SWAG (the OPNsense nginx plugin is no longer read); its widgets follow SWAG's settings
         enabled["nginx"] = settings.swag_enabled
-        enabled["fail2ban"] = settings.swag_enabled and bool(settings.swag_fail2ban_log.strip())
+        enabled["fail2ban"] = settings.fail2ban_enabled
         enabled["crowdsec_lapi"] = docker_cs
         for k, on in (("suricata", settings.ids_pull), ("crowdsec", settings.crowdsec_pull or docker_cs), ("qfeeds", settings.qfeeds_pull)):
             if not on:  # switched off: hidden like its Threats tab, even with older data in the period
@@ -1295,8 +1295,11 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         has = {r["s"] for r in await db.pool().fetch(
             "SELECT s FROM unnest($1::text[]) s WHERE EXISTS (SELECT 1 FROM events WHERE source = s "
             "AND ts > now() - make_interval(secs => $2))", list(pulls), hours * 3600)}
-        return {k for k, on in pulls.items()
-                if not on or (not settings.opnsense_enabled and k not in has and not (k == "crowdsec" and settings.crowdsec_lapi_enabled))}
+        off = {k for k, on in pulls.items()
+               if not on or (not settings.opnsense_enabled and k not in has and not (k == "crowdsec" and settings.crowdsec_lapi_enabled))}
+        if not settings.fail2ban_enabled:
+            off.add("fail2ban")  # SWAG & CrowdSec › fail2ban tab: only with SWAG's fail2ban log set (Settings)
+        return off
 
     async def dash_compute(name: str, hours: float, tab: str | None = None) -> dict[str, Any]:
         out = await run_dashboard(name, hours, await dash_off(hours), tab)

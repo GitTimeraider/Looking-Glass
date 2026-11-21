@@ -303,6 +303,11 @@ class Settings(BaseSettings):
         return bool(self.swag_log_dir.strip())
 
     @property
+    def fail2ban_enabled(self) -> bool:
+        """SWAG's log folder and its fail2ban log are set (Settings › SWAG & CrowdSec): the fail2ban tab and widgets."""
+        return self.swag_enabled and bool(self.swag_fail2ban_log.strip())
+
+    @property
     def crowdsec_lapi_enabled(self) -> bool:
         """A CrowdSec Local API with a machine login (alerts) or a bouncer key (decisions)."""
         return bool(self.crowdsec_lapi_url and ((self.crowdsec_lapi_machine and self.crowdsec_lapi_password)

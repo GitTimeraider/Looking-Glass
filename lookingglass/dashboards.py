@@ -156,7 +156,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
         "title": "SWAG & CrowdSec", "source": "nginx", "group": "swag",
         "tabs": [{"id": "web", "title": "Web (nginx)", "source": "nginx"},
                  {"id": "crowdsec", "title": "CrowdSec", "source": "crowdsec"},
-                 {"id": "fail2ban", "title": "fail2ban", "source": "fail2ban"},
+                 {"id": "fail2ban", "title": "fail2ban", "source": "fail2ban", "needs": "fail2ban"},  # hidden without it
                  {"id": "honeypot", "title": "Honeypot", "source": "nginx,fail2ban"}],
         "panels": [
             # ------------------------------------------------------------------------------------------ Web ---
@@ -207,11 +207,11 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
              "sql": f"SELECT left(coalesce(data->>'user_agent', '-'), 120) ua, count(*) n, max(data->>'user_agent') o_d_user_agent FROM events WHERE {SW} AND action ~ '^http_' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 20"},
             {"id": "sw_countries", "tab": "web", "title": "Requests by country", "type": "hbar", "drill": {"base": SW_DRILL, "by": "country"},
              "sql": f"SELECT src_country label, count(*) v FROM events WHERE {SW} AND src_country IS NOT NULL AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 15"},
+            {**log_panel(SW), "id": "sw_log", "tab": "web"},
             {"id": "sw_errors", "tab": "web", "title": "nginx errors and warnings", "type": "table", "span": 3, "drill": {"base": {**SW_DRILL, "action": "http_error"}},
              "cols": [["ts", "Last", "time"], ["level", "Level"], ["message", "Message"], ["n", "Count", "num"]],
              "sql": f"SELECT max(ts) ts, data->>'level' level, left(regexp_replace(message, '^\\d+#\\d+: (\\*\\d+ )?', ''), 200) message, count(*) n "
                     f"FROM events WHERE {SW} AND action = 'http_error' AND severity <= 4 AND {W} GROUP BY 2, 3 ORDER BY 1 DESC LIMIT 25"},
-            {**log_panel(SW), "id": "sw_log", "tab": "web"},
             # ------------------------------------------------------------------------------------- CrowdSec ---
             {"id": "csl_kpi", "tab": "crowdsec", "type": "stat", "span": 3, "sql":
                 f"SELECT (SELECT count(*) FROM events WHERE {CSL_SEEN} AND action = 'alert') AS \"Alerts\", "
@@ -244,6 +244,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             # the bans in force (snapshot of the last poll): time left counts down in the browser; Unban deletes the
             # decision through the Local API (needs the machine login - "id" is empty without it, so no button)
             {"id": "csl_active", "tab": "crowdsec", "title": "Active bans (now)", "type": "table", "span": 3,
+             "search": {"cols": ["value", "country", "scenario", "origin"], "placeholder": "Search IP, country, scenario…", "show": 200},
              "drill": {"base": {**CSL_DRILL, "hours": 24 * 90}},
              "cols": [["value", "Target"], ["country", "", "flag"], ["type", "Type"], ["scenario", "Scenario"], ["origin", "Origin"],
                       ["until", "Time left", "left"], ["id", "", "unban"]],
@@ -251,7 +252,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                     "d->>'country' country, d->>'type' type, d->>'scenario' scenario, d->>'origin' origin, "
                     "(d->>'until')::timestamptz until, CASE WHEN (d->>'can_unban')::boolean THEN d->>'id' END id, 'lapi' unban_src "
                     "FROM snapshots s, jsonb_array_elements(CASE WHEN jsonb_typeof(s.data) = 'array' THEN s.data ELSE '[]'::jsonb END) d "
-                    "WHERE s.key = 'crowdsec_lapi_decisions' AND $1 > 0 ORDER BY until DESC NULLS LAST LIMIT 500"},
+                    "WHERE s.key = 'crowdsec_lapi_decisions' AND $1 > 0 ORDER BY until DESC NULLS LAST LIMIT 5000"},
             {"id": "csl_countries", "tab": "crowdsec", "title": "Alerts by country", "type": "hbar", "drill": {"base": {**CSL_DRILL, "action": "alert"}, "by": "country"},
              "sql": f"SELECT src_country label, count(*) v FROM events WHERE {CSL_SEEN} AND action = 'alert' AND src_country IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 12"},
             {"id": "csl_appsec", "tab": "crowdsec", "title": "AppSec (WAF) and HTTP targets", "type": "table", "span": 3,
@@ -261,15 +262,11 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                     f"count(DISTINCT src_ip) ips, count(DISTINCT id) n FROM events LEFT JOIN LATERAL "
                     f"jsonb_array_elements_text(CASE WHEN jsonb_typeof(data->'meta'->'target_uri') = 'array' THEN data->'meta'->'target_uri' ELSE '[]'::jsonb END) u ON true "
                     f"WHERE {CSL_SEEN} AND action = 'alert' AND (data ? 'meta') GROUP BY 1 ORDER BY 5 DESC LIMIT 25"},
-            {"id": "csl_acq", "tab": "crowdsec", "title": "What CrowdSec reads (metrics, since its start)", "type": "table", "span": 2,
+            {"id": "csl_acq", "tab": "crowdsec", "title": "What CrowdSec reads (metrics, since its start)", "type": "table", "span": 3,
              "cols": [["source", "Log / source"], ["type", "Type"], ["read", "Lines read", "num"], ["parsed", "Parsed", "num"], ["unparsed", "Not parsed", "num"]],
              "sql": "SELECT a->>'source' source, a->>'type' type, (a->>'read')::numeric::bigint read, (a->>'parsed')::numeric::bigint parsed, "
                     "(a->>'unparsed')::numeric::bigint unparsed FROM snapshots s, jsonb_array_elements(CASE WHEN jsonb_typeof(s.data->'acquisition') = 'array' "
                     "THEN s.data->'acquisition' ELSE '[]'::jsonb END) a WHERE s.key = 'crowdsec_lapi_metrics' AND $1 > 0 ORDER BY 3 DESC LIMIT 30"},
-            {"id": "csl_bouncers", "tab": "crowdsec", "title": "Bouncers asking for decisions", "type": "table",
-             "cols": [["bouncer", "Bouncer"], ["n", "Requests (since start)", "num"]],
-             "sql": "SELECT b.key bouncer, b.value::numeric::bigint n FROM snapshots s, jsonb_each(CASE WHEN jsonb_typeof(s.data->'bouncers') = 'object' "
-                    "THEN s.data->'bouncers' ELSE '{}'::jsonb END) b WHERE s.key = 'crowdsec_lapi_metrics' AND $1 > 0 ORDER BY 2 DESC"},
             {**log_panel(f"({CSL} OR ({SW} AND action IN ('bouncer_block', 'waf_block')))"), "id": "csl_log", "tab": "crowdsec"},
             # ------------------------------------------------------------------------------------- fail2ban ---
             {"id": "f2b_kpi", "tab": "fail2ban", "type": "stat", "span": 3, "sql":
@@ -318,6 +315,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                 f"count(*) FILTER (WHERE source = 'fail2ban' AND action = 'ban') AS \"Bans by honeypot jails\", "
                 "(SELECT count(*) FROM alerts WHERE status = 'open' AND rule = 'honeypot') AS \"Open honeypot alerts\" "
                 f"FROM events WHERE {HP} AND {W}",
+             "needs_cols": {"Bans by honeypot jails": "fail2ban"},
              "drill": {"base": HP_DRILL, "tiles": {"Bans by honeypot jails": {"source": "fail2ban", "d_honeypot": "true", "action": "ban"},
                                                    "Open honeypot alerts": {"url": "/alerts"}}}},
             {"id": "hp_time", "tab": "honeypot", "title": "Honeypot hits over time", "type": "timeseries", "span": 3, "drill": {"base": HP_DRILL},
@@ -418,6 +416,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             # the decisions CrowdSec holds now (snapshot of the last pull, rows normalised by crowdsec_ban_row); "ends"
             # counts down in the browser, the unban column deletes the decision on OPNsense (POST /api/crowdsec/unban)
             {"id": "cs_bans", "tab": "crowdsec", "title": "Active bans", "type": "table", "span": 3, "needs": "crowdsec",
+             "search": {"cols": ["ip", "country", "reason", "origin"], "placeholder": "Search IP, country, reason…", "show": 200},
              "drill": {"base": {"source": "crowdsec", "hours": 24 * 90}},
              "cols": [["ip", "IP / value", "ip"], ["country", "", "flag"], ["type", "Type"], ["reason", "Reason"],
                       ["origin", "Origin"], ["ends", "Time left", "left"], ["id", "", "unban"]],
@@ -425,7 +424,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                     "coalesce(d->>'action', d->>'type', 'ban') \"type\", coalesce(d->>'reason', d->>'scenario') reason, "
                     "coalesce(d->>'source', d->>'origin') origin, d->>'lg_until' ends, 'opnsense' unban_src "
                     "FROM snapshots s, jsonb_array_elements(CASE WHEN jsonb_typeof(s.data) = 'array' THEN s.data ELSE '[]'::jsonb END) d "
-                    "WHERE s.key = 'crowdsec_decisions' AND $1::float8 IS NOT NULL ORDER BY ends DESC NULLS LAST LIMIT 500"},
+                    "WHERE s.key = 'crowdsec_decisions' AND $1::float8 IS NOT NULL ORDER BY ends DESC NULLS LAST LIMIT 5000"},
             {"id": "cs_time", "tab": "crowdsec", "title": "CrowdSec over time", "type": "timeseries", "span": 3,
              "drill": {"series_drill": {"firewall blocks": {"source": "firewall", "d_blocklist": "CrowdSec"},
                                         "alerts": {"source": "crowdsec", "action": "alert"}, "decisions": {"source": "crowdsec", "action": "ban,captcha"}}},

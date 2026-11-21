@@ -1782,7 +1782,7 @@ class DetectionEngine:
         st = self.settings
         return {"nginx": st.swag_enabled, "suricata": st.ids_pull,
                 "crowdsec": st.crowdsec_pull or st.crowdsec_lapi_enabled, "qfeeds": st.qfeeds_pull,
-                "fail2ban": st.swag_enabled and bool(st.swag_fail2ban_log.strip()),
+                "fail2ban": st.fail2ban_enabled,
                 "unifi": st.unifi_enabled and st.unifi_events}.get(source, True)
 
     async def source_silence(self) -> None:
