@@ -21,7 +21,7 @@ from .ingest import STATS, EventWriter
 from .parsers import filterlog
 from .parsers import nginx as nginx_parser
 from .parsers.common import event, ip_or_none, real_name
-from .parsers.security import (crowdsec_alert_from_api, crowdsec_decision_from_api, ids_from_api,
+from .parsers.security import (crowdsec_alert_from_api, crowdsec_ban_row, crowdsec_decision_from_api, ids_from_api,
                                unbound_from_api)
 from .parsers.syslog import parse_iso
 
@@ -69,6 +69,10 @@ class OPNsenseClient:
         r = await self.client.post(f"/api/{path.lstrip('/')}", json=payload or {})
         return self._result(r)
 
+    async def delete(self, path: str) -> Any:
+        r = await self.client.delete(f"/api/{path.lstrip('/')}")
+        return self._result(r)
+
     async def search(self, path: str, rows: int = 500, sort: dict[str, str] | None = None) -> list[dict[str, Any]]:
         """Call a ``search*`` endpoint (bootgrid style) and return its rows; ``sort`` e.g. {"timestamp": "desc"}."""
         try:
@@ -81,6 +85,19 @@ class OPNsenseClient:
         if isinstance(res, dict):
             return res.get("rows") or []
         return res if isinstance(res, list) else []
+
+    async def delete_crowdsec_decision(self, decision_id: int) -> None:
+        """``cscli decisions delete --id``: the CrowdSec plugin's own Decisions page asks with DELETE; older
+        versions took POST. Raises ApiError when OPNsense says it did not work."""
+        path = f"crowdsec/decisions/del/{int(decision_id)}"
+        try:
+            res = await self.delete(path)
+        except ApiError as exc:
+            if exc.status not in (404, 405):
+                raise
+            res = await self.post(path)
+        if isinstance(res, dict) and str(res.get("result", "")).lower() not in ("deleted", "ok", "saved", "done"):
+            raise ApiError(200, f"OPNsense answered {json.dumps(res)[:200]}")
 
     @staticmethod
     def _result(r: httpx.Response) -> Any:
@@ -771,7 +788,8 @@ class Poller:
             if ev:
                 self.writer.put(ev)
         decisions = await self.api.search("crowdsec/decisions/search", rows=5000)
-        await db.set_snapshot("crowdsec_decisions", decisions[:5000])
+        now = datetime.now(timezone.utc)
+        await db.set_snapshot("crowdsec_decisions", [crowdsec_ban_row(r, now) for r in decisions[:5000]])
         for row in decisions:
             ev = crowdsec_decision_from_api(row)
             if ev:

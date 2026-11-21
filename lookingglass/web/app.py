@@ -852,6 +852,38 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         out.append({"key": "backups", "label": PURGE_PARTS["backups"], "rows": row["rows"], "size": row["size"]})
         return out
 
+    @app.post("/api/crowdsec/unban")
+    async def crowdsec_unban(request: Request, payload: dict = Body(...)):
+        """Threats › CrowdSec › Active bans: delete one decision on OPNsense (cscli decisions delete --id). The API
+        user needs the CrowdSec privilege that already lets Looking Glass read the decisions."""
+        from ..opnsense import ApiError, OPNsenseClient
+
+        try:
+            did = int(payload.get("id"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "No decision id.") from None
+        if not settings.opnsense_enabled:
+            raise HTTPException(400, "The OPNsense API is not set up (Settings › OPNsense).")
+        snap = await db.get_snapshot("crowdsec_decisions")
+        rows = snap if isinstance(snap, list) else []
+        row = next((r for r in rows if isinstance(r, dict) and str(r.get("id")) == str(did)), None)
+        client = OPNsenseClient(settings)
+        try:
+            await client.delete_crowdsec_decision(did)
+        except ApiError as exc:
+            hint = " (the API user lacks the CrowdSec privilege)" if exc.status == 403 else ""
+            raise HTTPException(502, f"OPNsense refused the unban: {exc}{hint}") from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"OPNsense not reachable: {type(exc).__name__}: {exc}") from exc
+        finally:
+            await client.close()
+        # gone from the list at once, not only after the next pull (up to 2 minutes)
+        await db.set_snapshot("crowdsec_decisions", [r for r in rows if r is not row])
+        results.clear()
+        value = (row or {}).get("lg_value") or (row or {}).get("scope_value") or "?"
+        log.warning("user %s removed CrowdSec decision %s (%s)", request.state.user["username"], did, value)
+        return {"ok": True, "id": did, "value": value}
+
     @app.post("/api/admin/purge")
     async def purge(request: Request, payload: dict = Body(...)):
         parts = [p for p in payload.get("parts") or [] if p in PURGE or p in PURGE_PARTS]

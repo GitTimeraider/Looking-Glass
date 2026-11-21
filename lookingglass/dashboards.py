@@ -233,6 +233,17 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                                  "Firewall blocks": {"source": "firewall", "d_blocklist": "CrowdSec"},
                                  "Blocked IPs": {"source": "firewall", "d_blocklist": "CrowdSec"},
                                  "Blocklist IPs": None, "Blocked packets (since rules loaded)": None}}},
+            # the decisions CrowdSec holds now (snapshot of the last pull, rows normalised by crowdsec_ban_row); "ends"
+            # counts down in the browser, the unban column deletes the decision on OPNsense (POST /api/crowdsec/unban)
+            {"id": "cs_bans", "tab": "crowdsec", "title": "Active bans", "type": "table", "span": 3, "needs": "crowdsec",
+             "drill": {"base": {"source": "crowdsec", "hours": 24 * 90}},
+             "cols": [["ip", "IP / value", "ip"], ["country", "", "flag"], ["type", "Type"], ["reason", "Reason"],
+                      ["origin", "Origin"], ["ends", "Time left", "left"], ["id", "", "unban"]],
+             "sql": "SELECT d->>'id' id, d->>'lg_ip' o_ip, coalesce(d->>'lg_ip', d->>'lg_value', d->>'scope_value') ip, d->>'country' country, "
+                    "coalesce(d->>'action', d->>'type', 'ban') \"type\", coalesce(d->>'reason', d->>'scenario') reason, "
+                    "coalesce(d->>'source', d->>'origin') origin, d->>'lg_until' ends "
+                    "FROM snapshots s, jsonb_array_elements(CASE WHEN jsonb_typeof(s.data) = 'array' THEN s.data ELSE '[]'::jsonb END) d "
+                    "WHERE s.key = 'crowdsec_decisions' AND $1::float8 IS NOT NULL ORDER BY ends DESC NULLS LAST LIMIT 500"},
             {"id": "cs_time", "tab": "crowdsec", "title": "CrowdSec over time", "type": "timeseries", "span": 3,
              "drill": {"series_drill": {"firewall blocks": {"source": "firewall", "d_blocklist": "CrowdSec"},
                                         "alerts": {"source": "crowdsec", "action": "alert"}, "decisions": {"source": "crowdsec", "action": "ban,captcha"}}},
