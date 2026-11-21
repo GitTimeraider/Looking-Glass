@@ -46,7 +46,8 @@ A tour of the pages: overview, alerts, dashboards, infrastructure, devices, even
   *DNS* (queries vs. blocked, types, rcodes, blocklists, clients, NXDOMAIN, tunneling candidates),
   *Web server* (status classes, attack patterns over time, vhosts, paths, 4xx probing, user agents, clients),
   *Threats* with four tabs: *Main* (all three sources together: key figures, threat events and blocks per source,
-  alerts by rule/severity, top attackers, blocklists, live log), *CrowdSec* (alerts, decisions, blocklist blocks over
+  alerts by rule/severity, top attackers, blocklists, live log), *CrowdSec* (alerts, decisions, **Active bans** – every
+  current decision with the time it has left and an **Unban** button that removes it on OPNsense –, blocklist blocks over
   time, direction, countries, ports, blocked IPs), *Q-Feeds* (hits in / out over time, interfaces, matches, internal
   hosts contacting listed addresses, ports) and *Suricata* (alerts by priority, alerted vs dropped, classifications,
   app protocols, countries, signatures with SID, interfaces, sources, targeted hosts, internal hosts alerting, TLS

@@ -56,8 +56,10 @@ In a **shell on the Docker host** (`crowdsec` = the name of your CrowdSec contai
 docker exec crowdsec cscli machines add lookingglass --password 'choose-a-long-password' -f /dev/null
 ```
 
-This is a read login for alerts (the `-f /dev/null` keeps CrowdSec's own credentials file untouched). Optional - the
-active decisions including the community blocklist:
+This is the login for alerts (the `-f /dev/null` keeps CrowdSec's own credentials file untouched). It is also what
+the **Unban** button of *SWAG & CrowdSec › CrowdSec › Active bans* uses (`cscli decisions delete --id`) - without the
+machine login the list is shown but has no Unban buttons. Optional - the active decisions including the community
+blocklist:
 
 ```bash
 docker exec crowdsec cscli bouncers add lookingglass
@@ -93,6 +95,14 @@ zone, so it must be the time zone of the SWAG container (its `TZ` variable). Acc
 Then **Setup & status** shows *SWAG (nginx + fail2ban)* and *CrowdSec (Docker)* with what arrives and what is missing
 (for example: CrowdSec does not read SWAG's logs, or no bouncer has asked CrowdSec for decisions - SWAG's crowdsec
 mod is not working).
+
+**Active bans** (tab *CrowdSec*) lists the decisions in force - address, country, type, scenario, origin and the
+**time left** - refreshed at every poll (*Poll interval*). **Unban** asks for confirmation, then removes the decision
+in CrowdSec; SWAG's bouncer lets the address in again almost at once (live mode, the default; it
+caches an answer for `CACHE_EXPIRATION` seconds) or at its next update (stream mode: `UPDATE_FREQUENCY`). CrowdSec can ban the address again if it keeps misbehaving. Community-blocklist
+bans (CAPI) are not listed there and cannot be unbanned one by one - use an allowlist in CrowdSec for those. fail2ban
+bans (tab *fail2ban*) are read from its log; lifting one needs `docker exec swag fail2ban-client set <jail> unbanip <ip>`
+in a shell on the Docker host.
 
 The first time a log is read, its last 5 MB are read too (*First read: older lines*), so the dashboards are not empty;
 CrowdSec's alerts of the last 7 days are read on the first poll. After that only new lines / alerts. Where each file

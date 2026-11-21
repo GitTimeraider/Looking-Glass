@@ -141,3 +141,20 @@ def test_configd_lines_are_stored_as_system():
     # real logins still are logins
     ev = parse_line("<38>Oct 18 11:59:01 fw sshd[5]: Accepted publickey for root from 192.168.1.10 port 5000 ssh2", now=NOW)
     assert ev["source"] == "auth" and ev["action"] == "login_success"
+
+
+def test_crowdsec_ban_row_time_left():
+    from datetime import datetime, timezone
+    from lookingglass.parsers.security import crowdsec_ban_row, go_duration
+
+    assert go_duration("3h59m12.5s") == 3 * 3600 + 59 * 60 + 12.5
+    assert go_duration("-1m2s") == -62 and go_duration("450ms") == 0.45
+    assert go_duration("2026-11-21T10:00:00Z") is None and go_duration("") is None
+    now = datetime(2026, 11, 21, 10, 0, tzinfo=timezone.utc)
+    r = crowdsec_ban_row({"id": 7, "scope_value": "Ip:1.2.3.4", "expiration": "1h30m0s", "action": "ban"}, now)
+    assert (r["lg_scope"], r["lg_value"], r["lg_ip"]) == ("Ip", "1.2.3.4", "1.2.3.4")
+    assert r["lg_until"] == "2026-11-21T11:30:00+00:00" and r["id"] == 7
+    r = crowdsec_ban_row({"scope_value": "Range:2001:db8::/48", "expiration": "2026-11-22T00:00:00Z"}, now)
+    assert r["lg_ip"] == "2001:db8::" and r["lg_until"] == "2026-11-22T00:00:00+00:00"
+    r = crowdsec_ban_row({"scope_value": "Country:NL"}, now)
+    assert r["lg_ip"] is None and r["lg_value"] == "NL" and r["lg_until"] is None

@@ -72,6 +72,16 @@ def test_threats_dashboard_crowdsec_and_switched_off_sources():
             cs = await run_dashboard("threats", 24, tab="crowdsec")
             by = {p["id"]: p for p in cs["panels"]}
             assert cs["source"] == "crowdsec" and by["cs_kpi"]["rows"][0]["Firewall blocks"] == 1 and by["csfw"]["rows"]
+            # Active bans: from the decisions snapshot, the longest-running first; o_ip only for real addresses
+            from lookingglass.parsers.security import crowdsec_ban_row
+            await db.set_snapshot("crowdsec_decisions", [crowdsec_ban_row(r, now) for r in (
+                {"id": 11, "scope_value": "Ip:203.0.113.5", "expiration": "1h0m0s", "action": "ban", "reason": "ssh-bf",
+                 "source": "crowdsec", "country": "NL"},
+                {"id": 12, "scope_value": "Country:XX", "expiration": "4h0m0s", "action": "ban"})])
+            bans = {p["id"]: p for p in (await run_dashboard("threats", 24, tab="crowdsec"))["panels"]}["cs_bans"]
+            assert not bans.get("error") and [r["id"] for r in bans["rows"]] == ["12", "11"]
+            assert bans["rows"][1]["o_ip"] == "203.0.113.5" and bans["rows"][0]["o_ip"] is None and bans["rows"][1]["ends"]
+            assert bans["order"] == {"k": "ends", "dir": -1}
             # CrowdSec switched off and without data: its tiles and tab are left out, the rest stays
             res = await run_dashboard("threats", 24, off={"crowdsec"}, tab="crowdsec")
             assert res["tab"] == "main" and "crowdsec" not in [t["id"] for t in res["tabs"]]

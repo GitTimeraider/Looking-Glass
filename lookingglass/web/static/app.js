@@ -210,7 +210,7 @@ const LG = {
       LG.table(el, cols, all, empty, onRow, opts);
     });
     if (onRow) el.querySelectorAll("tr[data-row]").forEach(tr => tr.onclick = e => {
-      if (e.target.closest("a")) return;
+      if (e.target.closest("a, button")) return;
       onRow(rows[Number(tr.dataset.row)]);
     });
   },

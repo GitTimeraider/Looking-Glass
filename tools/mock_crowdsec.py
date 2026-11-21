@@ -89,6 +89,18 @@ def alerts(authorization: str | None = Header(None), has_active_decision: str | 
     return list(reversed(rows))[:limit]
 
 
+@app.delete("/v1/decisions/{decision_id}")
+def delete_decision(decision_id: int, authorization: str | None = Header(None)):
+    """Unban (cscli decisions delete --id): machine login only, like CrowdSec."""
+    auth(authorization)
+    n = 0
+    for a in ALERTS:
+        keep = [d for d in a["decisions"] if d["id"] != decision_id]
+        n += len(a["decisions"]) - len(keep)
+        a["decisions"] = keep
+    return {"nbDeleted": str(n)}
+
+
 @app.get("/v1/decisions")
 def decisions(x_api_key: str | None = Header(None)):
     if x_api_key != BOUNCER_KEY:

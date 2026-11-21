@@ -19,7 +19,27 @@ LG.seg(document.getElementById("range"), hours, v => { hours = Number(v); localS
 const FMT = {
   ip: LG.ip, flag: LG.flag, ago: LG.ago, time: LG.time, sev: LG.sev, src: LG.src, bytes: LG.bytes,
   num: LG.num,
+  // CrowdSec Active bans (SWAG & CrowdSec, Threats): time left (counts down, see the timer below) and Unban
+  left: v => `<span data-left="${LG.esc(v || "")}">${LG.esc(LG.left(v))}</span>`,
+  unban: (v, r) => v ? `<button type="button" class="small danger" data-unban="${LG.esc(v)}" data-src="${LG.esc(r.unban_src || "")}" data-what="${LG.esc(r.ip || r.value || "")}">Unban</button>` : "",
 };
+setInterval(() => document.querySelectorAll("[data-left]").forEach(el => { el.textContent = LG.left(el.dataset.left); }), 30000);
+document.getElementById("panels").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-unban]");
+  if (!b) return;
+  e.stopPropagation();
+  if (!confirm(`Remove the CrowdSec decision for ${b.dataset.what || "this address"}?\n\nCrowdSec lifts the ban now and the bouncers follow at their next update; ` +
+               "it can ban the address again if it keeps misbehaving.")) return;
+  b.disabled = true; b.textContent = "Unbanning…";
+  try {
+    await LG.api("/api/crowdsec/unban", { method: "POST", body: { id: b.dataset.unban, src: b.dataset.src } });
+    b.closest("tr").remove();
+    load();
+  } catch (err) {
+    b.disabled = false; b.textContent = "Unban";
+    alert("Unban failed: " + err.message);
+  }
+});
 let built = false, step = 3600;
 // dashboards with tabs (Threats): the tab is in the address (#suricata), only its panels are loaded
 let tab = decodeURIComponent(location.hash.slice(1)), builtTab = null;
@@ -144,7 +164,7 @@ const SORTABLE_CHARTS = ["hbar", "pie"], chartSort = {};
 let lastData = null;
 // table columns: label for the unlabelled country column, newest / biggest first for times and sizes
 const tableCols = p => (p.cols || Object.keys((p.rows || [])[0] || {}).filter(k => !/^[fo]_/.test(k)).map(k => [k, k]))
-  .map(([k, l, f]) => ({ k, l: l || (f === "flag" ? "Country" : ""), num: f === "num", desc: ["time", "ago", "bytes"].includes(f),
+  .map(([k, l, f]) => ({ k, l: l || (f === "flag" ? "Country" : ""), num: f === "num", desc: ["time", "ago", "bytes", "left"].includes(f),
                          f: f && f !== "num" ? FMT[f] : undefined }));
 
 function render(d, only) {

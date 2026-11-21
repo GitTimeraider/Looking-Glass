@@ -21,7 +21,7 @@ import asyncio
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -31,6 +31,7 @@ from .bichon import parse_prometheus
 from .config import Settings
 from .detections import close_alerts, offline_for, raise_alert
 from .parsers.common import event, ip_or_none
+from .parsers.security import go_duration
 from .parsers.syslog import parse_iso
 
 log = logging.getLogger("lookingglass.crowdsec_lapi")
@@ -258,10 +259,13 @@ class LapiClient:
         self.token_until = (exp.timestamp() - 120) if exp else time.time() + 1800
 
     async def machine_get(self, path: str, params: dict[str, Any]) -> Any:
+        return await self.machine_request("GET", path, params)
+
+    async def machine_request(self, method: str, path: str, params: dict[str, Any] | None = None) -> Any:
         for attempt in range(2):
             if not self.token or time.time() > self.token_until:
                 await self.login()
-            r = await self.http.get(path, params=params, headers={"Authorization": f"Bearer {self.token}"})
+            r = await self.http.request(method, path, params=params, headers={"Authorization": f"Bearer {self.token}"})
             if r.status_code == 401 and attempt == 0:
                 self.token = None
                 continue
@@ -277,6 +281,18 @@ class LapiClient:
         else:
             params["since"] = since
         return await self.machine_get("/v1/alerts", params) or []
+
+    async def delete_decision(self, decision_id: int) -> int:
+        """``cscli decisions delete --id``: needs the machine login (a bouncer key only reads). Returns how many
+        decisions CrowdSec removed (0: already gone)."""
+        if not self.has_machine:
+            raise LapiError(400, "unbanning needs the machine login (Settings › SWAG & CrowdSec) - a bouncer key "
+                                 "can only read decisions")
+        res = await self.machine_request("DELETE", f"/v1/decisions/{int(decision_id)}")
+        try:
+            return int((res or {}).get("nbDeleted", 0))
+        except (TypeError, ValueError, AttributeError):
+            return 0
 
     async def decisions(self) -> list[dict[str, Any]]:
         r = await self.http.get("/v1/decisions", headers={"X-Api-Key": self.bouncer_key})
@@ -365,6 +381,13 @@ class LapiPoller:
             except LapiError as exc:
                 parts["bouncer"] = {"ok": False, "error": str(exc)}
         if active is not None:
+            now = datetime.now(timezone.utc)
+            for d in active:
+                # the bouncer list has only the time left at the moment of asking ("3h59m12s"): make it a moment, so
+                # the Active bans list keeps counting down between polls
+                if not d.get("until") and (secs := go_duration(d.get("duration"))) is not None:
+                    d["until"] = (now + timedelta(seconds=secs)).isoformat()
+                d["can_unban"] = self.client.has_machine
             await db.set_snapshot(DECISIONS_KEY, active[:5000])
         if self.settings.crowdsec_lapi_metrics_url:
             try:

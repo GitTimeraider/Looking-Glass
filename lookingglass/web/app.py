@@ -908,6 +908,57 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         out.append({"key": "wan", "label": PURGE_PARTS["wan"], "rows": row["days"] + row["samples"], "size": row["size"]})
         return out
 
+    @app.post("/api/crowdsec/unban")
+    async def crowdsec_unban(request: Request, payload: dict = Body(...)):
+        """Active bans lists: delete one CrowdSec decision. ``src`` "lapi": CrowdSec in Docker (SWAG & CrowdSec),
+        through its Local API with the machine login; "opnsense": the OPNsense CrowdSec plugin (Threats › CrowdSec)."""
+        from ..crowdsec_lapi import DECISIONS_KEY, LapiClient, LapiError
+        from ..opnsense import ApiError, OPNsenseClient
+
+        try:
+            did = int(payload.get("id"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "No decision id.") from None
+        src = payload.get("src") or "opnsense"
+        if src == "lapi":
+            if not settings.crowdsec_lapi_url:
+                raise HTTPException(400, "CrowdSec is not set up (Settings › SWAG & CrowdSec).")
+            key, lapi = DECISIONS_KEY, LapiClient(settings)
+            try:
+                await lapi.delete_decision(did)
+            except LapiError as exc:
+                hint = (" (CrowdSec refused the machine login - Settings › SWAG & CrowdSec › Test connection)"
+                        if exc.status in (401, 403) else "")
+                raise HTTPException(400 if exc.status == 400 else 502, f"CrowdSec refused the unban: {exc}{hint}") from exc
+            except httpx.HTTPError as exc:
+                raise HTTPException(502, f"CrowdSec not reachable: {type(exc).__name__}: {exc}") from exc
+            finally:
+                await lapi.close()
+        elif src == "opnsense":
+            if not settings.opnsense_enabled:
+                raise HTTPException(400, "The OPNsense API is not set up (Settings › OPNsense).")
+            key, client = "crowdsec_decisions", OPNsenseClient(settings)
+            try:
+                await client.delete_crowdsec_decision(did)
+            except ApiError as exc:
+                hint = " (the API user lacks the CrowdSec privilege)" if exc.status == 403 else ""
+                raise HTTPException(502, f"OPNsense refused the unban: {exc}{hint}") from exc
+            except httpx.HTTPError as exc:
+                raise HTTPException(502, f"OPNsense not reachable: {type(exc).__name__}: {exc}") from exc
+            finally:
+                await client.close()
+        else:
+            raise HTTPException(400, "Unknown CrowdSec.")
+        # gone from the list at once, not only after the next poll
+        snap = await db.get_snapshot(key)
+        rows = snap if isinstance(snap, list) else []
+        row = next((r for r in rows if isinstance(r, dict) and str(r.get("id")) == str(did)), None) or {}
+        await db.set_snapshot(key, [r for r in rows if not (isinstance(r, dict) and str(r.get("id")) == str(did))])
+        results.clear()
+        value = row.get("value") if src == "lapi" else row.get("lg_value") or row.get("scope_value")
+        log.warning("user %s removed CrowdSec decision %s (%s, %s)", request.state.user["username"], did, value or "?", src)
+        return {"ok": True, "id": did, "value": value or "?"}
+
     @app.post("/api/admin/purge")
     async def purge(request: Request, payload: dict = Body(...)):
         parts = [p for p in payload.get("parts") or [] if p in PURGE or p in PURGE_PARTS]

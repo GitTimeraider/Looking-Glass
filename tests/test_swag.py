@@ -208,6 +208,17 @@ def test_swag_dashboard_and_detections():
                     assert kpi["Bans"] == 3 and kpi["Unbans"] == 1 and kpi["Banned now"] >= 2
                 if tab == "honeypot":
                     assert res["panels"][0]["rows"][0]["IPs"] == 2
+            # Active bans: time left and an Unban button only with the machine login (can_unban)
+            until = (now + timedelta(hours=2)).isoformat()
+            await db.set_snapshot(lapi.DECISIONS_KEY, [
+                {"id": 7, "type": "ban", "scope": "Ip", "value": "203.0.113.9", "until": until, "can_unban": True},
+                {"id": 8, "type": "ban", "scope": "Country", "value": "XX", "until": None, "can_unban": False}])
+            res = await run_dashboard("swag", 24, tab="crowdsec")
+            bans = next(p for p in res["panels"] if p["id"] == "csl_active")
+            assert not bans.get("error") and [r["value"] for r in bans["rows"]] == ["203.0.113.9", "XX"]
+            assert (bans["rows"][0]["id"], bans["rows"][0]["o_ip"], bans["rows"][0]["unban_src"]) == ("7", "203.0.113.9", "lapi")
+            assert bans["rows"][1]["id"] is None and bans["rows"][1]["o_ip"] is None
+            await pool.execute("DELETE FROM snapshots WHERE key = $1", lapi.DECISIONS_KEY)
             eng = DetectionEngine(Settings())
             for rule in ("fail2ban", "honeypot"):
                 await db.kv_set(f"wm:{rule}", 0)
@@ -259,3 +270,58 @@ def test_lapi_login_trims_and_explains_a_wrong_password():
 def test_lapi_user_agent_has_exactly_one_slash():
     ua = lapi.user_agent()
     assert ua.startswith("looking-glass/") and ua.count("/") == 1
+
+
+def test_lapi_delete_decision_needs_the_machine_login():
+    import httpx
+    from lookingglass.config import Settings
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path, request.headers.get("authorization")))
+        if request.url.path == "/v1/watchers/login":
+            return httpx.Response(200, json={"code": 200, "expire": "2099-01-01T00:00:00Z", "token": "t"})
+        return httpx.Response(200, json={"nbDeleted": "1"})
+
+    async def main():
+        client = lapi.LapiClient(Settings(crowdsec_lapi_url="http://cs:8080", crowdsec_lapi_machine="lg",
+                                          crowdsec_lapi_password="pw"))
+        client.http = httpx.AsyncClient(base_url="http://cs:8080", transport=httpx.MockTransport(handler))
+        assert await client.delete_decision(42) == 1
+        assert calls[-1] == ("DELETE", "/v1/decisions/42", "Bearer t")
+        await client.close()
+        bouncer_only = lapi.LapiClient(Settings(crowdsec_lapi_url="http://cs:8080", crowdsec_lapi_bouncer_key="k"))
+        with pytest.raises(lapi.LapiError, match="machine login"):
+            await bouncer_only.delete_decision(42)
+        await bouncer_only.close()
+    asyncio.run(main())
+
+
+def test_lapi_poll_stores_until_and_can_unban(monkeypatch):
+    from lookingglass import db
+    from lookingglass.config import Settings
+    stored = {}
+
+    async def set_snapshot(key, data):
+        stored[key] = data
+
+    async def decisions(self):
+        return [{"id": 1, "origin": "cscli", "type": "ban", "scope": "Ip", "value": "203.0.113.4", "duration": "1h30m0s"},
+                {"id": 2, "origin": "CAPI", "type": "ban", "scope": "Ip", "value": "192.0.2.1", "duration": "100h"}]
+    monkeypatch.setattr(db, "set_snapshot", set_snapshot)
+    monkeypatch.setattr(lapi.LapiClient, "decisions", decisions)
+
+    class Writer:
+        def put(self, ev):
+            pass
+
+    async def main():
+        p = lapi.LapiPoller(Settings(crowdsec_lapi_url="http://cs:8080", crowdsec_lapi_bouncer_key="k"), Writer())
+        before = datetime.now(timezone.utc)
+        await p.poll()
+        await p.stop()
+        (d,) = stored[lapi.DECISIONS_KEY]  # the community blocklist is not listed
+        assert d["can_unban"] is False and d["value"] == "203.0.113.4"
+        left = (datetime.fromisoformat(d["until"]) - before).total_seconds()
+        assert 5390 <= left <= 5410
+    asyncio.run(main())
