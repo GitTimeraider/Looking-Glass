@@ -73,7 +73,9 @@ def auth(authorization: str | None) -> None:
 @app.post("/v1/watchers/login")
 async def login(request: Request):
     body = await request.json()
-    if body.get("machine_id") != MACHINE or body.get("password") != PASSWORD:
+    # like CrowdSec: a User-Agent that is not exactly "name/version" fails like a wrong password
+    if body.get("machine_id") != MACHINE or body.get("password") != PASSWORD or \
+            len(request.headers.get("user-agent", "").split("/")) != 2:
         raise HTTPException(401, "incorrect Username or Password")
     return {"code": 200, "expire": iso(datetime.now(timezone.utc) + timedelta(hours=1)), "token": TOKEN}
 

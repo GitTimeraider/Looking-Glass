@@ -231,7 +231,9 @@ def test_lapi_login_trims_and_explains_a_wrong_password():
     def handler(request: httpx.Request) -> httpx.Response:
         import json
         body = json.loads(request.content)
-        if body == {"machine_id": "lookingglass", "password": "s3cret", "scenarios": []}:
+        # CrowdSec refuses a User-Agent that is not exactly "name/version" like a wrong password
+        if body == {"machine_id": "lookingglass", "password": "s3cret", "scenarios": []} and \
+                len(request.headers["user-agent"].split("/")) == 2:
             return httpx.Response(200, json={"code": 200, "expire": "2099-01-01T00:00:00Z", "token": "t"})
         return httpx.Response(401, json={"code": 401, "message": "incorrect Username or Password"})
 
@@ -252,3 +254,8 @@ def test_lapi_login_trims_and_explains_a_wrong_password():
             finally:
                 await client.close()
     asyncio.run(main())
+
+
+def test_lapi_user_agent_has_exactly_one_slash():
+    ua = lapi.user_agent()
+    assert ua.startswith("looking-glass/") and ua.count("/") == 1

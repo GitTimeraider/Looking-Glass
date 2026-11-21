@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -200,12 +201,21 @@ def metrics_summary(text: str) -> dict[str, Any]:
     }
 
 
+def user_agent() -> str:
+    """CrowdSec's watcher login needs a User-Agent of exactly "name/version" (one '/'): it stores the part after the
+    slash as the machine's version, and refuses anything else with the same "incorrect Username or Password" as a
+    wrong password (pkg/apiserver/middlewares/v1/jwt.go)."""
+    from . import __version__
+    version = re.sub(r"[^\w.+-]", "-", str(__version__ or "")) or "0"
+    return f"looking-glass/{version}"
+
+
 class LapiClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.http = httpx.AsyncClient(base_url=settings.crowdsec_lapi_url.rstrip("/"), verify=settings.crowdsec_lapi_verify_ssl,
                                       timeout=httpx.Timeout(30.0, connect=10.0),
-                                      headers={"User-Agent": "looking-glass"})
+                                      headers={"User-Agent": user_agent()})
         self.token: str | None = None
         self.token_until = 0.0
 
