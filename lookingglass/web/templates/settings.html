@@ -42,7 +42,7 @@
       and - when the AI analyst is set up - its analysis. Reports can also be written by hand on the Reports page.</p>{% endif %}
     {% if g == "email" %}<h3>Mail server (SMTP)</h3>
     <p class="small muted">The account Looking Glass sends notification mails with. Below the mail server you choose what you want to be mailed about.</p>{% endif %}
-    <form class="settings-form" data-group="{{ g }}"></form>
+    <form class="settings-form" data-group="{{ g }}" autocomplete="off"></form>
     <div class="filters" style="margin-top:12px">
       <button type="button" data-save="{{ g }}">Save</button>
       {% if g in ("opnsense", "unifi", "backrest", "bichon", "swag", "ai") %}<button type="button" class="secondary" data-test="{{ g }}">Test connection</button>{% endif %}
@@ -197,7 +197,7 @@
     <a href="/unraid#packages">Unraid › Packages</a>. Read with Syft (included in the image) when an image is new or
     updated, or when you press Update there - never on a schedule. For the exact image each container runs, the
     server needs a Docker API (docker-socket-proxy with CONTAINERS=1 and IMAGES=1, above).</p>
-  <form class="settings-form" data-group="packages"></form>
+  <form class="settings-form" data-group="packages" autocomplete="off"></form>
   <div class="filters" style="margin-top:12px"><button type="button" data-save="packages">Save</button></div>
   <div class="small" id="msg-packages"></div>
 </div>
@@ -312,10 +312,12 @@ function fieldHtml(f) {
       <span class="image-preview"></span><input type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/x-icon,.ico">
       <button type="button" class="secondary small" data-image-clear>${f.key === "favicon" ? "Built-in icon" : "No logo"}</button></div>`;
   else if (f.kind === "text") input = `<textarea id="${id}" rows="4" placeholder="${LG.esc(f.placeholder || "")}">${LG.esc(f.value || "")}</textarea>`;
-  else if (f.kind === "secret") input = `<div class="secret-row"><input type="password" id="${id}" autocomplete="new-password"
+  // password managers must not fill these (a text field above a password field looks like a login form to them)
+  else if (f.kind === "secret") input = `<div class="secret-row"><input type="password" id="${id}" autocomplete="new-password" data-lpignore="true" data-1p-ignore data-bwignore data-form-type="other"
       placeholder="${f.is_set ? "•••••••• stored - type to replace" : "not set"}">
       ${f.is_set ? `<label class="chk small"><input type="checkbox" id="${id}-clear"> remove</label>` : ""}</div>`;
   else input = `<input id="${id}" type="${f.kind === "int" ? "number" : "text"}" value="${LG.esc(f.value ?? "")}" placeholder="${LG.esc(f.placeholder || "")}"
+      autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-bwignore data-form-type="other"
       ${f.min != null ? `min="${f.min}"` : ""} ${f.max != null ? `max="${f.max}"` : ""}>`;
   return f.kind === "bool" ? `<div class="setting">${input}${help}</div>`
     : `<div class="setting"><label for="${id}"><b>${LG.esc(f.label)}</b>${f.kind === "secret" ? ` <span class="badge ${f.is_set ? "ok" : ""}">${f.is_set ? "set" : "empty"}</span>` : ""}${f.kind === "list" ? ` <span class="small muted" data-count-for="${id}"></span>` : ""}</label>${input}${f.kind === "list" ? `<div class="small muted">One per line.${f.default ? ` <button type="button" class="secondary small" data-restore="${f.key}">Restore built-in list</button>` : ""}</div>` : ""}${help}</div>`;
