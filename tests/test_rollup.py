@@ -183,7 +183,8 @@ def test_dashboard_and_overview_use_the_hourly_counts_from_two_days():
                 lists = out["threats"]
                 assert sum(x["n"] for x in lists["crowdsec_ips"]) == thr["cs"]  # one blocked address in the seed
                 assert sum(x["n"] for x in lists["ids_dropped"]) == thr["ids"]
-                assert set(out["now"]) == {"unifi_devices", "unraid", "backup_jobs"} and "backups" in out["sources"]
+                assert set(out["now"]) == {"unifi_devices", "unraid", "backup_jobs", "crowdsec_bans", "crowdsec_bans_total",
+                                       "fail2ban_now"} and "backups" in out["sources"]
             await pool.execute("TRUNCATE events, event_rollup")
         finally:
             await db.close()

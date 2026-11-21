@@ -32,7 +32,7 @@ def test_channels_and_duplicates():
             res = await setup_checks.run(Settings(opnsense_url="http://x", opnsense_api_key="k", opnsense_api_secret="s"))
             by = {c["id"]: c for c in res["checks"]}
             assert by["dns"]["status"] == "duplicate" and set(by["dns"]["via"]) == {"API", "syslog"}
-            assert by["nginx"]["status"] == "ok" and by["nginx"]["via"] == ["API"] and by["nginx"]["avoid"]
+            assert "nginx" not in by  # the OPNsense nginx plugin is no longer read (SWAG has its own check)
             assert by["ids"]["status"] == "ok" and by["ids"]["via"] == ["API"]
             assert by["crowdsec"]["status"] == "action" and "Privileges" in by["crowdsec"]["todo"][0]
             assert by["api"]["status"] == "info" and "crowdsec" in by["api"]["summary"]

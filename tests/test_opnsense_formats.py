@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 
-from lookingglass.parsers import nginx
 from lookingglass.parsers.security import crowdsec_alert_from_api, crowdsec_decision_from_api, parse_generic, unbound_from_api
 
 NOW = datetime(2026, 10, 19, 10, 0, tzinfo=timezone.utc)
@@ -59,20 +58,6 @@ def test_auth_and_vpn_lines():
     for (prog, msg), (source, action, user, ip) in cases.items():
         ev = parse_generic(NOW, "fw", prog, 5, msg)
         assert (ev["source"], ev["action"], ev["username"], ev["src_ip"]) == (source, action, user, ip), msg
-
-
-def test_nginx_api_lines():
-    ev = nginx.access_from_api({"remote_ip": "203.0.113.5", "username": "-", "time": "19/Oct/2026:10:00:00 +0200", "status": "404",
-                                "size": "153", "user_agent": "zgrab/0.x", "request_line": "GET /.env HTTP/1.1",
-                                "forwarded_for": "-", "http_referer": "-"}, "www.example.com", NOW)
-    assert ev["action"] == "http_404" and ev["domain"] == "www.example.com" and "sensitive_file" in ev["data"]["tags"]
-    err = nginx.error_from_api({"date": "2026/10/19", "time": "10:00:01", "severity": "error", "number": "1#0",
-                                "message": '*5 limiting requests, excess: 1 by zone "one", client: 198.51.100.7, server: x, request: "GET / HTTP/1.1"'},
-                               "global", NOW, tz=timezone.utc)
-    assert err["action"] == "rate_limited" and err["src_ip"] == "198.51.100.7" and err["ts"].hour == 10
-    st = nginx.stream_from_api({"remote_ip": "198.51.100.8", "time": "19/Oct/2026:10:00:00 +0200", "status": "200",
-                                "bytes_sent": "100", "bytes_received": "50", "session_time": "1.5"}, "port 443", NOW)
-    assert st["action"] == "stream_200" and st["data"]["bytes_sent"] == 100
 
 
 def test_dashboard_sql_order():

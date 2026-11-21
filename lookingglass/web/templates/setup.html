@@ -61,12 +61,6 @@
     <li><b>Unbound DNS</b> — enable <i>Unbound DNS statistics</i> in <i>Reporting › Settings</i> (off by default); Looking Glass
       pulls every query with client, answer and blocklist from it. Do <b>not</b> also enable <i>Log Queries</i> / <i>Log Replies</i>
       in <i>Services › Unbound DNS › Advanced</i>: that duplicates every query and slows Unbound down.</li>
-    <li><b>nginx plugin</b> — OPNsense remote syslog only forwards nginx's global error log, never the access logs (they are
-      files on the firewall). Looking Glass therefore reads access, error and stream logs through the nginx API
-      (<a href="/settings#opnsense">Settings › OPNsense</a> › <i>Pull nginx access / error logs</i>, on by default; the API
-      user needs the nginx pages). A nginx <i>SYSLOG target</i> is <b>not</b> needed; only if you want access logs in real time
-      instead of once a minute, add one (Host = Docker host, Port = the syslog port, tag <code>nginx</code>) and then switch the
-      pull off, otherwise every request is counted twice.</li>
     <li><b>VPN</b> — WireGuard writes no connection logs at all, so peers, handshakes and traffic come from the API
       (<i>Pull VPN status</i>, on by default), as do OpenVPN sessions and IPsec tunnels. Logins and connects of OpenVPN /
       IPsec also arrive via syslog (<code>openvpn</code>, <code>ipsec (charon)</code>).</li>

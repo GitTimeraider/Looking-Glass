@@ -151,38 +151,6 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             {"id": "long", "title": "Longest / unusual names (tunneling check)", "type": "table", "drill": {"by": {"domain": "domain", "ip": "client"}}, "cols": [["domain", "Domain"], ["client", "Client", "ip"], ["len", "Length", "num"]],
              "sql": f"SELECT domain, host(src_ip) client, max(length(domain)) len FROM events WHERE source = 'unbound' AND length(domain) > 50 AND {W} GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 25"},
         ]},
-    "web": {
-        "title": "Web server (nginx)", "source": "nginx", "group": "opnsense", "panels": [
-            {"id": "kpi", "type": "stat", "span": 3, "sql":
-                f"SELECT count(*) AS \"Requests\", count(*) FILTER (WHERE action ~ '^http_4') AS \"4xx\", "
-                f"count(*) FILTER (WHERE action ~ '^http_5') AS \"5xx\", "
-                f"count(*) FILTER (WHERE jsonb_array_length(coalesce(data->'tags', '[]'::jsonb)) > 0) AS \"Suspicious\", "
-                f"count(DISTINCT src_ip) AS \"Clients\", count(*) FILTER (WHERE action IN ('waf_block', 'bouncer_block', 'rate_limited')) AS \"WAF / bouncer / rate limited\" "
-                f"FROM events WHERE source = 'nginx' AND {W}",
-             "drill": {"tiles": {"4xx": {"status": "4xx"}, "5xx": {"status": "5xx"}, "Suspicious": {"tag": "any"},
-                                 "WAF / bouncer / rate limited": {"action": "waf_block,bouncer_block,rate_limited"}}}},
-            {"id": "status", "title": "Responses by class", "type": "timeseries", "span": 2,
-             "drill": {"series": "status"},
-             "sql": f"SELECT {B} t, CASE WHEN action ~ '^http_2' THEN '2xx' WHEN action ~ '^http_3' THEN '3xx' WHEN action ~ '^http_4' THEN '4xx' WHEN action ~ '^http_5' THEN '5xx' ELSE coalesce(action, 'other') END series, count(*) v FROM events WHERE source = 'nginx' AND {W} GROUP BY 1, 2 ORDER BY 1"},
-            {"id": "codes", "title": "Status codes", "type": "pie",
-             "sql": f"SELECT replace(coalesce(action, '?'), 'http_', '') label, count(*) v, action f_action FROM events WHERE source = 'nginx' AND {W} GROUP BY 1, 3 ORDER BY 2 DESC LIMIT 10"},
-            {"id": "attacks", "title": "Attack patterns over time", "type": "timeseries", "span": 2, "drill": {"series": "tag"},
-             "sql": f"SELECT {B} t, tag series, count(*) v FROM (SELECT ts, jsonb_array_elements_text(data->'tags') tag FROM events WHERE source = 'nginx' AND {W} AND jsonb_typeof(data->'tags') = 'array') x GROUP BY 1, 2 ORDER BY 1"},
-            {"id": "vhosts", "title": "Virtual hosts", "type": "pie", "drill": {"by": "domain"},
-             "sql": f"SELECT coalesce(domain, '?') label, count(*) v FROM events WHERE source = 'nginx' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 8"},
-            {"id": "paths", "title": "Top paths", "type": "table", "cols": [["path", "Path"], ["n", "Requests", "num"], ["err", "Errors", "num"]],
-             "sql": f"SELECT left(data->>'path', 120) path, count(*) n, count(*) FILTER (WHERE action ~ '^http_[45]') err, max(data->>'path') o_d_path FROM events WHERE source = 'nginx' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 25"},
-            {"id": "404", "title": "Top 4xx paths (probing)", "type": "table", "cols": [["path", "Path"], ["ips", "IPs", "num"], ["n", "Hits", "num"]],
-             "drill": {"base": {"status": "4xx"}},
-             "sql": f"SELECT left(data->>'path', 120) path, count(DISTINCT src_ip) ips, count(*) n, max(data->>'path') o_d_path FROM events WHERE source = 'nginx' AND action ~ '^http_4' AND {W} GROUP BY 1 ORDER BY 3 DESC LIMIT 25"},
-            {"id": "clients", "title": "Top clients", "type": "table", "drill": {"by": {"ip": "ip"}}, "cols": [["ip", "Client", "ip"], ["country", "", "flag"], ["err", "Errors", "num"], ["sus", "Suspicious", "num"], ["n", "Requests", "num"]],
-             "sql": f"SELECT host(src_ip) ip, max(src_country) country, count(*) FILTER (WHERE action ~ '^http_[45]') err, count(*) FILTER (WHERE jsonb_array_length(coalesce(data->'tags', '[]'::jsonb)) > 0) sus, count(*) n FROM events WHERE source = 'nginx' AND src_ip IS NOT NULL AND {W} GROUP BY 1 ORDER BY 5 DESC LIMIT 25"},
-            {"id": "ua", "title": "Top user agents", "type": "table", "cols": [["ua", "User agent"], ["n", "Requests", "num"]],
-             "sql": f"SELECT left(coalesce(data->>'user_agent', '-'), 120) ua, count(*) n, max(data->>'user_agent') o_d_user_agent FROM events WHERE source = 'nginx' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 20"},
-            {"id": "countries", "title": "Requests by country", "type": "hbar", "drill": {"by": "country"},
-             "sql": f"SELECT src_country label, count(*) v FROM events WHERE source = 'nginx' AND src_country IS NOT NULL AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 15"},
-            log_panel("source = 'nginx'"),
-        ]},
     "swag": {
         # SWAG on the Docker host (swag.py) and CrowdSec's Local API (crowdsec_lapi.py)
         "title": "SWAG & CrowdSec", "source": "nginx", "group": "swag",
@@ -701,8 +669,8 @@ def step_for(hours: float) -> int:
 # panels that only count events per source / action / protocol / interface / direction / port / country / severity:
 # over 2+ days they read the hourly counts (rollup.py) - same numbers, a fraction of the work
 ROLLUP_PANELS = {("firewall", "actions"), ("firewall", "proto"), ("firewall", "iface"), ("firewall", "dir"),
-                 ("firewall", "ports"), ("firewall", "countries"), ("firewall", "hour"), ("dns", "q"), ("web", "status"),
-                 ("web", "codes"), ("web", "countries"), ("auth", "ts"), ("vpn", "vpnev"),
+                 ("firewall", "ports"), ("firewall", "countries"), ("firewall", "hour"), ("dns", "q"),
+                 ("auth", "ts"), ("vpn", "vpnev"),
                  ("syslog", "sev"), ("threats", "ids_act"), ("threats", "ids_countries"),
                  ("threats", "ids_iface")}
 

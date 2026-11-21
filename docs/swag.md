@@ -16,7 +16,7 @@ server). Read only: nothing is changed in SWAG or CrowdSec.
 
 Everything shows up under **Docker security › SWAG & CrowdSec** (tabs *Web*, *CrowdSec*, *fail2ban*, *Honeypot*).
 SWAG's requests are also part of the *Web server* dashboard, the Threats page's CrowdSec tab, the reports, the AI
-analyst and the web attack / scanner / CrowdSec detections - exactly like the OPNsense nginx and CrowdSec plugins
+analyst and the web attack / scanner / CrowdSec detections - exactly like the OPNsense CrowdSec plugin
 (SWAG's events have program `swag`, Docker-CrowdSec's `crowdsec-lapi`).
 
 ## 1. Give Looking Glass SWAG's log folder
@@ -120,7 +120,37 @@ A honeypot is something nobody legitimate ever touches, so every hit is a scanne
 | `jail:nginx-honeypot` | every match / ban of that fail2ban jail |
 | `file:nginx/honeypot.log` | everything in that log file (a decoy site with its own `access_log`) |
 
-Jails and log files with *honeypot* in their name count automatically.
+Jails and log files with *honeypot* in their name count automatically. **With none of these set, every honeypot
+widget stays at 0.**
+
+### Honeypot from your nginx config file (no typing)
+
+Already have the trap locations in a SWAG config file, e.g.
+
+```nginx
+location ~* ^/(wp-admin|wp-login\.php|xmlrpc\.php|phpmyadmin|\.git|\.env|\.aws|server-status|cgi-bin|boaform|HNAP1)(/|\.|$) {
+    return 404;
+}
+```
+
+then point Looking Glass at that file instead of copying the paths:
+
+1. **Unraid web UI › Docker tab ›** click the Looking Glass icon › **Edit** › **Add another Path, Port, Variable,
+   Label or Device**: Config Type *Path*, Container Path `/swag/nginx`, Host Path `/mnt/user/appdata/swag/nginx`
+   (SWAG's nginx folder), Access Mode **Read Only** › **Add** › **Apply**. (Docker Compose:
+   `- /path/to/swag/config/nginx:/swag/nginx:ro`.)
+2. **Looking Glass web UI › Settings › SWAG & CrowdSec › Honeypot from nginx config**: the file as the container sees
+   it, e.g. `/swag/nginx/honeypot.conf` (a path without a leading `/` is taken from the folder above the log folder, so
+   `nginx/honeypot.conf` works too; several files and `*` are allowed). **Test connection** shows how many trap
+   locations it found, then **Save**.
+
+Every `location` in the file is a trap, matched the way nginx does it: `~` (regex), `~*` (regex, any case), `=`
+(exact path) and prefix (`^~ /x/` or `/x`), against the decoded path without the query. A location that matches
+every page (`location /`) is skipped, as is a named one (`@x`); put the traps in a file of their own rather than
+pointing at a whole site config. The file is read again within 30 seconds whenever it changes - **adding a path to the
+regex is all you do**. When the traps change, the requests of the last 30 days are checked again, so the Honeypot tab
+shows earlier hits at once (no alerts are raised for those old hits). *Setup & status* shows the number of traps
+read, or why the file could not be read.
 
 Hits are marked (`data.honeypot`, tag `honeypot`) and shown under *SWAG & CrowdSec › Honeypot*. Alerts (rule
 *Honeypot touched*): one per address - **high** from inside your network, from the internet the level of *Honeypot hit

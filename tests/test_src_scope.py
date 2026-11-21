@@ -57,20 +57,20 @@ def test_src_scope_search_and_live_log():
             # non-local ones instead of an empty table
             await pool.execute("TRUNCATE events")
             await db.copy_events(
-                [event(now - timedelta(hours=3, seconds=i), "nginx", severity=6, action="http_404", src_ip="45.9.9.9",
-                       message="GET /.env") for i in range(5)]
-                + [event(now - timedelta(seconds=i), "nginx", severity=6, action="http_200", src_ip="192.168.1.20",
-                         message="GET /") for i in range(200)])
-            web_log = next(p for p in DASHBOARDS["web"]["panels"] if p["type"] == "log")
+                [event(now - timedelta(hours=3, seconds=i), "nginx", program="swag", severity=6, action="http_404",
+                       src_ip="45.9.9.9", message="GET /.env") for i in range(5)]
+                + [event(now - timedelta(seconds=i), "nginx", program="swag", severity=6, action="http_200",
+                         src_ip="192.168.1.20", message="GET /") for i in range(200)])
+            web_log = next(p for p in DASHBOARDS["swag"]["panels"] if p["type"] == "log" and p.get("tab") == "web")
             unfiltered = await pool.fetch(web_log["sql"], 24 * 3600)
             assert {r["src_ip"] for r in unfiltered} == {"192.168.1.20"}
-            public = await run_log("web", web_log["id"], 24, "public")
+            public = await run_log("swag", web_log["id"], 24, "public")
             assert len(public) == 5 and {r["src_ip"] for r in public} == {"45.9.9.9"}
-            local = await run_log("web", web_log["id"], 24, "local")
+            local = await run_log("swag", web_log["id"], 24, "local")
             assert len(local) == web_log["limit"] and {r["src_ip"] for r in local} == {"192.168.1.20"}
-            assert await run_log("web", web_log["id"], 1, "public") == []  # the period still applies
+            assert await run_log("swag", web_log["id"], 1, "public") == []  # the period still applies
             with pytest.raises(KeyError):
-                await run_log("web", "kpi", 24, "public")  # only live logs
+                await run_log("swag", "sw_kpi", 24, "public")  # only live logs
         finally:
             await db.pool().execute("TRUNCATE events")
             await db.close()

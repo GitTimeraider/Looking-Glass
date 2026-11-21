@@ -51,11 +51,11 @@ QUERIES: dict[str, str] = {
                    "AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
     "dns_clients": "SELECT host(src_ip) client, count(*) n, count(*) FILTER (WHERE action IN ('block', 'drop')) blocked FROM events "
                    "WHERE source = 'unbound' AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
-    "web_status": "SELECT action status, count(*)::bigint n FROM events WHERE source = 'nginx' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
+    "web_status": "SELECT action status, count(*)::bigint n FROM events WHERE source = 'nginx' AND program = 'swag' AND action ~ '^http_' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
     "web_top_clients": "SELECT host(src_ip) ip, src_country country, count(*) n, count(*) FILTER (WHERE action ~ '^http_[45]') errors FROM events "
-                       "WHERE source = 'nginx' AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
+                       "WHERE source = 'nginx' AND program = 'swag' AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
     "web_attack_tags": "SELECT tag, count(*) n, count(DISTINCT src_ip) ips FROM (SELECT src_ip, jsonb_array_elements_text(data->'tags') tag FROM events "
-                       "WHERE source = 'nginx' AND ts > now() - make_interval(secs => $1) AND jsonb_typeof(data->'tags') = 'array') t GROUP BY 1 ORDER BY 2 DESC",
+                       "WHERE source = 'nginx' AND program = 'swag' AND ts > now() - make_interval(secs => $1) AND jsonb_typeof(data->'tags') = 'array') t GROUP BY 1 ORDER BY 2 DESC",
     "auth_failures": "SELECT host(src_ip) ip, source, count(*) n, array_agg(DISTINCT username) FILTER (WHERE username IS NOT NULL) users FROM events "
                      f"WHERE action = 'login_failed' AND ts > now() - make_interval(secs => $1) {CATEGORY_FILTER} "
                      "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15",
@@ -79,7 +79,15 @@ QUERIES: dict[str, str] = {
                           "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 3 DESC LIMIT 15",
     "crowdsec_scenarios": "SELECT coalesce(data->>'scenario', data->>'reason') scenario, count(*) n, count(DISTINCT src_ip) ips FROM events "
                           "WHERE source = 'crowdsec' AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
-    # SWAG (swag.py): fail2ban jails and honeypot hits
+    # SWAG (swag.py): requests per site, what its CrowdSec bouncer / AppSec / rate limit stopped, fail2ban jails and
+    # honeypot hits
+    "swag_sites": "SELECT coalesce(domain, '?') site, count(*) n, count(*) FILTER (WHERE action ~ '^http_[45]') errors, "
+                  "count(DISTINCT src_ip) ips FROM events WHERE source = 'nginx' AND program = 'swag' AND action ~ '^http_' "
+                  "AND ts > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 15",
+    "swag_blocked": "SELECT host(src_ip) ip, max(src_country) country, count(*) n, "
+                    "string_agg(DISTINCT replace(action, '_', ' '), ', ') how, max(ts) last FROM events "
+                    "WHERE source = 'nginx' AND program = 'swag' AND action IN ('bouncer_block', 'waf_block', 'rate_limited') "
+                    "AND src_ip IS NOT NULL AND ts > now() - make_interval(secs => $1) GROUP BY src_ip ORDER BY 3 DESC LIMIT 15",
     "fail2ban_jails": "SELECT coalesce(data->>'jail', '?') jail, count(*) FILTER (WHERE action = 'ban') bans, "
                       "count(DISTINCT src_ip) FILTER (WHERE action = 'ban') ips, count(*) FILTER (WHERE action = 'found') matches FROM events "
                       "WHERE source = 'fail2ban' AND action IN ('ban', 'found') AND ts > now() - make_interval(secs => $1) "
@@ -209,7 +217,7 @@ def sections_for(categories: list[str]) -> list[str]:
 
 # only count events per source / action: from 2 days on read from the hourly counts (rollup.py), same numbers
 # (::bigint keeps them whole numbers there: sum(n) is a numeric)
-ROLLUP_QUERIES = {"totals_by_source", "firewall_actions", "web_status"}
+ROLLUP_QUERIES = {"totals_by_source", "firewall_actions"}  # web_status: SWAG only (program), not in the hourly counts
 
 
 async def build_report(hours: float = 24, categories: Any = None) -> dict[str, Any]:

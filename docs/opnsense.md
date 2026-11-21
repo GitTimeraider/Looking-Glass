@@ -52,16 +52,7 @@ These steps were checked against the current OPNsense documentation and source (
 > **Check your setup:** Looking Glass › **Setup & status** lists every data source with what actually arrived in the last
 > 24 hours and through which channel, marked *to do* (what to change, and where), *duplicate* (the same data arrives
 > twice – which one to switch off), *tip*, *ok* or *optional*. Each source needs only one channel.
-4. **nginx plugin** – nothing to do. OPNsense remote syslog never forwards nginx *access* logs; they exist only as files.
-   Looking Glass therefore reads access, error and stream logs through the nginx log API (*Settings ›
-   OPNsense › Pull nginx access / error logs*; the API user needs the nginx pages): a log with new lines every minute,
-   a quiet one less often (up to every 10 minutes; every read is a configd action on OPNsense). Each read takes exactly
-   the lines added since the previous one; after a log rotation the rest of the old file is read from the rotated copy,
-   so nothing is lost at midnight. For real-time delivery instead:
-   **Services › Nginx › Configuration**, tab **Other › SYSLOG Targets**, add a target (Host = Docker host,
-   Port = 514, Severity *info*), then select it in each **HTTP(S) › HTTP Server** under *SYSLOG targets*.
-   nginx then sends straight to Looking Glass over UDP.
-   **VPN** – WireGuard writes no connection logs, so WireGuard peers (status, last handshake, traffic), OpenVPN sessions
+4. **VPN** – WireGuard writes no connection logs, so WireGuard peers (status, last handshake, traffic), OpenVPN sessions
    and IPsec tunnels are read from the API (*Pull VPN status*). A WireGuard peer going online or offline becomes an event.
    Each peer is also listed under **Devices** (by its tunnel IP), named after your dnsmasq *Hosts* entry for that IP or
    else the peer name, so alerts show the name instead of the IP.

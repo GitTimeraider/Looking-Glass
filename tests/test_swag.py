@@ -325,3 +325,90 @@ def test_lapi_poll_stores_until_and_can_unban(monkeypatch):
         left = (datetime.fromisoformat(d["until"]) - before).total_seconds()
         assert 5390 <= left <= 5410
     asyncio.run(main())
+
+
+# ------------------------------------------------------------------------------- honeypot from nginx config ---
+TRAP_CONF = r'''
+# traps - grows over time
+location ~* ^/(wp-admin|wp-login\.php|wp-content|wp-includes|xmlrpc\.php|wordpress|phpmyadmin|pma|myadmin|adminer|\.git|\.svn|\.hg|\.env|\.aws|\.ssh|\.docker|\.DS_Store|server-status|cgi-bin|vendor/phpunit|boaform|HNAP1)(/|\.|$) {
+    return 404;
+}
+location = /secret.php { return 404; }   # exact
+location ^~ /trap/ { return 444; }
+location / { proxy_pass http://app; }
+location ~ "^/x(?<n>\d{2})$" { return 404; }
+location @named { }
+'''
+
+
+def test_nginx_conf_traps_like_nginx():
+    from lookingglass.swag import nginx_conf_traps
+    traps, problems = nginx_conf_traps(TRAP_CONF)
+    assert [k for k, _ in traps] == ["regex", "exact", "prefix", "regex"]
+    assert problems == ["location /: matches every page, skipped"]
+    hp = Honeypot("")
+    hp.conf_traps = traps
+    hits = {p: hp.request(p, None) for p in ("/wp-login.php", "/WP-ADMIN/x", "/.env", "/.env.bak?x=1", "/%2Eenv",
+                                              "/wordpressx", "/index.html", "/blog/wp-admin", "/secret.php",
+                                              "/secret.php2", "/trap/a", "/x12", "/x123")}
+    assert [p for p, hit in hits.items() if hit] == ["/wp-login.php", "/WP-ADMIN/x", "/.env", "/.env.bak?x=1", "/%2Eenv",
+                                                    "/secret.php", "/trap/a", "/x12"]
+    _, problems = nginx_conf_traps("location ~ ^/(unclosed { return 404; }")
+    assert "not understood" in problems[0]
+
+
+def test_honeypot_conf_file_is_read_again_when_it_changes(tmp_path):
+    (tmp_path / "nginx").mkdir()
+    conf = tmp_path / "nginx" / "honeypot.conf"
+    conf.write_text("location ~* ^/(wp-admin|\\.env)(/|\\.|$) { return 404; }\n")
+    hp = Honeypot("", "nginx/honeypot.conf", str(tmp_path))  # relative: next to the log folder
+    assert hp.request("/.env", None) and not hp.request("/.git/config", None)
+    fp = hp.fingerprint()
+    assert hp.reload() is False  # unchanged
+    conf.write_text("location ~* ^/(wp-admin|\\.env|\\.git)(/|\\.|$) { return 404; }\n# longer now\n")
+    assert hp.reload() is True and hp.request("/.git/config", None) and hp.fingerprint() != fp
+    assert hp.conf_status[str(conf)] == {"traps": 1, "problems": [], "error": None}
+    missing = Honeypot("", "/nowhere/honeypot.conf")
+    assert "not found" in missing.conf_status["/nowhere/honeypot.conf"]["error"] and not missing.has_request_traps
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_honeypot_marks_stored_requests_and_new_report_sections(tmp_path):
+    from lookingglass import db
+    from lookingglass.config import Settings
+    from lookingglass.parsers.common import event
+    from lookingglass.reports import build_report
+    from lookingglass.swag import RETAG_KEY, SwagReader
+
+    conf = tmp_path / "honeypot.conf"
+    conf.write_text("location ~* ^/(wp-login\\.php|\\.env)(/|\\.|$) { return 404; }\n")
+
+    async def main():
+        await db.connect(DSN)
+        pool = db.pool()
+        try:
+            await pool.execute("TRUNCATE events")
+            await db.kv_set(RETAG_KEY, None)
+            now = datetime.now(timezone.utc)
+            await db.copy_events([
+                event(now - timedelta(days=2), "nginx", program="swag", severity=6, action="http_404", src_ip="203.0.113.7",
+                      domain="blog.example.com", data={"path": "/wp-login.php", "tags": ["wordpress"]}),
+                event(now - timedelta(hours=1), "nginx", program="swag", severity=6, action="http_200", src_ip="203.0.113.8",
+                      domain="blog.example.com", data={"path": "/index.html"}),
+                event(now - timedelta(days=40), "nginx", program="swag", severity=6, action="http_404", src_ip="203.0.113.9",
+                      data={"path": "/.env"}),  # older than 30 days: left alone
+                event(now - timedelta(hours=1), "nginx", program="swag", severity=4, action="bouncer_block",
+                      src_ip="203.0.113.10", domain="blog.example.com")])
+            reader = SwagReader(Settings(swag_log_dir=str(tmp_path / "log"), swag_honeypot_conf=str(conf)), lambda e: None)
+            assert await reader.retag() == 1
+            assert await reader.retag() == 0  # same traps: not checked again
+            row = await pool.fetchrow("SELECT data FROM events WHERE host(src_ip) = '203.0.113.7'")
+            assert row["data"]["honeypot"] is True and row["data"]["tags"] == ["wordpress", "honeypot"]
+            rep = await build_report(24 * 3)
+            assert [r["ip"] for r in rep["honeypot_hits"]] == ["203.0.113.7"]
+            assert rep["swag_blocked"][0]["ip"] == "203.0.113.10" and rep["swag_blocked"][0]["how"] == "bouncer block"
+            assert {r["site"]: r["n"] for r in rep["swag_sites"]} == {"blog.example.com": 2}
+        finally:
+            await pool.execute("TRUNCATE events")
+            await db.close()
+    asyncio.run(main())

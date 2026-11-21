@@ -24,6 +24,12 @@ A tour of the pages: overview, alerts, dashboards, infrastructure, devices, even
   tall, remove them and add others (e.g. *Firewall system*); *Done* saves the layout for your account, *Reset to
   default* brings back the standard one. Widgets of sources you switched off (e.g. Suricata) hide themselves.
   More widgets are under *+ Add widget…*, grouped:
+  * *SWAG & CrowdSec* - on the page by default: **SWAG: responses**, **SWAG: blocked by CrowdSec / WAF** (addresses
+    the bouncer, AppSec or rate limit stopped), **CrowdSec: banned now** (with the time left; *all / unban →* opens
+    the full list), **Honeypot hits**, **fail2ban: banned now**, **SWAG: attack patterns**, **SWAG: top clients**;
+    under *+ Add widget…*: **SWAG: requests per site** and **fail2ban jails**. With SWAG set up the key figures also
+    show **SWAG blocked** and **Honeypot hits**. (A layout you saved before keeps itself: add the new widgets with
+    *Customize › + Add widget…*.)
   * *Threats* - Suricata (top sources, targeted hosts, classifications, internal hosts alerting, **dropped
     signatures**), **threat blocks by source**, **CrowdSec firewall: top blocked IPs**, **devices with security
     events** (with where they are connected in UniFi);
@@ -44,7 +50,6 @@ A tour of the pages: overview, alerts, dashboards, infrastructure, devices, even
   with exactly those events (same filters and time span):
   *Firewall* (actions, interfaces, protocols, ports, countries, rules, allowed inbound, internal hosts being blocked),
   *DNS* (queries vs. blocked, types, rcodes, blocklists, clients, NXDOMAIN, tunneling candidates),
-  *Web server* (status classes, attack patterns over time, vhosts, paths, 4xx probing, user agents, clients),
   *Threats* with four tabs: *Main* (all three sources together: key figures, threat events and blocks per source,
   alerts by rule/severity, top attackers, blocklists, live log), *CrowdSec* (alerts, decisions, **Active bans** – every
   current decision with the time it has left and an **Unban** button that removes it on OPNsense –, blocklist blocks over
@@ -111,7 +116,7 @@ A tour of the pages: overview, alerts, dashboards, infrastructure, devices, even
   that one event - what it means, whether it is normal and what to do - looking at what the same address did around
   it, how often it happens and alerts about its addresses.
 * **Reports** – 24h / 7d / 30d reports, optionally with an AI-written analysis; print to PDF, download JSON or
-  **Email** it. Tick what a report covers: **OPNsense** (firewall, DNS, web server, Suricata, CrowdSec, Q-Feeds,
+  **Email** it. Tick what a report covers: **OPNsense** (firewall, DNS, SWAG web server, Suricata, CrowdSec, Q-Feeds,
   logins), **UniFi** (APs / switches going offline, clients dropping off or roaming, UniFi events, clients with
   security events), **Unraid** (array / pool state and free space, notifications, container log errors, CPU / memory)
   and **Backups** (jobs, failures). All ticked (the default) is the full *security report*; otherwise only those parts

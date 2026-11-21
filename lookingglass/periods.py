@@ -33,6 +33,10 @@ KEEP_DAYS = 7  # default of Settings › Data & detection › "keep refreshing f
 VIEW_WRITE_S = 300  # "looked at" is written at most this often per period
 
 
+class Gone(Exception):
+    """Raised by a computer whose view no longer exists (a dashboard that was removed): its stored result is dropped."""
+
+
 def is_long(hours: float) -> bool:
     return hours > SHORT_HOURS
 
@@ -143,6 +147,9 @@ class Periods:
             log.info("counted %s in %.0f s", key, time.monotonic() - started)
         except asyncio.CancelledError:
             raise
+        except Gone:
+            await db.pool().execute("DELETE FROM period_results WHERE key = $1", key)
+            self.memory.pop(key, None)
         except Exception as exc:  # noqa: BLE001
             error = f"{type(exc).__name__}: {exc}"[:500]
             log.warning("counting %s failed: %s", key, error)

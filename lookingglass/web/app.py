@@ -29,8 +29,8 @@ from . import asset_version
 from ..ingest import STATS
 from .. import rollup
 from ..cache import ResultCache, stale_for, ttl_for
-from ..periods import Periods, is_long, key_of
-from ..dashboards import CS_FW, DASHBOARDS, IDS_DROP, QF, run_dashboard, run_log
+from ..periods import Gone as PeriodGone, Periods, is_long, key_of
+from ..dashboards import CS_FW, DASHBOARDS, F2B_STATE, HP, IDS_DROP, QF, SW, SW_BLOCK, run_dashboard, run_log
 from ..reports import CATEGORIES, build_report, parse_categories, report_mail, report_title, run_ai_summary, timeline
 from .. import setup_checks, unraid_storage
 from ..parsers.common import real_name
@@ -262,7 +262,10 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         # the blocks of the CrowdSec / Q-Feeds rules are firewall lines tagged in data (not in the hourly counts): raw,
         # each on its own (partial) index - the same definitions as the Threats page
         threats = (f"SELECT (SELECT count(*) FROM events WHERE {CS_FW} AND ts > now() - make_interval(secs => $1)) crowdsec_fw, "
-                   f"(SELECT count(*) FROM events WHERE {QF} AND ts > now() - make_interval(secs => $1)) qfeeds")
+                   f"(SELECT count(*) FROM events WHERE {QF} AND ts > now() - make_interval(secs => $1)) qfeeds, "
+                   # SWAG: requests its CrowdSec bouncer / AppSec / rate limit stopped, and honeypot hits
+                   f"(SELECT count(*) FROM events WHERE {SW} AND {SW_BLOCK} AND ts > now() - make_interval(secs => $1)) swag_blocked, "
+                   f"(SELECT count(*) FROM events WHERE {HP} AND ts > now() - make_interval(secs => $1)) honeypot")
         # lists for the optional threat widgets (not in the scheduled reports): the addresses CrowdSec's rules blocked
         # (the outside end of the connection) and the Suricata signatures that dropped traffic
         threat_lists = {
@@ -303,6 +306,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 "threats": dict(lists)}
 
     async def dash_compute_args(name: str, tab: str | None, hours: float) -> dict[str, Any]:
+        if name not in DASHBOARDS:  # a stored 7 / 30 day view of a removed dashboard (the OPNsense nginx page)
+            raise PeriodGone(name)
         return await dash_compute(name, hours, tab)
 
     # 7 / 30 days: counted on a schedule in the background and shown from the stored result (periods.py)
@@ -370,7 +375,18 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             jobs = [{k: j.get(k) for k in ("source_label", "job", "state", "schedule", "last_started", "last_good",
                                            "last_finished_status", "last_message", "ok", "warned", "failed")}
                     for j in ov["jobs"]]
-        return {"unifi_devices": unifi, "unraid": unraid, "backup_jobs": jobs}
+        # SWAG & CrowdSec: the bans in force now (CrowdSec in Docker: its last poll; fail2ban: latest ban without unban)
+        bans = await db.get_snapshot("crowdsec_lapi_decisions")
+        cs_bans = sorted(({k: d.get(k) for k in ("value", "country", "type", "scenario", "origin", "until")}
+                          for d in (bans if isinstance(bans, list) else []) if isinstance(d, dict)),
+                         key=lambda d: str(d.get("until") or ""), reverse=True)[:50]
+        f2b_now = []
+        if settings.swag_enabled:
+            f2b_now = db.records(await db.pool().fetch(
+                f"SELECT jail, host(src_ip) ip, src_country country, ts FROM {F2B_STATE} s WHERE action <> 'unban' "
+                "ORDER BY ts DESC LIMIT 50"))
+        return {"unifi_devices": unifi, "unraid": unraid, "backup_jobs": jobs, "crowdsec_bans": cs_bans,
+                "crowdsec_bans_total": len(bans) if isinstance(bans, list) else None, "fail2ban_now": f2b_now}
 
     @app.get("/api/overview")
     async def overview(request: Request, hours: float = Query(24, gt=0, le=24 * 90)):
@@ -404,17 +420,20 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         has = {r["source"] for r in report.get("totals_by_source") or []}
         has |= {k for k, n in (("crowdsec", kpi.get("crowdsec_fw")), ("qfeeds", kpi.get("qfeeds"))) if n}  # their firewall blocks
         enabled = {"suricata": settings.ids_pull, "crowdsec": settings.crowdsec_pull, "qfeeds": settings.qfeeds_pull,
-                   "nginx": settings.nginx_pull, "unbound": settings.unbound_query_pull}
+                   "unbound": settings.unbound_query_pull}
         docker_cs = settings.crowdsec_lapi_enabled  # CrowdSec / nginx (SWAG) in Docker: shown without OPNsense too
         # a plugin the OPNsense API says is not installed (the poll answers 400 / 404): its widgets are hidden too while
         # it sent nothing - otherwise they stay on the page empty, and look broken
         jobs = await db.get_snapshot("poller_status") or {}
         jobs = jobs if isinstance(jobs, dict) else {}
-        missing = {k for k, job in (("nginx", "nginx_logs"), ("qfeeds", "qfeeds"))
+        missing = {k for k, job in (("qfeeds", "qfeeds"),)
                    if isinstance(jobs.get(job), dict) and jobs[job].get("unsupported") and not jobs[job].get("forbidden")}
         enabled = {k: (v and settings.opnsense_enabled and k not in missing) or k in has for k, v in enabled.items()}
         enabled["crowdsec"] = enabled["crowdsec"] or docker_cs
-        enabled["nginx"] = enabled["nginx"] or settings.swag_enabled
+        # the web server is SWAG (the OPNsense nginx plugin is no longer read); its widgets follow SWAG's settings
+        enabled["nginx"] = settings.swag_enabled
+        enabled["fail2ban"] = settings.swag_enabled and bool(settings.swag_fail2ban_log.strip())
+        enabled["crowdsec_lapi"] = docker_cs
         for k, on in (("suricata", settings.ids_pull), ("crowdsec", settings.crowdsec_pull or docker_cs), ("qfeeds", settings.qfeeds_pull)):
             if not on:  # switched off: hidden like its Threats tab, even with older data in the period
                 enabled[k] = False
@@ -1223,6 +1242,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
     async def dash_page(request: Request, name: str):
         if name == "suricata":  # Suricata is a tab of the Threats page
             return RedirectResponse("/dash/threats#suricata")
+        if name == "web":  # the OPNsense nginx page is gone: the web server is SWAG's
+            return RedirectResponse("/dash/swag#web")
         if name == "unifi":  # the former "Wi-Fi & clients" dashboard: its contents live on the UniFi page
             return RedirectResponse("/unifi#clients")
         if name not in DASHBOARDS:
