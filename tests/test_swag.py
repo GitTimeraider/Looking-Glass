@@ -465,7 +465,7 @@ def test_honeypot_shows_crowdsec_bans():
             now = datetime.now(timezone.utc)
             hit = lambda ip: event(now - timedelta(hours=2), "nginx", program="swag", severity=4, action="http_404",  # noqa: E731
                                    src_ip=ip, data={"path": "/.env", "honeypot": True, "tags": ["honeypot"]})
-            await db.copy_events([hit("203.0.113.7"), hit("198.51.100.8"), hit("192.0.2.9"),
+            await db.copy_events([hit("203.0.113.7"), hit("198.51.100.8"), hit("192.0.2.9"), hit("127.0.0.1"),
                                   # 198.51.100.8 was banned an hour ago (that ban has ended since)
                                   event(now - timedelta(hours=1), "crowdsec", program="crowdsec-lapi", severity=4, action="ban",
                                         src_ip="198.51.100.8")])
@@ -476,16 +476,25 @@ def test_honeypot_shows_crowdsec_bans():
             res = await run_dashboard("swag", 24, set(), "honeypot")
             by = {p["id"]: p for p in res["panels"]}
             kpi = by["hp_kpi"]["rows"][0]
-            assert (kpi["IPs"], kpi["Banned by CrowdSec"], kpi["Banned now"]) == (3, 2, 1)
+            assert (kpi["IPs"], kpi["Banned by CrowdSec"], kpi["Banned now"]) == (4, 2, 1)
+            assert kpi["From inside"] == 1  # 127.0.0.1 (the SWAG host itself) is inside, as for the alert
             rows = {r["ip"]: r for r in by["hp_ips"]["rows"]}
             assert rows["203.0.113.7"]["cs"] == "banned now" and rows["203.0.113.7"]["cs_until"] is not None
             assert rows["198.51.100.8"]["cs"] == "banned" and rows["192.0.2.9"]["cs"] is None
             off = await run_dashboard("swag", 24, {"crowdsec", "fail2ban"}, "honeypot")
             assert "Banned now" not in off["panels"][0]["rows"][0]
             rep = {r["ip"]: r["crowdsec"] for r in (await build_report(24))["honeypot_hits"]}
-            assert rep == {"203.0.113.7": "banned now", "198.51.100.8": "banned", "192.0.2.9": None}
+            assert rep == {"203.0.113.7": "banned now", "198.51.100.8": "banned", "192.0.2.9": None, "127.0.0.1": None}
         finally:
             await pool.execute("TRUNCATE events")
             await pool.execute("DELETE FROM snapshots WHERE key = 'crowdsec_lapi_decisions'")
             await db.close()
     asyncio.run(main())
+
+
+def test_honeypot_error_line_keeps_the_trap_path():
+    hp = Honeypot("/wp-login.php")
+    line = ('2024/05/01 12:00:00 [error] 812#812: *9 open() "/config/www/wp-login.php" failed (2: No such file or directory), '
+            'client: 127.0.0.1, server: _, request: "GET /wp-login.php?x=1 HTTP/1.1", host: "localhost"')
+    ev = parse_line("error", line, "nginx/error.log", "SWAG", timezone.utc, hp, now=NOW)
+    assert ev["data"]["honeypot"] is True and ev["data"]["path"] == "/wp-login.php" and ev["src_ip"] == "127.0.0.1"

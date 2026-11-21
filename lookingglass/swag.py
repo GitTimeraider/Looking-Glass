@@ -248,6 +248,8 @@ def parse_line(kind: str, line: str, rel: str, name: str, tz: Any, honeypot: Hon
             path = parts[1] if len(parts) > 1 else parts[0]
         if honeypot.file(rel) or honeypot.request(path, ev.get("domain") or data.get("host")):
             mark_honeypot(ev)
+            if path and not data.get("path"):  # an error-log line: keep the trap path it asked for (alert, Honeypot tab)
+                data["path"] = path.split("?", 1)[0][:500]
     ev["host"] = name
     ev.setdefault("data", {})["log"] = rel
     return ev

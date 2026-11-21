@@ -16,6 +16,7 @@ import re
 from typing import Any
 
 from . import db, rollup
+from .event_filter import LOCAL_NETS
 from .parsers.filterlog import QFEEDS as QF
 
 W = "ts > now() - make_interval(secs => $1)"
@@ -48,6 +49,9 @@ CSL_SEEN = f"({CS_SEEN} AND program = 'crowdsec-lapi')"
 HP = "(source IN ('nginx', 'fail2ban') AND data->>'honeypot' = 'true')"
 HP_DRILL = {"source": "nginx,fail2ban", "d_honeypot": "true"}
 F2B_DRILL = {"source": "fail2ban"}
+# a local source address - private, CGNAT, loopback (127.0.0.1: the SWAG host / container itself), link-local: the same
+# as Event search's "Source: local" (and the honeypot alert's INTERNAL, which also counts Settings › Internal networks)
+LOCAL_SRC = "(" + " OR ".join(f"src_ip << '{n}'" for n in LOCAL_NETS) + ")"
 
 
 def cs_ban_now(ip: str) -> str:
@@ -335,7 +339,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             # ------------------------------------------------------------------------------------- Honeypot ---
             {"id": "hp_kpi", "tab": "honeypot", "type": "stat", "span": 3, "sql":
                 f"SELECT count(*) AS \"Hits\", count(DISTINCT src_ip) AS \"IPs\", count(DISTINCT src_country) AS \"Countries\", "
-                f"count(DISTINCT src_ip) FILTER (WHERE {PRIV}) AS \"From inside\", "
+                f"count(DISTINCT src_ip) FILTER (WHERE {LOCAL_SRC}) AS \"From inside\", "
                 # who touched it and got banned: by CrowdSec (any scenario, in the period / in force now), by fail2ban jails
                 f"(SELECT count(*) FROM (SELECT DISTINCT src_ip FROM events WHERE {HP} AND {W} AND src_ip IS NOT NULL) h "
                 f"WHERE {cs_banned_in_period('h.src_ip')} OR {cs_ban_now('h.src_ip')}) AS \"Banned by CrowdSec\", "
@@ -345,7 +349,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                 "(SELECT count(*) FROM alerts WHERE status = 'open' AND rule = 'honeypot') AS \"Open honeypot alerts\" "
                 f"FROM events WHERE {HP} AND {W}",
              "needs_cols": {"Bans by honeypot jails": "fail2ban", "Banned by CrowdSec": "crowdsec", "Banned now": "crowdsec"},
-             "drill": {"base": HP_DRILL, "tiles": {"Bans by honeypot jails": {"source": "fail2ban", "d_honeypot": "true", "action": "ban"},
+             "drill": {"base": HP_DRILL, "tiles": {"From inside": {"src_scope": "local"}, "Bans by honeypot jails": {"source": "fail2ban", "d_honeypot": "true", "action": "ban"},
                                                    "Banned by CrowdSec": None, "Banned now": {"url": "/dash/swag#crowdsec"},
                                                    "Open honeypot alerts": {"url": "/alerts"}}}},
             {"id": "hp_time", "tab": "honeypot", "title": "Honeypot hits over time", "type": "timeseries", "span": 3, "drill": {"base": HP_DRILL},

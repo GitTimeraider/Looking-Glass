@@ -1231,7 +1231,7 @@ class DetectionEngine:
         network that is high (a compromised device or someone looking around), from the internet the set level."""
         last, current = await self._watermark("honeypot")
         rows = await db.pool().fetch(
-            "SELECT src_ip, count(*) AS hits, array_agg(DISTINCT coalesce(data->>'path', 'jail ' || (data->>'jail'))) AS what, "
+            "SELECT src_ip, count(*) AS hits, array_agg(DISTINCT coalesce(data->>'path', 'jail ' || (data->>'jail'), left(message, 120))) AS what, "
             "max(data->>'user_agent') AS ua, min(ts) AS first, max(ts) AS last FROM events "
             "WHERE id > $1 AND id <= $2 AND source IN ('nginx', 'fail2ban') AND data->>'honeypot' = 'true' "
             "AND src_ip IS NOT NULL AND (source = 'nginx' OR action IN ('found', 'ban')) GROUP BY 1", last, current)
