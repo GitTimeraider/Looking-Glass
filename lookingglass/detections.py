@@ -76,12 +76,14 @@ COUNTS_SQL = "(status = 'open' OR close_reason = 'muted')"
 EXTERNAL_CHAIN = [("Recon", {"port_scan", "host_sweep", "web_scanner", "threat_intel_inbound", "honeypot"}),
                   ("Attack", {"web_attack", "ids", "crowdsec", "fail2ban", "brute_force", "password_spray",
                               "distributed_brute_force"}),
-                  ("Access", {"success_after_failures", "admin_login", "login_new_location"})]
+                  ("Access", {"success_after_failures", "admin_login", "login_new_location"}),
+                  # the web proxy answered an attack and the site's container got into trouble right after
+                  ("Impact", {"web_container_trouble"})]
 INTERNAL_CHAIN = [("Threat sign", {"threat_intel_outbound", "dns_malicious_blocked", "dns_dga", "ids",
                                    "threat_feed", "malicious_tls", "young_domain", "crypto_mining", "new_behavior",
                                    "ml_anomaly"}),
                   ("Command & control", {"beaconing", "suspicious_outbound_port", "dns_tunnel", "dns_bypass",
-                                         "internal_blocked_outbound", "tor"}),
+                                         "internal_blocked_outbound", "tor", "proxy_callback"}),
                   ("Spreading / theft", {"port_scan", "host_sweep", "lateral_movement", "password_spray", "brute_force",
                                          "canary", "honeypot", "arp_spoofing", "volume_spike"})]
 # signs of a compromise on their own: one of these (at any severity) makes a chain worth an alert. The other chain rules
@@ -91,7 +93,8 @@ INTERNAL_CHAIN = [("Threat sign", {"threat_intel_outbound", "dns_malicious_block
 STRONG_CHAIN_RULES = {"threat_intel_outbound", "dns_malicious_blocked", "dns_dga", "ids", "threat_feed",
                       "malicious_tls", "crypto_mining", "dns_tunnel", "tor", "lateral_movement", "canary", "arp_spoofing",
                       "port_scan", "host_sweep", "password_spray", "brute_force", "web_attack", "crowdsec", "honeypot",
-                      "distributed_brute_force", "success_after_failures", "login_new_location", "threat_intel_inbound"}
+                      "distributed_brute_force", "success_after_failures", "login_new_location", "threat_intel_inbound",
+                      "proxy_callback", "web_container_trouble"}
 
 # a name from a better source replaces one from a worse source, never the other way round
 NAME_RANK = {"manual": 100, "opnsense": 90, "unifi-alias": 70, "dnsmasq-static": 60, "unifi": 45, "dhcp": 50, "wireguard": 40, "dns": 30, "arp": 20}
@@ -747,9 +750,11 @@ class DetectionEngine:
         self._ran: dict[str, float] = {}
         self._svc_down: dict[str, float] = {}  # service name -> first seen stopped (time.time()), see check_services
         from .behavior import Behavior  # local imports: those modules use the helpers of this one
+        from .crosslink import CrossLink
         from .intel import Intel
         self.behavior = Behavior(settings, self.internal)
         self.intel = Intel(settings)
+        self.crosslink = CrossLink(settings, self.internal)
 
     async def run(self) -> None:
         await asyncio.sleep(20)
@@ -757,7 +762,8 @@ class DetectionEngine:
             started = time.monotonic()
             for rule in (self.port_scan, self.host_sweep, self.brute_force, self.success_after_failures,
                          self.external_admin_login, self.web_attacks, self.web_scanner, self.ids_alerts,
-                         self.crowdsec_alerts, self.fail2ban_bans, self.honeypot_hits, self.qfeeds_hits, self.dns_anomalies,
+                         self.crowdsec_alerts, self.fail2ban_bans, self.honeypot_hits, self.proxy_callbacks, self.ban_bypass,
+                         self.web_container_trouble, self.qfeeds_hits, self.dns_anomalies,
                          self.internal_blocked_outbound, self.suspicious_outbound_ports, self.config_changes,
                          self.password_spray, self.distributed_brute_force, self.login_location, self.dns_bypass,
                          self.beaconing, self.lateral_movement,
@@ -1051,6 +1057,12 @@ class DetectionEngine:
                 rating.why.append("every request failed (4xx/5xx)")
             if inside:
                 rating.up("the attacker is INSIDE the network")
+            elif r["src_ip"] and (fw := await self.crosslink.firewall_view(ip)):
+                # the same address probes the rest of the network too: a targeted attacker, not a passing scanner.
+                # Up to high: a 200 is no proof an exploit worked - critical is for what the firewall saw happen next
+                # (proxy_callback, attack chains)
+                why = "the OPNsense side flagged this address too (" + "; ".join(fw) + ")"
+                rating.up(why) if rating.severity in ("info", "low", "medium") else rating.note(why)
             await raise_alert(
                 "web_attack", rating, f"Web attack ({r['tag']}) from {ip} on "
                 f"{'SWAG' if r['swag'] and not r['opnsense'] else 'nginx'}", f"web:{ip}:{r['tag']}", src_ip=r["src_ip"] and ip, events={"source": "nginx", "ip": r["src_ip"] and ip},
@@ -1087,6 +1099,8 @@ class DetectionEngine:
                     rating.why.append("it only got errors - background noise")
                 if logged_in:
                     rating.up("and this address logged in successfully")
+                if fw := await self.crosslink.firewall_view(ip):
+                    rating.up("the OPNsense side flagged this address too (" + "; ".join(fw) + ")")
             await raise_alert("web_scanner", rating, f"Web scanning from {ip} ({r['hits']} 4xx responses)",
                               f"web_scan:{ip}", src_ip=ip, events={"source": "nginx", "ip": ip}, count=r["hits"], mode="max",
                               description=f"{ip} produced {r['hits']} client errors over {r['paths']} distinct paths in 10 minutes "
@@ -1266,6 +1280,21 @@ class DetectionEngine:
                               description=f"{ip} hit the honeypot {r['hits']} time(s): {', '.join(what)}"
                                           + (f". User agent: {r['ua']}" if r["ua"] else "") + ".")
         await self._commit("honeypot", current)
+
+    # ---------------------------------- SWAG / CrowdSec (Docker) x OPNsense / Unraid: crosslink.py ---
+    async def proxy_callbacks(self) -> None:
+        last, current = await self._watermark("proxy_callback")
+        await self.crosslink.callbacks(last, current)
+        await self._commit("proxy_callback", current)
+
+    async def ban_bypass(self) -> None:
+        last, current = await self._watermark("ban_bypass")
+        await self.crosslink.ban_bypass(last, current)
+        await self._commit("ban_bypass", current)
+
+    async def web_container_trouble(self) -> None:
+        if self._due("web_container_trouble", 120):
+            await self.crosslink.container_trouble()
 
     async def qfeeds_hits(self) -> None:
         last, current = await self._watermark("qfeeds")
@@ -1696,7 +1725,7 @@ class DetectionEngine:
             chain = INTERNAL_CHAIN if internal else EXTERNAL_CHAIN
             members_all = set().union(*(m for _, m in chain))
             stages = [name for name, members in chain if rules & members]
-            if not internal and "Access" not in stages:
+            if not internal and not {"Access", "Impact"} & set(stages):
                 continue  # scans and attacks from the internet that got nowhere: background noise
             if len(stages) < 2:
                 continue  # one kind of signal is what the alert of that rule already says
