@@ -226,6 +226,11 @@ FIELDS: list[Field] = [
     Field("swag_honeypot_internet", "swag", "Honeypot hit from the internet: alert", "choice", "The alert level of a "
           "honeypot hit from an internet address (one alert per address). From inside your network it is always high.",
           choices=("off", "info", "low", "medium", "high")),
+    Field("crowdsec_lapi_alerts", "swag", "CrowdSec (SWAG) ban of an internet address: alert", "choice", "The alert "
+          "level when CrowdSec in Docker detects and bans / captchas an internet address (one alert per address and "
+          "scenario). That is CrowdSec doing its job: 'off' raises none - the bans stay visible under SWAG & CrowdSec › "
+          "CrowdSec, in reports and the Overview. An address inside your network is always high.",
+          choices=("off", "info", "low")),
     Field("swag_fail2ban_alerts", "swag", "fail2ban ban of an internet address: alert", "choice", "The alert level "
           "when fail2ban bans an internet address (one alert per address and jail). A ban of an address inside your "
           "network is always high.", choices=("off", "info", "low", "medium")),

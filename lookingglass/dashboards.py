@@ -16,6 +16,7 @@ import re
 from typing import Any
 
 from . import db, rollup
+from .alert_filters import RULES
 from .event_filter import LOCAL_SRC, SCOPE_SQL, scoped_sql  # noqa: F401 - SCOPE_SQL used by callers
 from .parsers.filterlog import QFEEDS as QF
 
@@ -41,6 +42,14 @@ CS_OPN_SEEN = f"({CS_SEEN} AND program IS DISTINCT FROM 'crowdsec-lapi')"
 CS_OPN_DRILL = {"source": "crowdsec", "not_program": "crowdsec-lapi"}
 CS_OPN_DECISIONS = ("(SELECT jsonb_array_length(data) FROM snapshots WHERE key = 'crowdsec_decisions' "
                     "AND jsonb_typeof(data) = 'array')")
+# OPNsense security pages: only what came from OPNsense. Logins / config changes: its own sources (UniFi, SWAG ...
+# write login events under their own source). Alerts: not the rule groups of other products, nor CrowdSec in Docker
+# (same rule, its own fingerprint, detections.crowdsec_alerts)
+OPN_LOGIN = "source IN ('auth', 'vpn', 'system')"
+OPN_LOGIN_DRILL = "auth,vpn,system"
+_OTHER_RULE_GROUPS = ("Web server (nginx)", "SWAG & CrowdSec (Docker)", "UniFi", "Backups", "Unraid")
+OPN_ALERT = ("(rule NOT IN (" + ", ".join(f"'{r}'" for g in _OTHER_RULE_GROUPS for r, _ in RULES.get(g, [])) + ") "
+             "AND fingerprint NOT LIKE 'crowdsec-lapi:%')")
 # one blocklist of that setting from the poller's snapshot (lower-case name)
 BL = "(SELECT data->'{0}' FROM snapshots WHERE key = 'blocklists')"
 
@@ -400,7 +409,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                 f"count(*) FILTER (WHERE {CS_FW}) AS \"CrowdSec firewall blocks\", "
                 f"count(*) FILTER (WHERE {QF}) AS \"Q-Feeds hits\", "
                 f"count(*) FILTER (WHERE {QF} AND {PRIV}) AS \"Outbound threat-intel hits\", "
-                f"(SELECT count(*) FROM alerts WHERE status = 'open' AND severity IN ('high', 'critical')) AS \"Open high/critical alerts\" "
+                f"(SELECT count(*) FROM alerts WHERE status = 'open' AND severity IN ('high', 'critical') AND {OPN_ALERT}) AS \"Open high/critical alerts\" "
                 f"FROM events WHERE (source = 'suricata' OR {CS_OPN} OR {CS_FW} OR {QF}) AND {W}",
              "drill": {"tiles": {"Suricata alerts": {"source": "suricata", "action": "alert,drop,blocked,reject"},
                                  "Suricata dropped": {"source": "suricata", "action": "drop,blocked"},
@@ -424,9 +433,9 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                     f"UNION ALL SELECT 'CrowdSec (firewall)', count(*), 'firewall', NULL, 'CrowdSec' FROM events WHERE {CS_FW} AND {W} "
                     f"UNION ALL SELECT 'Q-Feeds', count(*), 'firewall,qfeeds', NULL, 'Q-Feeds' FROM events WHERE {QF} AND {W}"},
             {"id": "alerts", "tab": "main", "title": "Alerts by rule", "type": "pie", "drill": {"url": "/alerts"},
-             "sql": "SELECT rule label, count(*) v FROM alerts WHERE last_seen > now() - make_interval(secs => $1) GROUP BY 1 ORDER BY 2 DESC LIMIT 10"},
+             "sql": f"SELECT rule label, count(*) v FROM alerts WHERE last_seen > now() - make_interval(secs => $1) AND {OPN_ALERT} GROUP BY 1 ORDER BY 2 DESC LIMIT 10"},
             {"id": "sev", "tab": "main", "title": "Alerts over time by severity", "type": "timeseries", "span": 2, "drill": {"url": "/alerts"},
-             "sql": "SELECT to_timestamp(floor(extract(epoch FROM created_at) / $2) * $2) t, severity series, count(*) v FROM alerts WHERE created_at > now() - make_interval(secs => $1) GROUP BY 1, 2 ORDER BY 1"},
+             "sql": f"SELECT to_timestamp(floor(extract(epoch FROM created_at) / $2) * $2) t, severity series, count(*) v FROM alerts WHERE created_at > now() - make_interval(secs => $1) AND {OPN_ALERT} GROUP BY 1, 2 ORDER BY 1"},
             {**log_panel(f"({IDS} OR {CS_OPN} OR {QF})"), "tab": "main"},
             {"id": "attackers", "tab": "main", "title": "Top attackers across all sources", "type": "table", "span": 3, "drill": {"base": {"source": ""}, "by": {"ip": "ip"}},
              "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["sources", "Seen by"], ["n", "Events", "num"], ["last", "Last", "ago"]],
@@ -586,21 +595,21 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                 f"count(DISTINCT src_ip) FILTER (WHERE action = 'login_failed') AS \"IPs with failed logins\", "
                 f"count(DISTINCT username) FILTER (WHERE action = 'login_failed') AS \"Usernames tried\", "
                 f"count(*) FILTER (WHERE action = 'config_change') AS \"Config changes\" "
-                f"FROM events WHERE source IN ('auth', 'vpn', 'system') AND {W}",
-             "drill": {"base": {"source": ""}, "tiles": {"Failed logins": {"action": "login_failed"}, "Successful logins": {"action": "login_success"},
+                f"FROM events WHERE {OPN_LOGIN} AND {W}",
+             "drill": {"base": {"source": OPN_LOGIN_DRILL}, "tiles": {"Failed logins": {"action": "login_failed"}, "Successful logins": {"action": "login_success"},
                                                          "IPs with failed logins": {"action": "login_failed"}, "Usernames tried": {"action": "login_failed"},
                                                          "Config changes": {"action": "config_change"}}}},
-            {"id": "ts", "title": "Logins over time", "type": "timeseries", "span": 2, "drill": {"base": {"source": "", "action": "login_failed,login_success,vpn_connect"}},
-             "sql": f"SELECT {B} t, source || ' ' || action series, count(*) v FROM events WHERE action IN ('login_failed', 'login_success', 'vpn_connect') AND {W} GROUP BY 1, 2 ORDER BY 1"},
-            {"id": "users", "title": "Usernames tried", "type": "pie", "drill": {"base": {"source": "", "action": "login_failed"}, "by": "user"},
-             "sql": f"SELECT coalesce(username, '?') label, count(*) v FROM events WHERE action = 'login_failed' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 10"},
-            {"id": "fails", "title": "Failed logins per source IP", "type": "table", "drill": {"base": {"source": "", "action": "login_failed"}, "by": {"ip": "ip"}}, "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["svc", "Service"], ["users", "Users"], ["n", "Failures", "num"], ["last", "Last", "ago"]],
-             "sql": f"SELECT host(src_ip) ip, max(src_country) country, max(coalesce(program, source)) svc, (array_agg(DISTINCT username))[1:6] users, count(*) n, max(ts) last FROM events WHERE action = 'login_failed' AND {W} GROUP BY 1 ORDER BY 5 DESC LIMIT 25"},
-            {"id": "ok", "title": "Successful logins", "type": "table", "drill": {"base": {"source": "", "action": "login_success,vpn_connect"}, "by": {"ip": "ip", "user": "username"}}, "cols": [["ts", "Time", "time"], ["username", "User"], ["ip", "From", "ip"], ["prog", "Via"]],
-             "sql": f"SELECT ts, username, host(src_ip) ip, coalesce(program, source) prog FROM events WHERE action IN ('login_success', 'vpn_connect') AND {W} ORDER BY ts DESC LIMIT 50"},
-            {"id": "cfg", "title": "Configuration changes", "type": "table", "drill": {"base": {"source": "", "action": "config_change"}, "by": {"host": "host"}}, "cols": [["ts", "Time", "time"], ["host", "Host"], ["part", "Changed"], ["username", "By"], ["ip", "From", "ip"], ["message", "Message"]],
+            {"id": "ts", "title": "Logins over time", "type": "timeseries", "span": 2, "drill": {"base": {"source": OPN_LOGIN_DRILL, "action": "login_failed,login_success,vpn_connect"}},
+             "sql": f"SELECT {B} t, source || ' ' || action series, count(*) v FROM events WHERE {OPN_LOGIN} AND action IN ('login_failed', 'login_success', 'vpn_connect') AND {W} GROUP BY 1, 2 ORDER BY 1"},
+            {"id": "users", "title": "Usernames tried", "type": "pie", "drill": {"base": {"source": OPN_LOGIN_DRILL, "action": "login_failed"}, "by": "user"},
+             "sql": f"SELECT coalesce(username, '?') label, count(*) v FROM events WHERE {OPN_LOGIN} AND action = 'login_failed' AND {W} GROUP BY 1 ORDER BY 2 DESC LIMIT 10"},
+            {"id": "fails", "title": "Failed logins per source IP", "type": "table", "drill": {"base": {"source": OPN_LOGIN_DRILL, "action": "login_failed"}, "by": {"ip": "ip"}}, "cols": [["ip", "IP", "ip"], ["country", "", "flag"], ["svc", "Service"], ["users", "Users"], ["n", "Failures", "num"], ["last", "Last", "ago"]],
+             "sql": f"SELECT host(src_ip) ip, max(src_country) country, max(coalesce(program, source)) svc, (array_agg(DISTINCT username))[1:6] users, count(*) n, max(ts) last FROM events WHERE {OPN_LOGIN} AND action = 'login_failed' AND {W} GROUP BY 1 ORDER BY 5 DESC LIMIT 25"},
+            {"id": "ok", "title": "Successful logins", "type": "table", "drill": {"base": {"source": OPN_LOGIN_DRILL, "action": "login_success,vpn_connect"}, "by": {"ip": "ip", "user": "username"}}, "cols": [["ts", "Time", "time"], ["username", "User"], ["ip", "From", "ip"], ["prog", "Via"]],
+             "sql": f"SELECT ts, username, host(src_ip) ip, coalesce(program, source) prog FROM events WHERE {OPN_LOGIN} AND action IN ('login_success', 'vpn_connect') AND {W} ORDER BY ts DESC LIMIT 50"},
+            {"id": "cfg", "title": "Configuration changes", "type": "table", "drill": {"base": {"source": OPN_LOGIN_DRILL, "action": "config_change"}, "by": {"host": "host"}}, "cols": [["ts", "Time", "time"], ["host", "Host"], ["part", "Changed"], ["username", "By"], ["ip", "From", "ip"], ["message", "Message"]],
              "sql": f"SELECT ts, host, coalesce(data->'config'->>'label', '?') part, username, host(src_ip) ip, left(message, 160) message "
-                    f"FROM events WHERE action = 'config_change' AND {W} ORDER BY ts DESC LIMIT 50"},
+                    f"FROM events WHERE {OPN_LOGIN} AND action = 'config_change' AND {W} ORDER BY ts DESC LIMIT 50"},
             log_panel("source = 'auth'"),
         ]},
     "vpn": {

@@ -196,6 +196,7 @@ class Settings(BaseSettings):
     swag_honeypot_conf: str = ""  # nginx config file(s) whose location blocks are traps, e.g. /swag/nginx/honeypot.conf
     swag_honeypot_internet: str = "low"  # alert severity of a honeypot hit from the internet ("off" = none)
     swag_fail2ban_alerts: str = "low"  # alert severity of a fail2ban ban of an internet address ("off" = none)
+    crowdsec_lapi_alerts: str = "low"  # alert severity of a CrowdSec (SWAG / Docker) alert / ban of an internet address
     crowdsec_lapi_url: str = ""  # e.g. http://crowdsec:8080
     crowdsec_lapi_machine: str = ""
     crowdsec_lapi_password: str = ""
