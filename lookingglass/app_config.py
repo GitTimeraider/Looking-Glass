@@ -234,6 +234,10 @@ FIELDS: list[Field] = [
     Field("swag_fail2ban_alerts", "swag", "fail2ban ban of an internet address: alert", "choice", "The alert level "
           "when fail2ban bans an internet address (one alert per address and jail). A ban of an address inside your "
           "network is always high.", choices=("off", "info", "low", "medium")),
+    Field("swag_proxy_ports", "swag", "Ports forwarded to SWAG", "str", "The ports OPNsense forwards to SWAG "
+          "(comma separated). An address SWAG's CrowdSec / fail2ban banned, or that touched a honeypot, and that the "
+          "firewall afterwards still lets in on any OTHER port raises a 'Banned on SWAG, still let in by the firewall' "
+          "alert: those bans only work inside SWAG.", placeholder="80,443"),
     Field("crowdsec_lapi_url", "swag", "CrowdSec Local API URL", "str", "The CrowdSec container's API (LAPI), port "
           "8080 inside the container. On the same Docker network: http://crowdsec:8080 (the container name); else the "
           "host's IP address and the port you mapped. Empty = off.", placeholder="http://crowdsec:8080"),

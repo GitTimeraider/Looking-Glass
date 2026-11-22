@@ -56,7 +56,7 @@ the default look: dark theme, purple accent, menu bar at the top and square corn
 ## What it detects
 
 Port scans, host sweeps, brute force and password spraying, logins after failures or from new countries, web attacks,
-Suricata / CrowdSec / Q-Feeds hits, fail2ban bans and honeypot hits (SWAG), DNS tunneling and random (DGA) domains, beaconing, lateral movement, DNS bypass,
+Suricata / CrowdSec / Q-Feeds hits, fail2ban bans and honeypot hits (SWAG) - and tied to the firewall and Unraid: devices calling back to a web attacker, SWAG bans the firewall still lets in, attacks followed by container trouble - DNS tunneling and random (DGA) domains, beaconing, lateral movement, DNS bypass,
 attack chains, new and rogue devices, evil-twin access points, rogue DHCP, ARP spoofing, canary traps, resource and
 service problems on OPNsense and Unraid, WAN lines that get slower or lose packets over days, failed backups and more. On top of that it learns what is normal for every
 device (behaviour & machine learning) and checks traffic against threat-intel feeds. Every alert explains its severity

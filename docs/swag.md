@@ -14,7 +14,7 @@ server). Read only: nothing is changed in SWAG or CrowdSec.
 | Honeypot | paths, host names, jails or log files you mark as traps | every hit, who it was, what they tried |
 | CrowdSec (Docker) | its Local API (machine login and/or bouncer key) + metrics | alerts with scenario, AS, country, target site / URI, AppSec rule, decisions; active decisions incl. the community blocklist; which logs CrowdSec reads, AppSec counters, which bouncers are alive |
 
-Everything shows up under **Docker security › SWAG & CrowdSec** (tabs *Web*, *CrowdSec*, *fail2ban*, *Honeypot*).
+Everything shows up under **Proxy & web security › SWAG & CrowdSec** (tabs *Web*, *CrowdSec*, *fail2ban*, *Honeypot*).
 SWAG's requests and Docker-CrowdSec's alerts and decisions are also part of the Overview's *SWAG & CrowdSec*
 widgets, the reports, the AI analyst and the web attack / scanner / CrowdSec detections (SWAG's events have program
 `swag`, Docker-CrowdSec's `crowdsec-lapi`). They are kept apart from the OPNsense CrowdSec plugin: *OPNsense security ›
@@ -207,6 +207,23 @@ SWAG's logrotate already rotates every `*.log` in that folder.
 | *CrowdSec (SWAG): …* - CrowdSec banned an internet address / an address inside | the level of *CrowdSec (SWAG) ban of an internet address: alert* (default low, info, or **off**: no alert, and the open ones are closed - the bans stay visible on the CrowdSec tab) / **high** |
 | Web attacks and scanners on SWAG | *Settings › Data & detection › Web attacks* |
 | CrowdSec Local API unreachable for 10 minutes | medium, closes by itself |
+
+### Tied to OPNsense and Unraid
+
+What SWAG, CrowdSec, fail2ban and the honeypot see is also matched with what the OPNsense firewall and the Unraid
+containers see. On its own each says little; together they point at an attack that worked. These rules are under
+*Settings › Alert filters › Correlation*:
+
+| Rule | When | Severity |
+|---|---|---|
+| **Device connected to an address that attacked the web proxy** | an internet address attacked SWAG (web attack pattern, honeypot, CrowdSec, fail2ban, bouncer / WAF block) and afterwards a device **inside** connects out to it (OPNsense firewall log): a reverse shell, a payload download or data sent home. Addresses that forward for others (X-Forwarded-For) and addresses 3+ of your devices talk to (CDNs, cloud) are skipped | **high**, **critical** when the firewall let it through |
+| **Banned on SWAG, still let in by the firewall** | an address SWAG's CrowdSec or fail2ban banned, or that touched a honeypot, is afterwards still passed by the OPNsense firewall to **another** port (SSH, Plex, a VPN …). Those bans only work inside SWAG - block it on OPNsense (*Blocked addresses*). Already blocked addresses are skipped; which ports are SWAG itself: *Settings › SWAG & CrowdSec › Ports forwarded to SWAG* (default `80,443`) | medium |
+| **Web attack, then trouble in the site's container** | an attack request on a site got a successful answer (2xx / 3xx), and within 60 minutes the site's Unraid container keeps restarting, turned unhealthy, stopped or logged errors. The container belongs to the site when a part of its host name is the container's name (`nextcloud.example.com` → `nextcloud`) | high |
+
+And the other way round: a **web attack** or **web scanning** alert for an internet address that OPNsense also knows -
+Suricata hits, Q-Feeds / CrowdSec blocklist hits, a port scan alert - is rated one step higher (up to high) and says so.
+All three rules feed the *attack chain*: a device that called an attacker back is *command & control*, and a web
+attack followed by container trouble is an outside chain *attack → impact*.
 
 ## Troubleshooting
 
