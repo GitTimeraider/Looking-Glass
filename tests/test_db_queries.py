@@ -190,3 +190,81 @@ def test_opnsense_and_docker_crowdsec_stay_apart():
             await pool.execute("DELETE FROM snapshots WHERE key IN ('crowdsec_decisions', 'crowdsec_lapi_decisions')")
             await db.close()
     asyncio.run(main())
+
+
+def test_opnsense_pages_only_count_opnsense():
+    """OPNsense security › Authentication leaves UniFi's (or any other product's) logins out; Threats' alert panels
+    leave out the alerts of other products and of CrowdSec in Docker."""
+    from datetime import datetime, timezone
+
+    from lookingglass.detections import raise_alert
+    from lookingglass.parsers.common import event
+
+    async def main():
+        await db.connect(DSN)
+        pool = db.pool()
+        try:
+            await pool.execute("TRUNCATE events, alerts")
+            now = datetime.now(timezone.utc)
+            await db.copy_events([
+                event(now, "auth", program="sshd", severity=4, action="login_failed", src_ip="45.1.1.1", username="root"),
+                event(now, "unifi", program="unifi", severity=4, action="login_failed", src_ip="45.2.2.2", username="admin"),
+                event(now, "unifi", program="unifi", severity=5, action="login_success", src_ip="192.168.1.9", username="me")])
+            by = {p["id"]: p for p in (await run_dashboard("auth", 24))["panels"]}
+            assert by["kpi"]["rows"][0]["Failed logins"] == 1 and by["kpi"]["rows"][0]["Successful logins"] == 0
+            assert [r["ip"] for r in by["fails"]["rows"]] == ["45.1.1.1"] and by["ok"]["rows"] == []
+            assert {r["label"] for r in by["users"]["rows"]} == {"root"}
+            assert by["fails"]["drill"]["base"]["source"] == "auth,vpn,system"
+            await raise_alert("ids", "high", "Suricata: x", "ids:x", src_ip="45.1.1.1")
+            await raise_alert("honeypot", "high", "Honeypot touched by 127.0.0.1", "honeypot:127.0.0.1", src_ip="127.0.0.1")
+            await raise_alert("crowdsec", "high", "CrowdSec (SWAG): a", "crowdsec-lapi:45.3.3.3:a", src_ip="45.3.3.3")
+            await raise_alert("crowdsec", "high", "CrowdSec (OPNsense): b", "crowdsec:45.4.4.4:b", src_ip="45.4.4.4")
+            thr = {p["id"]: p for p in (await run_dashboard("threats", 24))["panels"]}
+            assert thr["kpi"]["rows"][0]["Open high/critical alerts"] == 2
+            assert {r["label"]: r["v"] for r in thr["alerts"]["rows"]} == {"ids": 1, "crowdsec": 1}
+            assert sum(r["v"] for r in thr["sev"]["rows"]) == 2
+        finally:
+            await pool.execute("TRUNCATE events, alerts")
+            await db.close()
+    asyncio.run(main())
+
+
+def test_crowdsec_swag_alert_setting():
+    """Settings › SWAG & CrowdSec › CrowdSec (SWAG) ban of an internet address: alert - off / info / low. Inside the
+    network always high; the OPNsense plugin keeps its own (low)."""
+    from datetime import datetime, timezone
+
+    from lookingglass.config import Settings
+    from lookingglass.detections import DetectionEngine
+    from lookingglass.parsers.common import event
+
+    async def run(level, rows):
+        pool = db.pool()
+        await pool.execute("TRUNCATE events")
+        await db.copy_events(rows)
+        await db.kv_set("wm:crowdsec", 0)
+        await DetectionEngine(Settings(crowdsec_lapi_alerts=level)).crowdsec_alerts()
+        return {r["fingerprint"]: (r["severity"], r["status"]) for r in await pool.fetch(
+            "SELECT fingerprint, severity, status FROM alerts WHERE rule = 'crowdsec'")}
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            await db.pool().execute("TRUNCATE events, alerts")
+            now = datetime.now(timezone.utc)
+            ev = lambda prog, ip, sc: event(now, "crowdsec", program=prog, severity=4, action="ban", src_ip=ip,  # noqa: E731
+                                            data={"scenario": sc})
+            got = await run("low", [ev("crowdsec-lapi", "45.8.8.8", "probing")])
+            assert got == {"crowdsec-lapi:45.8.8.8:probing": ("low", "open")}
+            # off: no new ones, the open one closed; inside the network still high; the OPNsense plugin unchanged
+            got = await run("off", [ev("crowdsec-lapi", "45.7.7.7", "crawl"), ev("crowdsec-lapi", "192.168.1.5", "ssh-bf"),
+                                    ev("crowdsec", "45.6.6.6", "ssh-bf")])
+            assert got == {"crowdsec-lapi:45.8.8.8:probing": ("low", "closed"),
+                           "crowdsec-lapi:192.168.1.5:ssh-bf": ("high", "open"),
+                           "crowdsec:45.6.6.6:ssh-bf": ("low", "open")}
+            got = await run("info", [ev("crowdsec-lapi", "45.5.5.5", "crawl")])
+            assert got["crowdsec-lapi:45.5.5.5:crawl"] == ("info", "open")
+        finally:
+            await db.pool().execute("TRUNCATE events, alerts")
+            await db.close()
+    asyncio.run(main())

@@ -204,8 +204,8 @@ SWAG's logrotate already rotates every `*.log` in that folder.
 |---|---|
 | fail2ban banned an internet address / an address inside | the level of *fail2ban ban of an internet address: alert* (default low, or off) / **high** |
 | Honeypot touched from the internet / from inside | *Honeypot hit from the internet: alert* (default low) / **high** |
-| CrowdSec alert for an internet / internal address | low (handled) / high - the same rule as the OPNsense plugin |
-| Web attacks and scanners on SWAG | the same rules and settings as nginx on OPNsense (*Settings › Data & detection › Web attacks*) |
+| *CrowdSec (SWAG): …* - CrowdSec banned an internet address / an address inside | the level of *CrowdSec (SWAG) ban of an internet address: alert* (default low, info, or **off**: no alert, and the open ones are closed - the bans stay visible on the CrowdSec tab) / **high** |
+| Web attacks and scanners on SWAG | *Settings › Data & detection › Web attacks* |
 | CrowdSec Local API unreachable for 10 minutes | medium, closes by itself |
 
 ## Troubleshooting
