@@ -177,7 +177,11 @@ def test_poller_end_to_end():
     again; Bichon's history replaces the metrics runs without doubles once the token may read it."""
     from lookingglass import alert_filters, db
 
-    page = {"text": metrics_text(start=time_now() - 600), "history": None}
+    # one clock reading for each sync: Bichon reports the same start in its metrics and in its history, and the run
+    # id is built from it - two readings a second apart would make two different runs (an intermittent failure)
+    t0 = time_now()
+    start1, start2 = t0 - 600, t0 - 60
+    page = {"text": metrics_text(start=start1), "history": None}
 
     def handler(req: httpx.Request) -> httpx.Response:
         assert req.headers["authorization"] == "Bearer tok"
@@ -208,13 +212,13 @@ def test_poller_end_to_end():
             assert [(r["job"], r["kind"], r["status"]) for r in rows] == [
                 (bichon.DATA_BACKUP_JOB, "backup", "success"), ("me@example.com", "backup", "success"), ("", "stats", "success")]
             # the next sync fails
-            page["text"] = metrics_text(start=time_now() - 60, succeeded=0)
+            page["text"] = metrics_text(start=start2, succeeded=0)
             await p.poll()
             a = await pool.fetchrow("SELECT rule, status, title FROM alerts")
             assert (a["rule"], a["status"]) == ("backup_failed", "open") and a["title"] == "Bichon mail sync 'me@example.com' failed"
             # the token may now read the history: the same syncs, from Bichon, with folder details
             p.history_ok = None
-            s1, s2 = int((time_now() - 600) * 1000), int((time_now() - 60) * 1000)
+            s1, s2 = int(start1 * 1000), int(start2 * 1000)
             page["history"] = [{"start_time": s1, "end_time": s1 + 10_250, "status": "Success", "trigger": "Scheduled"},
                                {"start_time": s2, "end_time": s2 + 4_000, "status": "Partial", "trigger": "Scheduled",
                                 "folder_details": {"Junk": {"folder_name": "Junk", "planned": 4, "current": 0,
