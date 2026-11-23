@@ -259,6 +259,19 @@
     <div class="small" id="flt-msg"></div>
     <div id="flt-preview-out"></div>
   </div>
+  <div class="card" style="margin-top:14px">
+    <h3>Recurring mute windows</h3>
+    <p class="small muted">For things that make noise at the same time every week - a backup that stops containers or
+      fills their logs with errors, a scheduled parity check: during these windows new alerts of the chosen categories
+      are stored silently instead of shown and mailed. For a one-off maintenance window use
+      <a href="/snooze">Snooze &amp; maintenance</a>; to mute something always, a filter above.</p>
+    <form class="settings-form" data-group="mute" autocomplete="off"></form>
+    <div class="filters" style="margin-top:12px">
+      <button type="button" data-save="mute">Save</button>
+      <button type="button" class="secondary" id="mute-help-btn">Format &amp; categories…</button>
+    </div>
+    <div class="small" id="msg-mute"></div>
+  </div>
 </section>
 {% endblock %}
 {% block scripts %}
@@ -400,6 +413,7 @@ function wireTheme() {
   if (corners) corners.onchange = () => { document.documentElement.dataset.corners = corners.value; };
 }
 const gmsg = (g, html, ok) => { const m = document.getElementById("msg-" + g); m.innerHTML = html; m.className = "small " + (ok ? "ok-msg" : "err"); };
+document.getElementById("mute-help-btn").onclick = () => LG.muteHelp(document.getElementById("s-mute_schedule"));
 document.querySelectorAll("[data-save]").forEach(b => b.onclick = async () => {
   const g = b.dataset.save;
   try {

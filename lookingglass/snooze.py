@@ -17,7 +17,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import alert_filters as af
-from . import db
+from . import db, mute_schedule
+from .config import get_settings
 
 log = logging.getLogger(__name__)
 
@@ -117,9 +118,16 @@ async def check(rule: str, src_ip: str | None, dst_ip: str | None) -> dict[str, 
                 await db.pool().execute("UPDATE snoozes SET hits = hits + 1, last_hit = now() WHERE id = $1", sn["id"])
                 return {"id": sn["id"], "name": sn.get("name") or f"snooze #{sn['id']}",
                         "until": sn["ends_at"].isoformat()}
+        return recurring(rule, now)
     except Exception:  # noqa: BLE001 - a broken snooze must never lose an alert
         log.exception("snooze check failed")
     return None
+
+
+def recurring(rule: str, now: datetime | None = None) -> dict[str, Any] | None:
+    """The recurring mute window (Settings › Alert filters) that covers an alert of ``rule`` now, else None."""
+    s = get_settings()
+    return mute_schedule.covering(s.mute_schedule, s.timezone, rule, now)
 
 
 async def covering(alerts: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -128,7 +136,7 @@ async def covering(alerts: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
     try:
         active = await _active()
     except Exception:  # noqa: BLE001
-        return out
+        active = []
     now = datetime.now(timezone.utc)
     for a in alerts:
         for sn in active:
@@ -136,6 +144,12 @@ async def covering(alerts: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
                 out[a["id"]] = {"id": sn["id"], "name": sn.get("name") or f"snooze #{sn['id']}",
                                 "until": sn["ends_at"].isoformat()}
                 break
+        else:
+            try:
+                if rec := recurring(a.get("rule") or "", now):
+                    out[a["id"]] = rec
+            except Exception:  # noqa: BLE001
+                log.exception("recurring mute window check failed")
     return out
 
 

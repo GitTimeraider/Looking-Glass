@@ -52,6 +52,7 @@ GROUPS = {
     "intel": "Threat intel & traps",
     "packages": "Container packages",
     "blocking": "Blocking",
+    "mute": "Recurring mute windows",  # shown under Settings › Alert filters
 }
 
 FIELDS: list[Field] = [
@@ -366,6 +367,11 @@ FIELDS: list[Field] = [
           "included): 'source:unraid tue 01-02' = Tuesdays 01:00-02:00, 'blocks mon-fri 22-06' = weeknights, "
           "'* sun 03-05', 'dns 02-04' = every day. Without days / hours it is ignored always.",
           placeholder="source:unraid tue 01-02, blocks"),
+    Field("mute_schedule", "mute", "Recurring mute windows", "list", "Every week at these days / times, new alerts of "
+          "a category are stored silently: not shown as open and not mailed, but still counted for attack chains and "
+          "the risk score. Local time (Settings › Display › Time zone), the end time not included. Format: category "
+          "[days] [from-to], e.g. 'unraid_container_errors tue 01:00-04:00' - see Format & categories for every "
+          "category.", placeholder="unraid_container_errors tue 01:00-04:00"),
     Field("risk_enabled", "behavior", "Risk score per device / address", "bool", "Every alert adds points (info 1, low "
           "3, medium 8, high 20, critical 40; once per rule) that fade over time; one alert when the total is high."),
     Field("risk_threshold", "behavior", "Risk score: alert from", "int", "", min=10, max=1000),
@@ -669,6 +675,12 @@ def _coerce(f: Field, value: Any) -> Any:
         from .behavior import parse_seasonal_ignore
         try:
             parse_seasonal_ignore(v)
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: {exc}") from exc
+    if f.key == "mute_schedule" and v:
+        from .mute_schedule import parse
+        try:
+            parse(v)
         except ValueError as exc:
             raise SettingsError(f"{f.label}: {exc}") from exc
     if f.key == "pkg_tool_env" and v:

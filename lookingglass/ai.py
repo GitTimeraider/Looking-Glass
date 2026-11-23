@@ -419,7 +419,8 @@ async def tool_backup_status(days: int = 7) -> Any:
 
 # Settings tabs as the web UI names them (settings.html); test_ai_settings checks they stay the same
 SETTINGS_TABS = {**{g: label for g, label in GROUPS.items()}, "ingest": "Ingestion & network",
-                 "email": "Email & notifications", "packages": "Unraid servers › Container packages"}
+                 "email": "Email & notifications", "packages": "Unraid servers › Container packages",
+                 "mute": "Alert filters › Recurring mute windows"}
 # settings pages that are not plain fields (managed in their own lists / pages)
 SETTINGS_PAGES = [
     {"path": "Settings › Alert filters", "what": "Stop alerts you don't want or change their severity. Conditions: "

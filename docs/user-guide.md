@@ -171,3 +171,24 @@ destination) and rules; with neither, it covers every alert. Alerts that were al
 mailed while the snooze lasts; the Alerts page shows a banner while one is active. *End now* stops it early. For
 something that should stay quiet for good, use *Mute similar…* (an alert filter) instead.
 
+### Recurring mute windows
+
+For noise that comes back at the same time every week - an Unraid appdata backup that stops containers or fills their
+logs with errors, a scheduled parity check - use **Settings › Alert filters › Recurring mute windows**. One window per
+line, in local time (Settings › Display › Time zone), the end time not included:
+
+```
+category [days] [from-to]
+
+unraid_container_errors tue 01:00-04:00     errors in container logs, Tuesdays 01:00-04:00
+unraid mon+thu 03-05                        every Unraid alert, Mondays and Thursdays 03:00-05:00
+backups sun                                 every backup alert, all of Sunday
+unraid_container_down mon-fri 23:30-01:00   past midnight: belongs to the day it starts on
+```
+
+The category is a single rule, a whole group (`unraid`, `backups`, `firewall`, `dns` …) or `*` for every alert; days
+are `mon` … `sun`, ranges (`mon-fri`) or several (`sat+sun`); left out = every day or the whole day (at least one of
+the two is needed). **Format & categories…** next to the Save button lists every category and adds a line for the one
+you click. Inside a window new alerts are handled exactly like during a snooze: stored closed (marked *snoozed*), not
+mailed, still counted for attack chains and the risk score; alerts that were already open are not mailed.
+

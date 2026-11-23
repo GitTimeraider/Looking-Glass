@@ -106,6 +106,7 @@ class Settings(BaseSettings):
     seasonal_enabled: bool = True
     seasonal_sensitivity: int = 6
     seasonal_ignore: str = ""
+    mute_schedule: str = ""  # recurring mute windows (mute_schedule.py)
     risk_enabled: bool = True
     risk_threshold: int = 60
     risk_half_life: int = 24
