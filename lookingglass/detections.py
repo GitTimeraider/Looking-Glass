@@ -1199,20 +1199,24 @@ class DetectionEngine:
             "min(ts) AS first, max(ts) AS last, program IS NOT DISTINCT FROM 'crowdsec-lapi' AS docker "
             "FROM events WHERE id > $1 AND id <= $2 AND source = 'crowdsec' AND action IN ('alert', 'ban', 'captcha') "
             "GROUP BY 1, 2, 6", last, current)
-        # CrowdSec in Docker (SWAG): its own level, Settings › SWAG & CrowdSec (off = no alert for internet addresses)
+        # each CrowdSec its own level (off = no alert for internet addresses): CrowdSec in Docker (SWAG) under
+        # Settings › SWAG & CrowdSec, the OPNsense plugin under Settings › OPNsense
         lapi_level = getattr(self.settings, "crowdsec_lapi_alerts", "low")
-        if lapi_level == "off":  # switched off: the ones still open (from internet addresses) are closed as well
-            open_fps = [r["fingerprint"] for r in await db.pool().fetch(
-                "SELECT fingerprint FROM alerts WHERE rule = 'crowdsec' AND fingerprint LIKE 'crowdsec-lapi:%' "
-                "AND status <> 'closed' AND severity <> 'high'")]
-            if open_fps:
-                await close_alerts("crowdsec", open_fps, "CrowdSec (SWAG) alerts are switched off (Settings › SWAG & CrowdSec)")
+        opn_level = getattr(self.settings, "crowdsec_opnsense_alerts", "low")
+        for lvl, like, where in ((lapi_level, "crowdsec-lapi:%", "SWAG) alerts are switched off (Settings › SWAG & CrowdSec"),
+                                 (opn_level, "crowdsec:%", "OPNsense) alerts are switched off (Settings › OPNsense")):
+            if lvl == "off":  # switched off: the ones still open (from internet addresses) are closed as well
+                open_fps = [r["fingerprint"] for r in await db.pool().fetch(
+                    "SELECT fingerprint FROM alerts WHERE rule = 'crowdsec' AND fingerprint LIKE $1 "
+                    "AND status <> 'closed' AND severity <> 'high'", like)]
+                if open_fps:
+                    await close_alerts("crowdsec", open_fps, f"CrowdSec ({where})")
         for r in rows:
             ip = str(r["src_ip"]) if r["src_ip"] else None
             internal = self.internal(ip) if ip else False
-            if not internal and r["docker"] and lapi_level == "off":
+            level = lapi_level if r["docker"] else opn_level
+            if not internal and level == "off":
                 continue
-            level = lapi_level if r["docker"] else "low"
             rating = Rating("high", "behaviour detected from INSIDE the network", sticky=True) if internal else \
                 Rating(level, "CrowdSec detected it and handles it (ban / captcha) - working as intended", sticky=True)
             # which CrowdSec: the OPNsense plugin or CrowdSec in Docker next to SWAG - kept apart, each its own alert

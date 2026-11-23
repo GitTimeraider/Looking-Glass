@@ -52,6 +52,7 @@ GROUPS = {
     "intel": "Threat intel & traps",
     "packages": "Container packages",
     "blocking": "Blocking",
+    "mute": "Recurring mute windows",  # shown under Settings › Alert filters
 }
 
 FIELDS: list[Field] = [
@@ -103,6 +104,11 @@ FIELDS: list[Field] = [
     Field("unbound_query_pull", "opnsense", "Pull Unbound DNS queries", "bool", "Needs Reporting › Settings › Unbound DNS statistics."),
     Field("crowdsec_pull", "opnsense", "Pull CrowdSec alerts & decisions", "bool",
           "Off also hides the CrowdSec tab under Threats and its Overview widgets."),
+    Field("crowdsec_opnsense_alerts", "opnsense", "CrowdSec (OPNsense) ban of an internet address: alert", "choice",
+          "The alert level when the CrowdSec plugin on OPNsense detects and bans / captchas an internet address (one "
+          "alert per address and scenario). That is CrowdSec doing its job: 'off' raises none and closes the open ones - "
+          "the bans stay visible under Threats › CrowdSec, in reports and the Overview. An address inside your network "
+          "is always high.", choices=("off", "info", "low")),
     Field("blocklist_aliases", "opnsense", "Blocklist aliases", "text", "The firewall aliases (pf tables) of blocking "
           "tools, one tool per line: Name: alias, alias - * matches any characters. For each line Looking Glass finds the "
           "rules that use these aliases (the tool's own and yours), counts the addresses in them and the packets the "
@@ -361,6 +367,11 @@ FIELDS: list[Field] = [
           "included): 'source:unraid tue 01-02' = Tuesdays 01:00-02:00, 'blocks mon-fri 22-06' = weeknights, "
           "'* sun 03-05', 'dns 02-04' = every day. Without days / hours it is ignored always.",
           placeholder="source:unraid tue 01-02, blocks"),
+    Field("mute_schedule", "mute", "Recurring mute windows", "list", "Every week at these days / times, new alerts of "
+          "a category are stored silently: not shown as open and not mailed, but still counted for attack chains and "
+          "the risk score. Local time (Settings › Display › Time zone), the end time not included. Format: category "
+          "[days] [from-to], e.g. 'unraid_container_errors tue 01:00-04:00' - see Format & categories for every "
+          "category.", placeholder="unraid_container_errors tue 01:00-04:00"),
     Field("risk_enabled", "behavior", "Risk score per device / address", "bool", "Every alert adds points (info 1, low "
           "3, medium 8, high 20, critical 40; once per rule) that fade over time; one alert when the total is high."),
     Field("risk_threshold", "behavior", "Risk score: alert from", "int", "", min=10, max=1000),
@@ -664,6 +675,12 @@ def _coerce(f: Field, value: Any) -> Any:
         from .behavior import parse_seasonal_ignore
         try:
             parse_seasonal_ignore(v)
+        except ValueError as exc:
+            raise SettingsError(f"{f.label}: {exc}") from exc
+    if f.key == "mute_schedule" and v:
+        from .mute_schedule import parse
+        try:
+            parse(v)
         except ValueError as exc:
             raise SettingsError(f"{f.label}: {exc}") from exc
     if f.key == "pkg_tool_env" and v:

@@ -347,6 +347,50 @@ const LG = {
     return { onClick: (e, els) => { if (els.length) fn(els[0].index, els[0].datasetIndex); },
              onHover: (e, els) => { e.native.target.style.cursor = els.length ? "pointer" : "default"; } };
   },
+  /** "Format & categories" popup of the recurring mute windows (Settings › Alert filters). Clicking a category adds a
+   *  line for it to ``target`` (a textarea), ready to fill in the days and times. */
+  async muteHelp(target) {
+    let dlg = document.getElementById("mute-help");
+    if (!dlg) {
+      dlg = document.createElement("dialog");
+      dlg.id = "mute-help"; dlg.className = "dlg";
+      dlg.innerHTML = `<div class="dlg-head"><h3>Recurring mute windows: format &amp; categories</h3><button type="button" class="secondary" data-close>Close</button></div><div class="mh-body"><span class="spinner"></span></div>`;
+      document.body.appendChild(dlg);
+      dlg.querySelector("[data-close]").onclick = () => dlg.close();
+      dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });
+    }
+    dlg.showModal();
+    const body = dlg.querySelector(".mh-body");
+    let r;
+    try { r = await LG.api("/api/mute-schedule/reference"); } catch (e) { body.innerHTML = `<div class="err">${LG.esc(e.message)}</div>`; return; }
+    const code = t => `<span class="mono">${LG.esc(t)}</span>`;
+    const add = (t, label) => target ? `<button type="button" class="secondary small" data-add="${LG.esc(t)}" title="Add a line for ${LG.esc(label)}">${LG.esc(t)}</button>` : code(t);
+    body.innerHTML = `
+      <p>One window per line: ${code(r.format)}. Times are local time (Settings › Display › Time zone); the end time itself is not included.</p>
+      <table class="small"><tbody>
+        <tr><td><b>category</b></td><td>a single rule (${code("unraid_container_errors")}), a whole group (${code("unraid")}, ${code("backups")} …) or ${code("*")} for every alert - all listed below</td></tr>
+        <tr><td><b>days</b></td><td>${r.days.map(code).join(" ")}; ranges ${code("mon-fri")}, ${code("fri-mon")}; several ${code("sat+sun")}, ${code("mon+thu")}. Left out = every day.</td></tr>
+        <tr><td><b>from-to</b></td><td>${code("01:30-04:00")}, whole hours ${code("01-04")}, past midnight ${code("22:00-06:00")} (belongs to the day it starts on), until midnight ${code("20:00-24:00")}. Left out = the whole day.</td></tr>
+      </tbody></table>
+      <p class="small muted">At least days or a time is needed - to mute something for good, use an alert filter. Inside a window
+        new alerts are stored silently (Alerts › Closed, marked “snoozed”): not shown as open and not mailed, but still counted for
+        attack chains and the risk score. Alerts that were already open are not mailed while the window lasts.</p>
+      <h4>Examples</h4>
+      <table class="small"><tbody>${r.examples.map(([t, d]) => `<tr><td>${code(t)}</td><td>${LG.esc(d)}</td></tr>`).join("")}</tbody></table>
+      <h4>Categories</h4>${target ? `<p class="small muted">Click one to add a line for it below the existing ones.</p>` : ""}
+      <p>${add("*", "every alert")} <span class="small muted">every alert</span></p>
+      ${r.groups.map(g => `<details><summary>${add(g.key, g.name)} <b>${LG.esc(g.name)}</b> <span class="small muted">(${g.rules.length} rules)</span></summary>
+        <table class="small"><tbody>${g.rules.map(x => `<tr><td>${add(x.rule, x.label)}</td><td>${LG.esc(x.label)}</td></tr>`).join("")}</tbody></table></details>`).join("")}`;
+    body.querySelectorAll("[data-add]").forEach(b => b.onclick = e => {
+      e.preventDefault();
+      const lines = target.value.split("\n").filter(l => l.trim());
+      lines.push(b.dataset.add + " tue 01:00-04:00");
+      target.value = lines.join("\n");
+      target.dispatchEvent(new Event("input"));
+      dlg.close(); target.focus();
+      const at = target.value.length; target.setSelectionRange(at - " tue 01:00-04:00".length + 1, at);
+    });
+  },
   /* ---- chart helpers ---- */
   color(i) { return LG.palette[i % LG.palette.length]; },
   timeLabel(t, hours) {

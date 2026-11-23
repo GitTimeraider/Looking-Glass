@@ -33,6 +33,10 @@ CONTAINER_RULES = ("unraid_container_restarting", "unraid_container_unhealthy", 
                    "unraid_container_errors")
 CONTAINER_WINDOW = 60  # minutes between a successful web attack and the container's trouble
 MAX_IPS = 5000  # addresses looked up per run at most (a flood of new firewall lines is read over several runs)
+REPLY_HOURS = 2  # how far back an inbound connection from the attacker makes a mirrored outbound packet its reply
+# a firewall line that can be the start of a connection: not TCP (no flags logged) or a TCP SYN without ACK. ACK, PSH,
+# FIN, RST or SYN+ACK packets belong to a session that already exists - for a server that is the attacker's own session
+OPENS_SQL = "(coalesce(data->>'tcpflags', '') = '' OR (data->>'tcpflags' LIKE '%S%' AND data->>'tcpflags' NOT LIKE '%A%'))"
 
 # what makes an address an attacker of the web proxy, per event (SQL)
 ATTACKER_SQL = (
@@ -128,17 +132,32 @@ class CrossLink:
 
     # ------------------------------------------------------------------------------------------------------------
     async def callbacks(self, last: int, current: int) -> None:
-        """A device inside connects out to an address that attacked the web proxy before (proxy_callback)."""
+        """A device inside connects out to an address that attacked the web proxy before (proxy_callback).
+
+        Only connections the device OPENS count. Packets that answer a connection the attacker opened (a TCP packet
+        with ACK / without SYN, or one that mirrors an inbound connection from the attacker: our port = the port it
+        connected to, its port = the port it came from) are the server's replies: when a ban cuts off the attacker
+        mid-session the firewall drops those replies as a state violation, which is not a call home."""
         pool = db.pool()
         rows = await pool.fetch(
-            "SELECT host(src_ip) src, host(dst_ip) dst, min(ts) first, max(ts) last, count(*) n, "
-            f"array_agg(DISTINCT dst_port) FILTER (WHERE dst_port IS NOT NULL) dports, count(*) FILTER (WHERE {ALLOWED_ROW}) passed "
-            "FROM events WHERE id > $1 AND id <= $2 AND source = 'firewall' AND src_ip IS NOT NULL AND dst_ip IS NOT NULL "
-            "GROUP BY 1, 2", last, current)
+            "SELECT host(src_ip) src, host(dst_ip) dst FROM events WHERE id > $1 AND id <= $2 AND source = 'firewall' "
+            f"AND src_ip IS NOT NULL AND dst_ip IS NOT NULL AND {OPENS_SQL} GROUP BY 1, 2", last, current)
         rows = [r for r in rows if self.internal(r["src"]) and not self.internal(r["dst"])]
         bad = await self.attackers([r["dst"] for r in rows], ATTACKER_SQL)
         if not bad:
             return
+        pairs = [(r["src"], r["dst"]) for r in rows if r["dst"] in bad]
+        rows = await pool.fetch(
+            "SELECT host(o.src_ip) src, host(o.dst_ip) dst, min(o.ts) first, max(o.ts) last, count(*) n, "
+            "array_agg(DISTINCT o.dst_port) FILTER (WHERE o.dst_port IS NOT NULL) dports, "
+            f"count(*) FILTER (WHERE {ALLOWED_ROW}) passed "
+            "FROM events o JOIN unnest($3::inet[], $4::inet[]) p(s, d) ON o.src_ip = p.s AND o.dst_ip = p.d "
+            f"WHERE o.id > $1 AND o.id <= $2 AND o.source = 'firewall' AND {OPENS_SQL} "
+            # the mirror of an inbound connection from the attacker = a reply on its session (UDP, or no flags logged)
+            "AND NOT (o.src_port IS NOT NULL AND o.dst_port IS NOT NULL AND EXISTS (SELECT 1 FROM events i "
+            "  WHERE i.source = 'firewall' AND i.src_ip = o.dst_ip AND i.dst_ip = o.src_ip AND i.src_port = o.dst_port "
+            "  AND i.dst_port = o.src_port AND i.ts BETWEEN o.ts - make_interval(hours => $5) AND o.ts)) "
+            "GROUP BY 1, 2", last, current, [p[0] for p in pairs], [p[1] for p in pairs], REPLY_HOURS)
         # a destination many devices of yours talk to is a popular service (CDN / cloud) that also hosts scanners
         shared = {r["dst"]: r["n"] for r in await pool.fetch(
             "SELECT host(dst_ip) dst, count(DISTINCT src_ip) n FROM events WHERE dst_ip = ANY($1::inet[]) "

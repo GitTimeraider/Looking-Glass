@@ -14,6 +14,7 @@ from lookingglass.parsers.common import event
 DSN = os.environ.get("TEST_DATABASE_URL")
 NOW = datetime.now(timezone.utc)
 ATTACKER, SCANNER, CDN = "203.0.113.66", "198.51.100.7", "192.0.2.80"
+PROBER, SHELL = "203.0.113.90", "203.0.113.91"
 
 
 def ev(source, minutes=1, **kw):
@@ -61,6 +62,28 @@ def test_cross_source_rules():
                 # a CDN address that "attacks" (requests forwarded for others) and that many devices use
                 web(CDN, 30, "/.env", 200, ["sensitive_file"], x_forwarded_for="1.2.3.4"),
             ] + [ev("firewall", 5, action="pass", src_ip=f"192.168.1.{30 + i}", dst_ip=CDN, dst_port=443) for i in range(4)]
+            # a prober hits 443 on .20 (port forward), gets banned mid-session: the server's last replies on that
+            # session (443 -> its source port, ACK / PSH+ACK) are dropped as state violations - not a call home
+            evs += [
+                ev("firewall", 15, action="pass", src_ip=PROBER, src_port=40946, dst_ip="192.168.1.20", dst_port=443,
+                   direction="in", data={"tcpflags": "S"}),
+                web(PROBER, 15, "/.git/config", 403, ["sensitive_file"]),
+                ev("crowdsec", 15, action="ban", src_ip=PROBER, data={"scenario": "crowdsecurity/http-probing"}),
+            ] + [ev("firewall", 14 - i, action="block", src_ip="192.168.1.20", src_port=443, dst_ip=PROBER,
+                    dst_port=40946, direction="out", data={"tcpflags": f}) for i, f in enumerate(["A", "PA", "FA", "SA"])]
+            # UDP (no flags) mirroring an inbound connection is a reply too
+            evs += [
+                ev("firewall", 15, action="pass", src_ip=PROBER, src_port=5555, dst_ip="192.168.1.21", dst_port=51820,
+                   proto="udp", direction="in"),
+                ev("firewall", 14, action="block", src_ip="192.168.1.21", src_port=51820, dst_ip=PROBER, dst_port=5555,
+                   proto="udp", direction="out"),
+            ]
+            # ... but a server that OPENS a connection (SYN) to an attacker is still caught, even when blocked
+            evs += [
+                web(SHELL, 15, "/api?x=${jndi:ldap://x}", 403, ["rce"]),
+                ev("firewall", 14, action="block", src_ip="192.168.1.22", src_port=50123, dst_ip=SHELL, dst_port=4444,
+                   direction="out", data={"tcpflags": "S"}),
+            ]
             # the attacker also triggered Suricata on OPNsense
             evs.append(ev("suricata", 35, action="alert", src_ip=ATTACKER, message="ET EXPLOIT x", data={"priority": 1}))
             await db.copy_events(evs)
@@ -72,7 +95,9 @@ def test_cross_source_rules():
             await eng.ban_bypass()
 
             cb = await alerts(pool, "proxy_callback")
-            assert [(a["ip"], a["dst"]) for a in cb] == [("192.168.1.10", ATTACKER)]  # not the scanner, not the CDN
+            # not the scanner, not the CDN, not the replies to the prober
+            assert sorted((a["ip"], a["dst"]) for a in cb) == [("192.168.1.10", ATTACKER), ("192.168.1.22", SHELL)]
+            cb = [a for a in cb if a["dst"] == ATTACKER]
             assert cb[0]["severity"] == "critical" and "web attack (rce)" in cb[0]["description"]
             bp = await alerts(pool, "ban_bypass")
             assert [a["ip"] for a in bp] == [SCANNER] and "port 22)" in bp[0]["title"]  # 443 is SWAG itself
