@@ -369,8 +369,12 @@ const LG = {
       <p>One window per line: ${code(r.format)}. Times are local time (Settings › Display › Time zone); the end time itself is not included.</p>
       <table class="small"><tbody>
         <tr><td><b>category</b></td><td>a single rule (${code("unraid_container_errors")}), a whole group (${code("unraid")}, ${code("backups")} …) or ${code("*")} for every alert - all listed below</td></tr>
-        <tr><td><b>days</b></td><td>${r.days.map(code).join(" ")}; ranges ${code("mon-fri")}, ${code("fri-mon")}; several ${code("sat+sun")}, ${code("mon+thu")}. Left out = every day.</td></tr>
+        <tr><td><b>days</b></td><td>weekdays ${r.days.map(code).join(" ")}, ranges ${code("mon-fri")}, ${code("fri-mon")};
+          days of the month ${code("1st")}, ${code("15th")}, ${code("last")} (the last day);
+          a weekday of the month ${code("1st-tue")}, ${code("3rd-sat")}, ${code("last-fri")}.
+          Several joined with ${code("+")}: ${code("sat+sun")}, ${code("1st+15th")}, ${code("1st-mon+3rd-mon")}. Left out = every day.</td></tr>
         <tr><td><b>from-to</b></td><td>${code("01:30-04:00")}, whole hours ${code("01-04")}, past midnight ${code("22:00-06:00")} (belongs to the day it starts on), until midnight ${code("20:00-24:00")}. Left out = the whole day.</td></tr>
+        <tr><td><b>every N weeks</b></td><td>optional, at the end: ${code("every 2 weeks from 2026-11-10")} - only in the week of that date and every 2 weeks after it (weeks start on Monday). Without days it is on the weekday of that date.</td></tr>
       </tbody></table>
       <p class="small muted">At least days or a time is needed - to mute something for good, use an alert filter. Inside a window
         new alerts are stored silently (Alerts › Closed, marked “snoozed”): not shown as open and not mailed, but still counted for

@@ -111,3 +111,47 @@ def test_alerts_inside_a_window_are_stored_silently(monkeypatch):
         finally:
             await db.close()
     asyncio.run(main())
+
+
+def d(y, mo, day, h=12):
+    return datetime(y, mo, day, h, tzinfo=timezone.utc)
+
+
+def test_days_of_the_month():
+    assert muted("backups 1st 02:00-06:00", "backup_failed", d(2026, 12, 1, 3))
+    assert not muted("backups 1st 02:00-06:00", "backup_failed", d(2026, 12, 2, 3))
+    assert muted("backups 1st+15th", "backup_failed", d(2026, 11, 15))
+    assert muted("backups last", "backup_failed", d(2026, 2, 28)) and not muted("backups last", "backup_failed", d(2026, 2, 27))
+    assert muted("backups last", "backup_failed", d(2026, 12, 31))
+    # past midnight from the last day of the month into the 1st
+    assert muted("backups last 22:00-02:00", "backup_failed", d(2026, 12, 1, 1))
+    assert not muted("backups 31st", "backup_failed", d(2026, 11, 30))  # November has no 31st
+
+
+def test_weekday_of_the_month():
+    # December 2026: Tuesdays are 1, 8, 15, 22, 29
+    assert muted("unraid 1st-tue", "unraid_disk", d(2026, 12, 1)) and not muted("unraid 1st-tue", "unraid_disk", d(2026, 12, 8))
+    assert muted("unraid 3rd-tue", "unraid_disk", d(2026, 12, 15))
+    assert muted("unraid last-tue", "unraid_disk", d(2026, 12, 29)) and not muted("unraid last-tue", "unraid_disk", d(2026, 12, 22))
+    assert muted("unraid 1st-mon+tue", "unraid_disk", d(2026, 12, 8))  # combined with every Tuesday
+
+
+def test_every_n_weeks():
+    spec = "unraid_container_errors tue 01-04 every 2 weeks from 2026-11-10"
+    assert muted(spec, "unraid_container_errors", TUE(2))                              # the week of the date
+    assert not muted(spec, "unraid_container_errors", d(2026, 11, 17, 2))              # the week after
+    assert muted(spec, "unraid_container_errors", d(2026, 11, 24, 2))                  # two weeks later
+    assert not muted(spec, "unraid_container_errors", d(2026, 11, 3, 2))               # before the start
+    # no days: the weekday of the date (Sunday 15 Nov 2026)
+    assert muted("backups every 2 weeks from 2026-11-15", "backup_failed", d(2026, 11, 29))
+    assert not muted("backups every 2 weeks from 2026-11-15", "backup_failed", d(2026, 11, 22))
+    assert not muted("backups every 2 weeks from 2026-11-15", "backup_failed", d(2026, 11, 28))  # Saturday
+    assert muted("unraid every 3 weeks from 2026-11-10 tue", "unraid_disk", d(2026, 12, 1))
+
+
+@pytest.mark.parametrize("bad", ["unraid 0th", "unraid 32nd", "unraid 6th-tue", "unraid 1st-xyz",
+                                 "unraid tue every 0 weeks from 2026-11-10", "unraid tue every 2 weeks from 2026-13-01",
+                                 "unraid every 2 weeks"])
+def test_unreadable_month_and_week_entries(bad):
+    with pytest.raises(ValueError):
+        ms.parse(bad)
