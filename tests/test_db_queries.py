@@ -268,3 +268,44 @@ def test_crowdsec_swag_alert_setting():
             await db.pool().execute("TRUNCATE events, alerts")
             await db.close()
     asyncio.run(main())
+
+
+def test_crowdsec_opnsense_alert_setting():
+    """Settings › OPNsense › CrowdSec (OPNsense) ban of an internet address: alert - off / info / low, like the SWAG
+    one. Inside the network always high; CrowdSec in Docker (SWAG) keeps its own."""
+    from datetime import datetime, timezone
+
+    from lookingglass.config import Settings
+    from lookingglass.detections import DetectionEngine
+    from lookingglass.parsers.common import event
+
+    async def run(level, rows):
+        pool = db.pool()
+        await pool.execute("TRUNCATE events")
+        await db.copy_events(rows)
+        await db.kv_set("wm:crowdsec", 0)
+        await DetectionEngine(Settings(crowdsec_opnsense_alerts=level)).crowdsec_alerts()
+        return {r["fingerprint"]: (r["severity"], r["status"]) for r in await pool.fetch(
+            "SELECT fingerprint, severity, status FROM alerts WHERE rule = 'crowdsec'")}
+
+    async def main():
+        await db.connect(DSN)
+        try:
+            await db.pool().execute("TRUNCATE events, alerts")
+            now = datetime.now(timezone.utc)
+            ev = lambda prog, ip, sc: event(now, "crowdsec", program=prog, severity=4, action="ban", src_ip=ip,  # noqa: E731
+                                            data={"scenario": sc})
+            got = await run("low", [ev("crowdsec", "45.8.8.8", "probing")])
+            assert got == {"crowdsec:45.8.8.8:probing": ("low", "open")}
+            # off: no new ones, the open one closed; inside the network still high; the SWAG one unchanged
+            got = await run("off", [ev("crowdsec", "45.7.7.7", "crawl"), ev("crowdsec", "192.168.1.5", "ssh-bf"),
+                                    ev("crowdsec-lapi", "45.6.6.6", "ssh-bf")])
+            assert got == {"crowdsec:45.8.8.8:probing": ("low", "closed"),
+                           "crowdsec:192.168.1.5:ssh-bf": ("high", "open"),
+                           "crowdsec-lapi:45.6.6.6:ssh-bf": ("low", "open")}
+            got = await run("info", [ev("crowdsec", "45.5.5.5", "crawl")])
+            assert got["crowdsec:45.5.5.5:crawl"] == ("info", "open")
+        finally:
+            await db.pool().execute("TRUNCATE events, alerts")
+            await db.close()
+    asyncio.run(main())

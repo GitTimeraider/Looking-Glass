@@ -103,6 +103,11 @@ FIELDS: list[Field] = [
     Field("unbound_query_pull", "opnsense", "Pull Unbound DNS queries", "bool", "Needs Reporting › Settings › Unbound DNS statistics."),
     Field("crowdsec_pull", "opnsense", "Pull CrowdSec alerts & decisions", "bool",
           "Off also hides the CrowdSec tab under Threats and its Overview widgets."),
+    Field("crowdsec_opnsense_alerts", "opnsense", "CrowdSec (OPNsense) ban of an internet address: alert", "choice",
+          "The alert level when the CrowdSec plugin on OPNsense detects and bans / captchas an internet address (one "
+          "alert per address and scenario). That is CrowdSec doing its job: 'off' raises none and closes the open ones - "
+          "the bans stay visible under Threats › CrowdSec, in reports and the Overview. An address inside your network "
+          "is always high.", choices=("off", "info", "low")),
     Field("blocklist_aliases", "opnsense", "Blocklist aliases", "text", "The firewall aliases (pf tables) of blocking "
           "tools, one tool per line: Name: alias, alias - * matches any characters. For each line Looking Glass finds the "
           "rules that use these aliases (the tool's own and yours), counts the addresses in them and the packets the "
