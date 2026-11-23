@@ -75,6 +75,12 @@ def register(app: FastAPI, settings: Settings) -> None:
     async def snoozes_list():
         return {"snoozes": await snooze.listing()}
 
+    @app.get("/api/mute-schedule/reference")
+    async def mute_schedule_reference():
+        """Settings › Alert filters › Recurring mute windows › Format & categories."""
+        from .. import mute_schedule
+        return mute_schedule.reference()
+
     async def _save_snooze(request: Request, payload: dict, sid: int | None = None) -> dict[str, Any]:
         try:
             v = snooze.clean(payload)
