@@ -289,7 +289,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
                     f"FROM events WHERE {CSL_SEEN} AND action = 'alert' AND src_ip IS NOT NULL GROUP BY 1 ORDER BY 6 DESC LIMIT 25"},
             # the bans in force (snapshot of the last poll): time left counts down in the browser; Unban deletes the
             # decision through the Local API (needs the machine login - "id" is empty without it, so no button)
-            {"id": "csl_active", "tab": "crowdsec", "title": "Active bans (now)", "type": "table", "span": 3,
+            {"id": "csl_active", "tab": "crowdsec", "title": "Active bans (now)", "type": "table", "span": 3, "unban_by": "docker",
              "search": {"cols": ["value", "country", "scenario", "origin"], "placeholder": "Search IP, country, scenario…", "show": 200},
              "drill": {"base": {**CSL_DRILL, "hours": 24 * 90}},
              "cols": [["value", "Target"], ["country", "", "flag"], ["type", "Type"], ["scenario", "Scenario"], ["origin", "Origin"],
@@ -476,6 +476,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
             # the decisions CrowdSec holds now (snapshot of the last pull, rows normalised by crowdsec_ban_row); "ends"
             # counts down in the browser, the unban column deletes the decision on OPNsense (POST /api/crowdsec/unban)
             {"id": "cs_bans", "tab": "crowdsec", "title": "Active bans", "type": "table", "span": 3, "needs": "crowdsec",
+             "unban_by": "opnsense",
              "search": {"cols": ["ip", "country", "reason", "origin"], "placeholder": "Search IP, country, reason…", "show": 200},
              "drill": {"base": {**CS_OPN_DRILL, "hours": 24 * 90}},
              "cols": [["ip", "IP / value", "ip"], ["country", "", "flag"], ["type", "Type"], ["reason", "Reason"],
@@ -745,26 +746,30 @@ def _shared_drill(v: Any) -> Any:
     return [_shared_drill(x) for x in v] if isinstance(v, list) else v
 
 
-def shared_panel(panel: dict[str, Any]) -> dict[str, Any]:
-    """The OPNsense CrowdSec plugin and CrowdSec in Docker share one Local API: the plugin's panels read its events."""
+def shared_panel(panel: dict[str, Any], primary: str) -> dict[str, Any]:
+    """The OPNsense CrowdSec plugin and CrowdSec in Docker share one Local API (``primary``: "docker" / "opnsense"
+    is it): the plugin's panels read its events, and Unban is offered only in the Local API's own Active bans list -
+    the other list loses that column (its rows are the same decisions)."""
     out = dict(panel)
     if "sql" in out:
         out["sql"] = out["sql"].replace(NOT_LAPI, "true").replace(NOT_LAPI_ALERT, "")
     if "drill" in out:
         out["drill"] = _shared_drill(out["drill"])
+    if out.get("unban_by") and out["unban_by"] != primary:
+        out["cols"] = [c for c in out["cols"] if c[2:3] != ["unban"]]
     return out
 
 
 async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] = frozenset(),
-                        tab: str | None = None, scope: str | None = None, shared_cs: bool = False) -> dict[str, Any]:
+                        tab: str | None = None, scope: str | None = None, shared_cs: str | None = None) -> dict[str, Any]:
     """``off``: optional sources (suricata, crowdsec, qfeeds) that are switched off and have no data in the period -
     their panels ("needs"), stat tiles ("needs_cols") and tabs ("needs") are left out.
     ``tab``: on a dashboard with "tabs" only that tab's panels are run (default: the first tab).
     ``scope``: "local" / "public" - only events from such source addresses (dashboards with "scope": True).
-    ``shared_cs``: the OPNsense CrowdSec plugin uses the Docker CrowdSec's Local API (crowdsec_shared.py)."""
+    ``shared_cs``: both CrowdSecs use one Local API, "docker" / "opnsense" is it (crowdsec_shared.py); None: apart."""
     spec = DASHBOARDS[name]
     if shared_cs:
-        spec = {**spec, "panels": [shared_panel(p) for p in spec["panels"]]}
+        spec = {**spec, "panels": [shared_panel(p, shared_cs) for p in spec["panels"]]}
     tabs = [t for t in spec.get("tabs") or [] if t.get("needs") not in off]
     if scope and (scope not in SCOPE_SQL or not spec.get("scope")):
         scope = None
@@ -778,7 +783,7 @@ async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] 
         sql = panel["sql"]
         fast = hours >= rollup.MIN_HOURS and (name, panel["id"]) in ROLLUP_PANELS
         args = [secs, step] if "$2" in sql else [secs]
-        out = {k: v for k, v in panel.items() if k not in ("sql", "where", "limit")}
+        out = {k: v for k, v in panel.items() if k not in ("sql", "where", "limit", "unban_by")}
         try:
             async with db.heavy(hours), db.pool().acquire() as conn:
                 # with the From filter: the hourly counts keep it as a dimension; raw queries read filtered events

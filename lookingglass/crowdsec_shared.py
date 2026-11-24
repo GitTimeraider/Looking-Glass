@@ -6,7 +6,18 @@ directly (crowdsec_lapi.py). Every alert and decision would be stored twice (pro
 ``crowdsec-lapi``) and counted twice: totals, attackers, correlation, and a "CrowdSec (OPNsense)" next to every
 "CrowdSec (SWAG)" alert.
 
-Shared (Settings › OPNsense › CrowdSec on OPNsense uses the Docker CrowdSec's Local API: auto / yes / no):
+It works the other way round too: CrowdSec in Docker logs in to OPNsense's Local API, and Settings › SWAG & CrowdSec
+points at OPNsense. Either way Looking Glass keeps the copy it reads from the Local API directly (it has more: target
+site, URI, AppSec rule ...) and drops the plugin's. Which one IS the Local API only decides where Unban is offered:
+Settings › OPNsense › Shared CrowdSec Local API (auto / docker / opnsense / no):
+
+* docker: the Docker CrowdSec (SWAG) is the Local API, OPNsense's logs in to it;
+* opnsense: OPNsense's is the Local API, the Docker CrowdSec logs in to it;
+* no: two separate CrowdSecs;
+* auto: shared when recognised (below); the Local API is OPNsense's when the URL of Settings › SWAG & CrowdSec points
+  at the OPNsense host, else the Docker one.
+
+Shared:
 
 * the OPNsense poller stores none of the plugin's alerts / decisions (they come from the Local API), only its
   Active bans list (the same decisions, the Unban button works from either list);
@@ -21,8 +32,10 @@ every pull of the plugin; until it is known, both are kept apart as before.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import db, rollup
 
@@ -41,9 +54,32 @@ DUPLICATE = ("source = 'crowdsec' AND program IS DISTINCT FROM 'crowdsec-lapi' A
              "AND l.src_ip IS NOT DISTINCT FROM events.src_ip)")
 
 
+MODES = ("auto", "docker", "opnsense", "no")
+_CACHE_SECONDS = 30.0  # dashboards ask at every refresh: the snapshot is read at most this often
+_cache: tuple[float, dict[str, Any]] = (0.0, {})
+
+
 def mode(settings: Any) -> str:
     m = str(getattr(settings, "crowdsec_shared_lapi", "auto") or "auto").lower()
-    return m if m in ("auto", "yes", "no") else "auto"
+    m = "docker" if m == "yes" else m  # the first version of the setting: yes = the Docker CrowdSec's Local API
+    return m if m in MODES else "auto"
+
+
+def _host(url: str | None) -> str:
+    try:
+        return (urlsplit(str(url or "")).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def primary(settings: Any) -> str:
+    """Which CrowdSec is the Local API: "docker" or "opnsense" (by the setting, or auto: where the Local API URL of
+    Settings › SWAG & CrowdSec points)."""
+    m = mode(settings)
+    if m in ("docker", "opnsense"):
+        return m
+    lapi = _host(getattr(settings, "crowdsec_lapi_url", ""))
+    return "opnsense" if lapi and lapi == _host(getattr(settings, "opnsense_url", "")) else "docker"
 
 
 def possible(settings: Any) -> bool:
@@ -51,13 +87,25 @@ def possible(settings: Any) -> bool:
     return bool(settings.opnsense_enabled and getattr(settings, "crowdsec_pull", True) and settings.crowdsec_lapi_enabled)
 
 
+async def _state() -> dict[str, Any]:
+    global _cache
+    if time.monotonic() - _cache[0] > _CACHE_SECONDS:
+        snap = await db.get_snapshot(KEY)
+        _cache = (time.monotonic(), snap if isinstance(snap, dict) else {})
+    return _cache[1]
+
+
 async def is_shared(settings: Any) -> bool:
     if not possible(settings) or mode(settings) == "no":
         return False
-    if mode(settings) == "yes":
+    if mode(settings) in ("docker", "opnsense"):
         return True
-    state = await db.get_snapshot(KEY)
-    return bool(isinstance(state, dict) and state.get("shared"))
+    return bool((await _state()).get("shared"))
+
+
+async def shared_primary(settings: Any) -> str | None:
+    """None: two CrowdSecs (or not known yet); else which one is the Local API ("docker" / "opnsense")."""
+    return primary(settings) if await is_shared(settings) else None
 
 
 def event_key(ev: dict[str, Any]) -> str | None:
@@ -94,7 +142,7 @@ async def sync(settings: Any, plugin_events: list[dict[str, Any]]) -> bool:
         keys = [k for k in (event_key(e) for e in plugin_events) if k]
         if keys:
             state = await detect(keys, sum(1 for e in plugin_events if e.get("action") == "alert"), prev)
-    shared = mode(settings) == "yes" or bool(state.get("shared"))
+    shared = mode(settings) in ("docker", "opnsense") or bool(state.get("shared"))
     if shared and not prev.get("cleaned"):
         state["removed"] = await forget_duplicates()
         state["cleaned"] = True
@@ -103,8 +151,11 @@ async def sync(settings: Any, plugin_events: list[dict[str, Any]]) -> bool:
     if shared != bool(prev.get("shared_now")):
         log.info("CrowdSec: the OPNsense plugin %s the Local API of Settings › SWAG & CrowdSec (%s)",
                  "uses" if shared else "does not use", mode(settings))
-    state.update(mode=mode(settings), shared_now=shared, at=datetime.now(timezone.utc).isoformat())
+    state.update(mode=mode(settings), shared_now=shared, primary=primary(settings) if shared else None,
+                 at=datetime.now(timezone.utc).isoformat())
     await db.set_snapshot(KEY, state)
+    global _cache
+    _cache = (time.monotonic(), state)
     return shared
 
 
