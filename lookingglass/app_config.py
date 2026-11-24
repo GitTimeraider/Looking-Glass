@@ -363,9 +363,11 @@ FIELDS: list[Field] = [
     Field("anomaly_ml_enabled", "behavior", "Machine learning (Isolation Forest)", "bool", "Scores every device-hour on "
           "7 features (connections, destinations, ports, countries, DNS, failed lookups, blocks) against the "
           "device's own history and alerts on combinations that are rare. Runs locally, nothing leaves the server."),
-    Field("anomaly_ml_sensitivity", "behavior", "Machine learning: sensitivity", "choice", "low = only hours rarer "
-          "than 1 in 2000 normal hours with a feature 4+ deviations off; medium = 1 in 500, 3.5; high = 1 in 200, 3.",
-          choices=("low", "medium", "high")),
+    Field("anomaly_ml_sensitivity", "behavior", "Machine learning: sensitivity", "choice", "From fewest to most alerts - "
+          "an hour alerts when it is rarer than 1 in N normal hours with a feature D deviations off: very_low = 1 in "
+          "10,000, 4.5; low = 1 in 2,000, 4; medium_low = 1 in 1,000, 3.75; medium = 1 in 500, 3.5; medium_high = 1 in "
+          "~300, 3.25; high = 1 in 200, 3; very_high = 1 in 100, 2.5.",
+          choices=("very_low", "low", "medium_low", "medium", "medium_high", "high", "very_high")),
     Field("seasonal_enabled", "behavior", "Unusual for this hour of the week", "bool", "Totals per hour (firewall "
           "blocks, failed logins, DNS, failed lookups, per log source) against the same hour in previous weeks."),
     Field("seasonal_sensitivity", "behavior", "Hour of the week: sensitivity", "int", "How many 'normal deviations' "

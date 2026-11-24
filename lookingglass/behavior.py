@@ -51,7 +51,10 @@ FEATURE_LABEL = {"connections": "connections", "destinations": "destinations", "
 # an increase only counts when it is also meaningful in absolute terms (5 failed lookups instead of 0 is not news)
 MIN_INCREASE = {"connections": 200, "destinations": 30, "ports": 10, "countries": 5, "dns": 200, "failed_lookups": 50,
                 "blocked": 50}
-ML_LEVELS = {"low": (0.9995, 4.0), "medium": (0.998, 3.5), "high": (0.995, 3.0)}  # training percentile, deviation
+# sensitivity -> (training percentile the anomaly score must beat, deviations a feature must be off), least to most
+# alerts: very_low = rarer than 1 in 10,000 normal hours and 4.5 deviations ... very_high = 1 in 100 and 2.5
+ML_LEVELS = {"very_low": (0.9999, 4.5), "low": (0.9995, 4.0), "medium_low": (0.999, 3.75), "medium": (0.998, 3.5),
+             "medium_high": (0.9965, 3.25), "high": (0.995, 3.0), "very_high": (0.99, 2.5)}
 RISK_POINTS = {"info": 1, "low": 3, "medium": 8, "high": 20, "critical": 40}
 # per-device overrides of global settings (devices.limits); a missing key means "use the global setting".
 # key -> (kind, bounds / choices, the global setting it overrides - None: no global setting, "alert")
@@ -61,7 +64,7 @@ MODES = ("alert", "silent", "off")
 LIMITS: dict[str, tuple[str, Any, str | None]] = {
     "volume_factor": ("int", (0, 1000), "behavior_volume_factor"),
     "volume_alerts": ("choice", ("alert", "silent"), None),
-    "ml_sensitivity": ("choice", ("off", "low", "medium", "high"), "anomaly_ml_sensitivity"),
+    "ml_sensitivity": ("choice", ("off", *ML_LEVELS), "anomaly_ml_sensitivity"),
     "ml_alerts": ("choice", ("alert", "silent"), None),
     "risk_threshold": ("int", (0, 1000), "risk_threshold"),
     "new_country": ("mode", MODES, "behavior_new_country"),

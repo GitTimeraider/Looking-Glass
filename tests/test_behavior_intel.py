@@ -402,6 +402,20 @@ def test_clean_limits_baseline():
             clean_limits(bad)
 
 
+def test_ml_sensitivity_levels():
+    from lookingglass.app_config import BY_KEY
+    from lookingglass.behavior import ML_LEVELS
+    order = list(ML_LEVELS)
+    assert order == ["very_low", "low", "medium_low", "medium", "medium_high", "high", "very_high"]
+    assert BY_KEY["anomaly_ml_sensitivity"].choices == tuple(order)
+    # each step alerts more: a lower score percentile and fewer deviations
+    for a, b in zip(order, order[1:]):
+        assert ML_LEVELS[a][0] > ML_LEVELS[b][0] and ML_LEVELS[a][1] > ML_LEVELS[b][1]
+    assert clean_limits({"ml_sensitivity": "very_high"}) == {"ml_sensitivity": "very_high"}
+    with pytest.raises(ValueError):
+        clean_limits({"ml_sensitivity": "extreme"})
+
+
 def test_clean_limits_ml_modes():
     assert clean_limits({"ml_modes": {"connections": "silent", "dns": "", "blocked": "default", "ports": "ALERT"}}) == \
         {"ml_modes": {"connections": "silent", "ports": "alert"}}
