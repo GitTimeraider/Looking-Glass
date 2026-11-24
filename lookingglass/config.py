@@ -151,6 +151,7 @@ class Settings(BaseSettings):
     firewall_log_pull: str = "auto"
     unbound_query_pull: bool = True
     crowdsec_pull: bool = True
+    crowdsec_shared_lapi: str = "auto"  # auto / docker / opnsense / no: one CrowdSec Local API for both (crowdsec_shared.py)
     crowdsec_opnsense_alerts: str = "low"  # alert severity of a CrowdSec (OPNsense plugin) alert / ban of an internet address
     blocklist_aliases: str = "CrowdSec: crowdsec_blocklists, crowdsec6_blocklists\nQ-Feeds: __qfeeds_*"
     qfeeds_pull: bool = True

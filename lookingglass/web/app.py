@@ -1357,7 +1357,8 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return off
 
     async def dash_compute(name: str, hours: float, tab: str | None = None, scope: str | None = None) -> dict[str, Any]:
-        out = await run_dashboard(name, hours, await dash_off(hours), tab, scope)
+        from ..crowdsec_shared import shared_primary
+        out = await run_dashboard(name, hours, await dash_off(hours), tab, scope, await shared_primary(settings))
         if out.get("tab") == "suricata":
             out["notice"] = await suricata_notice(hours)
         return out

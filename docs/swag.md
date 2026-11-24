@@ -21,6 +21,31 @@ widgets, the reports, the AI analyst and the web attack / scanner / CrowdSec det
 Threats* and the Overview's *CrowdSec (OPNsense)* widgets count only the plugin; alerts say *CrowdSec (OPNsense)* or
 *CrowdSec (SWAG)*, and the reports have a section for each.
 
+### One CrowdSec Local API for both (OPNsense and Docker)
+
+If one CrowdSec logs in to the other's Local API, both list the **same** alerts and decisions. That works either way
+round: OPNsense's CrowdSec as a log processor / bouncer of this one, or this one logging in to OPNsense's Local API
+(then the URL above points at OPNsense). *Settings › OPNsense › Shared CrowdSec Local API*:
+
+| Choice | Means |
+|---|---|
+| `auto` (default) | recognised by the same alert and decision ids for the same addresses on both; the Local API is OPNsense's when the URL of *Settings › SWAG & CrowdSec* points at the OPNsense host, else the Docker one |
+| `docker` | the Docker CrowdSec (SWAG) is the Local API, OPNsense's logs in to it |
+| `opnsense` | OPNsense's CrowdSec is the Local API, the Docker one logs in to it |
+| `no` | two separate CrowdSecs, counted apart |
+
+Shared, every alert and decision is stored and counted **once**:
+
+* the plugin's copies are not stored (Looking Glass keeps the copy it reads from the Local API directly - it has more:
+  target site, URI, AppSec rule); the ones stored before are removed once, and open *CrowdSec (OPNsense)* alerts that
+  have a *CrowdSec (SWAG)* twin are closed;
+* *OPNsense security › Threats › CrowdSec* and the Threats tiles show the same alerts and decisions;
+* one alert per address and scenario, titled *CrowdSec (SWAG + OPNsense)*, at the level of *Settings › SWAG &
+  CrowdSec › CrowdSec (SWAG) ban of an internet address: alert*;
+* both *Active bans* lists show the same decisions, but only the list of the CrowdSec that **is** the Local API has
+  the **Unban** button;
+* in the reports everything is under *CrowdSec (SWAG / Docker)*.
+
 ## 1. Give Looking Glass SWAG's log folder
 
 SWAG keeps all logs in its `/config/log` folder: `nginx/access.log`, `nginx/error.log`, `fail2ban/fail2ban.log`.

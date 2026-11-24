@@ -109,6 +109,14 @@ FIELDS: list[Field] = [
           "alert per address and scenario). That is CrowdSec doing its job: 'off' raises none and closes the open ones - "
           "the bans stay visible under Threats › CrowdSec, in reports and the Overview. An address inside your network "
           "is always high.", choices=("off", "info", "low")),
+    Field("crowdsec_shared_lapi", "opnsense", "Shared CrowdSec Local API", "choice",
+          "When one CrowdSec logs in to the other's Local API (OPNsense's to the Docker one of Settings › SWAG & "
+          "CrowdSec, or the other way round), both list the same alerts and decisions. Then each is stored and counted "
+          "once, only one alert per address and scenario is raised (its level: Settings › SWAG & CrowdSec), and Unban "
+          "is offered only in the Active bans list of the CrowdSec that is the Local API. docker: the Docker CrowdSec "
+          "(SWAG) is the Local API. opnsense: OPNsense's is. no: two separate CrowdSecs. auto: recognised by the same "
+          "alert and decision ids in both; the Local API is OPNsense's when the URL of Settings › SWAG & CrowdSec "
+          "points at the OPNsense host.", choices=("auto", "docker", "opnsense", "no")),
     Field("blocklist_aliases", "opnsense", "Blocklist aliases", "text", "The firewall aliases (pf tables) of blocking "
           "tools, one tool per line: Name: alias, alias - * matches any characters. For each line Looking Glass finds the "
           "rules that use these aliases (the tool's own and yours), counts the addresses in them and the packets the "
