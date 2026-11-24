@@ -128,12 +128,13 @@ class UnraidClient:
                                       headers={"x-api-key": crypto.decrypt(server["api_key"]), "Content-Type": "application/json",
                                                "Accept": "application/json"},
                                       timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=True)
+        self.ws_base = server["url"].rstrip("/")
         self.docker = None
         if server.get("docker_url"):
             self.docker = httpx.AsyncClient(base_url=server["docker_url"].rstrip("/"), timeout=httpx.Timeout(20.0, connect=5.0))
 
     async def query(self, q: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
-        r = await self.http.post("/graphql", json={"query": q, "variables": variables or {}})
+        r = await self._post_graphql({"query": q, "variables": variables or {}})
         if r.status_code >= 400:
             raise GraphQLError(f"HTTP {r.status_code}: {r.text[:300]}")
         body = r.json()
@@ -141,10 +142,29 @@ class UnraidClient:
             raise GraphQLError("; ".join(e.get("message", "?") for e in body["errors"])[:500])
         return body.get("data") or {}
 
+    async def _post_graphql(self, payload: dict[str, Any]) -> httpx.Response:
+        """POST to /graphql, following redirects AS A POST. Unraid often redirects (http -> https, or to its
+        *.myunraid.net name); httpx (like browsers) turns a POST into an empty GET on 301/302, which the API then
+        rejects (CSRF block, or "must contain a non-empty `query`" with the developer sandbox on). The final
+        address is remembered so later requests (and the websocket) go there directly."""
+        url = "/graphql"
+        for _ in range(5):
+            r = await self.http.post(url, json=payload, follow_redirects=False)
+            if r.status_code not in (301, 302, 303, 307, 308) or "location" not in r.headers:
+                return r
+            nxt = r.request.url.join(r.headers["location"])
+            if nxt.path.rstrip("/") == "/graphql":  # same endpoint, new origin: use it from now on
+                self.http.base_url = nxt.copy_with(path="", query=None, fragment=None)
+                self.ws_base = str(self.http.base_url).rstrip("/")
+                url = "/graphql"
+            else:
+                url = str(nxt)
+        raise GraphQLError(f"too many redirects (last: {r.headers.get('location')})")
+
     async def subscribe(self, q: str, until: Callable[[list[dict[str, Any]]], bool], timeout: float) -> list[dict[str, Any]]:
         """Run a GraphQL subscription (graphql-ws protocol on /graphql) and return its results until ``until`` says
         enough or ``timeout`` seconds passed; then unsubscribe."""
-        url = re.sub(r"^http", "ws", self.server["url"].rstrip("/")) + "/graphql"
+        url = re.sub(r"^http", "ws", self.ws_base) + "/graphql"
         ctx = None
         if url.startswith("wss:"):
             ctx = ssl.create_default_context()
