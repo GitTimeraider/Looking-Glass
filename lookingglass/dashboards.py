@@ -37,8 +37,12 @@ CS_SEEN = ("(source = 'crowdsec' AND (ts > now() - make_interval(secs => $1) "
            "OR received_at > now() - make_interval(secs => $1)))")
 # the OPNsense CrowdSec plugin only (Threats page, Overview's Threats widgets): CrowdSec in Docker (crowdsec_lapi.py,
 # SWAG & CrowdSec page) writes the same source with program crowdsec-lapi, and its decisions to their own snapshot
-CS_OPN = "(source = 'crowdsec' AND program IS DISTINCT FROM 'crowdsec-lapi')"
-CS_OPN_SEEN = f"({CS_SEEN} AND program IS DISTINCT FROM 'crowdsec-lapi')"
+# With one Local API for both (crowdsec_shared.py) the plugin's events are not stored: run_dashboard then lifts
+# NOT_LAPI and the drills' not_program, and these pages read the Local API's events.
+NOT_LAPI = "program IS DISTINCT FROM 'crowdsec-lapi'"
+NOT_LAPI_ALERT = "AND fingerprint NOT LIKE 'crowdsec-lapi:%'"
+CS_OPN = f"(source = 'crowdsec' AND {NOT_LAPI})"
+CS_OPN_SEEN = f"({CS_SEEN} AND {NOT_LAPI})"
 CS_OPN_DRILL = {"source": "crowdsec", "not_program": "crowdsec-lapi"}
 CS_OPN_DECISIONS = ("(SELECT jsonb_array_length(data) FROM snapshots WHERE key = 'crowdsec_decisions' "
                     "AND jsonb_typeof(data) = 'array')")
@@ -49,7 +53,7 @@ OPN_LOGIN = "source IN ('auth', 'vpn', 'system')"
 OPN_LOGIN_DRILL = "auth,vpn,system"
 _OTHER_RULE_GROUPS = ("Web server (nginx)", "SWAG & CrowdSec (Docker)", "UniFi", "Backups", "Unraid")
 OPN_ALERT = ("(rule NOT IN (" + ", ".join(f"'{r}'" for g in _OTHER_RULE_GROUPS for r, _ in RULES.get(g, [])) + ") "
-             "AND fingerprint NOT LIKE 'crowdsec-lapi:%')")
+             f"{NOT_LAPI_ALERT})")
 # one blocklist of that setting from the poller's snapshot (lower-case name)
 BL = "(SELECT data->'{0}' FROM snapshots WHERE key = 'blocklists')"
 
@@ -734,13 +738,33 @@ ROLLUP_PANELS = {("firewall", "actions"), ("firewall", "proto"), ("firewall", "i
                  ("threats", "ids_iface")}
 
 
+def _shared_drill(v: Any) -> Any:
+    """A drill without the "not CrowdSec in Docker" condition (shared Local API)."""
+    if isinstance(v, dict):
+        return {k: _shared_drill(x) for k, x in v.items() if not (k == "not_program" and x == "crowdsec-lapi")}
+    return [_shared_drill(x) for x in v] if isinstance(v, list) else v
+
+
+def shared_panel(panel: dict[str, Any]) -> dict[str, Any]:
+    """The OPNsense CrowdSec plugin and CrowdSec in Docker share one Local API: the plugin's panels read its events."""
+    out = dict(panel)
+    if "sql" in out:
+        out["sql"] = out["sql"].replace(NOT_LAPI, "true").replace(NOT_LAPI_ALERT, "")
+    if "drill" in out:
+        out["drill"] = _shared_drill(out["drill"])
+    return out
+
+
 async def run_dashboard(name: str, hours: float, off: set[str] | frozenset[str] = frozenset(),
-                        tab: str | None = None, scope: str | None = None) -> dict[str, Any]:
+                        tab: str | None = None, scope: str | None = None, shared_cs: bool = False) -> dict[str, Any]:
     """``off``: optional sources (suricata, crowdsec, qfeeds) that are switched off and have no data in the period -
     their panels ("needs"), stat tiles ("needs_cols") and tabs ("needs") are left out.
     ``tab``: on a dashboard with "tabs" only that tab's panels are run (default: the first tab).
-    ``scope``: "local" / "public" - only events from such source addresses (dashboards with "scope": True)."""
+    ``scope``: "local" / "public" - only events from such source addresses (dashboards with "scope": True).
+    ``shared_cs``: the OPNsense CrowdSec plugin uses the Docker CrowdSec's Local API (crowdsec_shared.py)."""
     spec = DASHBOARDS[name]
+    if shared_cs:
+        spec = {**spec, "panels": [shared_panel(p) for p in spec["panels"]]}
     tabs = [t for t in spec.get("tabs") or [] if t.get("needs") not in off]
     if scope and (scope not in SCOPE_SQL or not spec.get("scope")):
         scope = None

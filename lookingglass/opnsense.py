@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from . import db
+from . import crowdsec_shared, db
 from .config import Settings
 from .ingest import STATS, EventWriter
 from .parsers import filterlog
@@ -804,16 +804,14 @@ class Poller:
         alerts, _ = await self._pull_newest(
             "crowdsec", lambda page: self.api.search("crowdsec/alerts/search", rows=500, sort={"created": "desc"}, page=page),
             lambda row: parse_iso(str(row.get("created_at") or row.get("created") or "")), 500)
-        for row in alerts:
-            ev = crowdsec_alert_from_api(row)
-            if ev:
-                self.writer.put(ev)
         decisions = await self.api.search("crowdsec/decisions/search", rows=5000)
         now = datetime.now(timezone.utc)
         await db.set_snapshot("crowdsec_decisions", [crowdsec_ban_row(r, now) for r in decisions[:5000]])
-        for row in decisions:
-            ev = crowdsec_decision_from_api(row)
-            if ev:
+        events = [ev for ev in [*(crowdsec_alert_from_api(r) for r in alerts), *(crowdsec_decision_from_api(r) for r in decisions)]
+                  if ev]
+        # the same Local API as CrowdSec in Docker (Settings › SWAG & CrowdSec): those are read from there already
+        if not await crowdsec_shared.sync(self.settings, events):
+            for ev in events:
                 self.writer.put(ev)
         await db.set_snapshot("crowdsec_status", {"alerts": len(alerts), "decisions": len(decisions)})
 

@@ -21,6 +21,21 @@ widgets, the reports, the AI analyst and the web attack / scanner / CrowdSec det
 Threats* and the Overview's *CrowdSec (OPNsense)* widgets count only the plugin; alerts say *CrowdSec (OPNsense)* or
 *CrowdSec (SWAG)*, and the reports have a section for each.
 
+### OPNsense's CrowdSec using this CrowdSec's Local API
+
+If CrowdSec on OPNsense is a log processor / bouncer of this CrowdSec (it logs in to its Local API instead of running
+its own), both list the **same** alerts and decisions. Looking Glass recognises that by itself: the same alert and
+decision ids for the same addresses on both (*Settings › OPNsense › CrowdSec on OPNsense uses the Docker CrowdSec's
+Local API*: `auto`, or `yes` / `no` to decide yourself). Then every alert and decision is stored and counted **once**:
+
+* the plugin's copies are not stored; the ones stored before it was recognised are removed once, and open
+  *CrowdSec (OPNsense)* alerts that have a *CrowdSec (SWAG)* twin are closed;
+* *OPNsense security › Threats › CrowdSec* and the Threats tiles show the Local API's alerts and decisions;
+* one alert per address and scenario, titled *CrowdSec (SWAG + OPNsense)*, at the level of *Settings › SWAG &
+  CrowdSec › CrowdSec (SWAG) ban of an internet address: alert*;
+* both *Active bans* lists show the same decisions - Unban in either is enough;
+* in the reports everything is under *CrowdSec (SWAG / Docker)*.
+
 ## 1. Give Looking Glass SWAG's log folder
 
 SWAG keeps all logs in its `/config/log` folder: `nginx/access.log`, `nginx/error.log`, `fail2ban/fail2ban.log`.
