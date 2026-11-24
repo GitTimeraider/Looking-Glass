@@ -15,8 +15,8 @@ excludes devices from all of them.
 | **Predictable devices only** | "new …" alerts only for devices that rarely pick up anything new (cameras, TVs, plugs) - PCs and phones are skipped automatically | *max. new things per day* (0 = all devices) |
 | **Similar devices** | devices of the same vendor form a group: what the others do too is normal, what none of them do weighs heavier - unless other devices on the network do it too (a phone and a PC both using WhatsApp or IMAP) | on / off |
 | **Odd hours** | activity at an hour the device has never been active | on / off |
-| **Traffic spike** | connections or DNS lookups of one hour N× the device's median | factor (0 = off); per device on the Devices page |
-| **Machine learning** | an Isolation Forest (one per pair of 7 features, pure Python, nothing leaves the server) scores each device-hour against the device's own history; alerts name the features that were off ("connections 9,000, normally ~100") | sensitivity low / medium / high; per device (incl. off) on the Devices page |
+| **Traffic spike** | connections or DNS lookups of one hour N× the device's median (or its normal hour set by hand) | factor (0 = off); per device on the Devices page |
+| **Machine learning** | an Isolation Forest (one per pair of 7 features, pure Python, nothing leaves the server) scores each device-hour against the device's own history; alerts name the features that were off ("connections 9,000, normally ~100") | sensitivity, from fewest to most alerts: very low (1 in 10,000 normal hours), low (1 in 2,000), medium-low (1 in 1,000), medium (1 in 500), medium-high (~1 in 300), high (1 in 200), very high (1 in 100); per device (incl. off) on the Devices page |
 | **Hour of the week** | network totals (blocks, failed logins, DNS, NXDOMAIN, per log source) against the same hour in previous weeks | sensitivity, metrics to ignore - always or only on some days / hours (e.g. `source:unraid tue 01-02`) |
 | **Risk score** | every open alert (not acknowledged / closed) adds points (info 1 … critical 40, once per rule) that fade with a half-life; one alert when a device's total is high; shown on the Devices page | threshold, half-life, addresses to skip; threshold per device on the Devices page |
 | **Learning from false positives** | **Close as false positive** on the Alerts page; the same rule + address 3× in 30 days becomes a suggestion (mute / lower to info), or in *auto* mode a "Learned: …" severity rule (visible and removable under Alert filters). The exact same alert again (same rule, device, port and remote address, not worse) is stored closed as *known false positive* right away | suggest / auto / off, how many; repeats: close / info / off, days to remember |
@@ -34,7 +34,7 @@ the global setting (also when that changes later); unticked, the value next to i
   *odd hours* alerts are **silent** and *new domain* / *new TLS program* **off** by default. The other types use the
   global settings. A device's own setting wins over its type.
 * **Alert limits** - the **traffic spike** factor (0 = no spike alerts for it), the **machine learning** sensitivity
-  (off / low / medium / high) and the **risk score** threshold (0 = never alert, the score is still kept). Raise them
+  (off, or one of the seven levels from very low to very high) and the **risk score** threshold (0 = never alert, the score is still kept). Raise them
   for devices that are busy at random (a gaming PC, a backup or download server), lower them for very steady ones
   (cameras, plugs, TVs) so smaller changes already alert.
 * **Alert modes** - per kind (*new country*, *new port*, *new domain*, *new TLS program*, *odd hours*: alert / silent
@@ -42,6 +42,19 @@ the global setting (also when that changes later); unticked, the value next to i
   the Alerts page), never shown as open and never notified. They still count for combined alerts: attack chains, the
   risk score and the corroboration of other alerts about the device. You hear about them only when they add up.
 * Also per device: **predictable** (max. new things per day) and the **quiet period** before a device is judged.
+* **Normal hour** - what the traffic spike and machine learning checks take as this device's normal hour, per
+  category (connections, destinations, ports, countries, DNS lookups, failed lookups, blocked connections): the
+  **learned median** of all its hours in the learning period (*Settings › Behaviour & ML › Learning period*, default 14
+  days - one median over day and night together, not per hour of the day), how many hours it was learned from, and
+  the value 9 of 10 hours stay below. *Median per hour of the day* shows how the hours differ, for reading only.
+  **Your own normal** replaces the learned median for that category: in the traffic spike check (connections, DNS
+  lookups) and where machine learning judges the device's hour (what counts as normal and the minimum increase above
+  it). The model itself keeps learning from the device's real hours. Empty = the learned median. Alerts say
+  *normally ~2,000, set by hand*. The table is calculated when the dialog opens, for that one device only.
+* **ML alert per category** - in the same table: machine learning alerts about each category *alert* or are *silent*
+  (*default* follows the device's *Machine learning alerts* setting). One alert covers every category the hour was off
+  in; it is silent only when **all** of them are silent, and its title then names a category that alerts. E.g. DNS
+  lookups silent for a device that updates itself at random: a DNS-only anomaly is silent, DNS plus new ports alerts.
 
 *Use defaults for everything* clears the device's own settings (its type stays). Devices with their own settings or a
 type show *⚙ settings*, the alerts they raise say which limit was used, and they are never removed automatically. A

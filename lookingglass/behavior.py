@@ -13,6 +13,10 @@
 * Per-device limits (devices.limits, Devices page): a device's own traffic-spike factor, machine learning sensitivity,
   risk score threshold, "new ..." alert switches, predictable-device limit and quiet period - looser for devices that are
   busy at random, stricter for very steady ones (see LIMITS).
+* Per-device normal hour (devices.limits["baseline"], Devices page): a fixed number per hourly feature that replaces the
+  learned median in the traffic spike and machine learning checks (see baseline_of / learned_baseline).
+* Per-device machine learning alert mode per feature (devices.limits["ml_modes"]): alert / silent for each category;
+  an hour is a silent alert only when every category it deviates in is silent (see ml_silent).
 * Feedback: alerts closed as "false positive" become suggestions (or automatic severity rules).
 
 Everything is configurable under Settings › Behaviour & ML, including devices never to analyse.
@@ -47,7 +51,10 @@ FEATURE_LABEL = {"connections": "connections", "destinations": "destinations", "
 # an increase only counts when it is also meaningful in absolute terms (5 failed lookups instead of 0 is not news)
 MIN_INCREASE = {"connections": 200, "destinations": 30, "ports": 10, "countries": 5, "dns": 200, "failed_lookups": 50,
                 "blocked": 50}
-ML_LEVELS = {"low": (0.9995, 4.0), "medium": (0.998, 3.5), "high": (0.995, 3.0)}  # training percentile, deviation
+# sensitivity -> (training percentile the anomaly score must beat, deviations a feature must be off), least to most
+# alerts: very_low = rarer than 1 in 10,000 normal hours and 4.5 deviations ... very_high = 1 in 100 and 2.5
+ML_LEVELS = {"very_low": (0.9999, 4.5), "low": (0.9995, 4.0), "medium_low": (0.999, 3.75), "medium": (0.998, 3.5),
+             "medium_high": (0.9965, 3.25), "high": (0.995, 3.0), "very_high": (0.99, 2.5)}
 RISK_POINTS = {"info": 1, "low": 3, "medium": 8, "high": 20, "critical": 40}
 # per-device overrides of global settings (devices.limits); a missing key means "use the global setting".
 # key -> (kind, bounds / choices, the global setting it overrides - None: no global setting, "alert")
@@ -57,7 +64,7 @@ MODES = ("alert", "silent", "off")
 LIMITS: dict[str, tuple[str, Any, str | None]] = {
     "volume_factor": ("int", (0, 1000), "behavior_volume_factor"),
     "volume_alerts": ("choice", ("alert", "silent"), None),
-    "ml_sensitivity": ("choice", ("off", "low", "medium", "high"), "anomaly_ml_sensitivity"),
+    "ml_sensitivity": ("choice", ("off", *ML_LEVELS), "anomaly_ml_sensitivity"),
     "ml_alerts": ("choice", ("alert", "silent"), None),
     "risk_threshold": ("int", (0, 1000), "risk_threshold"),
     "new_country": ("mode", MODES, "behavior_new_country"),
@@ -98,6 +105,69 @@ def global_limit(s: Settings, key: str) -> Any:
     return as_mode(value) if kind == "mode" else value
 
 
+BASELINE_MAX = 10_000_000
+
+
+def clean_baseline(raw: Any) -> dict[str, float]:
+    """A device's own normal hour from the UI: feature -> a number >= 0; empty = the learned median. Raises ValueError."""
+    if raw in (None, "", {}):
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("baseline must be an object")
+    out: dict[str, float] = {}
+    for f, value in raw.items():
+        if f not in FEATURES:
+            raise ValueError(f"baseline: unknown category {f}")
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        try:
+            n = float(str(value).strip().replace(",", "."))
+        except ValueError as exc:
+            raise ValueError(f"normal {FEATURE_LABEL[f]}: '{value}' is not a number") from exc
+        if isinstance(value, bool) or not math.isfinite(n) or not 0 <= n <= BASELINE_MAX:
+            raise ValueError(f"normal {FEATURE_LABEL[f]}: must be between 0 and {BASELINE_MAX:,}")
+        out[f] = int(n) if n == int(n) else n
+    return out
+
+
+ML_MODES = ("alert", "silent")
+
+
+def clean_ml_modes(raw: Any) -> dict[str, str]:
+    """A device's machine learning alert mode per category from the UI: empty / default = the device's general
+    "Machine learning alerts" setting. Raises ValueError."""
+    if raw in (None, "", {}):
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("ml_modes must be an object")
+    out: dict[str, str] = {}
+    for f, value in raw.items():
+        if f not in FEATURES:
+            raise ValueError(f"ml_modes: unknown category {f}")
+        v = str(value or "").strip().lower()
+        if v in ("", "default", "global"):
+            continue
+        if v not in ML_MODES:
+            raise ValueError(f"machine learning alerts for {FEATURE_LABEL[f]}: must be alert or silent")
+        out[f] = v
+    return out
+
+
+def ml_silent(limits: dict[str, dict[str, Any]], key: str, ip: str | None, features: list[str]) -> bool:
+    """A machine learning alert about these deviating features is silent when each of them is silent: its own mode per
+    category (ml_modes), else the device's general one (ml_alerts)."""
+    general = limit(limits, key, ip, "ml_alerts", "alert")
+    own = limit(limits, key, ip, "ml_modes", None)
+    own = own if isinstance(own, dict) else {}
+    return bool(features) and all(own.get(f, general) == "silent" for f in features)
+
+
+def baseline_of(limits: dict[str, dict[str, Any]], key: str, ip: str | None) -> dict[str, float]:
+    """The normal hour set by hand for a device (feature -> value), {} = all learned."""
+    own = limit(limits, key, ip, "baseline", None)
+    return own if isinstance(own, dict) else {}
+
+
 def clean_limits(raw: Any) -> dict[str, Any]:
     """Validate per-device limits from the UI: empty / None = the global setting (key dropped). Raises ValueError."""
     if raw is None:
@@ -106,6 +176,14 @@ def clean_limits(raw: Any) -> dict[str, Any]:
         raise ValueError("limits must be an object")
     out: dict[str, Any] = {}
     for key, value in raw.items():
+        if key == "baseline":  # the device's own normal hour (fixed numbers instead of the learned medians)
+            if base := clean_baseline(value):
+                out[key] = base
+            continue
+        if key == "ml_modes":  # machine learning alert / silent per category
+            if modes := clean_ml_modes(value):
+                out[key] = modes
+            continue
         if key not in LIMITS:
             raise ValueError(f"unknown limit {key}")
         if value is None or (isinstance(value, str) and value.strip().lower() in ("", "default", "global")):
@@ -165,6 +243,41 @@ async def device_limits() -> dict[str, dict[str, Any]]:
         for k in [r["mac"], *(r["ips"] or [])]:
             out[k] = merged
     return out
+
+
+def _quantile(values: list[float], q: float) -> float:
+    s = sorted(values)
+    return s[min(len(s) - 1, int(q * len(s)))] if s else 0.0
+
+
+async def learned_baseline(s: Settings, keys: list[str], tz: Any = None) -> dict[str, Any]:
+    """What the traffic spike and machine learning checks learned as a device's normal hour (Devices page): per feature
+    the median of its hours in the learning period, the 90th percentile and, for reading only, the median per hour of
+    the day (local time). Read on demand for one device: at most learn_days × 24 rows."""
+    rows = await db.pool().fetch(
+        "SELECT hour, features FROM device_hourly WHERE key = ANY($1::text[]) "
+        "AND hour > now() - make_interval(days => $2) ORDER BY hour", keys, s.behavior_learn_days)
+    by_hour: dict[datetime, dict[str, float]] = {}
+    for r in rows:  # a device learned under its address before its MAC was known: the hours add up
+        f = by_hour.setdefault(r["hour"], dict.fromkeys(FEATURES, 0.0))
+        for k in FEATURES:
+            f[k] += float((r["features"] or {}).get(k, 0) or 0)
+    hours = list(by_hour.values())
+    tz = tz or timezone.utc
+    of_day: dict[int, list[dict[str, float]]] = defaultdict(list)
+    for h, f in by_hour.items():
+        of_day[h.astimezone(tz).hour].append(f)
+    return {
+        "hours": len(hours), "learn_days": s.behavior_learn_days,
+        "first": min(by_hour).isoformat() if by_hour else None,
+        # hours of history each check needs before it judges this device
+        "need": {"volume": 24 * min(s.behavior_min_days, 3), "ml": 48},
+        "features": [{"key": f, "label": FEATURE_LABEL[f],
+                      "median": statistics.median(h[f] for h in hours) if hours else None,
+                      "p90": _quantile([h[f] for h in hours], 0.9) if hours else None,
+                      "volume": f in ("connections", "dns")} for f in FEATURES],
+        "by_hour": {str(hr): {f: statistics.median(x[f] for x in of_day[hr]) for f in FEATURES} for hr in sorted(of_day)},
+    }
 
 
 class Matcher:
@@ -582,12 +695,13 @@ class Behavior:
             factor = default if own is None else own
             if not factor:
                 continue  # off (for this device)
+            fixed = baseline_of(limits, key, ip)  # the normal hour set by hand wins over the learned median
             spikes = []
             for f, floor in floors.items():
-                med = statistics.median(h.get(f, 0) for h in hist)
+                med = float(fixed[f]) if f in fixed else statistics.median(h.get(f, 0) for h in hist)
                 v = cur["features"].get(f, 0)
                 if v >= floor and v >= factor * max(med, floor / factor):
-                    spikes.append(f"{FEATURE_LABEL[f]} {v:,.0f} (normally ~{med:,.0f})")
+                    spikes.append(f"{FEATURE_LABEL[f]} {v:,.0f} (normally ~{med:,.0f}{', set by hand' if f in fixed else ''})")
             if spikes:
                 await raise_alert(
                     "volume_spike", corroborate(Rating("low", f"{factor}× or more above this device's normal hour"
@@ -624,9 +738,15 @@ class Behavior:
             train += [vec(r["features"]) for r in hist]
             level = limit(limits, key, rows[-1]["ip"], "ml_sensitivity", default)
             if rows[-1]["hour"] == hour and level in ML_LEVELS:  # every device trains the model, only these are judged
+                # a normal hour set by hand replaces the learned median where this hour is judged (centre and the
+                # minimum increase); the model itself keeps training on the device's real history
+                fixed = baseline_of(limits, key, rows[-1]["ip"])
+                if fixed:
+                    norm = {f: (math.log1p(float(fixed[f])), c[1]) if f in fixed else c for f, c in norm.items()}
                 v = vec(rows[-1]["features"])
-                med_raw = [statistics.median(float(r["features"].get(f, 0)) for r in hist) for f in FEATURES]
-                current.append((key, rows[-1], v, med_raw, level))
+                med_raw = [float(fixed[f]) if f in fixed else statistics.median(float(r["features"].get(f, 0)) for r in hist)
+                           for f in FEATURES]
+                current.append((key, rows[-1], v, med_raw, level, set(fixed)))
         if len(train) < 500 or not current:
             return
 
@@ -638,7 +758,7 @@ class Behavior:
             cuts = {lv: ref[min(len(ref) - 1, int(ML_LEVELS[lv][0] * len(ref)))] for lv in {c[4] for c in current}}
             return cuts, [forest.score(c[2]) for c in current]
         cuts, scores = await asyncio.to_thread(run)
-        for (key, row, v, med_raw, level), score in zip(current, scores):
+        for (key, row, v, med_raw, level, fixed), score in zip(current, scores):
             cut, z = cuts[level], ML_LEVELS[level][1]
             dev = [(v[i], f) for i, f in enumerate(FEATURES)
                    if v[i] >= z and float(row["features"].get(f, 0)) - med_raw[i] >= MIN_INCREASE[f]]
@@ -647,17 +767,25 @@ class Behavior:
             if not dev or (score < cut and max(d for d, _ in dev) < 2 * z):
                 continue
             ip = row["ip"]
-            parts = [f"{FEATURE_LABEL[f]} {float(row['features'].get(f, 0)):,.0f} (normally ~{med_raw[FEATURES.index(f)]:,.0f})"
-                     for _, f in sorted(dev, reverse=True)]
+            feats = [f for _, f in sorted(dev, reverse=True)]
+            silent = ml_silent(limits, key, ip, feats)
+            own_modes = limit(limits, key, ip, "ml_modes", None) or {}
+            if not silent:  # the title names a category that alerts, not one set to silent
+                general = limit(limits, key, ip, "ml_alerts", "alert")
+                feats.sort(key=lambda f: own_modes.get(f, general) == "silent")
+            parts = [f"{FEATURE_LABEL[f]} {float(row['features'].get(f, 0)):,.0f} (normally ~{med_raw[FEATURES.index(f)]:,.0f}"
+                     f"{', set by hand' if f in fixed else ''})" for f in feats]
             await raise_alert(
                 "ml_anomaly", corroborate(Rating("low", "this hour is unlike the device's normal hours (machine learning)"),
                                           await evidence(ip, "ml_anomaly"), 1),
                 f"Unusual activity of {ip} (machine learning): {parts[0]}", f"ml:{key}:{hour:%Y%m%d%H}", src_ip=ip,
                 events={"ip": ip}, data={"score": round(score, 3), "cut": round(cut, 3)},
-                silent=limit(limits, key, ip, "ml_alerts", "alert") == "silent",
+                silent=silent,
                 description=f"Between {local_time(self.s, hour)} and {local_time(self.s, hour + timedelta(hours=1))} this "
                             f"device behaved unlike its last {self.s.behavior_learn_days} days: {'; '.join(parts)}. "
-                            f"Anomaly score {score:.2f} (alert from {cut:.2f}, sensitivity {level}"
+                            + (f"Silent for this device: {', '.join(FEATURE_LABEL[f] for f in feats if own_modes.get(f) == 'silent')}"
+                               f" (Devices page). " if any(own_modes.get(f) == "silent" for f in feats) else "")
+                            + f"Anomaly score {score:.2f} (alert from {cut:.2f}, sensitivity {level}"
                             + (", set for this device on the Devices page)." if level != default else
                                "). Sensitivity: Settings › Behaviour & ML, or per device on the Devices page."))
 
