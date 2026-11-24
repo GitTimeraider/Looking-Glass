@@ -951,28 +951,44 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
 
     @app.post("/api/crowdsec/unban")
     async def crowdsec_unban(request: Request, payload: dict = Body(...)):
-        """Active bans lists: delete one CrowdSec decision. ``src`` "lapi": CrowdSec in Docker (SWAG & CrowdSec),
-        through its Local API with the machine login; "opnsense": the OPNsense CrowdSec plugin (Threats › CrowdSec)."""
+        """Active bans lists: delete an address's CrowdSec decisions. ``id``: one decision id, or several ("12,15" or a
+        list) - the lists show one row per address and CrowdSec keeps one decision per scenario, so one Unban lifts
+        all of them. ``src`` "lapi": CrowdSec in Docker (SWAG & CrowdSec), through its Local API with the machine
+        login; "opnsense": the OPNsense CrowdSec plugin (Threats › CrowdSec)."""
         from ..crowdsec_lapi import DECISIONS_KEY, LapiClient, LapiError
         from ..opnsense import ApiError, OPNsenseClient
 
+        raw = payload.get("id")
+        parts = raw if isinstance(raw, list) else str(raw if raw is not None else "").split(",")
         try:
-            did = int(payload.get("id"))
-        except (TypeError, ValueError):
+            ids = list(dict.fromkeys(int(str(p).strip()) for p in parts if str(p).strip()))
+        except ValueError:
             raise HTTPException(400, "No decision id.") from None
+        if not ids or len(ids) > 100:
+            raise HTTPException(400, "No decision id.")
         src = payload.get("src") or "opnsense"
+        done: list[int] = []
+
+        def partial(msg: str) -> str:  # some were removed before one failed: say so, the list already drops them
+            return f"{msg} ({len(done)} of {len(ids)} decisions were removed)" if done else msg
+
         if src == "lapi":
             if not settings.crowdsec_lapi_url:
                 raise HTTPException(400, "CrowdSec is not set up (Settings › SWAG & CrowdSec).")
             key, lapi = DECISIONS_KEY, LapiClient(settings)
             try:
-                await lapi.delete_decision(did)
+                for did in ids:
+                    await lapi.delete_decision(did)
+                    done.append(did)
             except LapiError as exc:
                 hint = (" (CrowdSec refused the machine login - Settings › SWAG & CrowdSec › Test connection)"
                         if exc.status in (401, 403) else "")
-                raise HTTPException(400 if exc.status == 400 else 502, f"CrowdSec refused the unban: {exc}{hint}") from exc
+                await drop_decisions(key, done)
+                raise HTTPException(400 if exc.status == 400 else 502,
+                                    partial(f"CrowdSec refused the unban: {exc}{hint}")) from exc
             except httpx.HTTPError as exc:
-                raise HTTPException(502, f"CrowdSec not reachable: {type(exc).__name__}: {exc}") from exc
+                await drop_decisions(key, done)
+                raise HTTPException(502, partial(f"CrowdSec not reachable: {type(exc).__name__}: {exc}")) from exc
             finally:
                 await lapi.close()
         elif src == "opnsense":
@@ -980,25 +996,38 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
                 raise HTTPException(400, "The OPNsense API is not set up (Settings › OPNsense).")
             key, client = "crowdsec_decisions", OPNsenseClient(settings)
             try:
-                await client.delete_crowdsec_decision(did)
+                for did in ids:
+                    await client.delete_crowdsec_decision(did)
+                    done.append(did)
             except ApiError as exc:
                 hint = " (the API user lacks the CrowdSec privilege)" if exc.status == 403 else ""
-                raise HTTPException(502, f"OPNsense refused the unban: {exc}{hint}") from exc
+                await drop_decisions(key, done)
+                raise HTTPException(502, partial(f"OPNsense refused the unban: {exc}{hint}")) from exc
             except httpx.HTTPError as exc:
-                raise HTTPException(502, f"OPNsense not reachable: {type(exc).__name__}: {exc}") from exc
+                await drop_decisions(key, done)
+                raise HTTPException(502, partial(f"OPNsense not reachable: {type(exc).__name__}: {exc}")) from exc
             finally:
                 await client.close()
         else:
             raise HTTPException(400, "Unknown CrowdSec.")
-        # gone from the list at once, not only after the next poll
+        row = await drop_decisions(key, ids)
+        value = row.get("value") if src == "lapi" else row.get("lg_value") or row.get("scope_value")
+        log.warning("user %s removed CrowdSec decision(s) %s (%s, %s)", request.state.user["username"],
+                    ",".join(map(str, ids)), value or "?", src)
+        return {"ok": True, "id": ids[0] if len(ids) == 1 else ids, "value": value or "?"}
+
+    async def drop_decisions(key: str, ids: list[int]) -> dict:
+        """Removed decisions leave the Active bans list at once, not only after the next poll. Returns the first
+        removed row (for the address in the log line)."""
+        if not ids:
+            return {}
+        gone = {str(i) for i in ids}
         snap = await db.get_snapshot(key)
         rows = snap if isinstance(snap, list) else []
-        row = next((r for r in rows if isinstance(r, dict) and str(r.get("id")) == str(did)), None) or {}
-        await db.set_snapshot(key, [r for r in rows if not (isinstance(r, dict) and str(r.get("id")) == str(did))])
+        row = next((r for r in rows if isinstance(r, dict) and str(r.get("id")) in gone), None) or {}
+        await db.set_snapshot(key, [r for r in rows if not (isinstance(r, dict) and str(r.get("id")) in gone)])
         results.clear()
-        value = row.get("value") if src == "lapi" else row.get("lg_value") or row.get("scope_value")
-        log.warning("user %s removed CrowdSec decision %s (%s, %s)", request.state.user["username"], did, value or "?", src)
-        return {"ok": True, "id": did, "value": value or "?"}
+        return row
 
     @app.post("/api/admin/purge")
     async def purge(request: Request, payload: dict = Body(...)):

@@ -290,11 +290,16 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
              "drill": {"base": {**CSL_DRILL, "hours": 24 * 90}},
              "cols": [["value", "Target"], ["country", "", "flag"], ["type", "Type"], ["scenario", "Scenario"], ["origin", "Origin"],
                       ["until", "Time left", "left"], ["id", "", "unban"]],
-             "sql": "SELECT d->>'value' value, CASE WHEN lower(d->>'scope') IN ('ip', 'range') THEN split_part(d->>'value', '/', 1) END o_ip, "
+             # one row per address: CrowdSec keeps one decision per scenario, so an address banned twice has two;
+             # "id" then holds all of them ("12,15") and Unban removes them together
+             "sql": "SELECT value, max(o_ip) o_ip, max(country) country, string_agg(DISTINCT type, ', ') type, "
+                    "string_agg(DISTINCT scenario, ', ') scenario, string_agg(DISTINCT origin, ', ') origin, max(until) until, "
+                    "CASE WHEN bool_and(can) THEN string_agg(id, ',' ORDER BY id) END id, 'lapi' unban_src FROM ("
+                    "SELECT d->>'value' value, CASE WHEN lower(d->>'scope') IN ('ip', 'range') THEN split_part(d->>'value', '/', 1) END o_ip, "
                     "d->>'country' country, d->>'type' type, d->>'scenario' scenario, d->>'origin' origin, "
-                    "(d->>'until')::timestamptz until, CASE WHEN (d->>'can_unban')::boolean THEN d->>'id' END id, 'lapi' unban_src "
+                    "(d->>'until')::timestamptz until, coalesce((d->>'can_unban')::boolean, false) AND d->>'id' IS NOT NULL can, d->>'id' id "
                     "FROM snapshots s, jsonb_array_elements(CASE WHEN jsonb_typeof(s.data) = 'array' THEN s.data ELSE '[]'::jsonb END) d "
-                    "WHERE s.key = 'crowdsec_lapi_decisions' AND $1 > 0 ORDER BY until DESC NULLS LAST LIMIT 5000"},
+                    "WHERE s.key = 'crowdsec_lapi_decisions' AND $1 > 0) x GROUP BY value, CASE WHEN value IS NULL THEN id END ORDER BY until DESC NULLS LAST LIMIT 5000"},
             {"id": "csl_countries", "tab": "crowdsec", "title": "Alerts by country", "type": "hbar", "drill": {"base": {**CSL_DRILL, "action": "alert"}, "by": "country"},
              "sql": f"SELECT src_country label, count(*) v FROM events WHERE {CSL_SEEN} AND action = 'alert' AND src_country IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 12"},
             {"id": "csl_appsec", "tab": "crowdsec", "title": "AppSec (WAF) and HTTP targets", "type": "table", "span": 3,
@@ -471,11 +476,15 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
              "drill": {"base": {**CS_OPN_DRILL, "hours": 24 * 90}},
              "cols": [["ip", "IP / value", "ip"], ["country", "", "flag"], ["type", "Type"], ["reason", "Reason"],
                       ["origin", "Origin"], ["ends", "Time left", "left"], ["id", "", "unban"]],
-             "sql": "SELECT d->>'id' id, d->>'lg_ip' o_ip, coalesce(d->>'lg_ip', d->>'lg_value', d->>'scope_value') ip, d->>'country' country, "
+             # one row per address, all its decisions (one per scenario) behind one Unban ("id": "11,14")
+             "sql": "SELECT string_agg(id, ',' ORDER BY id) id, max(o_ip) o_ip, ip, max(country) country, "
+                    "string_agg(DISTINCT \"type\", ', ') \"type\", string_agg(DISTINCT reason, ', ') reason, "
+                    "string_agg(DISTINCT origin, ', ') origin, max(ends) ends, 'opnsense' unban_src FROM ("
+                    "SELECT d->>'id' id, d->>'lg_ip' o_ip, coalesce(d->>'lg_ip', d->>'lg_value', d->>'scope_value') ip, d->>'country' country, "
                     "coalesce(d->>'action', d->>'type', 'ban') \"type\", coalesce(d->>'reason', d->>'scenario') reason, "
-                    "coalesce(d->>'source', d->>'origin') origin, d->>'lg_until' ends, 'opnsense' unban_src "
+                    "coalesce(d->>'source', d->>'origin') origin, d->>'lg_until' ends "
                     "FROM snapshots s, jsonb_array_elements(CASE WHEN jsonb_typeof(s.data) = 'array' THEN s.data ELSE '[]'::jsonb END) d "
-                    "WHERE s.key = 'crowdsec_decisions' AND $1::float8 IS NOT NULL ORDER BY ends DESC NULLS LAST LIMIT 5000"},
+                    "WHERE s.key = 'crowdsec_decisions' AND $1::float8 IS NOT NULL) x GROUP BY ip, CASE WHEN ip IS NULL THEN id END ORDER BY ends DESC NULLS LAST LIMIT 5000"},
             {"id": "cs_time", "tab": "crowdsec", "title": "CrowdSec over time", "type": "timeseries", "span": 3,
              "drill": {"series_drill": {"firewall blocks": {"source": "firewall", "d_blocklist": "CrowdSec"},
                                         "alerts": {**CS_OPN_DRILL, "action": "alert"}, "decisions": {**CS_OPN_DRILL, "action": "ban,captcha"}}},

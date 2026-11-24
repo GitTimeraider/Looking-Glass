@@ -100,8 +100,9 @@ Then **Setup & status** shows *SWAG (nginx + fail2ban)* and *CrowdSec (Docker)* 
 mod is not working).
 
 **Active bans** (tab *CrowdSec*) lists the decisions in force - address, country, type, scenario, origin and the
-**time left** - refreshed at every poll (*Poll interval*). **Unban** asks for confirmation, then removes the decision
-in CrowdSec; SWAG's bouncer lets the address in again almost at once (live mode, the default; it
+**time left** - refreshed at every poll (*Poll interval*). CrowdSec keeps one decision per scenario, so an address
+banned by two scenarios has two; the list shows it once, with both scenarios and the longest time left. **Unban** asks
+for confirmation, then removes all of that address's decisions in CrowdSec (removing just one would leave it banned); SWAG's bouncer lets the address in again almost at once (live mode, the default; it
 caches an answer for `CACHE_EXPIRATION` seconds) or at its next update (stream mode: `UPDATE_FREQUENCY`). CrowdSec can ban the address again if it keeps misbehaving. Community-blocklist
 bans (CAPI) are not listed there and cannot be unbanned one by one - use an allowlist in CrowdSec for those. fail2ban
 bans (tab *fail2ban*) are read from its log; lifting one needs `docker exec swag fail2ban-client set <jail> unbanip <ip>`

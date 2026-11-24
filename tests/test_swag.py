@@ -218,6 +218,17 @@ def test_swag_dashboard_and_detections():
             assert not bans.get("error") and [r["value"] for r in bans["rows"]] == ["203.0.113.9", "XX"]
             assert (bans["rows"][0]["id"], bans["rows"][0]["o_ip"], bans["rows"][0]["unban_src"]) == ("7", "203.0.113.9", "lapi")
             assert bans["rows"][1]["id"] is None and bans["rows"][1]["o_ip"] is None
+            # an address banned by two scenarios: one row, both scenarios, both ids behind one Unban
+            await db.set_snapshot(lapi.DECISIONS_KEY, [
+                {"id": 7, "type": "ban", "scope": "Ip", "value": "203.0.113.9", "until": until, "can_unban": True,
+                 "scenario": "crowdsecurity/http-probing", "origin": "crowdsec"},
+                {"id": 12, "type": "ban", "scope": "Ip", "value": "203.0.113.9", "until": None, "can_unban": True,
+                 "scenario": "crowdsecurity/appsec-vpatch", "origin": "crowdsec"}])
+            bans = next(p for p in (await run_dashboard("swag", 24, tab="crowdsec"))["panels"] if p["id"] == "csl_active")
+            assert not bans.get("error") and len(bans["rows"]) == 1
+            r = bans["rows"][0]
+            assert (r["id"], r["origin"], r["o_ip"]) == ("12,7", "crowdsec", "203.0.113.9") and r["until"]
+            assert r["scenario"] == "crowdsecurity/appsec-vpatch, crowdsecurity/http-probing"
             await pool.execute("DELETE FROM snapshots WHERE key = $1", lapi.DECISIONS_KEY)
             eng = DetectionEngine(Settings())
             for rule in ("fail2ban", "honeypot"):
