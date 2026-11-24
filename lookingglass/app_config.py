@@ -367,11 +367,13 @@ FIELDS: list[Field] = [
           "included): 'source:unraid tue 01-02' = Tuesdays 01:00-02:00, 'blocks mon-fri 22-06' = weeknights, "
           "'* sun 03-05', 'dns 02-04' = every day. Without days / hours it is ignored always.",
           placeholder="source:unraid tue 01-02, blocks"),
-    Field("mute_schedule", "mute", "Recurring mute windows", "list", "Every week at these days / times, new alerts of "
+    Field("mute_schedule", "mute", "Recurring mute windows", "list", "At these days / times (every week, month or N "
+          "weeks), new alerts of "
           "a category are stored silently: not shown as open and not mailed, but still counted for attack chains and "
           "the risk score. Local time (Settings › Display › Time zone), the end time not included. Format: category "
-          "[days] [from-to], e.g. 'unraid_container_errors tue 01:00-04:00' - see Format & categories for every "
-          "category.", placeholder="unraid_container_errors tue 01:00-04:00"),
+          "[days] [from-to] [every N weeks from YYYY-MM-DD], e.g. 'unraid_container_errors tue 01:00-04:00', "
+          "'backups 1st 02:00-06:00' (1st of the month), 'unraid 1st-mon', 'unraid tue 01-04 every 2 weeks from "
+          "2026-11-10' - see Format & categories for all options and every category.", placeholder="unraid_container_errors tue 01:00-04:00"),
     Field("risk_enabled", "behavior", "Risk score per device / address", "bool", "Every alert adds points (info 1, low "
           "3, medium 8, high 20, critical 40; once per rule) that fade over time; one alert when the total is high."),
     Field("risk_threshold", "behavior", "Risk score: alert from", "int", "", min=10, max=1000),

@@ -173,22 +173,27 @@ something that should stay quiet for good, use *Mute similar…* (an alert filte
 
 ### Recurring mute windows
 
-For noise that comes back at the same time every week - an Unraid appdata backup that stops containers or fills their
+For noise that comes back at the same time every week, month or few weeks - an Unraid appdata backup that stops containers or fills their
 logs with errors, a scheduled parity check - use **Settings › Alert filters › Recurring mute windows**. One window per
 line, in local time (Settings › Display › Time zone), the end time not included:
 
 ```
-category [days] [from-to]
+category [days] [from-to] [every N weeks from YYYY-MM-DD]
 
 unraid_container_errors tue 01:00-04:00     errors in container logs, Tuesdays 01:00-04:00
+backups 1st 02:00-06:00                     the 1st of every month (also: 15th, last, 1st+15th)
+unraid_parity 1st-mon                       the first Monday of every month (also: 3rd-sat, last-fri)
+unraid tue 01-04 every 2 weeks from 2026-11-10   every other Tuesday, starting in the week of 10 Nov 2026
 unraid mon+thu 03-05                        every Unraid alert, Mondays and Thursdays 03:00-05:00
 backups sun                                 every backup alert, all of Sunday
 unraid_container_down mon-fri 23:30-01:00   past midnight: belongs to the day it starts on
 ```
 
 The category is a single rule, a whole group (`unraid`, `backups`, `firewall`, `dns` …) or `*` for every alert; days
-are `mon` … `sun`, ranges (`mon-fri`) or several (`sat+sun`); left out = every day or the whole day (at least one of
-the two is needed). **Format & categories…** next to the Save button lists every category and adds a line for the one
+are weekdays `mon` … `sun` and ranges (`mon-fri`), days of the month (`1st`, `15th`, `last`) or a weekday of the
+month (`1st-tue`, `last-fri`), several joined with `+` (`sat+sun`, `1st+15th`); left out = every day or the whole day
+(at least one of the two is needed). `every N weeks from YYYY-MM-DD` at the end limits it to the week of that date and
+every N-th week after it (weeks start on Monday); without days it is on the weekday of that date. **Format & categories…** next to the Save button lists every category and adds a line for the one
 you click. Inside a window new alerts are handled exactly like during a snooze: stored closed (marked *snoozed*), not
 mailed, still counted for attack chains and the risk score; alerts that were already open are not mailed.
 
