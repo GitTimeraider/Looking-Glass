@@ -91,6 +91,12 @@ def test_unban_route_lapi(monkeypatch):
             ep = next(r.endpoint for r in app.routes if getattr(r, "path", "") == "/api/crowdsec/unban")
             assert (await ep(req, {"id": 9, "src": "lapi"}))["value"] == "198.51.100.9" and seen == [9]
             assert [r["id"] for r in await db.get_snapshot(lapi.DECISIONS_KEY)] == [10]
+            # one Unban for an address with several decisions (one per scenario): all of them
+            await db.set_snapshot(lapi.DECISIONS_KEY, [{"id": 11, "value": "198.51.100.11"}, {"id": 12, "value": "198.51.100.11"},
+                                                       {"id": 10, "value": "x"}])
+            res = await ep(req, {"id": "11,12", "src": "lapi"})
+            assert res["id"] == [11, 12] and seen == [9, 11, 12]
+            assert [r["id"] for r in await db.get_snapshot(lapi.DECISIONS_KEY)] == [10]
             # bouncer key only: refused with the reason, the list is untouched
             app = create_app(Settings(crowdsec_lapi_url="http://cs:8080", crowdsec_lapi_bouncer_key="k"), None)
             ep = next(r.endpoint for r in app.routes if getattr(r, "path", "") == "/api/crowdsec/unban")

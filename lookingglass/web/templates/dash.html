@@ -43,7 +43,8 @@ document.getElementById("panels").addEventListener("click", async e => {
   const b = e.target.closest("button[data-unban]");
   if (!b) return;
   e.stopPropagation();
-  if (!confirm(`Remove the CrowdSec decision for ${b.dataset.what || "this address"}?\n\nCrowdSec lifts the ban now and the bouncers follow at their next update; ` +
+  const n = b.dataset.unban.split(",").length;  // one row per address: all its decisions (one per scenario) go together
+  if (!confirm(`Remove ${n > 1 ? `all ${n} CrowdSec decisions` : "the CrowdSec decision"} for ${b.dataset.what || "this address"}?\n\nCrowdSec lifts the ban now and the bouncers follow at their next update; ` +
                "it can ban the address again if it keeps misbehaving.")) return;
   b.disabled = true; b.textContent = "Unbanning…";
   try {
@@ -53,6 +54,7 @@ document.getElementById("panels").addEventListener("click", async e => {
   } catch (err) {
     b.disabled = false; b.textContent = "Unban";
     alert("Unban failed: " + err.message);
+    load();  // some of the address's decisions may be gone already
   }
 });
 let built = false, step = 3600;
