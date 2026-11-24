@@ -1550,6 +1550,7 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
             tz = None
         out = await learned_baseline(settings, keys, tz)
         out["fixed"] = dict((row["limits"] or {}).get("baseline") or {}) if row else {}
+        out["ml_modes"] = dict((row["limits"] or {}).get("ml_modes") or {}) if row else {}
         out["enabled"] = {"behavior": settings.behavior_enabled,
                           "volume": bool(settings.behavior_enabled and settings.behavior_volume_factor),
                           "ml": bool(settings.behavior_enabled and settings.anomaly_ml_enabled)}

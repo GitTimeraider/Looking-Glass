@@ -605,7 +605,17 @@ nav.side .nlinks a { margin-left: 4px; }
 .base-tbl th, .base-tbl td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .base-tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
 .base-tbl tr.own td { background: color-mix(in srgb, var(--accent, #4a8cff) 10%, transparent); }
-.base-tbl input { width: 130px; }
+.base-tbl input { width: 110px; }
+.base-tbl select { width: 92px; }
+@media (max-width: 640px) {  /* phone: the category on its own line, the numbers and fields below it */
+  .base-tbl.base-main thead { display: none; }
+  .base-tbl.base-main tr { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .base-tbl.base-main td { border: 0; padding: 0 4px; white-space: normal; }
+  .base-tbl.base-main td:first-child { grid-column: 1 / -1; font-weight: 600; }
+  .base-tbl.base-main td.num { text-align: left; }
+  .base-tbl.base-main td[data-l]::before { content: attr(data-l) ": "; color: var(--muted, #999); font-weight: 400; }
+  .base-tbl.base-main input, .base-tbl.base-main select { width: 100%; }
+}
 .base-hours { margin-top: 8px; }
 .base-hours summary { cursor: pointer; }
 @media (max-width: 640px) { .lim-row { grid-template-columns: auto minmax(0, 1fr); } .lim-row .lim-l { grid-column: 1 / -1; } }

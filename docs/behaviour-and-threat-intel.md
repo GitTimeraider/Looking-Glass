@@ -51,6 +51,10 @@ the global setting (also when that changes later); unticked, the value next to i
   lookups) and where machine learning judges the device's hour (what counts as normal and the minimum increase above
   it). The model itself keeps learning from the device's real hours. Empty = the learned median. Alerts say
   *normally ~2,000, set by hand*. The table is calculated when the dialog opens, for that one device only.
+* **ML alert per category** - in the same table: machine learning alerts about each category *alert* or are *silent*
+  (*default* follows the device's *Machine learning alerts* setting). One alert covers every category the hour was off
+  in; it is silent only when **all** of them are silent, and its title then names a category that alerts. E.g. DNS
+  lookups silent for a device that updates itself at random: a DNS-only anomaly is silent, DNS plus new ports alerts.
 
 *Use defaults for everything* clears the device's own settings (its type stays). Devices with their own settings or a
 type show *⚙ settings*, the alerts they raise say which limit was used, and they are never removed automatically. A

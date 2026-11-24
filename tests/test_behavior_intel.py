@@ -402,6 +402,49 @@ def test_clean_limits_baseline():
             clean_limits(bad)
 
 
+def test_clean_limits_ml_modes():
+    assert clean_limits({"ml_modes": {"connections": "silent", "dns": "", "blocked": "default", "ports": "ALERT"}}) == \
+        {"ml_modes": {"connections": "silent", "ports": "alert"}}
+    assert clean_limits({"ml_modes": {"dns": ""}}) == {}
+    for bad in ({"ml_modes": {"bytes": "silent"}}, {"ml_modes": {"dns": "off"}}, {"ml_modes": ["dns"]}):
+        with pytest.raises(ValueError):
+            clean_limits(bad)
+
+
+@needs_db
+def test_machine_learning_alert_or_silent_per_category():
+    async def body(pool):
+        hour = NOW.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+        r = random.Random(5)
+        rows = []
+        for i in range(1, 7 * 24):
+            for d in range(4):
+                f = {"connections": 100 + r.randint(-20, 20), "destinations": 20 + r.randint(-3, 3), "ports": 3,
+                     "countries": 2, "dns": 200 + r.randint(-30, 30), "failed_lookups": r.randint(0, 2), "blocked": r.randint(0, 3)}
+                rows.append((f"aa:00:00:00:00:0{d}", hour - timedelta(hours=i), f"192.168.1.{20 + d}", f))
+        spike = {"connections": 9000, "destinations": 900, "ports": 40, "countries": 25, "dns": 210, "failed_lookups": 1,
+                 "blocked": 2}
+        for d in range(4):
+            rows.append((f"aa:00:00:00:00:0{d}", hour, f"192.168.1.{20 + d}", spike))
+        await pool.executemany("INSERT INTO device_hourly (key, hour, ip, features) VALUES ($1, $2, $3::inet, $4)", rows)
+        every = {"connections": "silent", "destinations": "silent", "ports": "silent", "countries": "silent"}
+        await pool.execute(
+            "INSERT INTO devices (mac, ip, limits) VALUES ('aa:00:00:00:00:00', '192.168.1.20', $1), "
+            "('aa:00:00:00:00:01', '192.168.1.21', $2), ('aa:00:00:00:00:02', '192.168.1.22', $3)",
+            {"ml_modes": every},                                     # every category it is off in: silent
+            {"ml_modes": {"connections": "silent"}},                 # one of them silent, the others alert
+            {"ml_alerts": "silent", "ml_modes": {"ports": "alert"}})  # silent in general, but ports alert
+        await Behavior(Settings(), DetectionEngine(Settings()).internal).ml(hour)
+        got = {r["ip"]: r for r in await pool.fetch(
+            "SELECT host(src_ip) ip, close_reason, title, description FROM alerts WHERE rule = 'ml_anomaly'")}
+        assert set(got) == {"192.168.1.20", "192.168.1.21", "192.168.1.22", "192.168.1.23"}
+        assert got["192.168.1.20"]["close_reason"] == "muted"
+        assert "Silent for this device: connections" in got["192.168.1.20"]["description"]
+        assert got["192.168.1.21"]["close_reason"] is None and "connections" not in got["192.168.1.21"]["title"]
+        assert got["192.168.1.22"]["close_reason"] is None and got["192.168.1.23"]["close_reason"] is None
+    run(body)
+
+
 @needs_db
 def test_own_normal_hour_overrides_the_learned_median():
     async def body(pool):

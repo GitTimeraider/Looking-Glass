@@ -15,6 +15,8 @@
   busy at random, stricter for very steady ones (see LIMITS).
 * Per-device normal hour (devices.limits["baseline"], Devices page): a fixed number per hourly feature that replaces the
   learned median in the traffic spike and machine learning checks (see baseline_of / learned_baseline).
+* Per-device machine learning alert mode per feature (devices.limits["ml_modes"]): alert / silent for each category;
+  an hour is a silent alert only when every category it deviates in is silent (see ml_silent).
 * Feedback: alerts closed as "false positive" become suggestions (or automatic severity rules).
 
 Everything is configurable under Settings › Behaviour & ML, including devices never to analyse.
@@ -125,6 +127,38 @@ def clean_baseline(raw: Any) -> dict[str, float]:
     return out
 
 
+ML_MODES = ("alert", "silent")
+
+
+def clean_ml_modes(raw: Any) -> dict[str, str]:
+    """A device's machine learning alert mode per category from the UI: empty / default = the device's general
+    "Machine learning alerts" setting. Raises ValueError."""
+    if raw in (None, "", {}):
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("ml_modes must be an object")
+    out: dict[str, str] = {}
+    for f, value in raw.items():
+        if f not in FEATURES:
+            raise ValueError(f"ml_modes: unknown category {f}")
+        v = str(value or "").strip().lower()
+        if v in ("", "default", "global"):
+            continue
+        if v not in ML_MODES:
+            raise ValueError(f"machine learning alerts for {FEATURE_LABEL[f]}: must be alert or silent")
+        out[f] = v
+    return out
+
+
+def ml_silent(limits: dict[str, dict[str, Any]], key: str, ip: str | None, features: list[str]) -> bool:
+    """A machine learning alert about these deviating features is silent when each of them is silent: its own mode per
+    category (ml_modes), else the device's general one (ml_alerts)."""
+    general = limit(limits, key, ip, "ml_alerts", "alert")
+    own = limit(limits, key, ip, "ml_modes", None)
+    own = own if isinstance(own, dict) else {}
+    return bool(features) and all(own.get(f, general) == "silent" for f in features)
+
+
 def baseline_of(limits: dict[str, dict[str, Any]], key: str, ip: str | None) -> dict[str, float]:
     """The normal hour set by hand for a device (feature -> value), {} = all learned."""
     own = limit(limits, key, ip, "baseline", None)
@@ -142,6 +176,10 @@ def clean_limits(raw: Any) -> dict[str, Any]:
         if key == "baseline":  # the device's own normal hour (fixed numbers instead of the learned medians)
             if base := clean_baseline(value):
                 out[key] = base
+            continue
+        if key == "ml_modes":  # machine learning alert / silent per category
+            if modes := clean_ml_modes(value):
+                out[key] = modes
             continue
         if key not in LIMITS:
             raise ValueError(f"unknown limit {key}")
@@ -726,17 +764,25 @@ class Behavior:
             if not dev or (score < cut and max(d for d, _ in dev) < 2 * z):
                 continue
             ip = row["ip"]
+            feats = [f for _, f in sorted(dev, reverse=True)]
+            silent = ml_silent(limits, key, ip, feats)
+            own_modes = limit(limits, key, ip, "ml_modes", None) or {}
+            if not silent:  # the title names a category that alerts, not one set to silent
+                general = limit(limits, key, ip, "ml_alerts", "alert")
+                feats.sort(key=lambda f: own_modes.get(f, general) == "silent")
             parts = [f"{FEATURE_LABEL[f]} {float(row['features'].get(f, 0)):,.0f} (normally ~{med_raw[FEATURES.index(f)]:,.0f}"
-                     f"{', set by hand' if f in fixed else ''})" for _, f in sorted(dev, reverse=True)]
+                     f"{', set by hand' if f in fixed else ''})" for f in feats]
             await raise_alert(
                 "ml_anomaly", corroborate(Rating("low", "this hour is unlike the device's normal hours (machine learning)"),
                                           await evidence(ip, "ml_anomaly"), 1),
                 f"Unusual activity of {ip} (machine learning): {parts[0]}", f"ml:{key}:{hour:%Y%m%d%H}", src_ip=ip,
                 events={"ip": ip}, data={"score": round(score, 3), "cut": round(cut, 3)},
-                silent=limit(limits, key, ip, "ml_alerts", "alert") == "silent",
+                silent=silent,
                 description=f"Between {local_time(self.s, hour)} and {local_time(self.s, hour + timedelta(hours=1))} this "
                             f"device behaved unlike its last {self.s.behavior_learn_days} days: {'; '.join(parts)}. "
-                            f"Anomaly score {score:.2f} (alert from {cut:.2f}, sensitivity {level}"
+                            + (f"Silent for this device: {', '.join(FEATURE_LABEL[f] for f in feats if own_modes.get(f) == 'silent')}"
+                               f" (Devices page). " if any(own_modes.get(f) == "silent" for f in feats) else "")
+                            + f"Anomaly score {score:.2f} (alert from {cut:.2f}, sensitivity {level}"
                             + (", set for this device on the Devices page)." if level != default else
                                "). Sensitivity: Settings › Behaviour & ML, or per device on the Devices page."))
 
