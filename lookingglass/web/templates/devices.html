@@ -35,9 +35,10 @@
       alerts are silent or off by default.</span></label>
       <span></span><div class="lim-v"><select id="lim-type"></select></div></div>
     <div id="lim-rows"></div>
+    <div id="lim-base"></div>
     <div class="small" id="lim-err" style="color:var(--bad, #c33)"></div>
     <div class="lim-actions"><button type="submit">Save</button> <button type="button" class="secondary" id="lim-reset"
-      title="Tick every &quot;Use default&quot; box and save (the device type stays)">Use defaults for everything</button></div>
+      title="Tick every &quot;Use default&quot; box, clear your own normal hour and save (the device type stays)">Use defaults for everything</button></div>
   </form>
 </dialog>
 <p class="small muted">Risk: points from this device's alerts that fade over time (Settings › Behaviour &amp; ML). Learned: what
@@ -124,7 +125,7 @@ const modeFmt = v => v === "silent" ? "silent" : v === "off" ? "off" : "alert";
 const LIM = [
   { group: "Alert limits" },
   { k: "volume_factor", l: "Traffic spike: alert at N times the device's normal hour", t: "int", min: 0, max: 1000,
-    fmt: v => v ? v + "×" : "off", hint: "Connections or DNS lookups in one hour against the device's median for that hour. 0 = no spike alerts." },
+    fmt: v => v ? v + "×" : "off", hint: "Connections or DNS lookups in one hour against the device's normal hour (see Normal hour below). 0 = no spike alerts." },
   { k: "volume_alerts", l: "Traffic spike alerts", t: "choice", opts: ALERT_SILENT, fmt: modeFmt,
     hint: "silent = stored, never shown or notified, but it counts for attack chains and the risk score." },
   { k: "ml_sensitivity", l: "Machine learning (unusual activity)", t: "choice",
@@ -146,7 +147,43 @@ const LIM = [
 ];
 const LIM_LABEL = Object.fromEntries(LIM.filter(x => x.k).map(x => [x.k, x]));
 function limitsText(l) {
-  return Object.entries(l || {}).map(([k, v]) => { const x = LIM_LABEL[k]; return x ? `${x.l}: ${x.fmt(v === true ? "alert" : v === false ? "off" : v)}` : `${k}: ${v}`; }).join(" · ");
+  return Object.entries(l || {}).map(([k, v]) => {
+    if (k === "baseline") return "Normal hour set by hand: " + Object.entries(v || {}).map(([f, n]) => `${BASE_LABEL[f] || f} ${LG.num(n)}`).join(", ");
+    const x = LIM_LABEL[k]; return x ? `${x.l}: ${x.fmt(v === true ? "alert" : v === false ? "off" : v)}` : `${k}: ${v}`;
+  }).join(" · ");
+}
+/* the device's normal hour (behavior.learned_baseline): learned medians per category, and a number set by hand that
+   replaces the median in the traffic spike and machine learning checks. Read only when the dialog opens. */
+const BASE_LABEL = { connections: "connections", destinations: "destinations", ports: "ports", countries: "countries",
+  dns: "DNS lookups", failed_lookups: "failed lookups", blocked: "blocked connections" };
+const baseNum = v => v === null || v === undefined ? "–" : LG.num(Math.round(v * 10) / 10);
+async function baseline(mac) {
+  const el = document.getElementById("lim-base");
+  el.innerHTML = `<h4 class="lim-group">Normal hour</h4><p class="small muted">Loading what was learned…</p>`;
+  let b;
+  try { b = await LG.api(`/api/devices/${encodeURIComponent(mac)}/baseline`); }
+  catch (err) { el.innerHTML = `<h4 class="lim-group">Normal hour</h4><p class="small muted">Could not load it: ${LG.esc(err.message)}</p>`; return; }
+  if (limMac !== mac) return;  // another device's dialog was opened meanwhile
+  const fixed = b.fixed || {};
+  const intro = b.hours
+    ? `Learned from <b>${LG.num(b.hours)}</b> hours with traffic in the last ${b.learn_days} days (Settings › Behaviour &amp; ML › Learning period). ` +
+      `The traffic spike check judges this device from ${b.need.volume} hours, machine learning from ${b.need.ml}.`
+    : `Nothing learned yet: the hourly counts start once the device shows up in the firewall or DNS logs${b.enabled.behavior ? "" : " and Learn device behaviour is on (Settings › Behaviour &amp; ML)"}.`;
+  const hours = Object.keys(b.by_hour || {});
+  el.innerHTML = `<h4 class="lim-group">Normal hour <span class="small muted">the median of all this device's hours; a number of your own replaces it in the traffic spike (connections, DNS lookups) and machine learning checks - empty = learned</span></h4>
+    <p class="small muted">${intro}</p>
+    <div class="base-wrap"><table class="base-tbl"><thead><tr><th>Per hour</th><th class="num" title="Half of the device's hours are below this">Learned median</th>
+      <th class="num" title="9 of 10 of the device's hours are below this">90% of hours below</th><th>Your own normal</th></tr></thead><tbody>` +
+    b.features.map(f => `<tr class="${fixed[f.key] !== undefined ? "own" : ""}"><td>${LG.esc(f.label)}${f.volume ? ` <span class="small muted" title="Also used by the traffic spike check">· spike</span>` : ""}</td>
+      <td class="num">${baseNum(f.median)}</td><td class="num">${baseNum(f.p90)}</td>
+      <td><input type="number" min="0" step="any" inputmode="decimal" data-base="${f.key}" aria-label="Your own normal ${LG.esc(f.label)} per hour"
+        value="${fixed[f.key] !== undefined ? LG.esc(String(fixed[f.key])) : ""}" placeholder="${f.median === null ? "learned" : "learned: " + baseNum(f.median)}"></td></tr>`).join("") +
+    `</tbody></table></div>` +
+    (hours.length ? `<details class="base-hours"><summary class="small">Median per hour of the day (for reading - the checks use the one normal hour above)</summary>
+      <div class="base-wrap"><table class="base-tbl"><thead><tr><th>Hour</th>${b.features.map(f => `<th class="num">${LG.esc(f.label)}</th>`).join("")}</tr></thead><tbody>` +
+      hours.map(h => `<tr><td>${String(h).padStart(2, "0")}:00</td>${b.features.map(f => `<td class="num">${baseNum(b.by_hour[h][f.key])}</td>`).join("")}</tr>`).join("") +
+      `</tbody></table></div></details>` : "");
+  el.querySelectorAll("[data-base]").forEach(i => i.oninput = () => i.closest("tr").classList.toggle("own", i.value.trim() !== ""));
 }
 const toField = (x, v) => x.opts === MODE ? modeFmt(v === true ? "alert" : v === false ? "off" : v) : String(v ?? "");
 /* the value a device uses when "Use default" is ticked: its type's default (DEVICE_TYPES), else the global setting */
@@ -188,6 +225,7 @@ async function limits(mac) {
   err.textContent = !limDef.behavior_enabled ? "Learn device behaviour is off (Settings › Behaviour & ML): only the risk score setting has an effect until it is on."
     : !limDef.risk_enabled ? "The risk score is off (Settings › Behaviour & ML): the risk setting has no effect until it is on." : "";
   document.getElementById("lim").showModal();
+  baseline(mac);
 }
 async function saveLimits(body) {
   try {
@@ -200,10 +238,16 @@ document.getElementById("lim-form").onsubmit = e => {
   document.querySelectorAll("#lim-rows [data-global]").forEach(cb => {
     if (!cb.checked) body[cb.dataset.global] = document.querySelector(`[data-own="${cb.dataset.global}"]`).value;
   });
+  const base = {};
+  document.querySelectorAll("#lim-base [data-base]").forEach(i => { if (i.value.trim() !== "") base[i.dataset.base] = i.value.trim(); });
+  if (Object.keys(base).length) body.baseline = base;
+  else if (!document.querySelector("#lim-base [data-base]") && (devs.find(x => x.mac === limMac) || {}).limits?.baseline)
+    body.baseline = devs.find(x => x.mac === limMac).limits.baseline;  // the table did not load: keep what was set
   saveLimits(body);
 };
 document.getElementById("lim-reset").onclick = () => {
   document.querySelectorAll("#lim-rows [data-global]").forEach(cb => { cb.checked = true; syncRow(cb); });
+  document.querySelectorAll("#lim-base [data-base]").forEach(i => { i.value = ""; i.closest("tr").classList.remove("own"); });
   saveLimits({});
 };
 document.getElementById("lim-close").onclick = () => document.getElementById("lim").close();

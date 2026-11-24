@@ -599,6 +599,15 @@ nav.side .nlinks a { margin-left: 4px; }
 .lim-actions { margin-top: 12px; }
 .lim-row.lim-type { border: 1px solid var(--border); margin-top: 6px; }
 .lim-row .lim-g input { flex: none; margin: 0; }
+/* devices page: the device's normal hour (learned medians, own numbers) */
+.base-wrap { overflow-x: auto; max-width: 100%; }
+.base-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.base-tbl th, .base-tbl td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.base-tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
+.base-tbl tr.own td { background: color-mix(in srgb, var(--accent, #4a8cff) 10%, transparent); }
+.base-tbl input { width: 130px; }
+.base-hours { margin-top: 8px; }
+.base-hours summary { cursor: pointer; }
 @media (max-width: 640px) { .lim-row { grid-template-columns: auto minmax(0, 1fr); } .lim-row .lim-l { grid-column: 1 / -1; } }
 .refresh-period { margin-left: 6px; padding: 1px 8px; }
 .pending-period { opacity: .35; pointer-events: none; }

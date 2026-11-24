@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from lookingglass import db
-from lookingglass.behavior import Behavior, Matcher, clean_limits
+from lookingglass.behavior import Behavior, Matcher, clean_limits, learned_baseline
 from lookingglass.config import Settings
 from lookingglass.detections import DetectionEngine, evidence, raise_alert
 from lookingglass.intel import (Intel, describe_rule, dns_redirects, exposure_changes, nat_redirects, opens_inbound, parse_canaries,
@@ -388,6 +388,57 @@ def test_per_device_limits():
         risk = await rules(pool, "risk_score")
         assert [(a["ip"], a["severity"]) for a in risk] == [("192.168.1.21", "critical")]
         assert "set for this device" in risk[0]["description"]
+    run(body)
+
+
+def test_clean_limits_baseline():
+    # a device's own normal hour: numbers per category, empty = learned; nothing set = no key at all
+    assert clean_limits({"baseline": {"connections": "2000", "dns": "", "blocked": 0, "ports": "2,5"}}) == \
+        {"baseline": {"connections": 2000, "blocked": 0, "ports": 2.5}}
+    assert clean_limits({"baseline": {"connections": ""}}) == {} and clean_limits({"baseline": None}) == {}
+    for bad in ({"baseline": {"bytes": 1}}, {"baseline": {"dns": "x"}}, {"baseline": {"dns": -1}},
+                {"baseline": {"dns": "inf"}}, {"baseline": {"dns": 10 ** 9}}, {"baseline": [1]}):
+        with pytest.raises(ValueError):
+            clean_limits(bad)
+
+
+@needs_db
+def test_own_normal_hour_overrides_the_learned_median():
+    async def body(pool):
+        hour = NOW.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+        r = random.Random(5)
+        rows = []
+        for i in range(1, 7 * 24):
+            for d in range(4):
+                f = {"connections": 100 + r.randint(-20, 20), "destinations": 20 + r.randint(-3, 3), "ports": 3,
+                     "countries": 2, "dns": 200 + r.randint(-30, 30), "failed_lookups": r.randint(0, 2), "blocked": r.randint(0, 3)}
+                rows.append((f"aa:00:00:00:00:0{d}", hour - timedelta(hours=i), f"192.168.1.{20 + d}", f))
+        spike = {"connections": 9000, "destinations": 900, "ports": 40, "countries": 25, "dns": 210, "failed_lookups": 1,
+                 "blocked": 2}
+        rows.append(("aa:00:00:00:00:00", hour, "192.168.1.20", {**spike, "connections": 600}))  # 6x the learned median
+        rows.append(("aa:00:00:00:00:01", hour, "192.168.1.21", spike))                         # 90x the learned median
+        rows.append(("aa:00:00:00:00:02", hour, "192.168.1.22", spike))                         # the same, nothing set
+        await pool.executemany("INSERT INTO device_hourly (key, hour, ip, features) VALUES ($1, $2, $3::inet, $4)", rows)
+        await pool.execute(
+            "INSERT INTO devices (mac, ip, limits) VALUES ('aa:00:00:00:00:00', '192.168.1.20', $1), "
+            "('aa:00:00:00:00:01', '192.168.1.21', $2)",
+            {"baseline": {"connections": 10}},  # a very quiet device: 600 is a spike now (60x)
+            {"baseline": {"connections": 9000, "destinations": 900, "ports": 40, "countries": 25}})  # that IS normal
+        b = Behavior(Settings(), DetectionEngine(Settings()).internal)
+        await b.volume(hour)
+        vol = await rules(pool, "volume_spike")
+        assert sorted(a["ip"] for a in vol) == ["192.168.1.20", "192.168.1.22"]
+        assert "normally ~10, set by hand" in next(a for a in vol if a["ip"] == "192.168.1.20")["description"]
+        await b.ml(hour)
+        ml = [a["ip"] for a in await rules(pool, "ml_anomaly")]
+        assert "192.168.1.22" in ml and "192.168.1.21" not in ml
+        # what the Devices page shows: the learned medians per category and per hour of the day
+        base = await learned_baseline(Settings(), ["aa:00:00:00:00:02"])
+        feats = {f["key"]: f for f in base["features"]}
+        assert base["hours"] == 7 * 24 and 90 <= feats["connections"]["median"] <= 110 and feats["ports"]["median"] == 3
+        assert feats["connections"]["p90"] >= feats["connections"]["median"] and feats["dns"]["volume"]
+        assert len(base["by_hour"]) == 24 and base["need"] == {"volume": 72, "ml": 48}
+        assert (await learned_baseline(Settings(), ["nobody"]))["hours"] == 0
     run(body)
 
 

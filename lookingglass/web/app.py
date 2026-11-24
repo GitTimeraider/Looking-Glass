@@ -1535,6 +1535,26 @@ def create_app(settings: Settings, analyst: Analyst, poller_status: dict[str, An
         return {"mac": mac.lower(), "ip": ip, "since": since.isoformat() if since else None, "profile": out,
                 "risk": db.jsonable(dict(risk)) if risk else None}
 
+    @app.get("/api/devices/{mac}/baseline")
+    async def device_baseline(mac: str):
+        """The device's normal hour as learned (medians per category) and as set by hand (devices.limits.baseline)."""
+        from zoneinfo import ZoneInfo
+
+        from ..behavior import learned_baseline
+        pool = db.pool()
+        row = await pool.fetchrow("SELECT host(ip) ip, limits FROM devices WHERE mac = $1", mac.lower())
+        keys = [k for k in (mac.lower(), row and row["ip"]) if k]
+        try:
+            tz = ZoneInfo(settings.timezone or "UTC")
+        except Exception:  # noqa: BLE001
+            tz = None
+        out = await learned_baseline(settings, keys, tz)
+        out["fixed"] = dict((row["limits"] or {}).get("baseline") or {}) if row else {}
+        out["enabled"] = {"behavior": settings.behavior_enabled,
+                          "volume": bool(settings.behavior_enabled and settings.behavior_volume_factor),
+                          "ml": bool(settings.behavior_enabled and settings.anomaly_ml_enabled)}
+        return db.jsonable(out)
+
     @app.delete("/api/devices/{mac}/profile")
     async def forget_profile(mac: str, kind: str | None = None):
         """Forget the learned behaviour (all, or one kind): the device is learned again from scratch."""
