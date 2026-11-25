@@ -378,7 +378,7 @@ async function charts() {
   if (tab === "overview") {
     LG.lineChart("c-cpu", m.unraid_cpu_pct || {}, { ...o, fmt: pct, min: 0, max: 100, fill: true, rename: () => "CPU" });
     LG.lineChart("c-mem", { memory: Object.values(m.unraid_mem_pct || {})[0] || [], swap: Object.values(m.unraid_swap_pct || {})[0] || [] }, { ...o, fmt: pct, min: 0, max: 100 });
-    LG.lineChart("c-temp", m.unraid_temp || {}, { ...o, rename: strip });
+    LG.lineChart("c-temp", m.unraid_temp || {}, { ...o, rename: strip, legendMenu: true });
     const pol = (sec.temps || {}).ok === false ? sec.temps.error : "";
     document.getElementById("n-temp").textContent = empty(m.unraid_temp) ? (pol ? "Sensors: " + pol
       : "No temperature data yet. On Unraid API 4.37.5 or older the sensor list is only read while every disk spins (reading it would wake them); the CPU package temperature is shown instead when the API provides it.") : "";
@@ -386,7 +386,7 @@ async function charts() {
     const net = {}, keep = (l, v) => !/^(veth|lo$)/.test(strip(l)) && v.some(p => p[1] > 0);
     for (const [l, v] of Object.entries(m.unraid_net_rx_bps || {})) if (keep(l, v)) net[strip(l) + " rx"] = v;
     for (const [l, v] of Object.entries(m.unraid_net_tx_bps || {})) if (keep(l, v)) net[strip(l) + " tx"] = v;
-    LG.lineChart("c-net", net, { ...o, fmt: v => LG.bps(v), neg: l => l.endsWith(" tx") });
+    LG.lineChart("c-net", net, { ...o, fmt: v => LG.bps(v), neg: l => l.endsWith(" tx"), legendMenu: true });
     document.getElementById("n-net").textContent = empty(net) ? ((sec.network || {}).error ? "No network data: " + sec.network.error + "." : "No network data yet.") : "";
   } else if (tab === "storage") {
     LG.lineChart("c-spin", m.unraid_group_spinning || {}, { ...o, rename: strip, min: 0, step: true });
