@@ -13,6 +13,21 @@ Credentials (users, MFA secrets, API keys) are never accessible to it. Data sent
 query results the model asks for (IPs, domains, log lines) - with **privacy mode** on, local addresses and names
 in them are pseudonyms (see [AI privacy mode](#ai-privacy-mode-pseudonyms)). It also reads your comments on alerts.
 
+## What it knows about your setup
+
+With every question and report the analyst gets a few lines about what is set up in Looking Glass: which sources
+(OPNsense API and its pulls, UniFi, Unraid, Backrest, Bichon, SWAG logs with their file names, SWAG's fail2ban,
+CrowdSec's Local API) are on and which are **not set up** - those send nothing by design, so it does not report them
+as silent or broken. A source that is set up but sent nothing at all in 30 days (fail2ban, Suricata, Q-Feeds - e.g.
+fail2ban switched off in SWAG) is treated the same. It is also told that SWAG's access logs, whatever the file is
+called (e.g. `lookingglass.log` from [the site name in every request](swag.md#optional-the-site-name-in-every-request)),
+are SWAG's request logs for all its sites, not Looking Glass's own traffic.
+
+**Settings › AI analyst › Notes for the analyst**: a few short lines of your own facts it should always take into
+account, e.g. *Looking Glass is only reachable over the VPN* or *the NAS uploads to the cloud every night at 2:00*.
+They are sent with every question, so keep them short (at most 2,000 characters). For a single alert, a comment on
+the alert works too.
+
 ## AI analysis: timeouts and "504 Gateway Timeout"
 
 A report's AI analysis is an agent run of several model calls (the model looks into the data with its tools) and runs

@@ -137,7 +137,7 @@ How to work:
 Current time: {now} UTC = {local}. Timestamps in the data are UTC; when you write times for the user, convert them
 to {style} (convert in SQL with AT TIME ZONE '{zone}' or yourself).
 Data volume in the last 24h by source: {volumes}
-""" + SCHEMA_DOC
+{setup}""" + SCHEMA_DOC
 
 TOOLS: list[dict[str, Any]] = [
     {"type": "function", "function": {
@@ -639,6 +639,60 @@ def explain_ai_error(exc: Exception | None, seconds: float, step: int, s: Settin
     return f"The AI endpoint could not be reached ({where}): {type(exc).__name__}: {exc}"
 
 
+def _names(value: str) -> str:
+    return ", ".join(x.strip() for x in str(value or "").replace("\n", ",").split(",") if x.strip())
+
+
+# optional sources that can be set up in Looking Glass but switched off on the user's side (fail2ban in SWAG, Suricata
+# or Q-Feeds in OPNsense): set up yet without a single event in 30 days = not in use, not a gap to report
+OPTIONAL_SOURCES = ("fail2ban", "suricata", "qfeeds")
+
+
+def setup_summary(s: Settings, unused: set[str] | frozenset[str] = frozenset()) -> str:
+    """What the user has set up in Looking Glass, in a few lines of the system prompt: a source that is not set up
+    sends nothing by design (not a gap to report), and SWAG's log files are named for what they are. ``unused``: set
+    up, but no events in 30 days (OPTIONAL_SOURCES)."""
+    on, off = [], []
+    if s.opnsense_enabled:
+        pulls = [n for n, v in (("Suricata", s.ids_pull), ("CrowdSec plugin", s.crowdsec_pull), ("Q-Feeds", s.qfeeds_pull)) if v]
+        on.append("OPNsense API" + (f" ({', '.join(pulls)})" if pulls else ""))
+    else:
+        off.append("OPNsense API")
+    (on if s.unifi_enabled else off).append("UniFi")
+    (on if s.unraid_url and s.unraid_api_key else off).append("Unraid")
+    (on if s.backrest_enabled else off).append("Backrest")
+    (on if s.bichon_enabled else off).append("Bichon")
+    if s.swag_enabled:
+        on.append(f"SWAG logs (access: {_names(s.swag_access_logs) or '-'}; error: {_names(s.swag_error_logs) or '-'})")
+    else:
+        off.append("SWAG logs")
+    (on if s.fail2ban_enabled else off).append("SWAG fail2ban")
+    if s.crowdsec_lapi_enabled:
+        mode = str(getattr(s, "crowdsec_shared_lapi", "auto"))
+        on.append("CrowdSec Local API (Docker)" + ("" if mode == "auto" else f", shared with OPNsense: {mode}"))
+    else:
+        off.append("CrowdSec Local API (Docker)")
+    out = f"Set up in Looking Glass: {', '.join(on) or 'nothing yet'}."
+    if unused:
+        out += (f" Set up but no events at all in 30 days: {', '.join(sorted(unused))} - most likely not running on the "
+                "user's side on purpose: don't report it as silent or broken unless the user asks.")
+    if off:
+        out += (f" NOT set up: {', '.join(off)} - these send no data by design: never report their missing data as a "
+                "problem, gap or silent source; mention one only when the user asks what else could be collected.")
+    if s.swag_enabled:
+        out += (" SWAG's access logs above are SWAG's request logs for ALL its sites, whatever the file is called (e.g. "
+                "lookingglass.log = SWAG's access log in a format with the host name, written for Looking Glass to read - "
+                "NOT Looking Glass's own traffic, and no sign that Looking Glass is published). The site of a request is "
+                "events.domain; data.log is only the file it was read from.")
+    notes = str(getattr(s, "ai_notes", "") or "").strip()
+    if notes:
+        out += f"\nThe user's notes about their setup (first-hand, take them as fact):\n{notes[:NOTES_MAX]}"
+    return out + "\n"
+
+
+NOTES_MAX = 2000
+
+
 class Analyst:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -647,11 +701,18 @@ class Analyst:
     async def _system_prompt(self) -> str:
         rows = await db.pool().fetch("SELECT source, count(*) n FROM events WHERE ts > now() - interval '24 hours' GROUP BY 1 ORDER BY 2 DESC")
         volumes = ", ".join(f"{r['source']}={r['n']}" for r in rows) or "no events yet"
+        unused = {r["s"] for r in await db.pool().fetch(  # one index lookup per source
+            "SELECT s FROM unnest($1::text[]) s WHERE NOT EXISTS (SELECT 1 FROM events WHERE source = s "
+            "AND ts > now() - interval '30 days')", list(OPTIONAL_SOURCES))}
+        s = self.settings
+        configured = {"fail2ban": s.fail2ban_enabled, "suricata": s.opnsense_enabled and s.ids_pull,
+                      "qfeeds": s.opnsense_enabled and s.qfeeds_pull}
+        unused = {src for src in unused if configured.get(src)}
         # str.replace, not str.format: the schema documentation contains braces
         return (SYSTEM_PROMPT.replace("{now}", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
                 .replace("{local}", local_time(self.settings, date=True) + f" {self.settings.timezone or 'UTC'}")
                 .replace("{style}", time_style(self.settings)).replace("{zone}", self.settings.timezone or "UTC")
-                .replace("{volumes}", volumes))
+                .replace("{volumes}", volumes).replace("{setup}", setup_summary(self.settings, unused)))
 
     async def system_message(self, private: bool) -> str:
         """The system prompt exactly as it is sent (with the privacy note in privacy mode)."""
