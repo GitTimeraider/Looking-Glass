@@ -294,6 +294,11 @@ FIELDS: list[Field] = [
     Field("ai_stream", "ai", "Stream answers", "bool", "Receive answers word by word. Keeps the connection busy, so "
           "gateways / proxies in front of the model (OpenRouter, LiteLLM, Cloudflare, nginx) don't cut long answers off "
           "with 504 Gateway Timeout. Switched off automatically if the endpoint can't stream."),
+    Field("ai_notes", "ai", "Notes for the analyst", "text", "Facts about your setup the analyst should always know, "
+          "a few short lines (sent with every question and report, so keep it brief - at most 2,000 characters). E.g. "
+          "'Looking Glass is only reachable over the VPN.' or 'The NAS backs up to the cloud every night at 2:00, that "
+          "traffic is expected.' What you set up in Looking Glass (and what not) is told to it already.",
+          placeholder="Looking Glass is only reachable from the LAN and the VPN, not through SWAG."),
     Field("ai_privacy", "ai", "Privacy mode: pseudonymize local data", "bool", "Before anything is sent to the AI, "
           "local identifiers are replaced by consistent pseudonyms, and translated back in the answer - you keep seeing "
           "the real values. Replaced: private IP addresses (the network part; the last number stays), your own public / "
@@ -733,6 +738,8 @@ def _coerce(f: Field, value: Any) -> Any:
             parse_sources(v)
         except ValueError as exc:
             raise SettingsError(f"{f.label}: {exc}") from exc
+    if f.key == "ai_notes" and len(str(v)) > 2000:
+        raise SettingsError(f"{f.label}: at most 2,000 characters (it is sent with every question)")
     if f.key == "ai_privacy_avoid" and v:
         from .privacy import parse_avoid
         try:

@@ -221,6 +221,7 @@ class Settings(BaseSettings):
     ai_max_tool_rounds: int = 12
     ai_timeout: int = 300
     ai_stream: bool = True
+    ai_notes: str = ""  # the user's facts about their setup, sent with every question (ai.setup_summary)
     ai_privacy: bool = False
     ai_privacy_names: bool = True
     ai_privacy_terms: str = ""

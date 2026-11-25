@@ -45,7 +45,9 @@ events(id bigint, ts timestamptz, received_at timestamptz, source text, host tex
                    device_offline, device_online, device_restart, rogue_ap, rogue_dhcp, poe_disconnect, login_success / login_failed (controller admin logins), ips_alert
   data keys: firewall {label (rule description), rid, reason, tcpflags}; nginx {method, path, status, user_agent, tags[]};
              unbound {qtype, rcode, blocklist, category}; suricata {sid, signature, classification, priority};
-             crowdsec {scenario, decisions, as, country, events_count, appsec, meta {target_uri[], target_fqdn[], rule_name[] ...}};
+             crowdsec {scenario, decisions, as, country, events_count, appsec, meta {target_uri[], target_fqdn[], rule_name[] ...};
+                       decision events (ban/captcha): id, value, scenario, origin, duration, until, alert_id};
+             nginx bouncer_block / waf_block {remediation, by (appsec = WAF), blocked_by};
              fail2ban {jail, honeypot}; honeypot hits (traps): data.honeypot = true (nginx tags[] also has 'honeypot');
              unifi {key (EVT_...), mac (client), ap, ap_from, ap_to, ssid, sw, port, subsystem}
 alerts(id, created_at, last_seen, rule, severity /*info|low|medium|high|critical*/, title, description, src_ip inet,
@@ -64,7 +66,9 @@ risk_scores(entity /*IP*/, score, parts jsonb [{rule, severity, points}], update
 intel_indicators(kind /*domain|ip|ja3*/, value, feed /*urlhaus|threatfox|feodo|sslbl_ja3|tor_relay|tor_exit*/, info)
 seen_domains(domain, first_seen, first_client, registered /*RDAP*/)  -- first lookup of each domain on the network
 snapshots(key, ts, data jsonb)  keys: system, activity (top processes), gateways, interfaces, services, firmware, arp,
-       leases_kea / leases_dnsmasq / leases_isc, unbound_totals, crowdsec_decisions, qfeeds_stats, poller_status,
+       leases_kea / leases_dnsmasq / leases_isc, unbound_totals, qfeeds_stats, poller_status,
+       crowdsec_decisions (OPNsense plugin) / crowdsec_lapi_decisions (CrowdSec in Docker): the decisions in force now -
+       prefer the crowdsec_status tool for bans, CrowdSec metrics and whether both CrowdSecs share one Local API,
        unifi:devices (APs / switches: state, model, firmware, upgradable, cpu, mem, clients, ports[], radios[]),
        unifi:clients (connected now: mac, ip, alias, hostname, wired, ssid, ap, switch, port, signal, satisfaction, tx/rx_bytes),
        unifi:health, unifi:rogue (neighbouring APs; evil_twin = foreign AP using one of your SSIDs), unifi:status,
@@ -137,7 +141,7 @@ How to work:
 Current time: {now} UTC = {local}. Timestamps in the data are UTC; when you write times for the user, convert them
 to {style} (convert in SQL with AT TIME ZONE '{zone}' or yourself).
 Data volume in the last 24h by source: {volumes}
-""" + SCHEMA_DOC
+{setup}""" + SCHEMA_DOC
 
 TOOLS: list[dict[str, Any]] = [
     {"type": "function", "function": {
@@ -194,6 +198,13 @@ TOOLS: list[dict[str, Any]] = [
                        "never), last and last successful run, schedule, runs and failures in the period, plus recent "
                        "failed or warning runs with their error text.",
         "parameters": {"type": "object", "properties": {"days": {"type": "integer", "description": "period, default 7"}}}}},
+    {"type": "function", "function": {
+        "name": "crowdsec_status",
+        "description": "CrowdSec now (OPNsense plugin and CrowdSec in Docker next to SWAG): the bans in force grouped per "
+                       "address (scenarios, type, origin, time left), counts per scenario / origin / country, alerts and "
+                       "SWAG bouncer / WAF blocks of the last 24 hours, which logs CrowdSec reads, AppSec and bouncer "
+                       "metrics, and whether both share one Local API. Optional filter on one address.",
+        "parameters": {"type": "object", "properties": {"ip": {"type": "string", "description": "optional: only this address"}}}}},
     {"type": "function", "function": {
         "name": "looking_glass_settings",
         "description": "Looking Glass's own Settings as they really exist: every tab and setting with its exact menu path, "
@@ -417,6 +428,88 @@ async def tool_backup_status(days: int = 7) -> Any:
     return out
 
 
+def _ban_rows(rows: Any, which: str) -> list[dict[str, Any]]:
+    """Both snapshot formats (crowdsec_lapi.py / parsers.security.crowdsec_ban_row) as one shape."""
+    out = []
+    for d in rows if isinstance(rows, list) else []:
+        if not isinstance(d, dict):
+            continue
+        if which == "docker":
+            out.append({"value": d.get("value"), "type": d.get("type"), "scenario": d.get("scenario"),
+                        "origin": d.get("origin"), "until": d.get("until"), "country": d.get("country")})
+        else:
+            out.append({"value": d.get("lg_value") or d.get("scope_value") or d.get("value"),
+                        "type": d.get("action") or d.get("type") or "ban", "scenario": d.get("reason") or d.get("scenario"),
+                        "origin": d.get("source") or d.get("origin"), "until": d.get("lg_until"), "country": d.get("country")})
+    return out
+
+
+def _top(rows: list[dict[str, Any]], key: str, n: int = 15) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for r in rows:
+        k = str(r.get(key) or "?")
+        counts[k] = counts.get(k, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: -kv[1])[:n])
+
+
+async def tool_crowdsec_status(ip: str | None = None) -> Any:
+    from . import crowdsec_shared
+    from .config import get_settings
+
+    s = get_settings()
+    if not (s.crowdsec_lapi_enabled or (s.opnsense_enabled and s.crowdsec_pull)):
+        return {"configured": False, "hint": "No CrowdSec is connected: Settings › SWAG & CrowdSec (Local API) or "
+                                             "Settings › OPNsense (CrowdSec plugin) in Looking Glass"}
+    primary = await crowdsec_shared.shared_primary(s)
+    lists = {"docker": _ban_rows(await db.get_snapshot("crowdsec_lapi_decisions"), "docker"),
+             "opnsense": _ban_rows(await db.get_snapshot("crowdsec_decisions"), "opnsense")}
+    out: dict[str, Any] = {
+        "shared_local_api": ({"shared": True, "local_api": primary, "note": "both lists hold the same decisions; Unban "
+                              "is offered only in the Active bans list of the CrowdSec that is the Local API"}
+                             if primary else {"shared": False}),
+    }
+    for which, rows in lists.items():
+        if which == "opnsense" and primary and lists["docker"]:
+            continue  # the same decisions twice
+        if ip:
+            rows = [r for r in rows if str(r.get("value") or "").split("/")[0] == ip]
+        per: dict[str, dict[str, Any]] = {}
+        for r in rows:  # CrowdSec keeps one decision per scenario: one entry per address, as the Active bans lists show
+            p = per.setdefault(str(r["value"]), {"value": r["value"], "country": r["country"], "scenarios": set(),
+                                                 "types": set(), "origins": set(), "decisions": 0, "until": None})
+            p["scenarios"].add(r["scenario"] or "?"); p["types"].add(r["type"] or "ban"); p["origins"].add(r["origin"] or "?")
+            p["decisions"] += 1
+            p["until"] = max(filter(None, (p["until"], r["until"])), default=None)
+        bans = sorted(per.values(), key=lambda p: p["until"] or "", reverse=True)
+        for p in bans:
+            for k in ("scenarios", "types", "origins"):
+                p[k] = sorted(p[k])
+        label = "CrowdSec in Docker (SWAG & CrowdSec page)" if which == "docker" else "OPNsense CrowdSec plugin (Threats › CrowdSec)"
+        if rows or not ip:
+            out[f"active_bans_{which}"] = {"where": label, "decisions": len(rows), "addresses": len(bans),
+                                           "by_scenario": _top(rows, "scenario"), "by_origin": _top(rows, "origin", 8),
+                                           "by_country": _top(rows, "country", 10), "bans": bans[:100]}
+    where_ip = " AND src_ip = $1::inet" if ip else ""
+    args = [ip] if ip else []
+    pool = db.pool()
+    out["alerts_24h_by_scenario"] = db.records(await pool.fetch(
+        "SELECT coalesce(data->>'scenario', data->>'reason') scenario, CASE WHEN program = 'crowdsec-lapi' THEN 'docker' "
+        "ELSE 'opnsense' END crowdsec, count(*) alerts, count(DISTINCT src_ip) ips FROM events WHERE source = 'crowdsec' "
+        f"AND action = 'alert' AND ts > now() - interval '24 hours'{where_ip} GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 25", *args))
+    out["swag_blocks_24h"] = db.records(await pool.fetch(
+        "SELECT host(src_ip) ip, string_agg(DISTINCT coalesce(data->>'by', action), ', ') how, count(*) n, max(domain) site "
+        "FROM events WHERE source = 'nginx' AND program = 'swag' AND action IN ('bouncer_block', 'waf_block') "
+        f"AND ts > now() - interval '24 hours'{where_ip} GROUP BY 1 ORDER BY 3 DESC LIMIT 20", *args))
+    if not ip:
+        metrics = await db.get_snapshot("crowdsec_lapi_metrics")
+        if isinstance(metrics, dict):
+            out["metrics"] = {k: metrics.get(k) for k in ("version", "acquisition", "overflows", "appsec", "bouncers")}
+        status = await db.get_snapshot("crowdsec_lapi:status")
+        if isinstance(status, dict):
+            out["local_api_status"] = {k: status.get(k) for k in ("ok", "error", "parts", "active_decisions")}
+    return out
+
+
 # Settings tabs as the web UI names them (settings.html); test_ai_settings checks they stay the same
 SETTINGS_TABS = {**{g: label for g, label in GROUPS.items()}, "ingest": "Ingestion & network",
                  "email": "Email & notifications", "packages": "Unraid servers › Container packages",
@@ -493,6 +586,7 @@ async def run_tool(name: str, args: dict[str, Any], settings: Settings | None = 
     fn = {"sql_query": tool_sql_query, "search_events": tool_search_events, "ip_profile": tool_ip_profile,
           "list_alerts": tool_list_alerts, "alert_detail": tool_alert_detail, "event_detail": tool_event_detail, "system_status": tool_system_status, "unifi_status": tool_unifi_status,
           "backup_status": tool_backup_status, "looking_glass_settings": tool_looking_glass_settings,
+          "crowdsec_status": tool_crowdsec_status,
           "traffic_overview": lambda hours=24: build_report(float(hours))}.get(name)
     if fn is None:
         return json.dumps({"error": f"unknown tool {name}"})
@@ -639,6 +733,60 @@ def explain_ai_error(exc: Exception | None, seconds: float, step: int, s: Settin
     return f"The AI endpoint could not be reached ({where}): {type(exc).__name__}: {exc}"
 
 
+def _names(value: str) -> str:
+    return ", ".join(x.strip() for x in str(value or "").replace("\n", ",").split(",") if x.strip())
+
+
+# optional sources that can be set up in Looking Glass but switched off on the user's side (fail2ban in SWAG, Suricata
+# or Q-Feeds in OPNsense): set up yet without a single event in 30 days = not in use, not a gap to report
+OPTIONAL_SOURCES = ("fail2ban", "suricata", "qfeeds")
+
+
+def setup_summary(s: Settings, unused: set[str] | frozenset[str] = frozenset()) -> str:
+    """What the user has set up in Looking Glass, in a few lines of the system prompt: a source that is not set up
+    sends nothing by design (not a gap to report), and SWAG's log files are named for what they are. ``unused``: set
+    up, but no events in 30 days (OPTIONAL_SOURCES)."""
+    on, off = [], []
+    if s.opnsense_enabled:
+        pulls = [n for n, v in (("Suricata", s.ids_pull), ("CrowdSec plugin", s.crowdsec_pull), ("Q-Feeds", s.qfeeds_pull)) if v]
+        on.append("OPNsense API" + (f" ({', '.join(pulls)})" if pulls else ""))
+    else:
+        off.append("OPNsense API")
+    (on if s.unifi_enabled else off).append("UniFi")
+    (on if s.unraid_url and s.unraid_api_key else off).append("Unraid")
+    (on if s.backrest_enabled else off).append("Backrest")
+    (on if s.bichon_enabled else off).append("Bichon")
+    if s.swag_enabled:
+        on.append(f"SWAG logs (access: {_names(s.swag_access_logs) or '-'}; error: {_names(s.swag_error_logs) or '-'})")
+    else:
+        off.append("SWAG logs")
+    (on if s.fail2ban_enabled else off).append("SWAG fail2ban")
+    if s.crowdsec_lapi_enabled:
+        mode = str(getattr(s, "crowdsec_shared_lapi", "auto"))
+        on.append("CrowdSec Local API (Docker)" + ("" if mode == "auto" else f", shared with OPNsense: {mode}"))
+    else:
+        off.append("CrowdSec Local API (Docker)")
+    out = f"Set up in Looking Glass: {', '.join(on) or 'nothing yet'}."
+    if unused:
+        out += (f" Set up but no events at all in 30 days: {', '.join(sorted(unused))} - most likely not running on the "
+                "user's side on purpose: don't report it as silent or broken unless the user asks.")
+    if off:
+        out += (f" NOT set up: {', '.join(off)} - these send no data by design: never report their missing data as a "
+                "problem, gap or silent source; mention one only when the user asks what else could be collected.")
+    if s.swag_enabled:
+        out += (" SWAG's access logs above are SWAG's request logs for ALL its sites, whatever the file is called (e.g. "
+                "lookingglass.log = SWAG's access log in a format with the host name, written for Looking Glass to read - "
+                "NOT Looking Glass's own traffic, and no sign that Looking Glass is published). The site of a request is "
+                "events.domain; data.log is only the file it was read from.")
+    notes = str(getattr(s, "ai_notes", "") or "").strip()
+    if notes:
+        out += f"\nThe user's notes about their setup (first-hand, take them as fact):\n{notes[:NOTES_MAX]}"
+    return out + "\n"
+
+
+NOTES_MAX = 2000
+
+
 class Analyst:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -647,11 +795,18 @@ class Analyst:
     async def _system_prompt(self) -> str:
         rows = await db.pool().fetch("SELECT source, count(*) n FROM events WHERE ts > now() - interval '24 hours' GROUP BY 1 ORDER BY 2 DESC")
         volumes = ", ".join(f"{r['source']}={r['n']}" for r in rows) or "no events yet"
+        unused = {r["s"] for r in await db.pool().fetch(  # one index lookup per source
+            "SELECT s FROM unnest($1::text[]) s WHERE NOT EXISTS (SELECT 1 FROM events WHERE source = s "
+            "AND ts > now() - interval '30 days')", list(OPTIONAL_SOURCES))}
+        s = self.settings
+        configured = {"fail2ban": s.fail2ban_enabled, "suricata": s.opnsense_enabled and s.ids_pull,
+                      "qfeeds": s.opnsense_enabled and s.qfeeds_pull}
+        unused = {src for src in unused if configured.get(src)}
         # str.replace, not str.format: the schema documentation contains braces
         return (SYSTEM_PROMPT.replace("{now}", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
                 .replace("{local}", local_time(self.settings, date=True) + f" {self.settings.timezone or 'UTC'}")
                 .replace("{style}", time_style(self.settings)).replace("{zone}", self.settings.timezone or "UTC")
-                .replace("{volumes}", volumes))
+                .replace("{volumes}", volumes).replace("{setup}", setup_summary(self.settings, unused)))
 
     async def system_message(self, private: bool) -> str:
         """The system prompt exactly as it is sent (with the privacy note in privacy mode)."""
