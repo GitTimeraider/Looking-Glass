@@ -192,6 +192,9 @@ function overview(d) {
   document.getElementById("gauges").innerHTML = LG.gauge((m.cpu || {}).percentTotal, "CPU") +
     LG.gauge(mem.percentTotal, "Memory", `${LG.bytes(memUsed(mem))} / ${LG.bytes(mem.total)}`) + LG.gauge(mem.percentSwapTotal, "Swap") +
     LG.gauge(kb.total ? kb.used / kb.total * 100 : null, "Array", kb.total ? `${kbytes(kb.used)} / ${kbytes(kb.total)}` : "") +
+    // every ZFS pool next to the array (pools left out under Settings › Unraid servers are already filtered out)
+    groups.filter(g => g.kind === "pool" && /zfs/i.test(g.fsType || "") && Number(g.size) > 0).map(g =>
+      LG.gauge(Number(g.used) / Number(g.size) * 100, `ZFS ${g.name}`, `${kbytes(g.used)} / ${kbytes(g.size)}`)).join("") +
     (temps.length ? `<div class="gauge"><div class="gv">${Math.max(...temps.map(t => t.current.value)).toFixed(0)}°C</div><div class="l">Hottest sensor</div></div>` : "") +
     ((cpu.packages || {}).totalPower ? `<div class="gauge"><div class="gv">${cpu.packages.totalPower.toFixed(0)} W</div><div class="l">CPU power</div></div>` : "");
   const layout = (info.memory || {}).layout || [], ver = (info.versions || {}).core || {};
