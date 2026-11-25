@@ -8,7 +8,7 @@ The AI analyst, Ask AI, AI-written reports, timeouts and privacy mode.
 
 Chat with the model (any OpenAI-compatible endpoint; with Claude it uses Anthropic's
 [OpenAI SDK compatibility layer](https://platform.claude.com/docs/en/api/openai-sdk)). It can run read-only SQL against the log database, search events, profile an
-IP, read alerts, OPNsense + Unraid status and traffic statistics, and answers with evidence and remediation steps.
+IP, read alerts, OPNsense + Unraid status and traffic statistics, CrowdSec's current bans (per address with their scenarios, type, origin and time left, for the OPNsense plugin and CrowdSec in Docker, and whether they share one Local API), its recent alerts, SWAG's bouncer / WAF blocks and CrowdSec's metrics, and answers with evidence and remediation steps.
 Credentials (users, MFA secrets, API keys) are never accessible to it. Data sent to the AI provider consists of the
 query results the model asks for (IPs, domains, log lines) - with **privacy mode** on, local addresses and names
 in them are pseudonyms (see [AI privacy mode](#ai-privacy-mode-pseudonyms)). It also reads your comments on alerts.

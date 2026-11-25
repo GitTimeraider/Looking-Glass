@@ -128,3 +128,44 @@ def test_two_separate_crowdsecs_stay_apart():
             await pool.execute("DELETE FROM snapshots WHERE key = $1", crowdsec_shared.KEY)
             await db.close()
     asyncio.run(main())
+
+
+@pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
+def test_ai_crowdsec_status(monkeypatch):
+    import json as _json
+
+    from lookingglass import ai, config
+
+    until = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()
+    settings = Settings(**BOTH, crowdsec_shared_lapi="docker")
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
+
+    async def main():
+        await db.connect(DSN)
+        pool = db.pool()
+        try:
+            await pool.execute("TRUNCATE events")
+            crowdsec_shared._cache = (0.0, {})
+            await db.set_snapshot("crowdsec_lapi_decisions", [
+                {"id": 1, "value": "203.0.113.7", "type": "ban", "scenario": "crowdsecurity/http-probing", "origin": "crowdsec",
+                 "until": until, "country": "NL"},
+                {"id": 2, "value": "203.0.113.7", "type": "ban", "scenario": "crowdsecurity/appsec-vpatch", "origin": "crowdsec",
+                 "until": until, "country": "NL"},
+                {"id": 3, "value": "198.51.100.8", "type": "captcha", "scenario": "crowdsecurity/ssh-bf", "origin": "cscli"}])
+            await db.set_snapshot("crowdsec_decisions", [{"id": 1, "lg_value": "203.0.113.7", "reason": "crowdsecurity/http-probing"}])
+            await db.copy_events(alert_events(lapi_alert(41, "203.0.113.7", 1)))
+            out = _json.loads(await ai.run_tool("crowdsec_status", {}))
+            assert out["shared_local_api"]["shared"] and out["shared_local_api"]["local_api"] == "docker"
+            bans = out["active_bans_docker"]
+            assert "active_bans_opnsense" not in out  # shared: the same decisions are not listed twice
+            assert (bans["decisions"], bans["addresses"]) == (3, 2)
+            first = next(b for b in bans["bans"] if b["value"] == "203.0.113.7")
+            assert first["scenarios"] == ["crowdsecurity/appsec-vpatch", "crowdsecurity/http-probing"] and first["decisions"] == 2
+            assert out["alerts_24h_by_scenario"][0]["scenario"] == "crowdsecurity/http-probing"
+            one = _json.loads(await ai.run_tool("crowdsec_status", {"ip": "198.51.100.8"}))
+            assert [b["value"] for b in one["active_bans_docker"]["bans"]] == ["198.51.100.8"] and "metrics" not in one
+        finally:
+            await pool.execute("TRUNCATE events")
+            await pool.execute("DELETE FROM snapshots WHERE key IN ('crowdsec_lapi_decisions', 'crowdsec_decisions')")
+            await db.close()
+    asyncio.run(main())
