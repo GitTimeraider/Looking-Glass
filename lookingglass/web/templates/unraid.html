@@ -15,11 +15,12 @@
   </div>
   <section data-s="overview">
     <div class="grid g3">
-      <div class="card span2"><h3>Utilisation now</h3><div class="gauges" id="gauges"></div></div>
-      <div class="card"><h3>System</h3><div id="sys"></div></div>
+      <!-- a full-width strip: next to the taller System card the gauges left half of their card empty -->
+      <div class="card span3"><h3>Utilisation now</h3><div class="gauges" id="gauges"></div></div>
       <div class="card"><h3>CPU %</h3><div class="chart-box sm"><canvas id="c-cpu"></canvas></div></div>
       <div class="card"><h3>Memory / swap %</h3><div class="chart-box sm"><canvas id="c-mem"></canvas></div></div>
-      <div class="card"><h3>Temperatures °C</h3><div class="chart-box sm"><canvas id="c-temp"></canvas></div><div class="small muted" id="n-temp"></div></div>
+      <div class="card"><h3>System</h3><div id="sys"></div></div>
+      <div class="card"><h3>Temperatures °C</h3><div class="chart-box tall"><canvas id="c-temp"></canvas></div><div class="small muted" id="n-temp"></div></div>
       <div class="card span2"><h3>Network (receive + / transmit −)</h3><div class="chart-box tall"><canvas id="c-net"></canvas></div><div class="small muted" id="n-net"></div></div>
       <div class="card"><h3>Per-core load now</h3><div class="chart-box sm"><canvas id="c-cores"></canvas></div></div>
       <div class="card"><h3>VMs</h3><div id="vms"></div></div>
