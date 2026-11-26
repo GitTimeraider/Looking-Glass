@@ -20,11 +20,12 @@
       <div class="card"><h3>CPU %</h3><div class="chart-box sm"><canvas id="c-cpu"></canvas></div></div>
       <div class="card"><h3>Memory / swap %</h3><div class="chart-box sm"><canvas id="c-mem"></canvas></div></div>
       <div class="card"><h3>System</h3><div id="sys"></div></div>
-      <div class="card"><h3>Temperatures °C</h3><div class="chart-box tall"><canvas id="c-temp"></canvas></div><div class="small muted" id="n-temp"></div></div>
-      <div class="card span2"><h3>Network (receive + / transmit −)</h3><div class="chart-box tall"><canvas id="c-net"></canvas></div><div class="small muted" id="n-net"></div></div>
+      <!-- network above temperatures, both one row high and two columns wide; per-core load and UPS fill the column beside them -->
+      <div class="card span2"><h3>Network (receive + / transmit −)</h3><div class="chart-box sm"><canvas id="c-net"></canvas></div><div class="small muted" id="n-net"></div></div>
       <div class="card"><h3>Per-core load now</h3><div class="chart-box sm"><canvas id="c-cores"></canvas></div></div>
-      <div class="card"><h3>VMs</h3><div id="vms"></div></div>
+      <div class="card span2"><h3>Temperatures °C</h3><div class="chart-box sm"><canvas id="c-temp"></canvas></div><div class="small muted" id="n-temp"></div></div>
       <div class="card"><h3>UPS</h3><div id="ups"></div></div>
+      <div class="card span2"><h3>VMs</h3><div id="vms"></div></div>
       <div class="card"><h3>Connection</h3><div id="conn"></div></div>
     </div>
   </section>
