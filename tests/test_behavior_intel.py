@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from lookingglass import db
-from lookingglass.behavior import Behavior, Matcher, clean_limits
+from lookingglass.behavior import Behavior, Matcher, clean_limits, learned_baseline
 from lookingglass.config import Settings
 from lookingglass.detections import DetectionEngine, evidence, raise_alert
 from lookingglass.intel import (Intel, describe_rule, dns_redirects, exposure_changes, nat_redirects, opens_inbound, parse_canaries,
@@ -388,6 +388,114 @@ def test_per_device_limits():
         risk = await rules(pool, "risk_score")
         assert [(a["ip"], a["severity"]) for a in risk] == [("192.168.1.21", "critical")]
         assert "set for this device" in risk[0]["description"]
+    run(body)
+
+
+def test_clean_limits_baseline():
+    # a device's own normal hour: numbers per category, empty = learned; nothing set = no key at all
+    assert clean_limits({"baseline": {"connections": "2000", "dns": "", "blocked": 0, "ports": "2,5"}}) == \
+        {"baseline": {"connections": 2000, "blocked": 0, "ports": 2.5}}
+    assert clean_limits({"baseline": {"connections": ""}}) == {} and clean_limits({"baseline": None}) == {}
+    for bad in ({"baseline": {"bytes": 1}}, {"baseline": {"dns": "x"}}, {"baseline": {"dns": -1}},
+                {"baseline": {"dns": "inf"}}, {"baseline": {"dns": 10 ** 9}}, {"baseline": [1]}):
+        with pytest.raises(ValueError):
+            clean_limits(bad)
+
+
+def test_ml_sensitivity_levels():
+    from lookingglass.app_config import BY_KEY
+    from lookingglass.behavior import ML_LEVELS
+    order = list(ML_LEVELS)
+    assert order == ["very_low", "low", "medium_low", "medium", "medium_high", "high", "very_high"]
+    assert BY_KEY["anomaly_ml_sensitivity"].choices == tuple(order)
+    # each step alerts more: a lower score percentile and fewer deviations
+    for a, b in zip(order, order[1:]):
+        assert ML_LEVELS[a][0] > ML_LEVELS[b][0] and ML_LEVELS[a][1] > ML_LEVELS[b][1]
+    assert clean_limits({"ml_sensitivity": "very_high"}) == {"ml_sensitivity": "very_high"}
+    with pytest.raises(ValueError):
+        clean_limits({"ml_sensitivity": "extreme"})
+
+
+def test_clean_limits_ml_modes():
+    assert clean_limits({"ml_modes": {"connections": "silent", "dns": "", "blocked": "default", "ports": "ALERT"}}) == \
+        {"ml_modes": {"connections": "silent", "ports": "alert"}}
+    assert clean_limits({"ml_modes": {"dns": ""}}) == {}
+    for bad in ({"ml_modes": {"bytes": "silent"}}, {"ml_modes": {"dns": "off"}}, {"ml_modes": ["dns"]}):
+        with pytest.raises(ValueError):
+            clean_limits(bad)
+
+
+@needs_db
+def test_machine_learning_alert_or_silent_per_category():
+    async def body(pool):
+        hour = NOW.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+        r = random.Random(5)
+        rows = []
+        for i in range(1, 7 * 24):
+            for d in range(4):
+                f = {"connections": 100 + r.randint(-20, 20), "destinations": 20 + r.randint(-3, 3), "ports": 3,
+                     "countries": 2, "dns": 200 + r.randint(-30, 30), "failed_lookups": r.randint(0, 2), "blocked": r.randint(0, 3)}
+                rows.append((f"aa:00:00:00:00:0{d}", hour - timedelta(hours=i), f"192.168.1.{20 + d}", f))
+        spike = {"connections": 9000, "destinations": 900, "ports": 40, "countries": 25, "dns": 210, "failed_lookups": 1,
+                 "blocked": 2}
+        for d in range(4):
+            rows.append((f"aa:00:00:00:00:0{d}", hour, f"192.168.1.{20 + d}", spike))
+        await pool.executemany("INSERT INTO device_hourly (key, hour, ip, features) VALUES ($1, $2, $3::inet, $4)", rows)
+        every = {"connections": "silent", "destinations": "silent", "ports": "silent", "countries": "silent"}
+        await pool.execute(
+            "INSERT INTO devices (mac, ip, limits) VALUES ('aa:00:00:00:00:00', '192.168.1.20', $1), "
+            "('aa:00:00:00:00:01', '192.168.1.21', $2), ('aa:00:00:00:00:02', '192.168.1.22', $3)",
+            {"ml_modes": every},                                     # every category it is off in: silent
+            {"ml_modes": {"connections": "silent"}},                 # one of them silent, the others alert
+            {"ml_alerts": "silent", "ml_modes": {"ports": "alert"}})  # silent in general, but ports alert
+        await Behavior(Settings(), DetectionEngine(Settings()).internal).ml(hour)
+        got = {r["ip"]: r for r in await pool.fetch(
+            "SELECT host(src_ip) ip, close_reason, title, description FROM alerts WHERE rule = 'ml_anomaly'")}
+        assert set(got) == {"192.168.1.20", "192.168.1.21", "192.168.1.22", "192.168.1.23"}
+        assert got["192.168.1.20"]["close_reason"] == "muted"
+        assert "Silent for this device: connections" in got["192.168.1.20"]["description"]
+        assert got["192.168.1.21"]["close_reason"] is None and "connections" not in got["192.168.1.21"]["title"]
+        assert got["192.168.1.22"]["close_reason"] is None and got["192.168.1.23"]["close_reason"] is None
+    run(body)
+
+
+@needs_db
+def test_own_normal_hour_overrides_the_learned_median():
+    async def body(pool):
+        hour = NOW.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+        r = random.Random(5)
+        rows = []
+        for i in range(1, 7 * 24):
+            for d in range(4):
+                f = {"connections": 100 + r.randint(-20, 20), "destinations": 20 + r.randint(-3, 3), "ports": 3,
+                     "countries": 2, "dns": 200 + r.randint(-30, 30), "failed_lookups": r.randint(0, 2), "blocked": r.randint(0, 3)}
+                rows.append((f"aa:00:00:00:00:0{d}", hour - timedelta(hours=i), f"192.168.1.{20 + d}", f))
+        spike = {"connections": 9000, "destinations": 900, "ports": 40, "countries": 25, "dns": 210, "failed_lookups": 1,
+                 "blocked": 2}
+        rows.append(("aa:00:00:00:00:00", hour, "192.168.1.20", {**spike, "connections": 600}))  # 6x the learned median
+        rows.append(("aa:00:00:00:00:01", hour, "192.168.1.21", spike))                         # 90x the learned median
+        rows.append(("aa:00:00:00:00:02", hour, "192.168.1.22", spike))                         # the same, nothing set
+        await pool.executemany("INSERT INTO device_hourly (key, hour, ip, features) VALUES ($1, $2, $3::inet, $4)", rows)
+        await pool.execute(
+            "INSERT INTO devices (mac, ip, limits) VALUES ('aa:00:00:00:00:00', '192.168.1.20', $1), "
+            "('aa:00:00:00:00:01', '192.168.1.21', $2)",
+            {"baseline": {"connections": 10}},  # a very quiet device: 600 is a spike now (60x)
+            {"baseline": {"connections": 9000, "destinations": 900, "ports": 40, "countries": 25}})  # that IS normal
+        b = Behavior(Settings(), DetectionEngine(Settings()).internal)
+        await b.volume(hour)
+        vol = await rules(pool, "volume_spike")
+        assert sorted(a["ip"] for a in vol) == ["192.168.1.20", "192.168.1.22"]
+        assert "normally ~10, set by hand" in next(a for a in vol if a["ip"] == "192.168.1.20")["description"]
+        await b.ml(hour)
+        ml = [a["ip"] for a in await rules(pool, "ml_anomaly")]
+        assert "192.168.1.22" in ml and "192.168.1.21" not in ml
+        # what the Devices page shows: the learned medians per category and per hour of the day
+        base = await learned_baseline(Settings(), ["aa:00:00:00:00:02"])
+        feats = {f["key"]: f for f in base["features"]}
+        assert base["hours"] == 7 * 24 and 90 <= feats["connections"]["median"] <= 110 and feats["ports"]["median"] == 3
+        assert feats["connections"]["p90"] >= feats["connections"]["median"] and feats["dns"]["volume"]
+        assert len(base["by_hour"]) == 24 and base["need"] == {"volume": 72, "ml": 48}
+        assert (await learned_baseline(Settings(), ["nobody"]))["hours"] == 0
     run(body)
 
 

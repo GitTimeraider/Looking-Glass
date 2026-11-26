@@ -56,3 +56,39 @@ def test_search_returns_descriptions_or_says_it_does_not_exist(monkeypatch):
 def test_analyst_is_told_to_use_it():
     assert "looking_glass_settings" in ai.TOOL_NAMES
     assert "Never invent a Looking Glass setting" in ai.SYSTEM_PROMPT
+
+
+def test_setup_summary_names_what_is_set_up_and_what_lookingglass_log_is():
+    s = Settings(swag_log_dir="/swag/log", swag_access_logs="nginx/lookingglass.log", swag_fail2ban_log="",
+                 ai_notes="Looking Glass is only reachable over the VPN.")
+    text = ai.setup_summary(s)
+    assert "access: nginx/lookingglass.log" in text and "NOT Looking Glass's own traffic" in text
+    not_set_up = text.split("NOT set up: ", 1)[1].split(" - ", 1)[0]
+    assert "SWAG fail2ban" in not_set_up and "OPNsense API" in not_set_up and "SWAG logs" not in not_set_up
+    assert "never report their missing data" in text
+    assert "only reachable over the VPN" in text and "take them as fact" in text
+    # no SWAG: nothing about its log files; no notes: no notes line
+    plain = ai.setup_summary(Settings())
+    assert "lookingglass.log" not in plain and "notes" not in plain
+    # set up, yet nothing in 30 days: not running on the user's side, not a gap
+    assert "no events at all in 30 days: fail2ban" in ai.setup_summary(Settings(swag_log_dir="/swag/log"), {"fail2ban"})
+
+
+def test_system_prompt_carries_the_setup(monkeypatch):
+    class Pool:
+        async def fetch(self, sql, *args):
+            if "NOT EXISTS" in sql:  # nothing from these in 30 days
+                return [{"s": x} for x in args[0]]
+            return [{"source": "nginx", "n": 5}]
+    monkeypatch.setattr(db, "pool", lambda: Pool())
+    # SWAG with its default fail2ban log, but fail2ban never wrote anything; OPNsense not set up (Suricata not counted)
+    prompt = asyncio.run(ai.Analyst(Settings(swag_log_dir="/swag/log")).system_message(False))
+    assert "{setup}" not in prompt and "Set up in Looking Glass: SWAG logs" in prompt
+    assert "no events at all in 30 days: fail2ban -" in prompt and "suricata" not in prompt.split("30 days:")[1].split(" - ")[0]
+    from lookingglass.app_config import BY_KEY, SettingsError, _coerce
+    assert BY_KEY["ai_notes"].group == "ai"
+    try:
+        _coerce(BY_KEY["ai_notes"], "x" * 2001)
+        raise AssertionError("too long notes accepted")
+    except SettingsError:
+        pass

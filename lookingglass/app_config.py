@@ -109,6 +109,14 @@ FIELDS: list[Field] = [
           "alert per address and scenario). That is CrowdSec doing its job: 'off' raises none and closes the open ones - "
           "the bans stay visible under Threats › CrowdSec, in reports and the Overview. An address inside your network "
           "is always high.", choices=("off", "info", "low")),
+    Field("crowdsec_shared_lapi", "opnsense", "Shared CrowdSec Local API", "choice",
+          "When one CrowdSec logs in to the other's Local API (OPNsense's to the Docker one of Settings › SWAG & "
+          "CrowdSec, or the other way round), both list the same alerts and decisions. Then each is stored and counted "
+          "once, only one alert per address and scenario is raised (its level: Settings › SWAG & CrowdSec), and Unban "
+          "is offered only in the Active bans list of the CrowdSec that is the Local API. docker: the Docker CrowdSec "
+          "(SWAG) is the Local API. opnsense: OPNsense's is. no: two separate CrowdSecs. auto: recognised by the same "
+          "alert and decision ids in both; the Local API is OPNsense's when the URL of Settings › SWAG & CrowdSec "
+          "points at the OPNsense host.", choices=("auto", "docker", "opnsense", "no")),
     Field("blocklist_aliases", "opnsense", "Blocklist aliases", "text", "The firewall aliases (pf tables) of blocking "
           "tools, one tool per line: Name: alias, alias - * matches any characters. For each line Looking Glass finds the "
           "rules that use these aliases (the tool's own and yours), counts the addresses in them and the packets the "
@@ -286,6 +294,11 @@ FIELDS: list[Field] = [
     Field("ai_stream", "ai", "Stream answers", "bool", "Receive answers word by word. Keeps the connection busy, so "
           "gateways / proxies in front of the model (OpenRouter, LiteLLM, Cloudflare, nginx) don't cut long answers off "
           "with 504 Gateway Timeout. Switched off automatically if the endpoint can't stream."),
+    Field("ai_notes", "ai", "Notes for the analyst", "text", "Facts about your setup the analyst should always know, "
+          "a few short lines (sent with every question and report, so keep it brief - at most 2,000 characters). E.g. "
+          "'Looking Glass is only reachable over the VPN.' or 'The NAS backs up to the cloud every night at 2:00, that "
+          "traffic is expected.' What you set up in Looking Glass (and what not) is told to it already.",
+          placeholder="Looking Glass is only reachable from the LAN and the VPN, not through SWAG."),
     Field("ai_privacy", "ai", "Privacy mode: pseudonymize local data", "bool", "Before anything is sent to the AI, "
           "local identifiers are replaced by consistent pseudonyms, and translated back in the answer - you keep seeing "
           "the real values. Replaced: private IP addresses (the network part; the last number stays), your own public / "
@@ -355,9 +368,11 @@ FIELDS: list[Field] = [
     Field("anomaly_ml_enabled", "behavior", "Machine learning (Isolation Forest)", "bool", "Scores every device-hour on "
           "7 features (connections, destinations, ports, countries, DNS, failed lookups, blocks) against the "
           "device's own history and alerts on combinations that are rare. Runs locally, nothing leaves the server."),
-    Field("anomaly_ml_sensitivity", "behavior", "Machine learning: sensitivity", "choice", "low = only hours rarer "
-          "than 1 in 2000 normal hours with a feature 4+ deviations off; medium = 1 in 500, 3.5; high = 1 in 200, 3.",
-          choices=("low", "medium", "high")),
+    Field("anomaly_ml_sensitivity", "behavior", "Machine learning: sensitivity", "choice", "From fewest to most alerts - "
+          "an hour alerts when it is rarer than 1 in N normal hours with a feature D deviations off: very_low = 1 in "
+          "10,000, 4.5; low = 1 in 2,000, 4; medium_low = 1 in 1,000, 3.75; medium = 1 in 500, 3.5; medium_high = 1 in "
+          "~300, 3.25; high = 1 in 200, 3; very_high = 1 in 100, 2.5.",
+          choices=("very_low", "low", "medium_low", "medium", "medium_high", "high", "very_high")),
     Field("seasonal_enabled", "behavior", "Unusual for this hour of the week", "bool", "Totals per hour (firewall "
           "blocks, failed logins, DNS, failed lookups, per log source) against the same hour in previous weeks."),
     Field("seasonal_sensitivity", "behavior", "Hour of the week: sensitivity", "int", "How many 'normal deviations' "
@@ -723,6 +738,8 @@ def _coerce(f: Field, value: Any) -> Any:
             parse_sources(v)
         except ValueError as exc:
             raise SettingsError(f"{f.label}: {exc}") from exc
+    if f.key == "ai_notes" and len(str(v)) > 2000:
+        raise SettingsError(f"{f.label}: at most 2,000 characters (it is sent with every question)")
     if f.key == "ai_privacy_avoid" and v:
         from .privacy import parse_avoid
         try:

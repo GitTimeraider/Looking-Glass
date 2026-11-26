@@ -127,6 +127,28 @@ async def step(batch: int = BATCH, backlog_only: bool = False) -> int:
         return max(0, new_upto - upto)
 
 
+_DIM_LIST = [d.strip() for d in _DIMS.split(",")]
+
+
+async def delete_events(where: str, *args) -> int:
+    """Delete the events matching ``where`` (SQL on ``events``) and take the ones already counted out of the hourly
+    counts again, so the dashboards stay exact. Returns how many events went."""
+    match = " AND ".join(f"r.{d} = c.{d}" for d in ["bucket", *_DIM_LIST])
+    async with db.pool().acquire() as conn, conn.transaction():
+        # the counting step waits meanwhile: it cannot count an event that is being deleted
+        upto = await conn.fetchval("SELECT upto FROM event_rollup_state FOR UPDATE") or 0
+        return await conn.fetchval(f"""
+            WITH gone AS (DELETE FROM events WHERE {where} RETURNING *),
+            cnt AS (SELECT bucket, {', '.join(_DIM_LIST)}, count(*) n FROM (
+                SELECT {_BUCKET} AS bucket, source, coalesce(action, '') AS action, coalesce(proto, '') AS proto,
+                       coalesce(interface, '') AS interface, coalesce(direction, '') AS direction,
+                       coalesce(dst_port, -1) AS dst_port, coalesce(src_country, '') AS src_country, severity,
+                       {_SCOPE} AS src_scope
+                FROM gone WHERE id <= {int(upto)}) g GROUP BY bucket, {', '.join(_DIM_LIST)}),
+            upd AS (UPDATE event_rollup r SET n = r.n - c.n FROM cnt c WHERE {match} RETURNING 1)
+            SELECT (SELECT count(*) FROM gone) + 0 * (SELECT count(*) FROM upd)""", *args)
+
+
 async def prune(retention_days: int) -> None:
     """Hours older than the events themselves are dropped (housekeeping)."""
     await db.pool().execute("DELETE FROM event_rollup WHERE bucket < now() - make_interval(days => $1) - interval '1 hour'",

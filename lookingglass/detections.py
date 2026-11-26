@@ -1211,6 +1211,8 @@ class DetectionEngine:
                     "AND status <> 'closed' AND severity <> 'high'", like)]
                 if open_fps:
                     await close_alerts("crowdsec", open_fps, f"CrowdSec ({where})")
+        from .crowdsec_shared import is_shared
+        shared = await is_shared(self.settings)  # one Local API for both: only its alerts are stored
         for r in rows:
             ip = str(r["src_ip"]) if r["src_ip"] else None
             internal = self.internal(ip) if ip else False
@@ -1220,7 +1222,8 @@ class DetectionEngine:
             rating = Rating("high", "behaviour detected from INSIDE the network", sticky=True) if internal else \
                 Rating(level, "CrowdSec detected it and handles it (ban / captcha) - working as intended", sticky=True)
             # which CrowdSec: the OPNsense plugin or CrowdSec in Docker next to SWAG - kept apart, each its own alert
-            which, fp, evs = (("SWAG", f"crowdsec-lapi:{ip}:{r['scenario']}", {"program": "crowdsec-lapi"}) if r["docker"] else
+            which, fp, evs = ((("SWAG + OPNsense" if shared else "SWAG"), f"crowdsec-lapi:{ip}:{r['scenario']}",
+                               {"program": "crowdsec-lapi"}) if r["docker"] else
                               ("OPNsense", f"crowdsec:{ip}:{r['scenario']}", {"not_program": "crowdsec-lapi"}))
             await raise_alert("crowdsec", rating,
                               f"CrowdSec ({which}): {r['scenario']} from {ip}{' (INTERNAL)' if internal else ''}",
