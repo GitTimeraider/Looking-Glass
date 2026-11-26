@@ -424,18 +424,70 @@ const LG = {
         scales: { x: { stacked: !opts.line, ticks: { maxTicksLimit: 10, maxRotation: 0 } }, y: { stacked: !opts.line, beginAtZero: true, ticks: { callback: opts.fmt || (v => v) } } },
         plugins: { legend: { position: "bottom", labels: { boxWidth: 10 } } } } });
   },
-  /** metric series {label: [[t, v], ...]} -> line chart */
+  /* lines hidden through a chart's "Lines" menu, by label - kept across refreshes (the chart is drawn anew each time)
+     and, where the browser allows, across visits (per page and chart) */
+  legendKey: id => `lg-legend:${location.pathname}:${id}`,
+  legendHidden(id) {
+    LG._legend = LG._legend || {};
+    if (!LG._legend[id]) {
+      let saved = [];
+      try { saved = JSON.parse(localStorage.getItem(LG.legendKey(id)) || "[]"); } catch (e) { saved = []; }
+      LG._legend[id] = new Set(Array.isArray(saved) ? saved : []);
+    }
+    return LG._legend[id];
+  },
+  /** A chart with many lines: instead of a legend block under the chart (which can push the chart out of its card), a
+      small "Lines n/m" menu in the card's heading with a checkbox per line. chart = null removes the menu. */
+  legendMenu(id, chart) {
+    const canvas = document.getElementById(id), card = canvas && canvas.closest(".card, .widget");
+    if (!card) return;
+    let menu = card.querySelector(`details.legend-menu[data-for="${id}"]`);
+    if (!chart) { if (menu) menu.remove(); return; }
+    if (!menu) {
+      menu = document.createElement("details");
+      menu.className = "legend-menu"; menu.dataset.for = id;
+      const head = card.querySelector("h3");
+      if (head) head.appendChild(menu); else canvas.parentElement.before(menu);
+      document.addEventListener("click", e => { if (menu.open && !menu.contains(e.target)) menu.open = false; });
+      document.addEventListener("keydown", e => { if (e.key === "Escape" && menu.open) { menu.open = false; menu.querySelector("summary").focus(); } });
+    }
+    const hidden = LG.legendHidden(id), ds = chart.data.datasets, wasOpen = menu.open;
+    const count = () => `Lines ${ds.filter((_, i) => chart.isDatasetVisible(i)).length}/${ds.length}`;
+    menu.innerHTML = `<summary title="Show or hide lines">${count()}</summary><div class="legend-pop" role="group" aria-label="Lines shown">
+      <div class="legend-act"><button type="button" class="small secondary" data-all="1">All</button><button type="button" class="small secondary" data-all="0">None</button></div>` +
+      ds.map((d, i) => `<label><input type="checkbox" data-i="${i}" ${chart.isDatasetVisible(i) ? "checked" : ""}><span class="legend-sw" style="background:${d.borderColor}"></span><span>${LG.esc(d.label)}</span></label>`).join("") + `</div>`;
+    menu.open = wasOpen;
+    const save = () => {
+      ds.forEach((d, i) => chart.isDatasetVisible(i) ? hidden.delete(d.label) : hidden.add(d.label));
+      try { localStorage.setItem(LG.legendKey(id), JSON.stringify([...hidden])); } catch (e) { /* private mode: this visit only */ }
+      chart.update(); menu.querySelector("summary").textContent = count();
+    };
+    menu.querySelectorAll("input[data-i]").forEach(cb => cb.onchange = () => { chart.setDatasetVisibility(+cb.dataset.i, cb.checked); save(); });
+    menu.querySelectorAll("button[data-all]").forEach(b => b.onclick = () => {
+      const on = b.dataset.all === "1";
+      ds.forEach((_, i) => chart.setDatasetVisibility(i, on));
+      menu.querySelectorAll("input[data-i]").forEach(cb => { cb.checked = on; });
+      save();
+    });
+  },
+  /** metric series {label: [[t, v], ...]} -> line chart. opts.legendMenu: true / false; default: a menu instead of the
+      legend from 7 lines on (LG.legendMenu) */
   lineChart(id, series, opts = {}) {
+    const hidden = LG.legendHidden(id);
     const datasets = Object.entries(series || {}).map(([label, pts], i) => ({
       label: (opts.rename ? opts.rename(label) : label) || id, borderColor: LG.color(i), backgroundColor: LG.color(i) + "22", fill: !!opts.fill,
       data: pts.map(p => ({ x: new Date(p[0]).getTime(), y: opts.neg && opts.neg(label) ? -p[1] : p[1] })), pointRadius: 0, borderWidth: 1.5, tension: opts.step ? 0 : .2, stepped: opts.step ? "before" : false }));
+    const menu = opts.legendMenu ?? datasets.length > 6;
+    if (menu) datasets.forEach(d => { d.hidden = hidden.has(d.label); });
     const fmt = opts.fmt || (v => Math.round(v * 100) / 100);
-    return LG.chart(id, { type: "line", data: { datasets }, options: { maintainAspectRatio: false, animation: false, parsing: false,
+    const chart = LG.chart(id, { type: "line", data: { datasets }, options: { maintainAspectRatio: false, animation: false, parsing: false,
       interaction: { mode: "nearest", intersect: false },
       scales: { x: { type: "linear", ticks: { callback: v => LG.timeLabel(v, opts.hours || 24), maxTicksLimit: 7, maxRotation: 0 } },
                 y: { min: opts.min, max: opts.max, ticks: { callback: v => fmt(Math.abs(v)) } } },
-      plugins: { legend: { display: datasets.length > 1, position: "bottom", labels: { boxWidth: 10 } },
+      plugins: { legend: { display: !menu && datasets.length > 1, position: "bottom", labels: { boxWidth: 10 } },
                  tooltip: { callbacks: { title: i => LG.time(i[0].parsed.x), label: c => `${c.dataset.label}: ${fmt(Math.abs(c.parsed.y))}` } } } } });
+    LG.legendMenu(id, menu && datasets.length > 1 ? chart : null);
+    return chart;
   },
   pieChart(id, rows, onClick) {
     return LG.chart(id, { type: "doughnut", data: { labels: rows.map(r => r.label ?? "?"),

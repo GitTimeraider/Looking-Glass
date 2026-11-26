@@ -69,6 +69,20 @@ header.top h1 { font-size: 20px; margin: 0; flex: 1; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
 .card h3 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .card h3 .sp { flex: 1; }
+/* a chart's "Lines n/m" menu (LG.legendMenu): instead of a legend block under a chart with many lines */
+.legend-menu { margin-left: auto; position: relative; text-transform: none; letter-spacing: normal; font-weight: 400; }
+.legend-menu > summary { cursor: pointer; list-style: none; font-size: 12px; padding: 2px 8px; border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text); white-space: nowrap; }
+.legend-menu > summary::-webkit-details-marker { display: none; }
+.legend-menu > summary::after { content: " ▾"; color: var(--muted); }
+.legend-menu[open] > summary { background: var(--panel2); }
+.legend-pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px; min-width: 220px; max-width: min(360px, calc(100vw - 32px)); max-height: 320px; overflow: auto;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35); font-size: 13px; color: var(--text); }
+.legend-pop .legend-act { display: flex; gap: 6px; margin-bottom: 6px; position: sticky; top: -8px; background: var(--panel); padding: 2px 0 4px; }
+.legend-pop label { display: flex; align-items: center; gap: 8px; padding: 3px 2px; cursor: pointer; overflow-wrap: anywhere; }
+.legend-pop input { margin: 0; flex: none; }
+.legend-sw { width: 10px; height: 10px; border-radius: 2px; flex: none; }
 .kpi .v { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .kpi .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
 .kpi.bad .v { color: var(--bad); } .kpi.warn .v { color: var(--warn); } .kpi.ok .v { color: var(--ok); }
